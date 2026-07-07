@@ -1,0 +1,51 @@
+# Qwen3-VL sidecar for DriveFaceIndexer (local GPU required).
+#
+# Prerequisite: NVIDIA GPU + Docker Desktop with GPU support / nvidia-container-toolkit
+#
+# Start:
+#   docker compose -f docker-compose.qwen.yml up -d
+#
+# API (OpenAI-compatible):
+#   http://localhost:8003/v1
+#
+# Then in backend .env:
+#   QWEN_VLM_ENABLED=true
+#   QWEN_VLM_BASE_URL=http://host.docker.internal:8003
+#   VIDEO_VLM_ENRICH=true
+
+services:
+  qwen-vlm:
+    image: vllm/vllm-openai:latest
+    container_name: dfi-qwen-vlm
+    restart: unless-stopped
+    ipc: host
+    ports:
+      - "8003:8003"
+    volumes:
+      - qwen_hf_cache:/root/.cache/huggingface
+    environment:
+      HF_HOME: /root/.cache/huggingface
+      VLLM_WORKER_MULTIPROC_METHOD: spawn
+    command: >
+      --model Qwen/Qwen3-VL-8B-Instruct
+      --host 0.0.0.0
+      --port 8003
+      --max-model-len 8192
+      --limit-mm-per-prompt image=1
+      --dtype auto
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:8003/v1/models || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 20
+      start_period: 300s
+
+volumes:
+  qwen_hf_cache:

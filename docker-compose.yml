@@ -1,0 +1,61 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: drivefaceindexer
+      POSTGRES_PASSWORD: drivefaceindexer
+      POSTGRES_DB: drivefaceindexer
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U drivefaceindexer"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  connector:
+    build:
+      context: "../drive connector"
+    ports:
+      - "3000:3000"
+    env_file:
+      - "../drive connector/.env"
+    volumes:
+      - connector-data:/app/data
+
+  backend:
+    build:
+      context: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://drivefaceindexer:drivefaceindexer@postgres:5432/drivefaceindexer
+      DRIVE_CONNECTOR_BASE_URL: http://connector:3000
+      DRIVE_CONNECTOR_API_KEY: ${DRIVE_CONNECTOR_API_KEY}
+      TEMP_DIR: /app/data/tmp
+      THUMBNAIL_DIR: /app/data/thumbnails
+      FLAGS_use_mkldnn: "false"
+    volumes:
+      - backend-data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      connector:
+        condition: service_started
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:8000
+    ports:
+      - "3001:3001"
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:
+  connector-data:
+  backend-data:

@@ -1,0 +1,405 @@
+"use client";
+
+import { useEffect, useState, useMemo, useCallback } from "react";
+import Script from "next/script";
+import { apiClient, type FolderContext, type DriveFile, type IndexStatus, type DriveSession, API_BASE } from "@/lib/api";
+import { Button, Card, Input } from "@/components/ui";
+import { formatDate } from "@/lib/utils";
+
+declare global {
+  interface Window {
+    gapi: any;
+    google: any;
+    _pickerApiLoaded?: boolean;
+  }
+}
+
+export default function FoldersPage() {
+  const [files, setFiles] = useState<DriveFile[]>([]);
+  const [status, setStatus] = useState<IndexStatus | null>(null);
+  const [folderContexts, setFolderContexts] = useState<FolderContext[]>([]);
+  const [driveSession, setDriveSession] = useState<DriveSession | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [pickerBusy, setPickerBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [editingFolder, setEditingFolder] = useState<string | null>(null);
+  const [editDescription, setEditDescription] = useState("");
+  const [savingFolder, setSavingFolder] = useState<string | null>(null);
+
+  async function load() {
+    try {
+      const [f, s, fc, ds] = await Promise.all([
+        apiClient.driveFiles(),
+        apiClient.indexStatus(),
+        apiClient.folderContexts().catch(() => [] as FolderContext[]),
+        apiClient.driveSession().catch(() => null as DriveSession | null),
+      ]);
+      setFiles(f);
+      setStatus(s);
+      setFolderContexts(Array.isArray(fc) ? fc : []);
+      setDriveSession(ds);
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load");
+    }
+  }
+
+  // Handle ?connected=1 or ?error=... redirected from OAuth callback
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("connected") === "1") {
+      window.history.replaceState({}, "", "/folders");
+      apiClient.syncDriveFiles().then(() => load()).catch(() => load());
+    } else if (params.get("error")) {
+      setError(`Drive connection failed: ${params.get("error")}`);
+      window.history.replaceState({}, "", "/folders");
+    }
+  }, []);
+
+  async function openPicker() {
+    setPickerBusy(true);
+    try {
+      const { accessToken, apiKey } = await apiClient.driveToken();
+
+      if (!window._pickerApiLoaded) {
+        await new Promise<void>((resolve) => window.gapi.load("picker", resolve));
+        window._pickerApiLoaded = true;
+      }
+
+      const view = new window.google.picker.DocsView(window.google.picker.ViewId.FOLDERS)
+        .setIncludeFolders(true)
+        .setSelectFolderEnabled(true)
+        .setMimeTypes("application/vnd.google-apps.folder");
+
+      const picker = new window.google.picker.PickerBuilder()
+        .setTitle("Choose a Drive folder to index")
+        .addView(view)
+        .setOAuthToken(accessToken)
+        .setDeveloperKey(apiKey)
+        .setCallback(async (data: any) => {
+          if (data.action !== window.google.picker.Action.PICKED) return;
+          const doc = data.docs[0];
+          await apiClient.saveDriveFolder(doc.id, doc.name);
+          await apiClient.syncDriveFiles().catch(() => {});
+          await load();
+        })
+        .build();
+
+      picker.setVisible(true);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not open folder picker");
+    } finally {
+      setPickerBusy(false);
+    }
+  }
+
+  async function disconnectDrive() {
+    await apiClient.driveLogout();
+    await load();
+  }
+
+  useEffect(() => {
+    load();
+    const t = setInterval(load, 4000);
+    return () => clearInterval(t);
+  }, []);
+
+  async function retryFile(id: string) {
+    setBusy(true);
+    try {
+      await apiClient.retryDriveFile(id);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Retry failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeFile(id: string) {
+    setBusy(true);
+    try {
+      await apiClient.removeDriveFile(id);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Remove failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function runIndex(reindex = false) {
+    setBusy(true);
+    try {
+      await (reindex ? apiClient.triggerReindex() : apiClient.triggerIndex());
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Index failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveFolderContext(folderPath: string) {
+    setSavingFolder(folderPath);
+    try {
+      await apiClient.upsertFolderContext(folderPath, editDescription);
+      setEditingFolder(null);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Save failed");
+    } finally {
+      setSavingFolder(null);
+    }
+  }
+
+  async function deleteContext(folderPath: string) {
+    await apiClient.deleteFolderContext(folderPath);
+    await load();
+  }
+
+  const uniqueFolders = useMemo(() => {
+    const paths = new Set<string>();
+    // Always include the root (connected folder)
+    paths.add("/");
+    for (const f of files) {
+      const parts = f.path.split("/").filter(Boolean);
+      if (parts.length > 1) {
+        parts.pop();
+        paths.add("/" + parts.join("/"));
+      }
+    }
+    return Array.from(paths).sort();
+  }, [files]);
+
+  const contextByPath = useMemo(() => {
+    const map: Record<string, FolderContext> = {};
+    for (const fc of folderContexts) map[fc.folder_path] = fc;
+    return map;
+  }, [folderContexts]);
+
+  const statusColor: Record<string, string> = {
+    pending: "text-yellow-400",
+    processing: "text-blue-400",
+    processed: "text-green-400",
+    error: "text-red-400",
+    skipped: "text-zinc-500",
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* Load Google Picker API */}
+      <Script src="https://apis.google.com/js/api.js" strategy="lazyOnload" />
+
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <h2 className="text-2xl font-semibold">Folders</h2>
+          <p className="text-sm text-zinc-400">Drive files tracked from your connected folder</p>
+        </div>
+        <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
+          <Button className="w-full sm:w-auto" onClick={() => runIndex(false)} disabled={busy || status?.is_running}>
+            {status?.is_running ? "Indexing..." : "Start Index"}
+          </Button>
+          <Button className="w-full sm:w-auto" variant="secondary" onClick={() => runIndex(true)} disabled={busy || status?.is_running}>
+            Reindex All
+          </Button>
+        </div>
+      </div>
+
+      {/* Drive connection card */}
+      <Card className={driveSession?.connected ? "border-green-800/50 bg-green-950/10" : "border-yellow-800/50 bg-yellow-950/10"}>
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div>
+            <p className="text-sm font-medium">
+              {driveSession?.connected ? "Google Drive connected" : "Google Drive not connected"}
+            </p>
+            {driveSession?.connected ? (
+              <p className="text-xs text-zinc-400">
+                {driveSession.email}
+                {driveSession.selected_folder
+                  ? ` · Folder: ${driveSession.selected_folder.name}`
+                  : " · No folder selected yet"}
+              </p>
+            ) : (
+              <p className="text-xs text-zinc-400">Connect your Google account to start indexing Drive files.</p>
+            )}
+          </div>
+          <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
+            {driveSession?.connected ? (
+              <>
+                <Button className="w-full sm:w-auto" onClick={openPicker} disabled={pickerBusy}>
+                  {pickerBusy ? "Opening…" : driveSession.selected_folder ? "Change Folder" : "Choose Folder"}
+                </Button>
+                <Button className="w-full sm:w-auto" variant="secondary" onClick={disconnectDrive}>Disconnect</Button>
+              </>
+            ) : (
+              <Button className="w-full sm:w-auto" onClick={() => window.location.href = `${API_BASE}/auth/google`}>
+                Connect Google Drive
+              </Button>
+            )}
+          </div>
+        </div>
+      </Card>
+
+      {error && <Card className="border-red-800 text-red-300">{error}</Card>}
+
+      <Card className={status?.is_running ? "border-blue-800 bg-blue-950/20" : ""}>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p className="text-sm font-medium">
+              {status?.is_running ? "Indexing in progress" : "Indexer status"}
+            </p>
+            {status?.is_running && status.current_file ? (
+              <p className="text-sm text-zinc-300">Now processing: {status.current_file}</p>
+            ) : (
+              <p className="text-sm text-zinc-400">
+                {status?.auto_index_enabled
+                  ? `Auto-sync every ${status.auto_index_interval_seconds}s`
+                  : "Click Start Index or enable auto-index in Settings"}
+                {status?.last_run_at ? ` · last sync ${formatDate(status.last_run_at)}` : ""}
+              </p>
+            )}
+          </div>
+          <div className="grid grid-cols-2 gap-2 text-sm sm:flex sm:gap-4">
+            <span className="text-green-400">{status?.counts_by_status.processed ?? 0} processed</span>
+            <span className="text-yellow-400">{status?.counts_by_status.pending ?? 0} pending</span>
+            <span className="text-blue-400">{status?.counts_by_status.processing ?? 0} active</span>
+            <span className="text-red-400">{status?.counts_by_status.error ?? 0} errors</span>
+          </div>
+        </div>
+        {status?.last_run && (
+          <p className="mt-3 text-xs text-zinc-500">
+            Last completed run: {status.last_run.discovered} discovered · {status.last_run.processed} processed ·{" "}
+            {status.last_run.skipped} skipped · {status.last_run.errored} errors
+          </p>
+        )}
+      </Card>
+
+      {uniqueFolders.length > 0 && (
+        <Card>
+          <h3 className="mb-3 font-medium text-sm">Folder Search Context</h3>
+          <p className="mb-4 text-xs text-zinc-400">
+            Add a description to a folder to improve search accuracy. The description is embedded with
+            Gemini and used to scope and verify search results.
+          </p>
+          <div className="space-y-2">
+            {uniqueFolders.map((fp) => {
+              const ctx = contextByPath[fp];
+              const isEditing = editingFolder === fp;
+              const isSaving = savingFolder === fp;
+              const folderName = fp === "/"
+                ? (driveSession?.selected_folder?.name ?? "Connected folder (root)")
+                : (fp.split("/").filter(Boolean).pop() ?? fp);
+
+              return (
+                <div key={fp} className="rounded-md border border-border/50 p-3">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-medium truncate">📁 {folderName}</span>
+                        {ctx?.description && (
+                          <span className="rounded bg-primary/20 px-1.5 py-0.5 text-xs text-primary">
+                            context set
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-xs text-zinc-500 truncate">{fp}</p>
+                      {ctx?.description && !isEditing && (
+                        <p className="mt-1 text-xs text-zinc-400 italic">&ldquo;{ctx.description}&rdquo;</p>
+                      )}
+                    </div>
+                    {!isEditing && (
+                      <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:gap-1 shrink-0">
+                        <Button
+                          variant="secondary"
+                          onClick={() => {
+                            setEditingFolder(fp);
+                            setEditDescription(ctx?.description ?? "");
+                          }}
+                        >
+                          {ctx?.description ? "Edit" : "Add context"}
+                        </Button>
+                        {ctx?.description && (
+                          <Button variant="secondary" onClick={() => deleteContext(fp)}>
+                            Remove
+                          </Button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  {isEditing && (
+                    <div className="mt-3 space-y-2">
+                      <Input
+                        placeholder="Describe this folder (e.g. 'Birthday party videos 2024, outdoor events')"
+                        value={editDescription}
+                        onChange={(e) => setEditDescription(e.target.value)}
+                        onKeyDown={(e) => e.key === "Enter" && saveFolderContext(fp)}
+                      />
+                      <div className="flex gap-2">
+                        <Button onClick={() => saveFolderContext(fp)} disabled={isSaving}>
+                          {isSaving ? "Saving…" : "Save & embed"}
+                        </Button>
+                        <Button variant="secondary" onClick={() => setEditingFolder(null)}>
+                          Cancel
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      )}
+
+      <Card className="overflow-x-auto p-0">
+        <table className="w-full text-left text-sm">
+          <thead className="border-b border-border text-zinc-400">
+            <tr>
+              <th className="p-3">Name</th>
+              <th className="p-3">Path</th>
+              <th className="p-3">Type</th>
+              <th className="p-3">Status</th>
+              <th className="p-3">Error</th>
+              <th className="p-3">Synced</th>
+              <th className="p-3">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {files.map((f) => (
+              <tr key={f.id} className="border-b border-border/50 hover:bg-muted/30">
+                <td className="p-3 font-medium">{f.name}</td>
+                <td className="p-3 text-zinc-400">{f.path}</td>
+                <td className="p-3 text-zinc-500">{f.mime_type}</td>
+                <td className={`p-3 ${statusColor[f.status] ?? ""}`}>{f.status}</td>
+                <td className="max-w-xs truncate p-3 text-xs text-red-300" title={f.error_message ?? undefined}>
+                  {f.error_message ?? "—"}
+                </td>
+                <td className="p-3 text-zinc-500">{f.last_synced_at ? formatDate(f.last_synced_at) : "—"}</td>
+                <td className="p-3">
+                  <div className="flex gap-2">
+                    {f.status === "error" && (
+                      <Button variant="secondary" onClick={() => retryFile(f.id)} disabled={busy}>
+                        Retry
+                      </Button>
+                    )}
+                    {(f.status === "error" || f.error_message?.includes("404")) && (
+                      <Button variant="secondary" onClick={() => removeFile(f.id)} disabled={busy}>
+                        Remove
+                      </Button>
+                    )}
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {files.length === 0 && (
+          <p className="p-4 text-sm text-zinc-500">
+            No files synced yet. Connect Drive, choose a folder, and files will appear automatically within ~30 seconds.
+          </p>
+        )}
+      </Card>
+    </div>
+  );
+}

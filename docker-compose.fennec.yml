@@ -1,0 +1,96 @@
+# Fennec Search sidecar for DriveFaceIndexer video moment search.
+#
+# Prerequisite:
+#   git clone https://github.com/JasonMakes801/fennec-search.git ../fennec-search
+#
+# Usage:
+#   docker compose -f docker-compose.fennec.yml up -d --build
+#   Fennec UI: http://localhost:8080
+#   Fennec API: http://localhost:8002
+
+services:
+  fennec-db:
+    image: pgvector/pgvector:pg16
+    container_name: dfi-fennec-db
+    environment:
+      POSTGRES_USER: fennec
+      POSTGRES_PASSWORD: fennec
+      POSTGRES_DB: fennec
+    ports:
+      - "5434:5432"
+    volumes:
+      - fennec_data:/var/lib/postgresql/data
+      - ../fennec-search/db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fennec"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  fennec-ingest:
+    build: ../fennec-search/ingest
+    container_name: dfi-fennec-ingest
+    restart: unless-stopped
+    depends_on:
+      fennec-db:
+        condition: service_healthy
+    environment:
+      DB_HOST: fennec-db
+      DB_PORT: 5432
+      DB_NAME: fennec
+      DB_USER: fennec
+      DB_PASSWORD: fennec
+      PYTHONUNBUFFERED: "1"
+      WATCH_FOLDERS: /media/dfi
+    volumes:
+      - ./data/fennec-media:/media/dfi
+      - fennec_posters:/app/posters
+      - fennec_models:/root/.cache
+
+  fennec-server:
+    build: ../fennec-search/server
+    container_name: dfi-fennec-server
+    restart: unless-stopped
+    depends_on:
+      fennec-db:
+        condition: service_healthy
+    environment:
+      DEMO_MODE: "false"
+      DB_HOST: fennec-db
+      DB_PORT: 5432
+      DB_NAME: fennec
+      DB_USER: fennec
+      DB_PASSWORD: fennec
+      POSTERS_DIR: /app/posters
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./data/fennec-media:/media/dfi:ro
+      - fennec_posters:/app/posters:ro
+    ports:
+      - "8002:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/ready')\""]
+      interval: 15s
+      timeout: 10s
+      retries: 30
+      start_period: 180s
+    networks:
+      default:
+        aliases:
+          - server
+
+  fennec-ui:
+    build: ../fennec-search/ui
+    container_name: dfi-fennec-ui
+    depends_on:
+      fennec-server:
+        condition: service_healthy
+    ports:
+      - "8080:80"
+    environment:
+      NODE_ENV: production
+
+volumes:
+  fennec_data:
+  fennec_posters:
+  fennec_models:

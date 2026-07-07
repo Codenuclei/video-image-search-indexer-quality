@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+.pytest_cache/
+
+# Env / secrets
+.env
+backend/.env
+
+# Data
+backend/data/
+backend/tests/fixtures/faces/*.jpg
+!backend/tests/fixtures/faces/.gitkeep
+
+# Node / frontend
+node_modules/
+.next/
+frontend/.env.local
+
+# OS
+.DS_Store
+Thumbs.db
