@@ -5,6 +5,8 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronRight,
+  Download,
+  ExternalLink,
   FileImage,
   FileVideo,
   Folder,
@@ -16,12 +18,15 @@ import {
 } from "lucide-react";
 import {
   apiClient,
+  driveFileDownloadUrl,
   driveFilePreviewUrl,
+  driveGoogleViewUrl,
+  driveVideoStreamUrl,
   type LibraryFile,
   type LibraryFolder,
   type LibraryResponse,
 } from "@/lib/api";
-import { Button, Card, Input, ServiceErrorCard, StatCard } from "@/components/ui";
+import { Button, Card, IconLink, Input, ServiceErrorCard, StatCard } from "@/components/ui";
 import { cn } from "@/lib/utils";
 
 type FilterMode = "all" | "processed" | "skipped" | "missing_caption" | "missing_embed" | "pending" | "error";
@@ -507,6 +512,30 @@ export default function LibraryPage() {
                   className="w-full rounded-lg border border-border object-cover"
                 />
               )}
+              {selectedFile.is_video && (
+                <video
+                  src={driveVideoStreamUrl(selectedFile.id)}
+                  controls
+                  playsInline
+                  className="w-full rounded-lg border border-border bg-black"
+                />
+              )}
+              <div className="flex flex-wrap gap-2">
+                <IconLink
+                  href={driveFileDownloadUrl(selectedFile.id)}
+                  icon={Download}
+                  label="Download"
+                  variant="primary"
+                  download={selectedFile.name}
+                />
+                <IconLink
+                  href={driveGoogleViewUrl(selectedFile.id)}
+                  icon={ExternalLink}
+                  label="Open in Drive"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                />
+              </div>
               <div>
                 <p className="font-medium break-all">{selectedFile.name}</p>
                 <p className="mt-1 text-xs text-muted-foreground break-all">{selectedFile.path}</p>

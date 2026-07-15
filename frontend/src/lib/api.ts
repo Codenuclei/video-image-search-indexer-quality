@@ -312,6 +312,10 @@ export const driveFilePreviewUrl = (driveFileId: string, mimeType?: string) => {
 export const driveFileDownloadUrl = (driveFileId: string) =>
   `${API_BASE}/drive/files/${driveFileId}/download`;
 
+/** Stream indexed video/audio for in-app playback (seek via HTML5 video element). */
+export const driveVideoStreamUrl = (driveFileId: string) =>
+  `${API_BASE}/drive/files/${driveFileId}/preview`;
+
 export const apiAssetUrl = (path: string) =>
   path.startsWith("http") ? path : `${API_BASE}${path}`;
 
