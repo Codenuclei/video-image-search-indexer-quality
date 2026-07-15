@@ -9,7 +9,7 @@ from app.db.models import ClusterStatus, DriveFile, Face, FaceCluster, Media
 from app.db.session import get_db
 from app.matching.service import ignore_cluster, merge_cluster_into_person, name_cluster
 from app.routers.persons import _serialize_person
-from app.schemas import ClusterOut, MediaOccurrence, MergeClusterRequest, NameClusterRequest, PersonOut
+from app.schemas import ClusterListResponse, ClusterOut, MediaOccurrence, MergeClusterRequest, NameClusterRequest, PersonOut
 
 router = APIRouter(prefix="/clusters", tags=["clusters"])
 
@@ -58,28 +58,44 @@ async def _build_cluster_out(session: AsyncSession, cluster: FaceCluster) -> Clu
     )
 
 
-@router.get("", response_model=list[ClusterOut])
+@router.get("", response_model=ClusterListResponse)
 async def list_clusters(
     include_ignored: bool = False,
+    limit: int = 100,
+    offset: int = 0,
     session: AsyncSession = Depends(get_db),
-) -> list[ClusterOut]:
+) -> ClusterListResponse:
     """Unknown-faces review queue: clusters awaiting a name (or ignored, if requested)."""
     settings = get_settings()
     min_conf = settings.review_queue_min_confidence
     statuses = [ClusterStatus.UNKNOWN]
     if include_ignored:
         statuses.append(ClusterStatus.IGNORED)
+    limit = max(1, min(limit, 100))
+    offset = max(0, offset)
+
+    filters = (
+        FaceCluster.status.in_(statuses),
+        Face.detection_confidence >= min_conf,
+    )
+    count_stmt = (
+        select(func.count(FaceCluster.id))
+        .join(Face, FaceCluster.representative_face_id == Face.id)
+        .where(*filters)
+    )
+    total = (await session.execute(count_stmt)).scalar_one()
+
     stmt = (
         select(FaceCluster)
         .join(Face, FaceCluster.representative_face_id == Face.id)
-        .where(
-            FaceCluster.status.in_(statuses),
-            Face.detection_confidence >= min_conf,
-        )
+        .where(*filters)
         .order_by(FaceCluster.member_count.desc())
+        .offset(offset)
+        .limit(limit)
     )
     clusters = (await session.execute(stmt)).scalars().all()
-    return [await _build_cluster_out(session, c) for c in clusters]
+    items = [await _build_cluster_out(session, c) for c in clusters]
+    return ClusterListResponse(items=items, total=total, offset=offset, limit=limit)
 
 
 @router.get("/{cluster_id}", response_model=ClusterOut)

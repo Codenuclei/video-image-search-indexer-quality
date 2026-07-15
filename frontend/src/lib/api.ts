@@ -79,6 +79,13 @@ export type Cluster = {
   created_at: string;
 };
 
+export type ClusterListResponse = {
+  items: Cluster[];
+  total: number;
+  offset: number;
+  limit: number;
+};
+
 export type DriveFile = {
   id: string;
   name: string;
@@ -312,6 +319,10 @@ export const apiClient = {
   health: () =>
     api<{ status: string; search?: string; fennec_enabled?: boolean; fennec_ready?: boolean }>("/health"),
   persons: () => api<Person[]>("/persons"),
+  searchPersons: (q: string, limit = 20) => {
+    const params = new URLSearchParams({ q, limit: String(limit) });
+    return api<Person[]>(`/persons/search?${params}`);
+  },
   person: (id: number) => api<Person>(`/persons/${id}`),
   renamePerson: (id: number, name: string) =>
     api<Person>(`/persons/${id}`, { method: "PATCH", body: JSON.stringify({ name }) }),
@@ -329,8 +340,14 @@ export const apiClient = {
         frame_timestamp?: number | null;
       }[]
     >(`/persons/${id}/media`),
-  clusters: (includeIgnored = false) =>
-    api<Cluster[]>(`/clusters${includeIgnored ? "?include_ignored=true" : ""}`),
+  clusters: (opts?: { includeIgnored?: boolean; limit?: number; offset?: number }) => {
+    const params = new URLSearchParams();
+    if (opts?.includeIgnored) params.set("include_ignored", "true");
+    if (opts?.limit != null) params.set("limit", String(opts.limit));
+    if (opts?.offset != null) params.set("offset", String(opts.offset));
+    const qs = params.toString();
+    return api<ClusterListResponse>(`/clusters${qs ? `?${qs}` : ""}`);
+  },
   nameCluster: (id: number, name: string) =>
     api<Person>(`/clusters/${id}/name`, { method: "POST", body: JSON.stringify({ name }) }),
   ignoreCluster: (id: number) => api<void>(`/clusters/${id}/ignore`, { method: "POST" }),

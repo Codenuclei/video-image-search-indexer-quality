@@ -94,11 +94,12 @@ async def test_clusters_review_queue_lists_unknown_cluster(client, override_db):
 
     assert response.status_code == 200
     body = response.json()
-    assert len(body) == 1
-    assert body[0]["id"] == cluster.id
-    assert body[0]["status"] == "unknown"
-    assert body[0]["representative_face_id"] == face.id
-    assert len(body[0]["appears_in"]) == 1
+    assert body["total"] == 1
+    assert len(body["items"]) == 1
+    assert body["items"][0]["id"] == cluster.id
+    assert body["items"][0]["status"] == "unknown"
+    assert body["items"][0]["representative_face_id"] == face.id
+    assert len(body["items"][0]["appears_in"]) == 1
 
 
 @requires_postgres
@@ -117,7 +118,7 @@ async def test_name_cluster_endpoint_creates_person(client, override_db):
     assert any(p["name"] == "Diana" for p in persons_response.json())
 
     review_queue = await client.get("/clusters")
-    assert review_queue.json() == []
+    assert review_queue.json()["items"] == []
 
 
 @requires_postgres
@@ -129,10 +130,27 @@ async def test_ignore_cluster_endpoint_removes_it_from_default_queue(client, ove
     assert response.status_code == 204
 
     queue = await client.get("/clusters")
-    assert queue.json() == []
+    assert queue.json()["items"] == []
 
     with_ignored = await client.get("/clusters", params={"include_ignored": True})
-    assert len(with_ignored.json()) == 1
+    assert len(with_ignored.json()["items"]) == 1
+
+
+@requires_postgres
+@pytest.mark.asyncio
+async def test_search_persons_endpoint(client, override_db):
+    _, _, cluster = await _seed_unknown_cluster(override_db)
+    await client.post(f"/clusters/{cluster.id}/name", json={"name": "Diana Adams"})
+
+    empty = await client.get("/persons/search", params={"q": ""})
+    assert empty.json() == []
+
+    match = await client.get("/persons/search", params={"q": "diana"})
+    assert len(match.json()) == 1
+    assert match.json()[0]["name"] == "Diana Adams"
+
+    miss = await client.get("/persons/search", params={"q": "nobody"})
+    assert miss.json() == []
 
 
 @requires_postgres

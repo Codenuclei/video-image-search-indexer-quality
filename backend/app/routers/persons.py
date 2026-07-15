@@ -58,6 +58,28 @@ async def list_persons(session: AsyncSession = Depends(get_db)) -> list[PersonOu
     return [await _serialize_person(session, p) for p in persons]
 
 
+@router.get("/search", response_model=list[PersonOut])
+async def search_persons(
+    q: str = "",
+    limit: int = 20,
+    session: AsyncSession = Depends(get_db),
+) -> list[PersonOut]:
+    """Search named people by substring (for merge picker in review queue)."""
+    query = q.strip()
+    if not query:
+        return []
+    limit = max(1, min(limit, 50))
+    persons = (
+        await session.execute(
+            select(Person)
+            .where(Person.name.ilike(f"%{query}%"))
+            .order_by(Person.name)
+            .limit(limit)
+        )
+    ).scalars().all()
+    return [await _serialize_person(session, p) for p in persons]
+
+
 @router.get("/{person_id}", response_model=PersonOut)
 async def get_person(person_id: int, session: AsyncSession = Depends(get_db)) -> PersonOut:
     person = await session.get(Person, person_id)
