@@ -13,7 +13,7 @@ import {
   type SearchResponse,
   type SearchResultFile,
 } from "@/lib/api";
-import { Button, Card, FilePreview, Input } from "@/components/ui";
+import { Button, Card, FilePreview, Input, ServiceErrorCard } from "@/components/ui";
 
 function formatTimestamp(sec: number): string {
   const m = Math.floor(sec / 60);
@@ -47,6 +47,7 @@ export default function SearchPage() {
   const [persons, setPersons] = useState<Person[]>([]);
   const [folderContexts, setFolderContexts] = useState<FolderContext[]>([]);
   const [results, setResults] = useState<SearchResponse | null>(null);
+  const [lastSearchMode, setLastSearchMode] = useState<{ captions: boolean; rerank: boolean } | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [previewFile, setPreviewFile] = useState<SearchResultFile | null>(null);
@@ -86,6 +87,7 @@ export default function SearchPage() {
     setLoading(true);
     setError(null);
     setPreviewFile(null);
+    setLastSearchMode({ captions: useCaptions, rerank });
     try {
       const params = new URLSearchParams({ q: q.trim() });
       if (person) params.set("person", person);
@@ -207,7 +209,27 @@ export default function SearchPage() {
         <p className="text-sm text-muted-foreground">Searching indexed media… visual queries can take up to a minute.</p>
       )}
 
-      {error && <Card className="border-destructive text-destructive">{error}</Card>}
+      {error && (
+        <ServiceErrorCard message={error} onRetry={search} onDismiss={() => setError(null)} />
+      )}
+
+      {results && lastSearchMode && (
+        <Card className="border-border/80 bg-muted/30 px-4 py-3 text-sm">
+          <p className="font-medium text-foreground">Search mode for this query</p>
+          <ul className="mt-1.5 space-y-1 text-xs text-muted-foreground">
+            <li>
+              {lastSearchMode.captions
+                ? "Captions ON — results can match indexed image descriptions as well as visual embeddings."
+                : "Captions OFF — visual embedding match only (faster; ignores caption text)."}
+            </li>
+            <li>
+              {lastSearchMode.rerank
+                ? "Re-rank ON — results are re-ordered by AI relevance (images and videos)."
+                : "Re-rank OFF — raw vector similarity order (no AI re-ordering)."}
+            </li>
+          </ul>
+        </Card>
+      )}
 
       {results && moments.length > 0 && (
         <>
@@ -277,13 +299,13 @@ export default function SearchPage() {
                         onClick={isImage ? () => setPreviewFile(file) : undefined}
                       />
                     </div>
-                    <div className="px-3 py-3 text-sm">
+                    <div className="flex flex-col gap-2 px-3 py-3 text-sm">
                       <div className="flex items-start justify-between gap-2">
                         <a
                           href={driveUrl}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="font-medium text-primary hover:underline"
+                          className="min-w-0 flex-1 font-medium leading-snug text-primary hover:underline"
                         >
                           {file.name}
                         </a>
@@ -293,19 +315,34 @@ export default function SearchPage() {
                           </span>
                         )}
                       </div>
-                      <p className="mt-1 truncate text-xs text-muted-foreground" title={file.path}>
+                      <p className="truncate text-xs text-muted-foreground" title={file.path}>
                         {file.path}
                       </p>
                       {file.caption && (
-                        <p className="mt-2 line-clamp-2 text-xs text-muted-foreground/90" title={file.caption}>
+                        <p className="line-clamp-2 text-xs text-muted-foreground/90" title={file.caption}>
                           {file.caption}
                         </p>
                       )}
-                      <div className="mt-2 flex flex-wrap gap-2">
+                      {(file.person_names ?? []).length > 0 && (
+                        <div className="flex min-h-6 flex-wrap items-center gap-1.5">
+                          <span className="shrink-0 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                            People
+                          </span>
+                          {(file.person_names ?? []).map((name) => (
+                            <span
+                              key={name}
+                              className="inline-flex items-center rounded-full bg-primary/15 px-2 py-0.5 text-xs leading-none text-primary"
+                            >
+                              {name}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                      <div className="flex flex-wrap items-center gap-2 pt-0.5">
                         <a
                           href={downloadUrl}
                           download={file.name}
-                          className="text-xs text-primary hover:underline"
+                          className="inline-flex items-center rounded-md bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground hover:brightness-110"
                         >
                           Download
                         </a>
@@ -313,23 +350,11 @@ export default function SearchPage() {
                           href={driveUrl}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="text-xs text-muted-foreground hover:underline"
+                          className="text-xs text-muted-foreground hover:text-foreground hover:underline"
                         >
                           Open in Drive
                         </a>
                       </div>
-                      {(file.person_names ?? []).length > 0 && (
-                        <div className="mt-2 flex flex-wrap gap-1">
-                          {(file.person_names ?? []).map((name) => (
-                            <span
-                              key={name}
-                              className="rounded-full bg-primary/15 px-2 py-0.5 text-xs text-primary"
-                            >
-                              {name}
-                            </span>
-                          ))}
-                        </div>
-                      )}
                     </div>
                   </li>
                 );
@@ -354,7 +379,7 @@ export default function SearchPage() {
           onClick={() => setPreviewFile(null)}
         >
           <div
-            className="relative max-h-[90vh] max-w-5xl overflow-hidden rounded-lg bg-card"
+            className="relative inline-flex max-h-[90vh] max-w-[min(92vw,56rem)] flex-col overflow-hidden rounded-lg bg-card shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           >
             <button
@@ -368,20 +393,22 @@ export default function SearchPage() {
             <img
               src={driveFilePreviewUrl(previewFile.drive_file_id, previewFile.mime_type)}
               alt={previewFile.name}
-              className="max-h-[85vh] max-w-full object-contain"
+              className="block max-h-[78vh] w-auto max-w-full object-contain"
             />
-            <p className="border-t border-border px-4 py-2 text-sm text-zinc-300">{previewFile.name}</p>
-            {previewFile.caption && (
-              <p className="border-t border-border px-4 py-2 text-xs text-muted-foreground">{previewFile.caption}</p>
-            )}
-            <div className="flex gap-3 border-t border-border px-4 py-2">
-              <a
-                href={driveFileDownloadUrl(previewFile.drive_file_id)}
-                download={previewFile.name}
-                className="text-xs text-primary hover:underline"
-              >
-                Download
-              </a>
+            <div className="border-t border-border px-4 py-3">
+              <p className="break-all text-sm font-medium text-foreground">{previewFile.name}</p>
+              {previewFile.caption && (
+                <p className="mt-1 text-xs text-muted-foreground">{previewFile.caption}</p>
+              )}
+              <div className="mt-3">
+                <a
+                  href={driveFileDownloadUrl(previewFile.drive_file_id)}
+                  download={previewFile.name}
+                  className="inline-flex items-center rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:brightness-110"
+                >
+                  Download
+                </a>
+              </div>
             </div>
           </div>
         </div>
@@ -474,9 +501,15 @@ function MomentCard({ moment }: { moment: SearchMoment }) {
           )}
         </div>
         {(moment.person_names ?? []).length > 0 && (
-          <div className="mt-2 flex flex-wrap gap-1">
+          <div className="mt-2 flex min-h-6 flex-wrap items-center gap-1.5">
+            <span className="shrink-0 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+              People
+            </span>
             {(moment.person_names ?? []).map((name) => (
-              <span key={name} className="rounded-full bg-primary/15 px-2 py-0.5 text-xs text-primary">
+              <span
+                key={name}
+                className="inline-flex items-center rounded-full bg-primary/15 px-2 py-0.5 text-xs leading-none text-primary"
+              >
                 {name}
               </span>
             ))}
