@@ -121,7 +121,7 @@ export default function ReviewPage() {
     <div className="space-y-6">
       <div>
         <h2 className="text-2xl font-semibold">Unknown Faces</h2>
-        <p className="text-sm text-zinc-400">
+        <p className="text-sm text-muted-foreground">
           Name a person once — future appearances auto-tag. Only faces with 80%+ detection confidence appear here.
         </p>
       </div>
@@ -132,14 +132,14 @@ export default function ReviewPage() {
       {error && (
         <ServiceErrorCard message={error} onRetry={() => load()} onDismiss={() => setError(null)} />
       )}
-      {initialLoading && <p className="text-zinc-400">Loading review queue…</p>}
+      {initialLoading && <p className="text-muted-foreground">Loading review queue…</p>}
       {refreshing && !initialLoading && (
-        <p className="text-xs text-zinc-500">Refreshing queue…</p>
+        <p className="text-xs text-muted-foreground">Refreshing queue…</p>
       )}
 
       {!initialLoading && clusters.length === 0 && (
         <Card>
-          <p className="text-zinc-400">No unknown faces in the review queue. Index some images to get started.</p>
+          <p className="text-muted-foreground">No unknown faces in the review queue. Index some images to get started.</p>
         </Card>
       )}
 
@@ -158,12 +158,12 @@ export default function ReviewPage() {
                 <FaceThumb faceId={c.representative_face_id} className="h-20 w-20 shrink-0 rounded-lg" />
                 <div className="min-w-0">
                   <p className="font-medium">Cluster #{c.id}</p>
-                  <p className="text-sm text-zinc-400">{c.member_count} face(s)</p>
+                  <p className="text-sm text-muted-foreground">{c.member_count} face(s)</p>
                   {c.representative_confidence != null && (
-                    <p className="text-xs text-zinc-500">{(c.representative_confidence * 100).toFixed(0)}% confidence</p>
+                    <p className="text-xs text-muted-foreground">{(c.representative_confidence * 100).toFixed(0)}% confidence</p>
                   )}
                   {c.appears_in.length > 0 && (
-                    <p className="text-xs text-zinc-500">
+                    <p className="text-xs text-muted-foreground">
                       In {c.appears_in.length} file{c.appears_in.length === 1 ? "" : "s"}
                     </p>
                   )}

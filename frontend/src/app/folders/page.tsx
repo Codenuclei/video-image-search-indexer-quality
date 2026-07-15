@@ -267,11 +267,11 @@ export default function FoldersPage() {
   }, [folderContexts]);
 
   const statusColor: Record<string, string> = {
-    pending: "text-yellow-400",
-    processing: "text-blue-400",
-    processed: "text-green-400",
-    error: "text-red-400",
-    skipped: "text-zinc-500",
+    pending: "text-amber-600 dark:text-yellow-400",
+    processing: "text-blue-600 dark:text-blue-400",
+    processed: "text-emerald-600 dark:text-green-400",
+    error: "text-red-600 dark:text-red-400",
+    skipped: "text-muted-foreground",
   };
 
   return (
@@ -282,7 +282,7 @@ export default function FoldersPage() {
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
           <h2 className="text-2xl font-semibold">Folders</h2>
-          <p className="text-sm text-zinc-400">Drive files tracked from your connected folder</p>
+          <p className="text-sm text-muted-foreground">Drive files tracked from your connected folder</p>
         </div>
         <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
           <Button className="w-full sm:w-auto" onClick={() => runIndex(false)} disabled={busy || status?.is_running}>
@@ -302,14 +302,14 @@ export default function FoldersPage() {
               {driveSession?.connected ? "Google Drive connected" : "Google Drive not connected"}
             </p>
             {driveSession?.connected ? (
-              <p className="text-xs text-zinc-400">
+              <p className="text-xs text-muted-foreground">
                 {driveSession.email}
                 {driveSession.selected_folder
                   ? ` · Folder: ${driveSession.selected_folder.name}`
                   : " · No folder selected yet"}
               </p>
             ) : (
-              <p className="text-xs text-zinc-400">Connect your Google account to start indexing Drive files.</p>
+              <p className="text-xs text-muted-foreground">Connect your Google account to start indexing Drive files.</p>
             )}
           </div>
           <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
@@ -337,8 +337,8 @@ export default function FoldersPage() {
               className="mt-0.5 h-4 w-4 shrink-0 rounded border-border bg-background accent-blue-500"
             />
             <span>
-              <span className="text-zinc-200">Pull folder shortcuts</span>
-              <span className="mt-1 block text-xs text-zinc-500">
+              <span className="text-foreground">Pull folder shortcuts</span>
+              <span className="mt-1 block text-xs text-muted-foreground">
                 Index files inside shortcut folders like &quot;Master Folder&quot; and &quot;UG iPhone Data&quot; —
                 not just physical subfolders.
               </span>
@@ -347,7 +347,7 @@ export default function FoldersPage() {
         )}
       </Card>
 
-      {error && <Card className="border-red-800 text-red-300">{error}</Card>}
+      {error && <Card className="border-destructive/50 text-destructive">{error}</Card>}
 
       <Card className={status?.is_running ? "border-blue-800 bg-blue-950/20" : ""}>
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -356,9 +356,9 @@ export default function FoldersPage() {
               {status?.is_running ? "Indexing in progress" : "Indexer status"}
             </p>
             {status?.is_running && status.current_file ? (
-              <p className="text-sm text-zinc-300">Now processing: {status.current_file}</p>
+              <p className="text-sm text-muted-foreground">Now processing: {status.current_file}</p>
             ) : (
-              <p className="text-sm text-zinc-400">
+              <p className="text-sm text-muted-foreground">
                 {status?.auto_index_enabled
                   ? `Auto-sync every ${status.auto_index_interval_seconds}s`
                   : "Click Start Index or enable auto-index in Settings"}
@@ -367,14 +367,14 @@ export default function FoldersPage() {
             )}
           </div>
           <div className="grid grid-cols-2 gap-2 text-sm sm:flex sm:gap-4">
-            <span className="text-green-400">{status?.counts_by_status.processed ?? 0} processed</span>
+            <span className="text-emerald-600 dark:text-green-400">{status?.counts_by_status.processed ?? 0} processed</span>
             <span className="text-yellow-400">{status?.counts_by_status.pending ?? 0} pending</span>
             <span className="text-blue-400">{status?.counts_by_status.processing ?? 0} active</span>
             <span className="text-red-400">{status?.counts_by_status.error ?? 0} errors</span>
           </div>
         </div>
         {status?.last_run && (
-          <p className="mt-3 text-xs text-zinc-500">
+          <p className="mt-3 text-xs text-muted-foreground">
             Last completed run: {status.last_run.discovered} discovered · {status.last_run.processed} processed ·{" "}
             {status.last_run.skipped} skipped · {status.last_run.errored} errors
           </p>
@@ -383,7 +383,7 @@ export default function FoldersPage() {
 
       <Card className="border-blue-900/40 bg-blue-950/10">
         <h3 className="mb-1 font-medium text-sm">YouTube videos</h3>
-        <p className="mb-4 text-xs text-zinc-400">
+        <p className="mb-4 text-xs text-muted-foreground">
           Paste YouTube URLs or video IDs. Missing videos are downloaded with yt-dlp to the shared
           Railway volume (team library — not your personal Drive). Then indexed: transcript, frames,
           and visual search. Videos already in the company Drive folder are linked automatically.
@@ -405,7 +405,7 @@ export default function FoldersPage() {
       {uniqueFolders.length > 0 && (
         <Card>
           <h3 className="mb-3 font-medium text-sm">Folder Search Context</h3>
-          <p className="mb-4 text-xs text-zinc-400">
+          <p className="mb-4 text-xs text-muted-foreground">
             Add a description to a folder to improve search accuracy. The description is embedded with
             Gemini and used to scope and verify search results.
           </p>
@@ -430,9 +430,9 @@ export default function FoldersPage() {
                           </span>
                         )}
                       </div>
-                      <p className="text-xs text-zinc-500 truncate">{fp}</p>
+                      <p className="text-xs text-muted-foreground truncate">{fp}</p>
                       {ctx?.description && !isEditing && (
-                        <p className="mt-1 text-xs text-zinc-400 italic">&ldquo;{ctx.description}&rdquo;</p>
+                        <p className="mt-1 text-xs text-muted-foreground italic">&ldquo;{ctx.description}&rdquo;</p>
                       )}
                     </div>
                     {!isEditing && (
@@ -481,7 +481,7 @@ export default function FoldersPage() {
 
       <Card className="overflow-x-auto p-0">
         <table className="w-full text-left text-sm">
-          <thead className="border-b border-border text-zinc-400">
+          <thead className="border-b border-border text-muted-foreground">
             <tr>
               <th className="p-3">Name</th>
               <th className="p-3">Source</th>
@@ -502,19 +502,21 @@ export default function FoldersPage() {
                 <td className="p-3">
                   <span
                     className={`rounded-full px-2 py-0.5 text-xs ${
-                      f.source === "youtube" ? "bg-blue-950 text-blue-300" : "bg-zinc-800 text-zinc-400"
+                      f.source === "youtube"
+                        ? "bg-blue-600/15 text-blue-700 dark:bg-blue-950 dark:text-blue-300"
+                        : "bg-muted text-muted-foreground"
                     }`}
                   >
                     {f.source === "youtube" ? "YouTube" : "Drive"}
                   </span>
                 </td>
-                <td className="p-3 text-zinc-400">{f.path}</td>
-                <td className="p-3 text-zinc-500">{f.mime_type}</td>
+                <td className="p-3 text-muted-foreground">{f.path}</td>
+                <td className="p-3 text-muted-foreground">{f.mime_type}</td>
                 <td className={`p-3 ${statusColor[f.status] ?? ""}`}>{f.status}</td>
                 <td className="max-w-xs p-3 text-xs">
                   {f.error_message ? (
                     <div className="space-y-2">
-                      <p className="truncate text-red-300" title={f.error_message}>
+                      <p className="truncate text-destructive" title={f.error_message}>
                         {f.error_message}
                       </p>
                       {(canRetry || canRemove) && (
@@ -536,14 +538,14 @@ export default function FoldersPage() {
                     <span className="text-muted-foreground">—</span>
                   )}
                 </td>
-                <td className="p-3 text-zinc-500">{f.last_synced_at ? formatDate(f.last_synced_at) : "—"}</td>
+                <td className="p-3 text-muted-foreground">{f.last_synced_at ? formatDate(f.last_synced_at) : "—"}</td>
               </tr>
             );
             })}
           </tbody>
         </table>
         {files.length === 0 && (
-          <p className="p-4 text-sm text-zinc-500">
+          <p className="p-4 text-sm text-muted-foreground">
             No files synced yet. Connect Drive, choose a folder, and files will appear automatically within ~30 seconds.
           </p>
         )}
