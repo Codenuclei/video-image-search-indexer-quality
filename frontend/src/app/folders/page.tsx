@@ -490,11 +490,13 @@ export default function FoldersPage() {
               <th className="p-3">Status</th>
               <th className="p-3">Error</th>
               <th className="p-3">Synced</th>
-              <th className="p-3">Actions</th>
             </tr>
           </thead>
           <tbody>
-            {files.map((f) => (
+            {files.map((f) => {
+              const canRetry = f.status === "error";
+              const canRemove = f.status === "error" || f.error_message?.includes("404");
+              return (
               <tr key={f.id} className="border-b border-border/50 hover:bg-muted/30">
                 <td className="p-3 font-medium">{f.name}</td>
                 <td className="p-3">
@@ -509,26 +511,35 @@ export default function FoldersPage() {
                 <td className="p-3 text-zinc-400">{f.path}</td>
                 <td className="p-3 text-zinc-500">{f.mime_type}</td>
                 <td className={`p-3 ${statusColor[f.status] ?? ""}`}>{f.status}</td>
-                <td className="max-w-xs truncate p-3 text-xs text-red-300" title={f.error_message ?? undefined}>
-                  {f.error_message ?? "—"}
+                <td className="max-w-xs p-3 text-xs">
+                  {f.error_message ? (
+                    <div className="space-y-2">
+                      <p className="truncate text-red-300" title={f.error_message}>
+                        {f.error_message}
+                      </p>
+                      {(canRetry || canRemove) && (
+                        <div className="flex flex-wrap gap-2">
+                          {canRetry && (
+                            <Button variant="secondary" onClick={() => retryFile(f.id)} disabled={busy}>
+                              Retry
+                            </Button>
+                          )}
+                          {canRemove && (
+                            <Button variant="secondary" onClick={() => removeFile(f.id)} disabled={busy}>
+                              Remove
+                            </Button>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <span className="text-muted-foreground">—</span>
+                  )}
                 </td>
                 <td className="p-3 text-zinc-500">{f.last_synced_at ? formatDate(f.last_synced_at) : "—"}</td>
-                <td className="p-3">
-                  <div className="flex gap-2">
-                    {f.status === "error" && (
-                      <Button variant="secondary" onClick={() => retryFile(f.id)} disabled={busy}>
-                        Retry
-                      </Button>
-                    )}
-                    {(f.status === "error" || f.error_message?.includes("404")) && (
-                      <Button variant="secondary" onClick={() => removeFile(f.id)} disabled={busy}>
-                        Remove
-                      </Button>
-                    )}
-                  </div>
-                </td>
               </tr>
-            ))}
+            );
+            })}
           </tbody>
         </table>
         {files.length === 0 && (

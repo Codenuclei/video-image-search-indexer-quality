@@ -24,7 +24,15 @@ import {
 import { Button, Card, Input, ServiceErrorCard, StatCard } from "@/components/ui";
 import { cn } from "@/lib/utils";
 
-type FilterMode = "all" | "missing_caption" | "missing_embed" | "pending" | "error";
+type FilterMode = "all" | "processed" | "skipped" | "missing_caption" | "missing_embed" | "pending" | "error";
+
+const FILE_TABLE_COLS =
+  "grid w-full grid-cols-[minmax(0,1fr)_5.5rem_4.5rem_4.5rem_4.5rem] items-center gap-2 sm:grid-cols-[minmax(0,1.4fr)_5.5rem_4.5rem_4.5rem_4.5rem]";
+
+function folderDisplayName(folder: LibraryFolder | null, path: string): string {
+  if (!folder || path === "/") return "Drive root";
+  return folder.name;
+}
 
 function formatBytes(n: number | null) {
   if (n == null || n <= 0) return "—";
@@ -186,7 +194,8 @@ function FileRow({
       type="button"
       onClick={onSelect}
       className={cn(
-        "grid w-full grid-cols-[minmax(0,1fr)_72px_72px_72px] items-center gap-2 border-b border-border px-3 py-2 text-left text-sm transition-colors sm:grid-cols-[minmax(0,1.4fr)_88px_72px_72px_72px]",
+        FILE_TABLE_COLS,
+        "border-b border-border px-3 py-2 text-left text-sm transition-colors",
         selected ? "bg-primary/10" : "hover:bg-muted/40"
       )}
     >
@@ -194,10 +203,10 @@ function FileRow({
         <Icon size={14} className="shrink-0 text-muted-foreground" />
         <span className="truncate font-medium">{file.name}</span>
       </span>
-      <span className={cn("rounded px-1.5 py-0.5 text-center text-[10px] font-medium uppercase", statusBadge(file.status))}>
+      <span className={cn("justify-self-center rounded px-1.5 py-0.5 text-center text-[10px] font-medium uppercase", statusBadge(file.status))}>
         {file.status}
       </span>
-      <span className="hidden text-center sm:block">
+      <span className="hidden justify-self-center sm:block">
         {file.is_image ? (
           file.has_caption ? (
             <CheckCircle2 size={14} className="mx-auto text-emerald-500" />
@@ -210,7 +219,7 @@ function FileRow({
           <span className="text-muted-foreground">n/a</span>
         )}
       </span>
-      <span className="hidden text-center sm:block">
+      <span className="hidden justify-self-center sm:block">
         {file.is_image ? (
           file.has_embedding ? (
             <CheckCircle2 size={14} className="mx-auto text-emerald-500" />
@@ -223,7 +232,7 @@ function FileRow({
           <span className="text-muted-foreground">n/a</span>
         )}
       </span>
-      <span className="hidden text-right text-xs text-muted-foreground sm:block">{formatBytes(file.size)}</span>
+      <span className="hidden justify-self-end text-xs text-muted-foreground sm:block">{formatBytes(file.size)}</span>
     </button>
   );
 }
@@ -274,6 +283,10 @@ export default function LibraryPage() {
       files = files.filter((f) => f.is_image && f.status === "processed" && !f.has_embedding);
     } else if (filter === "pending") {
       files = files.filter((f) => f.status === "pending" || f.status === "processing");
+    } else if (filter === "processed") {
+      files = files.filter((f) => f.status === "processed");
+    } else if (filter === "skipped") {
+      files = files.filter((f) => f.status === "skipped");
     } else if (filter === "error") {
       files = files.filter((f) => f.status === "error");
     }
@@ -336,20 +349,22 @@ export default function LibraryPage() {
 
   return (
     <div className="space-y-4 pb-20 md:pb-4">
-      <div className="flex flex-wrap items-start justify-between gap-3">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Media Library</h1>
           <p className="mt-1 text-sm text-muted-foreground">
             Folder-wise view of indexed files — caption, embed, and index status
           </p>
         </div>
-        <Button variant="secondary" onClick={() => { setLoading(true); load(); }} disabled={loading}>
-          <RefreshCw size={14} className={cn("mr-1.5 inline", loading && "animate-spin")} />
-          Refresh
-        </Button>
-        <Button variant="secondary" onClick={skipCorrupt} disabled={skipBusy}>
-          {skipBusy ? "Skipping…" : "Skip corrupt files"}
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant="secondary" onClick={() => { setLoading(true); load(); }} disabled={loading}>
+            <RefreshCw size={14} className={cn("mr-1.5 inline", loading && "animate-spin")} />
+            Refresh
+          </Button>
+          <Button variant="secondary" onClick={skipCorrupt} disabled={skipBusy}>
+            {skipBusy ? "Skipping…" : "Skip corrupt files"}
+          </Button>
+        </div>
       </div>
 
       {backfillActive && (
@@ -420,17 +435,21 @@ export default function LibraryPage() {
 
         {/* File list — center pane */}
         <section className="flex min-w-0 flex-1 flex-col">
-          <div className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2">
-            <p className="min-w-0 flex-1 truncate text-sm font-medium">
-              {selectedFolder?.path ?? "/"}
-              <span className="ml-2 text-muted-foreground">({filteredFiles.length} files)</span>
+          <div className="grid gap-2 border-b border-border px-3 py-2 sm:grid-cols-[minmax(0,1fr)_11rem_11rem] sm:items-center">
+            <p className="min-w-0 text-sm font-medium">
+              <span className="text-foreground">{folderDisplayName(selectedFolder, selectedFolderPath)}</span>
+              <span className="ml-2 text-muted-foreground">
+                ({filteredFiles.length} file{filteredFiles.length === 1 ? "" : "s"})
+              </span>
             </p>
             <select
               value={filter}
               onChange={(e) => setFilter(e.target.value as FilterMode)}
-              className="rounded-md border border-input bg-background px-2 py-1 text-xs"
+              className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-xs"
             >
               <option value="all">All files</option>
+              <option value="processed">Processed</option>
+              <option value="skipped">Skipped</option>
               <option value="missing_caption">Missing caption</option>
               <option value="missing_embed">Missing embed</option>
               <option value="pending">Pending / processing</option>
@@ -440,15 +459,15 @@ export default function LibraryPage() {
               placeholder="Search in folder…"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              className="max-w-[180px] py-1 text-xs"
+              className="w-full py-1.5 text-xs"
             />
           </div>
 
-          <div className="hidden grid-cols-[minmax(0,1fr)_88px_72px_72px_72px] gap-2 border-b border-border bg-muted/30 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground sm:grid">
+          <div className={cn(FILE_TABLE_COLS, "hidden border-b border-border bg-muted/30 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground sm:grid")}>
             <span>Name</span>
-            <span>Index</span>
-            <span>Caption</span>
-            <span>Embed</span>
+            <span className="text-center">Index</span>
+            <span className="text-center">Caption</span>
+            <span className="text-center">Embed</span>
             <span className="text-right">Size</span>
           </div>
 

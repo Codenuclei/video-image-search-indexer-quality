@@ -42,7 +42,7 @@ export default function SettingsPage() {
   }
 
   return (
-    <div className="max-w-lg space-y-6">
+    <div className="mx-auto w-full max-w-5xl space-y-6">
       <div className="flex items-center justify-between gap-3">
         <div>
           <h2 className="text-2xl font-semibold">Settings</h2>
@@ -54,7 +54,7 @@ export default function SettingsPage() {
 
       {error && <Card className="border-destructive text-destructive">{error}</Card>}
 
-      <Card className="space-y-2 text-sm text-zinc-400">
+      <Card className="space-y-4 text-sm text-zinc-400">
         <p>
           Model: <span className="text-zinc-200">{settings.gemini_model}</span>
         </p>
@@ -65,6 +65,7 @@ export default function SettingsPage() {
         <p className="text-xs">Set GEMINI_API_KEY and store name in backend <code>.env</code>.</p>
       </Card>
 
+      <div className="grid gap-6 lg:grid-cols-2">
       <Card className="space-y-4">
         <h3 className="font-medium">Search</h3>
         <label className="flex cursor-pointer items-start gap-3 text-sm">
@@ -201,6 +202,7 @@ export default function SettingsPage() {
           Save interval
         </Button>
       </Card>
+      </div>
     </div>
   );
 }

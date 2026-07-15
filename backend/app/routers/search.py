@@ -351,7 +351,7 @@ async def search(
         elif keyword_matched:
             image_files = merge_action_search_pool(image_files, keyword_matched)
 
-    if use_rerank and image_files and use_captions and not get_settings().search_caption_filter_enabled:
+    if use_rerank and image_files and not get_settings().search_caption_filter_enabled:
         pre_rerank = list(image_files)
         try:
             reranked = await rerank_image_files(
