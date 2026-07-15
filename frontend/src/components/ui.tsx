@@ -2,7 +2,8 @@
 
 import { useState } from "react";
 import { cn } from "@/lib/utils";
-import { driveFilePreviewUrl } from "@/lib/api";
+import { driveFilePreviewUrl, isServiceUnavailableMessage } from "@/lib/api";
+import { BackendDisconnectedOverlay } from "@/components/backend-disconnected-overlay";
 
 export function Card({ className, children }: { className?: string; children: React.ReactNode }) {
   return (
@@ -113,18 +114,28 @@ export function ConfirmDialog({
 export function ServiceErrorCard({
   message,
   onRetry,
+  onDismiss,
   retryLabel = "Retry",
+  retrying = false,
 }: {
   message: string;
   onRetry?: () => void;
+  onDismiss?: () => void;
   retryLabel?: string;
+  retrying?: boolean;
 }) {
+  if (isServiceUnavailableMessage(message)) {
+    return (
+      <BackendDisconnectedOverlay onRetry={onRetry} onDismiss={onDismiss} retrying={retrying} />
+    );
+  }
+
   return (
     <Card className="border-destructive/50 bg-destructive/5">
       <p className="text-sm text-destructive">{message}</p>
       {onRetry && (
-        <Button className="mt-3" variant="secondary" onClick={onRetry}>
-          {retryLabel}
+        <Button className="mt-3" variant="secondary" onClick={onRetry} disabled={retrying}>
+          {retrying ? "Retrying…" : retryLabel}
         </Button>
       )}
     </Card>

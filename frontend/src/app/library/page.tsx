@@ -373,6 +373,7 @@ export default function LibraryPage() {
             setLoading(true);
             load();
           }}
+          onDismiss={() => setError(null)}
           retryLabel="Refresh"
         />
       )}

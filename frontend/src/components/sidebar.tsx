@@ -7,6 +7,7 @@ import {
   FolderOpen,
   HardDrive,
   Home,
+  LifeBuoy,
   LogOut,
   Menu,
   Search,
@@ -20,6 +21,7 @@ import { IndexStatusBanner } from "@/components/index-status-banner";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { ConfirmDialog } from "@/components/ui";
 import { getAuthEmail, signOut } from "@/components/auth-gate";
+import { supportMailto } from "@/lib/support";
 
 const links = [
   { href: "/", label: "Dashboard", icon: Home, mobile: true },
@@ -90,11 +92,19 @@ function NavLinks({
   );
 }
 
-function SidebarFooter({ email }: { email: string | null }) {
+function SidebarFooter({ email, onNavigate }: { email: string | null; onNavigate?: () => void }) {
   const [logoutOpen, setLogoutOpen] = useState(false);
 
   return (
     <div className="space-y-2 border-t border-sidebar-border pt-4">
+      <a
+        href={supportMailto()}
+        onClick={onNavigate}
+        className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium text-sidebar-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+      >
+        <LifeBuoy size={16} className="shrink-0" />
+        Contact Support
+      </a>
       {email && (
         <div className="flex items-center justify-between gap-2">
           <p className="truncate text-[10px] text-muted-foreground">{email}</p>
@@ -205,7 +215,7 @@ export function Sidebar() {
             <IndexStatusBanner />
             <NavLinks pathname={pathname} onNavigate={() => setMenuOpen(false)} />
             <div className="mt-auto">
-              <SidebarFooter email={email} />
+              <SidebarFooter email={email} onNavigate={() => setMenuOpen(false)} />
             </div>
           </aside>
         </div>

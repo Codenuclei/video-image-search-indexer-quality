@@ -194,7 +194,9 @@ export default function PeoplePage() {
         </p>
       </div>
 
-      {error && <ServiceErrorCard message={error} onRetry={load} />}
+      {error && (
+        <ServiceErrorCard message={error} onRetry={load} onDismiss={() => setError(null)} />
+      )}
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
         {persons.map((p) => (
