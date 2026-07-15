@@ -5,51 +5,7 @@ import Link from "next/link";
 import { Pencil, Trash2 } from "lucide-react";
 import { apiClient, type Person, type PersonRole } from "@/lib/api";
 import { Button, Card, FaceThumb, Input } from "@/components/ui";
-
-function roleLabel(role: PersonRole) {
-  if (role === "student") return "Student";
-  if (role === "non_student") return "Non-student";
-  return "Unset";
-}
-
-function RoleSelector({
-  role,
-  disabled,
-  onChange,
-}: {
-  role: PersonRole;
-  disabled?: boolean;
-  onChange: (role: PersonRole) => void;
-}) {
-  const options: { value: PersonRole; label: string }[] = [
-    { value: null, label: "Unset" },
-    { value: "student", label: "Student" },
-    { value: "non_student", label: "Non-student" },
-  ];
-  return (
-    <div className="flex flex-wrap gap-1">
-      {options.map((opt) => (
-        <button
-          key={opt.label}
-          type="button"
-          disabled={disabled}
-          onClick={() => onChange(opt.value)}
-          className={`rounded-full px-2.5 py-1 text-xs transition-colors ${
-            role === opt.value
-              ? opt.value === "student"
-                ? "bg-blue-600 text-white"
-                : opt.value === "non_student"
-                  ? "bg-amber-600 text-white"
-                  : "bg-muted text-foreground"
-              : "bg-muted/60 text-muted-foreground hover:bg-muted"
-          }`}
-        >
-          {opt.label}
-        </button>
-      ))}
-    </div>
-  );
-}
+import { RoleSelector } from "@/components/role-selector";
 
 function PersonCard({
   person,
@@ -192,10 +148,10 @@ function PersonCard({
                 </div>
               </div>
               <p className="text-sm text-muted-foreground">{person.occurrence_count} appearances</p>
-              <p className="text-xs text-muted-foreground">
-                Tag: <span className="font-medium text-foreground">{roleLabel(person.role)}</span>
-              </p>
-              <RoleSelector role={person.role ?? null} disabled={roleSaving} onChange={saveRole} />
+              <div className="mt-3 space-y-2">
+                <p className="text-xs text-muted-foreground">Role tag</p>
+                <RoleSelector role={person.role ?? null} disabled={roleSaving} onChange={saveRole} />
+              </div>
               {error && <p className="text-xs text-destructive">{error}</p>}
             </>
           )}

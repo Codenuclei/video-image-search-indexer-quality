@@ -5,6 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import { Pencil } from "lucide-react";
 import { apiClient, type Person, type PersonRole } from "@/lib/api";
 import { Button, Card, FaceThumb, Input } from "@/components/ui";
+import { RoleSelector } from "@/components/role-selector";
 
 type PersonMedia = {
   media_id: number;
@@ -145,32 +146,8 @@ export default function PersonDetailPage() {
                 <h2 className="text-xl font-semibold sm:text-2xl">{person.name}</h2>
                 <p className="text-sm text-zinc-400">{person.occurrence_count} appearances across Drive</p>
                 <div className="mt-3 space-y-2">
-                  <p className="text-xs text-zinc-500">Role tag (used for student / teacher search)</p>
-                  <div className="flex flex-wrap gap-1">
-                    {([
-                      { value: null, label: "Unset" },
-                      { value: "student", label: "Student" },
-                      { value: "non_student", label: "Non-student" },
-                    ] as { value: PersonRole; label: string }[]).map((opt) => (
-                      <button
-                        key={opt.label}
-                        type="button"
-                        disabled={roleSaving}
-                        onClick={() => saveRole(opt.value)}
-                        className={`rounded-full px-2.5 py-1 text-xs ${
-                          person.role === opt.value
-                            ? opt.value === "student"
-                              ? "bg-blue-600 text-white"
-                              : opt.value === "non_student"
-                                ? "bg-amber-600 text-white"
-                                : "bg-muted text-foreground"
-                            : "bg-muted/60 text-muted-foreground hover:bg-muted"
-                        }`}
-                      >
-                        {opt.label}
-                      </button>
-                    ))}
-                  </div>
+                  <p className="text-xs text-muted-foreground">Role tag (used for student / teacher search)</p>
+                  <RoleSelector role={person.role ?? null} disabled={roleSaving} onChange={saveRole} />
                 </div>
               </div>
               <div className="mt-1 flex shrink-0 gap-1">
