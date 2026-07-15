@@ -18,6 +18,7 @@ import {
 import { cn } from "@/lib/utils";
 import { IndexStatusBanner } from "@/components/index-status-banner";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { ConfirmDialog } from "@/components/ui";
 import { getAuthEmail, signOut } from "@/components/auth-gate";
 
 const links = [
@@ -90,13 +91,16 @@ function NavLinks({
 }
 
 function SidebarFooter({ email }: { email: string | null }) {
+  const [logoutOpen, setLogoutOpen] = useState(false);
+
   return (
     <div className="space-y-2 border-t border-sidebar-border pt-4">
       {email && (
         <div className="flex items-center justify-between gap-2">
           <p className="truncate text-[10px] text-muted-foreground">{email}</p>
           <button
-            onClick={signOut}
+            type="button"
+            onClick={() => setLogoutOpen(true)}
             title="Sign out"
             className="flex h-8 w-8 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground"
           >
@@ -104,6 +108,19 @@ function SidebarFooter({ email }: { email: string | null }) {
           </button>
         </div>
       )}
+      <ConfirmDialog
+        open={logoutOpen}
+        title="Log out?"
+        message="Are you sure you want to log out? You will need to sign in again to use DriveFaceIndexer."
+        confirmLabel="Log out"
+        cancelLabel="Stay signed in"
+        variant="danger"
+        onCancel={() => setLogoutOpen(false)}
+        onConfirm={() => {
+          setLogoutOpen(false);
+          signOut();
+        }}
+      />
       <div className="flex items-center justify-between">
         <p className="text-[10px] text-muted-foreground">☀️ Summer Edition</p>
         <ThemeToggle />
