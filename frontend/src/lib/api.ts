@@ -277,7 +277,7 @@ export const apiClient = {
     api<Person>(`/clusters/${id}/name`, { method: "POST", body: JSON.stringify({ name }) }),
   ignoreCluster: (id: number) => api<void>(`/clusters/${id}/ignore`, { method: "POST" }),
   mergeCluster: (id: number, personId: number) =>
-    api<void>(`/clusters/${id}/merge`, { method: "POST", body: JSON.stringify({ person_id: personId }) }),
+    api<Person>(`/clusters/${id}/merge`, { method: "POST", body: JSON.stringify({ person_id: personId }) }),
   syncDriveFiles: () => api<{ ok: boolean; scheduled: boolean }>("/drive/sync", { method: "POST" }),
   driveFiles: (status?: string) => api<DriveFile[]>(`/drive/files${status ? `?status=${status}` : ""}`),
   driveLibrary: () => api<LibraryResponse>("/drive/library"),
