@@ -1,8 +1,11 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { apiClient, type Cluster, type Person } from "@/lib/api";
 import { Button, Card, FaceThumb, Input, ServiceErrorCard } from "@/components/ui";
+import { PersonMergeSearch } from "@/components/person-merge-search";
+
+const CLUSTER_PAGE_SIZE = 100;
 
 type ClusterAction =
   | { type: "name"; clusterId: number }
@@ -11,9 +14,9 @@ type ClusterAction =
 
 export default function ReviewPage() {
   const [clusters, setClusters] = useState<Cluster[]>([]);
-  const [persons, setPersons] = useState<Person[]>([]);
+  const [clusterOffset, setClusterOffset] = useState(0);
+  const [clusterTotal, setClusterTotal] = useState(0);
   const [names, setNames] = useState<Record<number, string>>({});
-  const [mergeSelections, setMergeSelections] = useState<Record<number, string>>({});
   const [initialLoading, setInitialLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -21,25 +24,28 @@ export default function ReviewPage() {
   const [action, setAction] = useState<ClusterAction | null>(null);
   const namingRef = useRef(false);
 
-  async function load({ initial = false }: { initial?: boolean } = {}) {
-    if (initial) setInitialLoading(true);
-    else setRefreshing(true);
-    try {
-      const [c, p] = await Promise.all([apiClient.clusters(), apiClient.persons()]);
-      setClusters(c);
-      setPersons(p);
-      setError(null);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load");
-    } finally {
-      if (initial) setInitialLoading(false);
-      else setRefreshing(false);
-    }
-  }
+  const load = useCallback(
+    async ({ initial = false, offset = clusterOffset }: { initial?: boolean; offset?: number } = {}) => {
+      if (initial) setInitialLoading(true);
+      else setRefreshing(true);
+      try {
+        const response = await apiClient.clusters({ limit: CLUSTER_PAGE_SIZE, offset });
+        setClusters(response.items);
+        setClusterTotal(response.total);
+        setError(null);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Failed to load");
+      } finally {
+        if (initial) setInitialLoading(false);
+        else setRefreshing(false);
+      }
+    },
+    [clusterOffset]
+  );
 
   useEffect(() => {
-    load({ initial: true });
-  }, []);
+    load({ initial: clusterOffset === 0 });
+  }, [clusterOffset, load]);
 
   useEffect(() => {
     if (!successMessage) return;
@@ -88,20 +94,18 @@ export default function ReviewPage() {
     }
   }
 
-  async function mergeCluster(id: number, personId: number) {
+  async function mergeCluster(id: number, person: Person) {
     if (action) return;
     const cluster = clusters.find((c) => c.id === id);
-    const person = persons.find((p) => p.id === personId);
-    if (!cluster || !person) return;
+    if (!cluster) return;
 
     setAction({ type: "merge", clusterId: id, personName: person.name });
     setError(null);
     try {
-      const updated = await apiClient.mergeCluster(id, personId);
+      const updated = await apiClient.mergeCluster(id, person.id);
       setSuccessMessage(
         `Merged ${cluster.member_count} face${cluster.member_count === 1 ? "" : "s"} from cluster #${id} into ${updated.name} — ${updated.name} now has ${updated.occurrence_count} appearance${updated.occurrence_count === 1 ? "" : "s"}.`
       );
-      setMergeSelections((prev) => ({ ...prev, [id]: "" }));
       await load();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to merge cluster");
@@ -109,6 +113,9 @@ export default function ReviewPage() {
       setAction(null);
     }
   }
+
+  const pageStart = clusterTotal === 0 ? 0 : clusterOffset + 1;
+  const pageEnd = Math.min(clusterOffset + clusters.length, clusterTotal);
 
   return (
     <div className="space-y-6">
@@ -140,8 +147,8 @@ export default function ReviewPage() {
           const naming = action?.type === "name" && action.clusterId === c.id;
           const ignoring = action?.type === "ignore" && action.clusterId === c.id;
           const merging = action?.type === "merge" && action.clusterId === c.id;
-          const mergeLabel =
-            merging && action?.type === "merge" ? `Merging into ${action.personName}…` : "Merge into…";
+          const mergeBusyLabel =
+            merging && action?.type === "merge" ? `Merging into ${action.personName}…` : "Merging…";
 
           return (
             <Card key={c.id} className="space-y-3">
@@ -182,37 +189,45 @@ export default function ReviewPage() {
                   {naming ? "Naming…" : "Name"}
                 </Button>
               </div>
-              <div className="flex flex-wrap gap-2">
+              <div className="flex flex-wrap items-start gap-2">
                 <Button variant="secondary" disabled={busy} onClick={() => ignoreCluster(c.id)}>
                   {ignoring ? "Ignoring…" : "Ignore"}
                 </Button>
-                {persons.length > 0 && (
-                  <select
-                    className="rounded-md border border-border bg-background px-2 py-1 text-sm disabled:opacity-50"
-                    value={mergeSelections[c.id] ?? ""}
-                    disabled={busy}
-                    onChange={(e) => {
-                      const personId = Number(e.target.value);
-                      if (!personId) return;
-                      setMergeSelections((prev) => ({ ...prev, [c.id]: e.target.value }));
-                      mergeCluster(c.id, personId);
-                    }}
-                  >
-                    <option value="" disabled>
-                      {mergeLabel}
-                    </option>
-                    {persons.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.name}
-                      </option>
-                    ))}
-                  </select>
-                )}
+                <PersonMergeSearch
+                  disabled={busy}
+                  busy={merging}
+                  busyLabel={mergeBusyLabel}
+                  onSelect={(person) => mergeCluster(c.id, person)}
+                />
               </div>
             </Card>
           );
         })}
       </div>
+
+      {clusterTotal > CLUSTER_PAGE_SIZE && (
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-sm text-muted-foreground">
+            Showing {pageStart}–{pageEnd} of {clusterTotal} unknown faces
+          </p>
+          <div className="flex gap-2">
+            <Button
+              variant="secondary"
+              disabled={clusterOffset === 0 || refreshing}
+              onClick={() => setClusterOffset((prev) => Math.max(0, prev - CLUSTER_PAGE_SIZE))}
+            >
+              Previous
+            </Button>
+            <Button
+              variant="secondary"
+              disabled={clusterOffset + CLUSTER_PAGE_SIZE >= clusterTotal || refreshing}
+              onClick={() => setClusterOffset((prev) => prev + CLUSTER_PAGE_SIZE)}
+            >
+              Next
+            </Button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -77,6 +77,13 @@ class ClusterOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class ClusterListResponse(BaseModel):
+    items: list[ClusterOut]
+    total: int
+    offset: int
+    limit: int
+
+
 class NameClusterRequest(BaseModel):
     name: str
 
