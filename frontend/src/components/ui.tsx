@@ -28,12 +28,14 @@ export function Button({
   variant = "primary",
   disabled,
   className,
+  type = "button",
 }: {
   children: React.ReactNode;
   onClick?: () => void;
   variant?: "primary" | "secondary" | "danger";
   disabled?: boolean;
   className?: string;
+  type?: "button" | "submit";
 }) {
   const variants = {
     primary: "bg-primary text-primary-foreground hover:brightness-110 active:scale-95 shadow-sm",
@@ -42,6 +44,7 @@ export function Button({
   };
   return (
     <button
+      type={type}
       onClick={onClick}
       disabled={disabled}
       className={cn(
@@ -52,6 +55,58 @@ export function Button({
     >
       {children}
     </button>
+  );
+}
+
+export function ConfirmDialog({
+  open,
+  title,
+  message,
+  confirmLabel = "Confirm",
+  cancelLabel = "Cancel",
+  variant = "danger",
+  onConfirm,
+  onCancel,
+}: {
+  open: boolean;
+  title: string;
+  message: string;
+  confirmLabel?: string;
+  cancelLabel?: string;
+  variant?: "primary" | "secondary" | "danger";
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  if (!open) return null;
+
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+      <button
+        type="button"
+        aria-label="Close dialog"
+        className="absolute inset-0 bg-black/50"
+        onClick={onCancel}
+      />
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="confirm-dialog-title"
+        className="relative z-10 w-full max-w-sm rounded-xl border border-border bg-card p-5 text-card-foreground shadow-xl"
+      >
+        <h2 id="confirm-dialog-title" className="text-base font-semibold">
+          {title}
+        </h2>
+        <p className="mt-2 text-sm text-muted-foreground">{message}</p>
+        <div className="mt-5 flex justify-end gap-2">
+          <Button variant="secondary" onClick={onCancel}>
+            {cancelLabel}
+          </Button>
+          <Button variant={variant} onClick={onConfirm}>
+            {confirmLabel}
+          </Button>
+        </div>
+      </div>
+    </div>
   );
 }
 
