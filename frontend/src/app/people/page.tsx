@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { Pencil, Trash2 } from "lucide-react";
 import { apiClient, type Person, type PersonRole } from "@/lib/api";
-import { Button, Card, FaceThumb, Input } from "@/components/ui";
+import { Button, Card, ConfirmDialog, FaceThumb, Input } from "@/components/ui";
 import { RoleSelector } from "@/components/role-selector";
 
 function PersonCard({
@@ -21,6 +21,7 @@ function PersonCard({
   const [saving, setSaving] = useState(false);
   const [roleSaving, setRoleSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const savingRef = useRef(false);
 
@@ -65,13 +66,6 @@ function PersonCard({
   }
 
   async function remove() {
-    if (
-      !window.confirm(
-        `Delete "${person.name}"? Faces will be unlinked and may return to the review queue.`
-      )
-    ) {
-      return;
-    }
     setDeleting(true);
     setError(null);
     try {
@@ -138,7 +132,7 @@ function PersonCard({
                   </button>
                   <button
                     type="button"
-                    onClick={remove}
+                    onClick={() => setConfirmDelete(true)}
                     disabled={deleting}
                     title="Delete name"
                     className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
@@ -157,6 +151,17 @@ function PersonCard({
           )}
         </div>
       </div>
+      <ConfirmDialog
+        open={confirmDelete}
+        title={`Delete "${person.name}"?`}
+        message="Faces will be unlinked and may return to the review queue."
+        confirmLabel={deleting ? "Deleting…" : "Delete"}
+        onConfirm={() => {
+          setConfirmDelete(false);
+          remove();
+        }}
+        onCancel={() => setConfirmDelete(false)}
+      />
     </Card>
   );
 }
