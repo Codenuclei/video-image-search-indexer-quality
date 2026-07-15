@@ -120,7 +120,7 @@ export default function SearchPage() {
     <div className="space-y-6">
       <div>
         <h2 className="text-xl font-semibold sm:text-2xl">Search</h2>
-        <p className="text-sm text-zinc-400">
+        <p className="text-sm text-muted-foreground">
           Visual search via Gemini embeddings. Toggle captions for text-description matching (slower, stricter).
           Videos use frame search + optional re-ranking.
         </p>
@@ -372,7 +372,7 @@ export default function SearchPage() {
 
       {results && mime === "video" && moments.length === 0 && (
         <Card>
-          <p className="text-sm text-zinc-500">
+          <p className="text-sm text-muted-foreground">
             No matching video moments. Make sure the video is indexed
             (check the Folders page). Once indexed, frames are embedded with Gemini Embedding 2 automatically.
           </p>
@@ -437,7 +437,7 @@ function matchBadgeStyle(matchType: string): string {
   if (isTranscriptMatch(matchType)) return "bg-blue-950 text-blue-300";
   if (matchType === "gemini_visual") return "bg-violet-950 text-violet-300";
   if (matchType.startsWith("svs_visual")) return "bg-violet-950 text-violet-300";
-  return "bg-zinc-800 text-zinc-300";
+  return "bg-muted text-foreground";
 }
 
 function matchLabel(matchType: string, score: number | null): string {
@@ -496,7 +496,7 @@ function MomentCard({ moment, onPreview }: { moment: SearchMoment; onPreview: ()
         </p>
         {isTranscript && moment.snippet && (
           <p
-            className="mt-2 line-clamp-3 rounded bg-blue-950/30 px-2 py-1.5 text-xs text-blue-100"
+            className="mt-2 line-clamp-3 rounded bg-blue-600/10 px-2 py-1.5 text-xs text-blue-900 dark:bg-blue-950/30 dark:text-blue-100"
             title={moment.snippet}
           >
             &ldquo;{moment.snippet}&rdquo;

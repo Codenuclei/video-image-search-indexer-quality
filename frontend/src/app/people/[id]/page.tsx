@@ -102,7 +102,7 @@ export default function PersonDetailPage() {
     setEditing(false);
   }
 
-  if (!person) return <p className="text-zinc-400">Loading...</p>;
+  if (!person) return <p className="text-muted-foreground">Loading...</p>;
 
   return (
     <div className="space-y-6">
@@ -138,7 +138,7 @@ export default function PersonDetailPage() {
             <div className="flex items-start gap-2">
               <div>
                 <h2 className="text-xl font-semibold sm:text-2xl">{person.name}</h2>
-                <p className="text-sm text-zinc-400">{person.occurrence_count} appearances across Drive</p>
+                <p className="text-sm text-muted-foreground">{person.occurrence_count} appearances across Drive</p>
                 <div className="mt-3 space-y-2">
                   <p className="text-xs text-muted-foreground">Role tag (used for student / teacher search)</p>
                   <RoleSelector role={person.role ?? null} disabled={roleSaving} onChange={saveRole} />
@@ -174,15 +174,15 @@ export default function PersonDetailPage() {
           {media.map((m) => (
             <li key={m.media_id} className="rounded-md bg-muted/50 px-3 py-2 text-sm">
               <span className="font-medium">{m.name}</span>
-              <span className="ml-2 text-zinc-500">{m.path}</span>
-              <span className="ml-2 text-xs text-zinc-600">({m.media_type})</span>
+              <span className="ml-2 text-muted-foreground">{m.path}</span>
+              <span className="ml-2 text-xs text-muted-foreground">({m.media_type})</span>
               {m.media_type === "video" && m.frame_timestamp != null && (
                 <span className="ml-2 text-xs text-violet-400">@ {formatTimestamp(m.frame_timestamp)}</span>
               )}
             </li>
           ))}
         </ul>
-        {media.length === 0 && <p className="text-sm text-zinc-500">No media linked yet.</p>}
+        {media.length === 0 && <p className="text-sm text-muted-foreground">No media linked yet.</p>}
       </Card>
 
       {person && (

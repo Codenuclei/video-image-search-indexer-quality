@@ -119,7 +119,7 @@ function FolderTreeItem({
           onClick={() => onSelect(folder.path)}
           className="flex min-w-0 flex-1 items-center gap-1 text-left"
         >
-          <Folder size={14} className={cn("shrink-0", folder.indexing_paused ? "text-zinc-500" : "text-amber-500")} />
+          <Folder size={14} className={cn("shrink-0", folder.indexing_paused ? "text-muted-foreground" : "text-amber-500")} />
           <span className="min-w-0 flex-1 truncate">{folder.name}</span>
           <span className="shrink-0 text-[10px] text-muted-foreground">
             {folder.image_count > 0 ? (
