@@ -110,6 +110,27 @@ export function ConfirmDialog({
   );
 }
 
+export function ServiceErrorCard({
+  message,
+  onRetry,
+  retryLabel = "Retry",
+}: {
+  message: string;
+  onRetry?: () => void;
+  retryLabel?: string;
+}) {
+  return (
+    <Card className="border-destructive/50 bg-destructive/5">
+      <p className="text-sm text-destructive">{message}</p>
+      {onRetry && (
+        <Button className="mt-3" variant="secondary" onClick={onRetry}>
+          {retryLabel}
+        </Button>
+      )}
+    </Card>
+  );
+}
+
 export function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {
   return (
     <input

@@ -1,5 +1,56 @@
 export const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
+export const SERVICE_UNAVAILABLE_MESSAGE =
+  "Can't reach the DFI service right now. It may be starting up or temporarily unavailable.";
+
+export function formatApiError(
+  error: unknown,
+  fallback = "Something went wrong. Please try again."
+): string {
+  if (!(error instanceof Error)) return fallback;
+  const raw = error.message.trim();
+  if (!raw) return fallback;
+
+  const lower = raw.toLowerCase();
+  if (
+    lower === "failed to fetch" ||
+    lower.includes("networkerror") ||
+    lower.includes("load failed") ||
+    lower.includes("network request failed") ||
+    lower.includes("econnrefused") ||
+    lower.includes("fetch failed")
+  ) {
+    return SERVICE_UNAVAILABLE_MESSAGE;
+  }
+
+  if (raw.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(raw) as { detail?: string };
+      if (typeof parsed.detail === "string" && parsed.detail.trim()) {
+        return parsed.detail.trim();
+      }
+    } catch {
+      // fall through
+    }
+  }
+
+  if (
+    /localhost:\d+/i.test(raw) ||
+    /127\.0\.0\.1/i.test(raw) ||
+    /:\d{4,5}\/?/i.test(raw) ||
+    /internal server error/i.test(raw) ||
+    /<html/i.test(raw)
+  ) {
+    return SERVICE_UNAVAILABLE_MESSAGE;
+  }
+
+  return raw.length > 240 ? `${raw.slice(0, 240)}…` : raw;
+}
+
+export function isServiceUnavailableMessage(message: string): boolean {
+  return message === SERVICE_UNAVAILABLE_MESSAGE;
+}
+
 export type PersonRole = "student" | "non_student" | null;
 
 export type Person = {
@@ -214,17 +265,24 @@ export type DriveTokenResponse = {
 };
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
-    ...init,
-    headers: { "Content-Type": "application/json", ...init?.headers },
-    cache: "no-store",
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || res.statusText);
+  try {
+    const res = await fetch(`${API_BASE}${path}`, {
+      ...init,
+      headers: { "Content-Type": "application/json", ...init?.headers },
+      cache: "no-store",
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      if (res.status >= 500) {
+        throw new Error(SERVICE_UNAVAILABLE_MESSAGE);
+      }
+      throw new Error(formatApiError(new Error(text || res.statusText)));
+    }
+    if (res.status === 204) return undefined as T;
+    return res.json();
+  } catch (error) {
+    throw new Error(formatApiError(error));
   }
-  if (res.status === 204) return undefined as T;
-  return res.json();
 }
 
 export const faceThumbnailUrl = (faceId: number | null) =>
@@ -320,7 +378,10 @@ export const apiClient = {
       });
       if (!res.ok) {
         const text = await res.text();
-        throw new Error(text || res.statusText);
+        if (res.status >= 500) {
+          throw new Error(SERVICE_UNAVAILABLE_MESSAGE);
+        }
+        throw new Error(formatApiError(new Error(text || res.statusText)));
       }
       const raw = (await res.json()) as Partial<SearchResponse>;
       return {
@@ -334,7 +395,7 @@ export const apiClient = {
       if (e instanceof Error && e.name === "AbortError") {
         throw new Error("Search timed out after 2 minutes. Try a shorter query.");
       }
-      throw e;
+      throw new Error(formatApiError(e));
     } finally {
       clearTimeout(timeout);
     }
