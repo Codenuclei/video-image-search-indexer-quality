@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.db.models import ClusterStatus, DriveFile, Face, FaceCluster, Media
 from app.db.session import get_db
 from app.matching.service import ignore_cluster, merge_cluster_into_person, name_cluster
@@ -62,10 +63,20 @@ async def list_clusters(
     session: AsyncSession = Depends(get_db),
 ) -> list[ClusterOut]:
     """Unknown-faces review queue: clusters awaiting a name (or ignored, if requested)."""
+    settings = get_settings()
+    min_conf = settings.review_queue_min_confidence
     statuses = [ClusterStatus.UNKNOWN]
     if include_ignored:
         statuses.append(ClusterStatus.IGNORED)
-    stmt = select(FaceCluster).where(FaceCluster.status.in_(statuses)).order_by(FaceCluster.member_count.desc())
+    stmt = (
+        select(FaceCluster)
+        .join(Face, FaceCluster.representative_face_id == Face.id)
+        .where(
+            FaceCluster.status.in_(statuses),
+            Face.detection_confidence >= min_conf,
+        )
+        .order_by(FaceCluster.member_count.desc())
+    )
     clusters = (await session.execute(stmt)).scalars().all()
     return [await _build_cluster_out(session, c) for c in clusters]
 

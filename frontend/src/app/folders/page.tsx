@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useMemo, useCallback } from "react";
 import Script from "next/script";
-import { apiClient, type FolderContext, type DriveFile, type IndexStatus, type DriveSession, API_BASE } from "@/lib/api";
+import { apiClient, type FolderContext, type DriveFile, type IndexStatus, type DriveSession, type Settings, API_BASE } from "@/lib/api";
 import { Button, Card, Input } from "@/components/ui";
 import { formatDate } from "@/lib/utils";
 
@@ -25,19 +25,26 @@ export default function FoldersPage() {
   const [editingFolder, setEditingFolder] = useState<string | null>(null);
   const [editDescription, setEditDescription] = useState("");
   const [savingFolder, setSavingFolder] = useState<string | null>(null);
+  const [youtubeInput, setYoutubeInput] = useState("");
+  const [youtubeBusy, setYoutubeBusy] = useState(false);
+  const [youtubeMsg, setYoutubeMsg] = useState<string | null>(null);
+  const [settings, setSettings] = useState<Settings | null>(null);
+  const [settingsSaving, setSettingsSaving] = useState(false);
 
   async function load() {
     try {
-      const [f, s, fc, ds] = await Promise.all([
+      const [f, s, fc, ds, st] = await Promise.all([
         apiClient.driveFiles(),
         apiClient.indexStatus(),
         apiClient.folderContexts().catch(() => [] as FolderContext[]),
         apiClient.driveSession().catch(() => null as DriveSession | null),
+        apiClient.settings().catch(() => null as Settings | null),
       ]);
       setFiles(f);
       setStatus(s);
       setFolderContexts(Array.isArray(fc) ? fc : []);
       setDriveSession(ds);
+      setSettings(st);
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load");
@@ -56,36 +63,85 @@ export default function FoldersPage() {
     }
   }, []);
 
+  async function toggleShortcutFolders(enabled: boolean) {
+    if (!settings) return;
+    setSettingsSaving(true);
+    try {
+      const updated = await apiClient.updateSettings({ follow_shortcut_folders: enabled });
+      setSettings(updated);
+      await apiClient.syncDriveFiles();
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to update shortcut setting");
+    } finally {
+      setSettingsSaving(false);
+    }
+  }
+
   async function openPicker() {
     setPickerBusy(true);
     try {
-      const { accessToken, apiKey } = await apiClient.driveToken();
+      const { accessToken, apiKey, appId } = await apiClient.driveToken();
+      const FOLDER_MIME = "application/vnd.google-apps.folder";
 
       if (!window._pickerApiLoaded) {
         await new Promise<void>((resolve) => window.gapi.load("picker", resolve));
         window._pickerApiLoaded = true;
       }
 
-      const view = new window.google.picker.DocsView(window.google.picker.ViewId.FOLDERS)
+      // setEnableDrives(true) on a view shows ONLY shared drives (hides My Drive).
+      // Use separate tabs so both My Drive folders and shared drives are available.
+      const myDriveFolderView = new window.google.picker.DocsView(window.google.picker.ViewId.FOLDERS)
         .setIncludeFolders(true)
         .setSelectFolderEnabled(true)
-        .setMimeTypes("application/vnd.google-apps.folder");
+        .setMimeTypes(FOLDER_MIME)
+        .setLabel("My Drive folders");
 
-      const picker = new window.google.picker.PickerBuilder()
-        .setTitle("Choose a Drive folder to index")
-        .addView(view)
+      const sharedDriveView = new window.google.picker.DocsView()
+        .setEnableDrives(true)
+        .setIncludeFolders(true)
+        .setSelectFolderEnabled(true)
+        .setLabel("Shared drives");
+
+      const myDriveMediaView = new window.google.picker.DocsView(window.google.picker.ViewId.DOCS_IMAGES_AND_VIDEOS)
+        .setIncludeFolders(true)
+        .setSelectFolderEnabled(true)
+        .setLabel("My Drive images & videos");
+
+      const sharedDriveMediaView = new window.google.picker.DocsView(window.google.picker.ViewId.DOCS_IMAGES_AND_VIDEOS)
+        .setEnableDrives(true)
+        .setIncludeFolders(true)
+        .setSelectFolderEnabled(true)
+        .setLabel("Shared drive images & videos");
+
+      const builder = new window.google.picker.PickerBuilder()
+        .setTitle("Choose a folder to index")
+        .addView(myDriveFolderView)
+        .addView(sharedDriveView)
+        .addView(myDriveMediaView)
+        .addView(sharedDriveMediaView)
         .setOAuthToken(accessToken)
         .setDeveloperKey(apiKey)
+        .enableFeature(window.google.picker.Feature.SUPPORT_DRIVES)
         .setCallback(async (data: any) => {
           if (data.action !== window.google.picker.Action.PICKED) return;
           const doc = data.docs[0];
+          if (doc.mimeType && doc.mimeType !== FOLDER_MIME) {
+            setError(
+              `"${doc.name}" is a file. Browse images/videos to preview media, then use Select folder (top-right) to choose the folder to index.`
+            );
+            return;
+          }
           await apiClient.saveDriveFolder(doc.id, doc.name);
           await apiClient.syncDriveFiles().catch(() => {});
           await load();
-        })
-        .build();
+        });
 
-      picker.setVisible(true);
+      if (appId) {
+        builder.setAppId(appId);
+      }
+
+      builder.build().setVisible(true);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not open folder picker");
     } finally {
@@ -138,6 +194,38 @@ export default function FoldersPage() {
     } finally {
       setBusy(false);
     }
+  }
+
+  async function addYoutubeVideos(urls: string[]) {
+    setYoutubeBusy(true);
+    setYoutubeMsg(null);
+    try {
+      const res = await apiClient.addYoutubeVideos(urls, true);
+      const ok = res.registered.filter((r) => r.drive_file_id).length;
+      const downloads = res.registered.filter((r) => r.download_queued).length;
+      setYoutubeMsg(
+        res.index_scheduled
+          ? downloads > 0
+            ? `Downloading ${downloads} video(s) to shared library + indexing.`
+            : `Queued ${ok} video(s) for full index.`
+          : `Registered ${ok} video(s).`
+      );
+      setYoutubeInput("");
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "YouTube feed failed");
+    } finally {
+      setYoutubeBusy(false);
+    }
+  }
+
+  async function feedYoutubeFromInput() {
+    const urls = youtubeInput
+      .split(/[\n,]+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (!urls.length) return;
+    await addYoutubeVideos(urls);
   }
 
   async function saveFolderContext(folderPath: string) {
@@ -228,7 +316,7 @@ export default function FoldersPage() {
             {driveSession?.connected ? (
               <>
                 <Button className="w-full sm:w-auto" onClick={openPicker} disabled={pickerBusy}>
-                  {pickerBusy ? "Opening…" : driveSession.selected_folder ? "Change Folder" : "Choose Folder"}
+                  {pickerBusy ? "Opening…" : driveSession.selected_folder ? "Change folder" : "Choose folder"}
                 </Button>
                 <Button className="w-full sm:w-auto" variant="secondary" onClick={disconnectDrive}>Disconnect</Button>
               </>
@@ -239,6 +327,24 @@ export default function FoldersPage() {
             )}
           </div>
         </div>
+        {driveSession?.connected && settings && (
+          <label className="mt-4 flex cursor-pointer items-start gap-3 border-t border-border pt-4 text-sm">
+            <input
+              type="checkbox"
+              checked={settings.follow_shortcut_folders}
+              disabled={settingsSaving}
+              onChange={(e) => toggleShortcutFolders(e.target.checked)}
+              className="mt-0.5 h-4 w-4 shrink-0 rounded border-border bg-background accent-blue-500"
+            />
+            <span>
+              <span className="text-zinc-200">Pull folder shortcuts</span>
+              <span className="mt-1 block text-xs text-zinc-500">
+                Index files inside shortcut folders like &quot;Master Folder&quot; and &quot;UG iPhone Data&quot; —
+                not just physical subfolders.
+              </span>
+            </span>
+          </label>
+        )}
       </Card>
 
       {error && <Card className="border-red-800 text-red-300">{error}</Card>}
@@ -273,6 +379,27 @@ export default function FoldersPage() {
             {status.last_run.skipped} skipped · {status.last_run.errored} errors
           </p>
         )}
+      </Card>
+
+      <Card className="border-blue-900/40 bg-blue-950/10">
+        <h3 className="mb-1 font-medium text-sm">YouTube videos</h3>
+        <p className="mb-4 text-xs text-zinc-400">
+          Paste YouTube URLs or video IDs. Missing videos are downloaded with yt-dlp to the shared
+          Railway volume (team library — not your personal Drive). Then indexed: transcript, frames,
+          and visual search. Videos already in the company Drive folder are linked automatically.
+        </p>
+        <textarea
+          className="min-h-[88px] w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+          placeholder="https://youtube.com/watch?v=VIDEO_ID"
+          value={youtubeInput}
+          onChange={(e) => setYoutubeInput(e.target.value)}
+        />
+        <div className="mt-3 flex flex-wrap gap-2">
+          <Button onClick={feedYoutubeFromInput} disabled={youtubeBusy || !youtubeInput.trim()}>
+            {youtubeBusy ? "Working…" : "Download to library & index"}
+          </Button>
+        </div>
+        {youtubeMsg && <p className="mt-3 text-xs text-blue-300">{youtubeMsg}</p>}
       </Card>
 
       {uniqueFolders.length > 0 && (
@@ -357,6 +484,7 @@ export default function FoldersPage() {
           <thead className="border-b border-border text-zinc-400">
             <tr>
               <th className="p-3">Name</th>
+              <th className="p-3">Source</th>
               <th className="p-3">Path</th>
               <th className="p-3">Type</th>
               <th className="p-3">Status</th>
@@ -369,6 +497,15 @@ export default function FoldersPage() {
             {files.map((f) => (
               <tr key={f.id} className="border-b border-border/50 hover:bg-muted/30">
                 <td className="p-3 font-medium">{f.name}</td>
+                <td className="p-3">
+                  <span
+                    className={`rounded-full px-2 py-0.5 text-xs ${
+                      f.source === "youtube" ? "bg-blue-950 text-blue-300" : "bg-zinc-800 text-zinc-400"
+                    }`}
+                  >
+                    {f.source === "youtube" ? "YouTube" : "Drive"}
+                  </span>
+                </td>
                 <td className="p-3 text-zinc-400">{f.path}</td>
                 <td className="p-3 text-zinc-500">{f.mime_type}</td>
                 <td className={`p-3 ${statusColor[f.status] ?? ""}`}>{f.status}</td>

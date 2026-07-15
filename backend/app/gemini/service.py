@@ -118,6 +118,8 @@ class GeminiFileSearchService:
         person_names: list[str] | None = None,
         extra_metadata: dict[str, str] | None = None,
     ) -> str | None:
+        from app.gemini.rate_limit import gemini_upload_slot, retry_on_rate_limit
+
         client = self._client_or_raise()
         store_name = self.ensure_store()
 
@@ -135,31 +137,36 @@ class GeminiFileSearchService:
             if value is not None and str(value).strip():
                 custom_metadata.append({"key": key, "string_value": str(value)})
 
-        operation = client.file_search_stores.upload_to_file_search_store(
-            file=local_path,
-            file_search_store_name=store_name,
-            config={
-                "display_name": display_name,
-                "custom_metadata": custom_metadata,
-            },
-        )
+        def _upload_and_wait() -> str | None:
+            with gemini_upload_slot():
+                operation = client.file_search_stores.upload_to_file_search_store(
+                    file=local_path,
+                    file_search_store_name=store_name,
+                    config={
+                        "display_name": display_name,
+                        "custom_metadata": custom_metadata,
+                    },
+                )
 
-        deadline = time.monotonic() + self._settings.gemini_upload_timeout_seconds
-        while not operation.done:
-            if time.monotonic() > deadline:
-                raise TimeoutError(f"Gemini indexing timed out for {display_name}")
-            time.sleep(self._settings.gemini_upload_poll_seconds)
-            operation = client.operations.get(operation)
+                deadline = time.monotonic() + self._settings.gemini_upload_timeout_seconds
+                while not operation.done:
+                    if time.monotonic() > deadline:
+                        raise TimeoutError(f"Gemini indexing timed out for {display_name}")
+                    time.sleep(self._settings.gemini_upload_poll_seconds)
+                    operation = client.operations.get(operation)
 
-        if getattr(operation, "error", None):
-            raise RuntimeError(f"Gemini indexing failed for {display_name}: {operation.error}")
+            if getattr(operation, "error", None):
+                raise RuntimeError(f"Gemini indexing failed for {display_name}: {operation.error}")
 
-        response = getattr(operation, "response", None)
-        document_name = None
-        if response is not None:
-            document_name = getattr(response, "name", None) or (
-                response.get("name") if isinstance(response, dict) else None
-            )
+            response = getattr(operation, "response", None)
+            document_name = None
+            if response is not None:
+                document_name = getattr(response, "name", None) or (
+                    response.get("name") if isinstance(response, dict) else None
+                )
+            return document_name
+
+        document_name = retry_on_rate_limit(_upload_and_wait)
         logger.info("Indexed %s into Gemini (%s)", display_name, document_name or "unknown doc id")
         return document_name
 
@@ -195,24 +202,30 @@ class GeminiFileSearchService:
     def describe_image(self, image_path: str, *, timestamp_sec: float) -> str:
         """Short VLM caption for a video keyframe."""
         from google.genai import types
+        from app.gemini.rate_limit import gemini_vlm_slot, retry_on_rate_limit
 
         client = self._client_or_raise()
         with open(image_path, "rb") as fh:
             image_bytes = fh.read()
-        response = client.models.generate_content(
-            model=self._settings.gemini_model,
-            contents=[
-                types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
-                types.Part.from_text(
-                    text=(
-                        f"This is a frame at {timestamp_sec:.1f}s from a video. "
-                        "Describe what is visible in one concise sentence for search indexing."
-                    )
-                ),
-            ],
-            config=types.GenerateContentConfig(temperature=0.2),
-        )
-        return (response.text or "").strip()[:500]
+
+        def _call() -> str:
+            with gemini_vlm_slot():
+                response = client.models.generate_content(
+                    model=self._settings.gemini_model,
+                    contents=[
+                        types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
+                        types.Part.from_text(
+                            text=(
+                                f"This is a frame at {timestamp_sec:.1f}s from a video. "
+                                "Describe what is visible in one concise sentence for search indexing."
+                            )
+                        ),
+                    ],
+                    config=types.GenerateContentConfig(temperature=0.2),
+                )
+            return (response.text or "").strip()[:500]
+
+        return retry_on_rate_limit(_call)
 
     @staticmethod
     def _retrieval_query(user_query: str) -> str:

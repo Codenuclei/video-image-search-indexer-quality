@@ -134,10 +134,37 @@ async def _extract_frame_on_demand(
     session: AsyncSession,
 ) -> bool:
     """
-    Ask ffmpeg to seek to *ts* in the Google Drive file and save one JPEG frame.
-    Uses the stored OAuth access token — refreshes automatically if expired.
-    The extracted frame is cached on disk for subsequent requests.
+    Ask ffmpeg to seek to *ts* and save one JPEG frame.
+    YouTube library files use the shared volume; Drive files stream via OAuth.
     """
+    from app.db.models import DriveFile
+    from app.video.youtube_cache import video_cache_path
+    from app.video.youtube_registry import is_youtube_source
+
+    drive_file = await session.get(DriveFile, drive_file_id)
+    if drive_file is not None and is_youtube_source(drive_file):
+        src = video_cache_path(settings, drive_file)
+        if not src.is_file():
+            logger.warning("Frame on-demand: YouTube local file missing for %s", drive_file_id)
+            return False
+        cmd = [
+            "ffmpeg", "-y",
+            "-ss", str(ts),
+            "-i", str(src),
+            "-frames:v", "1",
+            "-q:v", "3",
+            str(out_path),
+        ]
+
+        def _run_local() -> bool:
+            try:
+                result = subprocess.run(cmd, capture_output=True, timeout=120)
+                return result.returncode == 0
+            except (subprocess.TimeoutExpired, FileNotFoundError):
+                return False
+
+        return await asyncio.to_thread(_run_local)
+
     from datetime import datetime, timedelta, timezone
 
     from sqlalchemy import select as sa_select

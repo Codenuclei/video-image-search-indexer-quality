@@ -6,6 +6,7 @@ import logging
 from app.drive.google_client import DriveDirectError
 from app.runtime_settings import get_runtime_settings
 from app.workers.indexer import IndexingWorker
+from app.workers.maintenance import maintenance_tick
 
 logger = logging.getLogger(__name__)
 
@@ -34,11 +35,23 @@ async def auto_index_loop(worker: IndexingWorker, stop_event: asyncio.Event) -> 
 
             if runtime.auto_index_enabled:
                 try:
+                    await worker.ensure_parallel_video_indexing()
+                    await worker.ensure_parallel_image_indexing()
                     summary = await worker.process_pending()
                     logger.info("Auto-index processing: %s", summary)
                 except Exception:  # noqa: BLE001
                     logger.exception("Auto-index processing failed")
+
+            try:
+                await maintenance_tick(worker)
+            except Exception:  # noqa: BLE001
+                logger.exception("Auto maintenance tick failed")
         else:
+            try:
+                await worker.ensure_parallel_video_indexing()
+                await worker.ensure_parallel_image_indexing()
+            except Exception:  # noqa: BLE001
+                logger.exception("Parallel video slot fill failed")
             logger.debug("Auto sync tick skipped — cycle in progress")
 
         try:

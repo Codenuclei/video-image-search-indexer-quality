@@ -22,7 +22,7 @@ import logging
 import re
 from pathlib import Path
 
-from app.schemas import SearchMoment
+from app.schemas import SearchMoment, SearchResultFile
 
 logger = logging.getLogger(__name__)
 
@@ -50,35 +50,42 @@ def _build_prompt(
     n_frames: int,
     person_name: str | None,
     folder_context: str | None,
+    *,
+    strict: bool,
 ) -> str:
     lines = [
-        "You are a video search result validator. Your job is to KEEP results unless they clearly do NOT belong.",
+        "You are a video search result validator.",
         "",
         f'Search query: "{query}"',
     ]
     if person_name:
-        lines.append(f'Person filter: the user is looking for frames containing "{person_name}".')
+        lines.append(f'Person filter: results must show "{person_name}".')
     if folder_context:
-        lines.append(f"Folder context (for disambiguation): {folder_context}")
+        lines.append(f"Folder context: {folder_context}")
     lines += [
         "",
         f"I am showing you {n_frames} video frame(s) below (Frame 1 … Frame {n_frames}).",
         "",
         "For EACH frame decide:",
-        "  true  — keep this frame. It has ANY visual connection to the query:",
-        "           • exact match (the thing is clearly visible)",
-        "           • related/conceptual match (e.g. 'flying car' → any flying vehicle, futuristic craft, sci-fi flight scene)",
-        "           • contextually plausible (scene type, setting, or action is related to what the user wants to find)",
-        "  false — discard this frame ONLY IF it has absolutely NO connection to the query.",
-        "           Examples of discard: a static document/title screen, a black frame, or a completely unrelated scene",
-        "           with no overlap whatsoever with the query topic.",
-        "",
-        "Be LENIENT. When in doubt, return true.",
-        "Do NOT be literal — interpret the query broadly and generously.",
+    ]
+    if strict:
+        lines += [
+            "  true  — the frame CLEARLY shows what the query asks for.",
+            "  false — the frame is unrelated, ambiguous, or only loosely similar",
+            "           (e.g. query 'students cooking' but frame shows people eating, talking, or a lecture).",
+            "Be STRICT. When uncertain, return false.",
+        ]
+    else:
+        lines += [
+            "  true  — keep if the frame has a clear connection to the query.",
+            "  false — discard only if completely unrelated.",
+            "When uncertain, return false.",
+        ]
+    lines += [
         "",
         "Reply ONLY with a compact JSON array of booleans, one per frame, in order.",
-        "No extra text, no markdown fences, no explanation.",
-        f"Example: [true, true, false, true]",
+        "No extra text.",
+        "Example: [true, false, true]",
     ]
     return "\n".join(lines)
 
@@ -106,6 +113,8 @@ def _rerank_batch_sync(
     folder_context: str | None,
     model: str,
     api_key: str,
+    *,
+    strict: bool,
 ) -> list[bool]:
     """Synchronous Gemini call — run via asyncio.to_thread."""
     from google import genai
@@ -133,11 +142,13 @@ def _rerank_batch_sync(
         else:
             parts.append(types.Part(text="[frame image unavailable]"))
 
-    # If no images at all, return all True (can't filter without content)
+    # If no images at all, reject in strict mode
     if valid_count == 0:
-        return [True] * len(moments)
+        return [False] * len(moments) if strict else [True] * len(moments)
 
-    parts.insert(0, types.Part(text=_build_prompt(query, len(moments), person_name, folder_context)))
+    parts.insert(0, types.Part(text=_build_prompt(
+        query, len(moments), person_name, folder_context, strict=strict,
+    )))
 
     try:
         response = client.models.generate_content(
@@ -154,11 +165,11 @@ def _rerank_batch_sync(
             kept = sum(result)
             logger.info("Gemini re-rank: %d/%d frames kept for query %r", kept, len(moments), query)
             return result
-        logger.warning("Gemini re-rank: could not parse response %r — keeping all", text[:200])
-        return [True] * len(moments)
+        logger.warning("Gemini re-rank: could not parse response %r — %s", text[:200], "rejecting all" if strict else "keeping all")
+        return [False] * len(moments) if strict else [True] * len(moments)
     except Exception as exc:
-        logger.warning("Gemini re-rank failed (%s) — keeping all candidates", exc)
-        return [True] * len(moments)
+        logger.warning("Gemini re-rank failed (%s) — %s", exc, "rejecting all" if strict else "keeping all")
+        return [False] * len(moments) if strict else [True] * len(moments)
 
 
 async def rerank_moments(
@@ -169,17 +180,13 @@ async def rerank_moments(
     face_thumbnail_path: str | None = None,
     folder_context: str | None = None,
     thumbnail_dir: str = "./data/thumbnails",
+    strict: bool = True,
 ) -> list[SearchMoment]:
     """
-    Filter *moments* using Gemini multimodal re-ranking.
+    Filter video frame hits using Gemini multimodal re-ranking.
 
-    The top _ALWAYS_KEEP_TOP moments (by Qdrant score) always pass through
-    unconditionally — they represent the strongest vector matches and should
-    not be discarded even if Gemini is uncertain.
-
-    The remaining moments are sent to Gemini in batches of up to _BATCH
-    frames.  Gemini's prompt is deliberately lenient: it only discards frames
-    with zero visual connection to the query.
+    When strict=True (default), every candidate must pass Gemini validation —
+    no automatic keep-top bypass.
     """
     from app.config import get_settings
     settings = get_settings()
@@ -187,9 +194,9 @@ async def rerank_moments(
     if not settings.gemini_api_key or not moments:
         return moments
 
-    # Always keep top N — never send to Gemini for filtering
-    guaranteed = moments[:_ALWAYS_KEEP_TOP]
-    candidates = moments[_ALWAYS_KEEP_TOP:]
+    keep_top = 0 if strict else _ALWAYS_KEEP_TOP
+    guaranteed = moments[:keep_top]
+    candidates = moments[keep_top:]
 
     if not candidates:
         return guaranteed
@@ -211,7 +218,261 @@ async def rerank_moments(
             query, batch, images,
             person_name, face_jpeg, folder_context,
             settings.gemini_model, settings.gemini_api_key,
+            strict=strict,
         )
         kept.extend(m for m, ok in zip(batch, mask) if ok)
+
+    return guaranteed + kept
+
+
+def _build_moment_snippet_prompt(
+    query: str,
+    n_moments: int,
+    *,
+    strict: bool,
+) -> str:
+    lines = [
+        "You are a video transcript/description validator.",
+        f'Search query: "{query}"',
+        "",
+        f"I am giving you {n_moments} video moment description(s).",
+        "For EACH moment decide:",
+    ]
+    if strict:
+        lines += [
+            "  true  — the description clearly matches the query topic/action.",
+            "  false — unrelated, ambiguous, or a different activity.",
+            "Be STRICT. When uncertain, return false.",
+        ]
+    else:
+        lines += [
+            "  true  — plausible match.",
+            "  false — clearly unrelated.",
+        ]
+    lines += [
+        "",
+        "Reply ONLY with a JSON array of booleans.",
+        "Example: [true, false]",
+    ]
+    return "\n".join(lines)
+
+
+def _rerank_moments_snippet_sync(
+    query: str,
+    moments: list[SearchMoment],
+    *,
+    strict: bool,
+    model: str,
+    api_key: str,
+) -> list[bool]:
+    from google import genai
+    from google.genai import types
+
+    if not moments:
+        return []
+
+    client = genai.Client(api_key=api_key)
+    lines = [_build_moment_snippet_prompt(query, len(moments), strict=strict), ""]
+    for i, moment in enumerate(moments, start=1):
+        desc = (moment.snippet or "[no description]").strip()
+        lines.append(f'Moment {i} ({moment.name} @ {moment.timestamp_sec:.1f}s): "{desc}"')
+
+    try:
+        response = client.models.generate_content(
+            model=model,
+            contents=[types.Content(role="user", parts=[types.Part(text="\n".join(lines))])],
+            config=types.GenerateContentConfig(
+                temperature=0.0,
+                response_mime_type="application/json",
+            ),
+        )
+        text = response.text or ""
+        result = _parse_booleans(text, len(moments))
+        if result is not None:
+            kept = sum(result)
+            logger.info("Gemini transcript re-rank: %d/%d kept for query %r", kept, len(moments), query)
+            return result
+        logger.warning("Gemini transcript re-rank parse failed — %s", "rejecting all" if strict else "keeping all")
+        return [False] * len(moments) if strict else [True] * len(moments)
+    except Exception as exc:
+        logger.warning("Gemini transcript re-rank failed (%s)", exc)
+        return [False] * len(moments) if strict else [True] * len(moments)
+
+
+async def rerank_transcript_moments(
+    query: str,
+    moments: list[SearchMoment],
+    *,
+    strict: bool = True,
+) -> list[SearchMoment]:
+    """Filter transcript-based moments using their text descriptions."""
+    from app.config import get_settings
+
+    settings = get_settings()
+    if not settings.gemini_api_key or not moments:
+        return moments
+
+    kept: list[SearchMoment] = []
+    for batch_start in range(0, len(moments), _BATCH):
+        batch = moments[batch_start: batch_start + _BATCH]
+        mask = await asyncio.to_thread(
+            _rerank_moments_snippet_sync,
+            query,
+            batch,
+            strict=strict,
+            model=settings.gemini_model,
+            api_key=settings.gemini_api_key,
+        )
+        kept.extend(m for m, ok in zip(batch, mask) if ok)
+    return kept
+
+
+_IMAGE_BATCH = 25
+_IMAGE_ALWAYS_KEEP_TOP = 3
+
+
+def _build_image_prompt(
+    query: str,
+    n_images: int,
+    person_name: str | None,
+    folder_context: str | None,
+    *,
+    strict_action: bool,
+) -> str:
+    lines = [
+        "You are an image search result validator.",
+        "",
+        f'Search query: "{query}"',
+    ]
+    if person_name:
+        lines.append(f'Person filter: results should contain "{person_name}".')
+    if folder_context:
+        lines.append(f"Folder context: {folder_context}")
+    lines += [
+        "",
+        f"I am giving you {n_images} image description(s) (Image 1 … Image {n_images}).",
+        "",
+        "For EACH image decide:",
+    ]
+    if strict_action:
+        lines += [
+            "  true  — the description shows the SPECIFIC ACTION in the query",
+            "           (e.g. query 'students cooking' → chopping, grilling, at a stove, food prep).",
+            "  false — the description shows a different activity",
+            "           (e.g. sitting and eating, talking, workshop, market, foosball, lecture).",
+            "Be STRICT on the action. When the action does not match, return false.",
+        ]
+    else:
+        lines += [
+            "  true  — keep if the description has ANY connection to the query.",
+            "  false — discard ONLY if completely unrelated.",
+            "When in doubt, return true.",
+        ]
+    lines += [
+        "",
+        "Reply ONLY with a compact JSON array of booleans, one per image, in order.",
+        "No extra text.",
+        "Example: [true, false, true]",
+    ]
+    return "\n".join(lines)
+
+
+def _rerank_images_caption_sync(
+    query: str,
+    files: list[SearchResultFile],
+    *,
+    person_name: str | None,
+    folder_context: str | None,
+    strict_action: bool,
+    model: str,
+    api_key: str,
+) -> list[bool]:
+    from google import genai
+    from google.genai import types
+
+    client = genai.Client(api_key=api_key)
+    lines = [
+        _build_image_prompt(
+            query, len(files), person_name, folder_context, strict_action=strict_action
+        ),
+        "",
+    ]
+    for i, item in enumerate(files, start=1):
+        cap = (item.caption or "").strip() or "[no description available]"
+        lines.append(f'Image {i} ({item.name}): "{cap}"')
+
+    try:
+        response = client.models.generate_content(
+            model=model,
+            contents=[types.Content(role="user", parts=[types.Part(text="\n".join(lines))])],
+            config=types.GenerateContentConfig(
+                temperature=0.0,
+                response_mime_type="application/json",
+            ),
+        )
+        text = response.text or ""
+        result = _parse_booleans(text, len(files))
+        if result is not None:
+            kept = sum(result)
+            logger.info("Gemini image re-rank: %d/%d kept for query %r", kept, len(files), query)
+            return result
+        logger.warning("Gemini image re-rank: could not parse %r — keeping all", text[:200])
+        return [True] * len(files)
+    except Exception as exc:
+        logger.warning("Gemini image re-rank failed (%s) — keeping all candidates", exc)
+        return [True] * len(files)
+
+
+async def rerank_image_files(
+    query: str,
+    files: list[SearchResultFile],
+    *,
+    person_name: str | None = None,
+    folder_context: str | None = None,
+    strict_action: bool = False,
+) -> list[SearchResultFile]:
+    """Filter image hits using Gemini caption validation."""
+    from app.concurrency.pools import effective_cpu_workers
+    from app.config import get_settings
+
+    settings = get_settings()
+    if not settings.gemini_api_key or not files:
+        return files
+
+    keep_top = 0 if strict_action else _IMAGE_ALWAYS_KEEP_TOP
+    guaranteed = files[:keep_top]
+    candidates = files[keep_top:]
+    if not candidates:
+        return guaranteed
+
+    batches = [
+        candidates[i : i + _IMAGE_BATCH]
+        for i in range(0, len(candidates), _IMAGE_BATCH)
+    ]
+    parallel = (
+        settings.search_llm_batch_parallel
+        if settings.search_llm_batch_parallel > 0
+        else min(4, effective_cpu_workers(settings.cpu_thread_pool_size))
+    )
+    sem = asyncio.Semaphore(max(1, parallel))
+
+    async def _run_batch(batch: list[SearchResultFile]) -> list[SearchResultFile]:
+        async with sem:
+            mask = await asyncio.to_thread(
+                _rerank_images_caption_sync,
+                query,
+                batch,
+                person_name=person_name,
+                folder_context=folder_context,
+                strict_action=strict_action,
+                model=settings.gemini_model,
+                api_key=settings.gemini_api_key,
+            )
+        return [item for item, ok in zip(batch, mask) if ok]
+
+    batch_kept = await asyncio.gather(*[_run_batch(batch) for batch in batches])
+    kept: list[SearchResultFile] = []
+    for items in batch_kept:
+        kept.extend(items)
 
     return guaranteed + kept

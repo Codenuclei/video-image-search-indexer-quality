@@ -5,6 +5,7 @@ import {
   apiAssetUrl,
   apiClient,
   API_BASE,
+  driveFileDownloadUrl,
   driveFilePreviewUrl,
   type FolderContext,
   type Person,
@@ -20,12 +21,29 @@ function formatTimestamp(sec: number): string {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
+function isTranscriptMatch(matchType: string): boolean {
+  return (
+    matchType === "transcript" ||
+    matchType === "transcript_regex" ||
+    matchType.startsWith("svs_transcript")
+  );
+}
+
+function formatTimestampRange(start: number, end?: number | null): string {
+  const startLabel = formatTimestamp(start);
+  if (end != null && end > start + 0.5) {
+    return `${startLabel}–${formatTimestamp(end)}`;
+  }
+  return startLabel;
+}
+
 export default function SearchPage() {
   const [q, setQ] = useState("");
   const [person, setPerson] = useState("");
   const [mime, setMime] = useState("all");
   const [folderPath, setFolderPath] = useState("");
   const [rerank, setRerank] = useState(true);
+  const [useCaptions, setUseCaptions] = useState(false);
   const [persons, setPersons] = useState<Person[]>([]);
   const [folderContexts, setFolderContexts] = useState<FolderContext[]>([]);
   const [results, setResults] = useState<SearchResponse | null>(null);
@@ -36,7 +54,32 @@ export default function SearchPage() {
   useEffect(() => {
     apiClient.persons().then(setPersons).catch(() => setPersons([]));
     apiClient.folderContexts().then(setFolderContexts).catch(() => {});
+    apiClient
+      .settings()
+      .then((s) => {
+        setRerank(s.search_rerank_enabled);
+        setUseCaptions(s.search_use_captions);
+      })
+      .catch(() => {});
   }, []);
+
+  async function setRerankPersist(value: boolean) {
+    setRerank(value);
+    try {
+      await apiClient.updateSettings({ search_rerank_enabled: value });
+    } catch {
+      /* keep local toggle; settings page can fix */
+    }
+  }
+
+  async function setCaptionsPersist(value: boolean) {
+    setUseCaptions(value);
+    try {
+      await apiClient.updateSettings({ search_use_captions: value });
+    } catch {
+      /* keep local toggle */
+    }
+  }
 
   async function search() {
     if (!q.trim()) return;
@@ -49,6 +92,7 @@ export default function SearchPage() {
       if (mime !== "all") params.set("mime", mime);
       if (folderPath) params.set("folder_path", folderPath);
       if (!rerank) params.set("rerank", "false");
+      if (useCaptions) params.set("captions", "true");
       const res = await fetch(`${API_BASE}/search?${params}`, { cache: "no-store" });
       if (!res.ok) throw new Error(await res.text());
       setResults(await res.json());
@@ -60,7 +104,9 @@ export default function SearchPage() {
     }
   }
 
-  const files = results?.files ?? [];
+  const files = (results?.files ?? []).filter(
+    (f) => f.score != null || !f.mime_type.startsWith("image/")
+  );
   const moments = results?.moments ?? [];
 
   return (
@@ -68,8 +114,8 @@ export default function SearchPage() {
       <div>
         <h2 className="text-xl font-semibold sm:text-2xl">Search</h2>
         <p className="text-sm text-zinc-400">
-          Visual search for objects, actions, poses, expressions, and scenes. Videos use Gemini Embedding 2
-          (frame-level, exact timestamps). Images use Gemini.
+          Visual search via Gemini embeddings. Toggle captions for text-description matching (slower, stricter).
+          Videos use frame search + optional re-ranking.
         </p>
       </div>
 
@@ -120,13 +166,25 @@ export default function SearchPage() {
             ))}
           </select>
         </div>
-        <div className="flex flex-col gap-2 sm:flex-row">
+        <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
           <Button className="w-full sm:w-auto" onClick={search} disabled={loading}>
             {loading ? "Searching…" : "Search"}
           </Button>
           <button
             type="button"
-            onClick={() => setRerank((v) => !v)}
+            onClick={() => setCaptionsPersist(!useCaptions)}
+            title={useCaptions ? "Caption search ON — fuses indexed image descriptions" : "Caption search OFF — visual embeddings only"}
+            className={`w-full rounded-md border px-3 py-2 text-xs font-medium transition-colors sm:w-auto ${
+              useCaptions
+                ? "border-primary/50 bg-primary/10 text-primary"
+                : "border-border bg-muted text-muted-foreground"
+            }`}
+          >
+            {useCaptions ? "Captions ON" : "Captions OFF"}
+          </button>
+          <button
+            type="button"
+            onClick={() => setRerankPersist(!rerank)}
             title={rerank ? "AI re-ranking ON — click to disable" : "AI re-ranking OFF — click to enable"}
             className={`w-full rounded-md border px-3 py-2 text-xs font-medium transition-colors sm:w-auto ${
               rerank
@@ -152,14 +210,47 @@ export default function SearchPage() {
       {error && <Card className="border-destructive text-destructive">{error}</Card>}
 
       {results && moments.length > 0 && (
-        <Card>
-          <h3 className="mb-4 font-medium">Video moments ({moments.length})</h3>
-          <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {moments.map((moment) => (
-              <MomentCard key={`${moment.drive_file_id}-${moment.timestamp_sec}`} moment={moment} />
-            ))}
-          </ul>
-        </Card>
+        <>
+          {(() => {
+            const transcriptMoments = moments.filter((m) => isTranscriptMatch(m.match_type));
+            const otherMoments = moments.filter((m) => !isTranscriptMatch(m.match_type));
+            return (
+              <>
+                {transcriptMoments.length > 0 && (
+                  <Card>
+                    <h3 className="mb-1 font-medium">Transcript matches ({transcriptMoments.length})</h3>
+                    <p className="mb-4 text-xs text-muted-foreground">
+                      Exact phrase/word match in video captions — frame shown at spoken timestamp
+                    </p>
+                    <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                      {transcriptMoments.map((moment) => (
+                        <MomentCard
+                          key={`t-${moment.drive_file_id}-${moment.timestamp_sec}`}
+                          moment={moment}
+                        />
+                      ))}
+                    </ul>
+                  </Card>
+                )}
+                {otherMoments.length > 0 && (
+                  <Card>
+                    <h3 className="mb-4 font-medium">
+                      {transcriptMoments.length > 0 ? "Visual moments" : "Video moments"} ({otherMoments.length})
+                    </h3>
+                    <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                      {otherMoments.map((moment) => (
+                        <MomentCard
+                          key={`v-${moment.drive_file_id}-${moment.timestamp_sec}`}
+                          moment={moment}
+                        />
+                      ))}
+                    </ul>
+                  </Card>
+                )}
+              </>
+            );
+          })()}
+        </>
       )}
 
       {results && mime !== "video" && (
@@ -171,6 +262,7 @@ export default function SearchPage() {
             <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
               {files.map((file) => {
                 const driveUrl = `https://drive.google.com/file/d/${file.drive_file_id}/view`;
+                const downloadUrl = driveFileDownloadUrl(file.drive_file_id);
                 const isImage = file.mime_type.startsWith("image/");
                 return (
                   <li
@@ -186,17 +278,46 @@ export default function SearchPage() {
                       />
                     </div>
                     <div className="px-3 py-3 text-sm">
-                      <a
-                        href={driveUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="font-medium text-primary hover:underline"
-                      >
-                        {file.name}
-                      </a>
+                      <div className="flex items-start justify-between gap-2">
+                        <a
+                          href={driveUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="font-medium text-primary hover:underline"
+                        >
+                          {file.name}
+                        </a>
+                        {file.score != null && (
+                          <span className="shrink-0 rounded bg-violet-950/60 px-1.5 py-0.5 text-[10px] text-violet-300">
+                            {Math.round(file.score * 100)}%
+                          </span>
+                        )}
+                      </div>
                       <p className="mt-1 truncate text-xs text-muted-foreground" title={file.path}>
                         {file.path}
                       </p>
+                      {file.caption && (
+                        <p className="mt-2 line-clamp-2 text-xs text-muted-foreground/90" title={file.caption}>
+                          {file.caption}
+                        </p>
+                      )}
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        <a
+                          href={downloadUrl}
+                          download={file.name}
+                          className="text-xs text-primary hover:underline"
+                        >
+                          Download
+                        </a>
+                        <a
+                          href={driveUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-xs text-muted-foreground hover:underline"
+                        >
+                          Open in Drive
+                        </a>
+                      </div>
                       {(file.person_names ?? []).length > 0 && (
                         <div className="mt-2 flex flex-wrap gap-1">
                           {(file.person_names ?? []).map((name) => (
@@ -245,11 +366,23 @@ export default function SearchPage() {
             </button>
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
-              src={driveFilePreviewUrl(previewFile.drive_file_id)}
+              src={driveFilePreviewUrl(previewFile.drive_file_id, previewFile.mime_type)}
               alt={previewFile.name}
               className="max-h-[85vh] max-w-full object-contain"
             />
             <p className="border-t border-border px-4 py-2 text-sm text-zinc-300">{previewFile.name}</p>
+            {previewFile.caption && (
+              <p className="border-t border-border px-4 py-2 text-xs text-muted-foreground">{previewFile.caption}</p>
+            )}
+            <div className="flex gap-3 border-t border-border px-4 py-2">
+              <a
+                href={driveFileDownloadUrl(previewFile.drive_file_id)}
+                download={previewFile.name}
+                className="text-xs text-primary hover:underline"
+              >
+                Download
+              </a>
+            </div>
           </div>
         </div>
       )}
@@ -259,25 +392,30 @@ export default function SearchPage() {
 
 function matchBadgeStyle(matchType: string): string {
   if (matchType === "face_detected") return "bg-amber-950 text-amber-300";
+  if (isTranscriptMatch(matchType)) return "bg-blue-950 text-blue-300";
   if (matchType === "gemini_visual") return "bg-violet-950 text-violet-300";
   if (matchType.startsWith("svs_visual")) return "bg-violet-950 text-violet-300";
-  if (matchType.startsWith("svs_transcript")) return "bg-blue-950 text-blue-300";
-  if (matchType === "transcript") return "bg-slate-800 text-slate-300";
   return "bg-zinc-800 text-zinc-300";
 }
 
 function matchLabel(matchType: string, score: number | null): string {
   const pct = score != null ? ` ${Math.round(score * 100)}%` : "";
   if (matchType === "face_detected") return `face${pct}`;
+  if (isTranscriptMatch(matchType)) return `transcript${pct}`;
   if (matchType === "gemini_visual") return `visual${pct}`;
   if (matchType === "svs_visual") return `visual${pct}`;
-  if (matchType === "svs_transcript") return `transcript${pct}`;
   return `${matchType}${pct}`;
 }
 
 function MomentCard({ moment }: { moment: SearchMoment }) {
-  const seekUrl = moment.video_url ? apiAssetUrl(moment.video_url) : null;
+  const seekUrl = moment.video_url
+    ? moment.video_url.startsWith("http")
+      ? moment.video_url
+      : apiAssetUrl(moment.video_url)
+    : null;
   const isFace = moment.match_type === "face_detected";
+  const isTranscript = isTranscriptMatch(moment.match_type);
+  const timeLabel = formatTimestampRange(moment.timestamp_sec, moment.end_timestamp_sec);
 
   return (
     <li className="overflow-hidden rounded-md border border-border bg-muted/30">
@@ -289,11 +427,16 @@ function MomentCard({ moment }: { moment: SearchMoment }) {
           className="h-full w-full object-cover"
         />
         <span className="absolute bottom-2 left-2 rounded bg-black/70 px-2 py-0.5 text-xs text-white">
-          {formatTimestamp(moment.timestamp_sec)}
+          {timeLabel}
         </span>
+        {isTranscript && (
+          <span className="absolute right-2 top-2 rounded bg-blue-600/90 px-2 py-0.5 text-xs text-white">
+            transcript
+          </span>
+        )}
         {isFace && (
           <span className="absolute right-2 top-2 rounded bg-amber-600/80 px-2 py-0.5 text-xs text-white">
-            👤 face match
+            face match
           </span>
         )}
       </div>
@@ -302,7 +445,15 @@ function MomentCard({ moment }: { moment: SearchMoment }) {
         <p className="mt-1 truncate text-xs text-muted-foreground" title={moment.path}>
           {moment.path}
         </p>
-        {moment.snippet && (
+        {isTranscript && moment.snippet && (
+          <p
+            className="mt-2 line-clamp-3 rounded bg-blue-950/30 px-2 py-1.5 text-xs text-blue-100"
+            title={moment.snippet}
+          >
+            &ldquo;{moment.snippet}&rdquo;
+          </p>
+        )}
+        {!isTranscript && moment.snippet && (
           <p className="mt-2 line-clamp-2 text-xs text-muted-foreground/80" title={moment.snippet}>
             {moment.snippet}
           </p>
@@ -318,7 +469,7 @@ function MomentCard({ moment }: { moment: SearchMoment }) {
               rel="noopener noreferrer"
               className="text-xs text-primary hover:underline"
             >
-              Play at {formatTimestamp(moment.timestamp_sec)}
+              {isTranscript ? `Play transcript at ${timeLabel}` : `Play at ${timeLabel}`}
             </a>
           )}
         </div>

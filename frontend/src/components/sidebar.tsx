@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import {
   FolderOpen,
+  HardDrive,
   Home,
   LogOut,
   Menu,
@@ -24,6 +25,7 @@ const links = [
   { href: "/review", label: "Review Queue", icon: UserCheck, mobile: true },
   { href: "/people", label: "People", icon: Users, mobile: true },
   { href: "/search", label: "Search", icon: Search, mobile: true },
+  { href: "/library", label: "Library", icon: HardDrive, mobile: true },
   { href: "/folders", label: "Folders", icon: FolderOpen, mobile: true },
   { href: "/settings", label: "Settings", icon: Settings, mobile: false },
 ];

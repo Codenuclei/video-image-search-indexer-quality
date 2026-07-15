@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 
@@ -24,10 +25,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
-from app.db.models import DriveUser
+from app.db.models import DriveFile, DriveFileStatus, DriveUser
 from app.db.session import get_db
 from app.dependencies import get_indexing_worker
-from app.drive.google_client import DriveDirectError
+from app.drive.google_client import DriveDirectError, _do_token_refresh, resolve_folder_for_indexing
 from app.runtime_settings import get_runtime_settings
 from app.workers.indexer import IndexingWorker
 
@@ -194,7 +195,19 @@ async def get_drive_token(
         user.token_expiry = new_expiry
         await session.commit()
 
-    return {"accessToken": user.access_token, "apiKey": settings.google_api_key}
+    return {
+        "accessToken": user.access_token,
+        "apiKey": settings.google_api_key,
+        "appId": _google_app_id_from_client_id(settings.google_client_id),
+    }
+
+
+def _google_app_id_from_client_id(client_id: str) -> str | None:
+    """Project number from OAuth client id (required by Google Picker setAppId)."""
+    if not client_id:
+        return None
+    match = re.match(r"^(\d+)-", client_id)
+    return match.group(1) if match else None
 
 
 # ── Folder selection ──────────────────────────────────────────────────────────
@@ -202,6 +215,32 @@ async def get_drive_token(
 class SaveFolderBody(BaseModel):
     id: str
     name: str
+
+
+async def _requeue_folder_selection_errors(session: AsyncSession) -> int:
+    """Re-queue files that failed only because no Drive folder was selected."""
+    from sqlalchemy import or_
+
+    rows = list(
+        (
+            await session.execute(
+                select(DriveFile).where(
+                    DriveFile.status == DriveFileStatus.ERROR,
+                    or_(
+                        DriveFile.error_message.ilike("%No Drive folder selected%"),
+                        DriveFile.error_message.ilike("%No Google Drive account connected%"),
+                    ),
+                )
+            )
+        ).scalars().all()
+    )
+    for drive_file in rows:
+        drive_file.status = DriveFileStatus.PENDING
+        drive_file.error_message = None
+    if rows:
+        await session.flush()
+        logger.info("Re-queued %d file(s) after Drive folder selection restored", len(rows))
+    return len(rows)
 
 
 async def _sync_after_folder_change(worker: IndexingWorker) -> None:
@@ -223,19 +262,47 @@ async def save_folder(
     body: SaveFolderBody,
     background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
     worker: IndexingWorker = Depends(get_indexing_worker),
 ):
     """Save the user's chosen Drive folder."""
     user = (await session.execute(select(DriveUser).limit(1))).scalar_one_or_none()
     if user is None:
         raise HTTPException(status_code=401, detail="No Google Drive account connected.")
-    user.selected_folder_id = body.id
-    user.selected_folder_name = body.name
+
+    access_token = user.access_token
+    now = datetime.now(tz=timezone.utc)
+    if user.token_expiry is None or user.token_expiry - timedelta(minutes=5) <= now:
+        if not user.refresh_token:
+            raise HTTPException(status_code=401, detail="Token expired — please reconnect Google Drive.")
+        access_token, new_expiry = await asyncio.to_thread(
+            _do_token_refresh,
+            user.refresh_token,
+            settings.google_client_id,
+            settings.google_client_secret,
+        )
+        user.access_token = access_token
+        user.token_expiry = new_expiry
+
+    try:
+        folder_id, folder_name = await resolve_folder_for_indexing(
+            access_token, body.id, body.name
+        )
+    except DriveDirectError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    user.selected_folder_id = folder_id
+    user.selected_folder_name = folder_name
+    requeued = await _requeue_folder_selection_errors(session)
     await session.commit()
-    logger.info("Drive folder saved: %s (%s)", body.name, body.id)
+    logger.info("Drive folder saved: %s (%s), requeued=%d", folder_name, folder_id, requeued)
     if not worker.is_running:
         background_tasks.add_task(_sync_after_folder_change, worker)
-    return {"ok": True, "folder": {"id": body.id, "name": body.name}}
+    return {
+        "ok": True,
+        "folder": {"id": folder_id, "name": folder_name},
+        "requeued": requeued,
+    }
 
 
 # ── Logout ────────────────────────────────────────────────────────────────────

@@ -29,3 +29,8 @@ async def remove_drive_file(
         await asyncio.to_thread(delete_image_sync, file_id)
     except Exception:  # noqa: BLE001
         pass
+    try:
+        from app.qdrant.image_captions import delete_caption_sync
+        await asyncio.to_thread(delete_caption_sync, file_id)
+    except Exception:  # noqa: BLE001
+        pass

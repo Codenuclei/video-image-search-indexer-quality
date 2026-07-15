@@ -34,12 +34,40 @@ class Settings(BaseSettings):
     gemini_upload_poll_seconds: float = 3.0
     gemini_upload_timeout_seconds: float = 600.0
     # Images are searched via Qdrant vector embeddings (Gemini Embedding 2).
-    # Uploading them to the Gemini File Search store is redundant and consumes
+    # Uploading images to the Gemini File Search store is redundant and consumes
     # the shared 10GB store quota, so it is disabled by default.
     gemini_file_search_images_enabled: bool = False
+    gemini_file_search_search_enabled: bool = False
+    # Parallel embed+Qdrant per query variant — off by default (can hurt quality under API load).
+    search_parallel_variants_enabled: bool = False
+    search_variant_max_parallel: int = 0   # 0 = auto (cpu cores); parallel variant embed+Qdrant
+    search_llm_batch_parallel: int = 0     # 0 = auto; caption filter + rerank batch concurrency
+    cpu_thread_pool_size: int = 0          # 0 = os.cpu_count()
+    image_index_max_parallel: int = 6      # concurrent image index jobs (face detect + embed)
+
+    # Image caption/embedding backfill throughput (maintenance loop).
+    image_caption_batch_parallel: int = 6   # concurrent Gemini describe batches
+    image_embed_backfill_parallel: int = 6  # concurrent image embedding upserts
+    maintenance_batches_per_tick: int = 6   # max caption batches per maintenance tick
+
+    # Search UI defaults (persisted in app_settings table).
+    search_use_captions: bool = False
+    search_rerank_enabled: bool = True
+    # Append-only caption-text LLM filter (no images sent to Gemini).
+    search_caption_filter_enabled: bool = True
+    search_caption_filter_pool_size: int = 120
+    search_caption_filter_batch_size: int = 25
+    search_caption_filter_parallel: int = 0
+    search_caption_filter_gap_seconds: float = 0.4
 
     auto_index_enabled: bool = False
     auto_index_interval_seconds: int = 30
+
+    # Follow Google Drive folder shortcuts when listing/syncing the connected tree.
+    follow_shortcut_folders: bool = True
+
+    # TIFF/RAW decode: max attempts before permanent skip (stops infinite requeue loops).
+    decode_max_attempts: int = 1
 
     webhook_secret: str = ""
 
@@ -55,6 +83,8 @@ class Settings(BaseSettings):
     min_face_area_fraction: float = 0.001
     media_dedup_similarity_threshold: float = 0.85
     person_match_threshold: float = 0.6
+    # Only face clusters at or above this detection confidence appear in the review queue.
+    review_queue_min_confidence: float = 0.80
 
     # Video indexing (ffmpeg frames + VTT transcript + Gemini VLM)
     video_indexing_enabled: bool = True
@@ -63,6 +93,15 @@ class Settings(BaseSettings):
     video_max_sample_frames: int = 300
     video_max_gemini_frames: int = 12
     video_vlm_enrich: bool = True
+    # Max videos indexing at the same time (each uses the same pipeline).
+    video_index_max_parallel: int = 3
+
+    # Gemini API client-side concurrency (tune to your tier; see ai.google.dev rate limits).
+    # Embedding 2: high RPM (~40k) — safe default 24 concurrent frame embeds.
+    # Flash VLM + File Search uploads: lower — defaults 6 / 4.
+    gemini_embed_max_concurrent: int = 24
+    gemini_vlm_max_concurrent: int = 6
+    gemini_upload_max_concurrent: int = 4
 
     # Legacy Fennec sidecar (disabled — use video_indexing_enabled instead)
     fennec_enabled: bool = False
@@ -83,12 +122,28 @@ class Settings(BaseSettings):
     qdrant_collection: str = "dfi_video_frames"
     qdrant_images_collection: str = "dfi_images"
     gemini_video_result_limit: int = 30   # Qdrant candidates before re-rank
-    gemini_video_min_score: float = 0.25   # cosine threshold — lower = more recall
+    gemini_video_min_score: float = 0.25
+    gemini_video_display_min_score: float = 0.32   # cosine threshold — lower = more recall
     gemini_image_result_limit: int = 30
     gemini_image_min_score: float = 0.25
 
     # Query expansion (LLM rewrites → multi-vector fusion) for higher recall
     search_query_expansion: bool = True
+
+    # Image captioning: index-time VLM description → caption text embedding.
+    # Search compares the query against captions (text→text, well-calibrated),
+    # which filters vague visual matches without slowing search.
+    image_caption_enabled: bool = True
+    image_caption_model: str = "gemini-2.5-flash"
+    image_caption_max_dim: int = 512          # downscale longest side before VLM
+    image_caption_batch_size: int = 8         # images per Gemini describe call
+    image_caption_min_words: int = 4          # captions shorter than this are re-generated
+    qdrant_image_captions_collection: str = "dfi_image_captions"
+    # Fusion of visual (image-embedding) and caption (text-embedding) cosine.
+    image_visual_weight: float = 0.4
+    image_caption_weight: float = 0.6
+    image_caption_min_score: float = 0.55     # caption text-match precision gate
+    image_visual_strong_score: float = 0.50   # keep on strong visual alone
 
     # Qwen3-VL sidecar (OpenAI-compatible vLLM) for local frame captioning
     qwen_vlm_enabled: bool = False

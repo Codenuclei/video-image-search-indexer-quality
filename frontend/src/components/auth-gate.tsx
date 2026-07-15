@@ -4,7 +4,49 @@ import { useEffect, useState } from "react";
 import Script from "next/script";
 
 const ALLOWED_DOMAIN = "mastersunion.org";
-const STORAGE_KEY = "dfi_auth_email";
+const STORAGE_KEY = "dfi_auth";
+const LEGACY_STORAGE_KEY = "dfi_auth_email";
+/** Keep sign-in across browser restarts (90 days). */
+const AUTH_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
+
+type AuthRecord = { email: string; at: number };
+
+function readStoredAuth(): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) {
+      // Migrate one-time from old sessionStorage key
+      const legacy = sessionStorage.getItem(LEGACY_STORAGE_KEY);
+      if (legacy) {
+        writeStoredAuth(legacy);
+        sessionStorage.removeItem(LEGACY_STORAGE_KEY);
+        return legacy;
+      }
+      return null;
+    }
+    const rec = JSON.parse(raw) as AuthRecord;
+    if (!rec.email || Date.now() - (rec.at ?? 0) > AUTH_MAX_AGE_MS) {
+      localStorage.removeItem(STORAGE_KEY);
+      return null;
+    }
+    return rec.email;
+  } catch {
+    localStorage.removeItem(STORAGE_KEY);
+    return null;
+  }
+}
+
+function writeStoredAuth(email: string) {
+  const rec: AuthRecord = { email, at: Date.now() };
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(rec));
+}
+
+function clearStoredAuth() {
+  localStorage.removeItem(STORAGE_KEY);
+  sessionStorage.removeItem(LEGACY_STORAGE_KEY);
+}
+
 const CLIENT_ID = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID ?? "";
 
 function parseJwt(token: string): Record<string, string> | null {
@@ -17,12 +59,11 @@ function parseJwt(token: string): Record<string, string> | null {
 }
 
 export function getAuthEmail(): string | null {
-  if (typeof window === "undefined") return null;
-  return sessionStorage.getItem(STORAGE_KEY);
+  return readStoredAuth();
 }
 
 export function signOut() {
-  sessionStorage.removeItem(STORAGE_KEY);
+  clearStoredAuth();
   window.location.reload();
 }
 
@@ -34,7 +75,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     setMounted(true);
-    const stored = sessionStorage.getItem(STORAGE_KEY);
+    const stored = readStoredAuth();
     if (stored) setEmail(stored);
   }, []);
 
@@ -55,7 +96,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
           setError(`Access is restricted to @${ALLOWED_DOMAIN} accounts only.`);
           return;
         }
-        sessionStorage.setItem(STORAGE_KEY, userEmail);
+        writeStoredAuth(userEmail);
         setEmail(userEmail);
         setError(null);
       },

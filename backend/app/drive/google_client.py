@@ -17,6 +17,8 @@ import httpx
 from sqlalchemy import select
 
 from app.drive.schemas import ConnectorFile, ConnectorFolder, ConnectorFolderListing
+from app.drive.traverse import FOLDER_MIME, SHORTCUT_MIME, plan_child_traversal
+from app.runtime_settings import get_runtime_settings
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
@@ -24,7 +26,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-FOLDER_MIME = "application/vnd.google-apps.folder"
 GOOGLE_EXPORT_MIME: dict[str, str] = {
     "application/vnd.google-apps.document": "text/plain",
     "application/vnd.google-apps.spreadsheet": "text/csv",
@@ -72,8 +73,8 @@ class DriveDirectClient:
 
     # ── token management ──────────────────────────────────────────────────────
 
-    async def _get_auth(self) -> tuple[str, str]:
-        """Return (access_token, folder_id), refreshing the token if needed."""
+    async def _get_access_token(self) -> str:
+        """Return a valid access token (refreshes if needed). Does not require a selected folder."""
         from app.db.models import DriveUser
 
         async with self._session_factory() as session:
@@ -85,11 +86,6 @@ class DriveDirectClient:
                 raise DriveDirectError(
                     "No Google Drive account connected. "
                     "Open the DFI frontend → Folders and click 'Connect Google Drive'."
-                )
-            if not user.selected_folder_id:
-                raise DriveDirectError(
-                    "No Drive folder selected. "
-                    "Open the DFI frontend → Folders and choose a folder."
                 )
 
             now = datetime.now(tz=timezone.utc)
@@ -114,13 +110,38 @@ class DriveDirectClient:
                 user.token_expiry = new_expiry
                 await session.commit()
 
-            return user.access_token, user.selected_folder_id
+            return user.access_token
+
+    async def _get_auth(self) -> tuple[str, str]:
+        """Return (access_token, folder_id) for folder listing. Requires a selected root folder."""
+        from app.db.models import DriveUser
+
+        async with self._session_factory() as session:
+            user: DriveUser | None = (
+                await session.execute(select(DriveUser).limit(1))
+            ).scalar_one_or_none()
+
+            if user is None:
+                raise DriveDirectError(
+                    "No Google Drive account connected. "
+                    "Open the DFI frontend → Folders and click 'Connect Google Drive'."
+                )
+            if not user.selected_folder_id:
+                raise DriveDirectError(
+                    "No Drive folder selected. "
+                    "Open the DFI frontend → Folders and choose a folder."
+                )
+            folder_id = user.selected_folder_id
+
+        access_token = await self._get_access_token()
+        return access_token, folder_id
 
     # ── folder listing ────────────────────────────────────────────────────────
 
     async def list_folder_files(self) -> ConnectorFolderListing:
         """Recursively list all files inside the connected folder."""
         access_token, root_folder_id = await self._get_auth()
+        follow_shortcuts = get_runtime_settings().follow_shortcut_folders
 
         # Look up the folder name
         async with httpx.AsyncClient(timeout=30) as client:
@@ -141,39 +162,55 @@ class DriveDirectClient:
 
         results: list[ConnectorFile] = []
         truncated = False
+        visited_folders: set[str] = set()
 
         queue: list[tuple[str, list[str]]] = [(root_folder_id, [])]
 
         async with httpx.AsyncClient(timeout=60) as client:
             while queue:
                 folder_id, path_parts = queue.pop(0)
+                if folder_id in visited_folders:
+                    continue
+                visited_folders.add(folder_id)
+
                 children = await _list_children(client, folder_id, access_token)
 
                 for child in children:
                     if len(results) >= MAX_ENTRIES:
                         truncated = True
                         break
+
+                    plan = plan_child_traversal(child, follow_shortcuts=follow_shortcuts)
+                    child_path = "/".join([*path_parts, plan.path_segment]) if plan.path_segment else ""
                     is_folder = child["mimeType"] == FOLDER_MIME
-                    child_path = "/".join([*path_parts, child["name"]])
-                    results.append(
-                        ConnectorFile.model_validate(
-                            {
-                                "id": child["id"],
-                                "name": child["name"],
-                                "mimeType": child["mimeType"],
-                                "isFolder": is_folder,
-                                "size": child.get("size"),
-                                "modifiedTime": child.get("modifiedTime"),
-                                "parentId": folder_id,
-                                "path": child_path,
-                            }
+
+                    if plan.include_in_listing:
+                        results.append(
+                            ConnectorFile.model_validate(
+                                {
+                                    "id": child["id"],
+                                    "name": child["name"],
+                                    "mimeType": child["mimeType"],
+                                    "isFolder": is_folder,
+                                    "size": child.get("size"),
+                                    "modifiedTime": child.get("modifiedTime"),
+                                    "parentId": folder_id,
+                                    "path": child_path,
+                                }
+                            )
                         )
-                    )
-                    if is_folder:
-                        queue.append((child["id"], [*path_parts, child["name"]]))
+
+                    if plan.traverse_folder_id and plan.traverse_folder_id not in visited_folders:
+                        queue.append((plan.traverse_folder_id, [*path_parts, plan.path_segment]))
 
                 if truncated:
                     break
+
+        if follow_shortcuts:
+            logger.debug(
+                "Drive listing followed folder shortcuts (%d folders visited)",
+                len(visited_folders),
+            )
 
         return ConnectorFolderListing(folder=root_folder, files=results, truncated=truncated)
 
@@ -186,7 +223,7 @@ class DriveDirectClient:
         Google-native files (Docs/Sheets/Slides) are exported to a plain format.
         The yielded httpx.Response has .aiter_bytes() just like DriveConnectorClient.
         """
-        access_token, _ = await self._get_auth()
+        access_token = await self._get_access_token()
         headers = {"Authorization": f"Bearer {access_token}"}
 
         async with httpx.AsyncClient(timeout=self._settings.drive_connector_timeout_seconds) as client:
@@ -231,7 +268,7 @@ async def _list_children(
     while True:
         params: dict[str, str | int] = {
             "q": f"'{folder_id}' in parents and trashed = false",
-            "fields": "nextPageToken,files(id,name,mimeType,size,modifiedTime)",
+            "fields": "nextPageToken,files(id,name,mimeType,size,modifiedTime,shortcutDetails)",
             "pageSize": 200,
             "spaces": "drive",
             "supportsAllDrives": "true",
@@ -261,3 +298,47 @@ def _raise_for_status(response: httpx.Response) -> None:
         raise DriveDirectError(
             f"Drive API returned {response.status_code}: {preview}"
         )
+
+
+async def resolve_folder_for_indexing(
+    access_token: str,
+    folder_id: str,
+    folder_name: str,
+) -> tuple[str, str]:
+    """Resolve a Drive folder shortcut to its target folder before saving as index root."""
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.get(
+            f"{_DRIVE_BASE}/files/{folder_id}",
+            params={
+                "fields": "id,name,mimeType,shortcutDetails",
+                "supportsAllDrives": "true",
+            },
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        _raise_for_status(resp)
+        meta = resp.json()
+
+    mime = meta.get("mimeType") or ""
+    if mime == SHORTCUT_MIME:
+        details = meta.get("shortcutDetails") or {}
+        target_id = details.get("targetId")
+        target_mime = details.get("targetMimeType") or ""
+        if target_id and target_mime == FOLDER_MIME:
+            logger.info(
+                "Resolved folder shortcut %s (%s) → target %s",
+                folder_name,
+                folder_id,
+                target_id,
+            )
+            return target_id, folder_name
+        raise DriveDirectError(
+            f'"{folder_name}" is a shortcut that does not point to a folder. '
+            "Choose the target folder or a regular folder in Folders."
+        )
+
+    if mime != FOLDER_MIME:
+        raise DriveDirectError(
+            f'"{folder_name}" is not a folder. Choose a folder to index in Folders.'
+        )
+
+    return folder_id, meta.get("name") or folder_name

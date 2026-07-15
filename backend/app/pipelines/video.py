@@ -29,6 +29,8 @@ from app.pipelines.image import detect_faces_async
 from app.qdrant.client import upsert_frame_sync
 from app.video.ffmpeg_utils import extract_frame_at, probe_video, sample_timestamps
 from app.video.vtt import VttCue, parse_vtt
+from app.video.youtube_cache import video_cache_path
+from app.video.youtube_registry import is_youtube_source
 
 logger = logging.getLogger(__name__)
 
@@ -64,14 +66,7 @@ async def _caption_frame(
 
 
 def _video_cache_path(settings: Settings, drive_file: DriveFile) -> str:
-    cache_dir = Path(settings.video_cache_dir)
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    suffix = ""
-    if "." in drive_file.name:
-        suffix = drive_file.name[drive_file.name.rindex(".") :]
-    if not suffix:
-        suffix = ".mp4"
-    return str(cache_dir / f"{drive_file.id}{suffix}")
+    return str(video_cache_path(settings, drive_file))
 
 
 def _frames_dir(settings: Settings, drive_file_id: str) -> Path:
@@ -174,6 +169,35 @@ async def _detect_faces_on_frame(
         await assign_face(session, face, detection.embedding)
 
 
+async def _embed_video_frames_parallel(
+    drive_file_id: str,
+    frame_paths: dict[float, str],
+    settings: Settings,
+) -> None:
+    """Embed sampled frames concurrently, bounded by gemini_embed_max_concurrent."""
+    sem = asyncio.Semaphore(settings.gemini_embed_max_concurrent)
+
+    async def _one(ts: float, frame_path: str) -> None:
+        async with sem:
+            try:
+                vec = await asyncio.to_thread(embed_frame_sync, frame_path)
+                await asyncio.to_thread(
+                    upsert_frame_sync,
+                    drive_file_id=drive_file_id,
+                    timestamp=ts,
+                    vector=vec,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Gemini frame embed failed at %.1fs for %s: %s",
+                    ts,
+                    drive_file_id,
+                    exc,
+                )
+
+    await asyncio.gather(*(_one(ts, path) for ts, path in frame_paths.items()))
+
+
 async def process_video_file(
     session: AsyncSession,
     drive_file: DriveFile,
@@ -197,7 +221,11 @@ async def process_video_file(
     dest = _video_cache_path(settings, drive_file)
     suffix = Path(dest).suffix or ".mp4"
 
-    if os.path.isfile(dest) and os.path.getsize(dest) > 0:
+    if is_youtube_source(drive_file):
+        if not os.path.isfile(dest) or os.path.getsize(dest) <= 0:
+            raise FileNotFoundError(f"YouTube local cache missing for {drive_file.id}: {dest}")
+        logger.info("Using shared YouTube library file: %s", dest)
+    elif os.path.isfile(dest) and os.path.getsize(dest) > 0:
         logger.info("Reusing cached video: %s", dest)
     else:
         async with download_to_temp_file(client, drive_file.id, settings, suffix=suffix) as tmp:
@@ -214,6 +242,23 @@ async def process_video_file(
     await session.flush()
 
     cues = await _load_vtt_cues(client, drive_file, dest, listing)
+    if not cues:
+        from app.video.youtube_transcript import fetch_youtube_captions, youtube_id_from_filename
+
+        yt_id = youtube_id_from_filename(drive_file.name)
+        if yt_id:
+            try:
+                cues = await fetch_youtube_captions(yt_id)
+                if cues:
+                    logger.info(
+                        "Loaded %d YouTube caption cues for %s (%s)",
+                        len(cues),
+                        drive_file.name,
+                        yt_id,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("YouTube caption fetch failed for %s: %s", drive_file.name, exc)
+
     duration = probe.duration_seconds or 0.0
     sample_times = _merge_sample_times(
         duration,
@@ -236,18 +281,8 @@ async def process_video_file(
         if image_bgr is not None:
             await _detect_faces_on_frame(session, media, image_bgr, ts, engine, settings, tracker)
 
-        # Embed frame with Gemini Embedding 2 and store in Qdrant
-        if settings.gemini_api_key:
-            try:
-                vec = await asyncio.to_thread(embed_frame_sync, frame_path)
-                await asyncio.to_thread(
-                    upsert_frame_sync,
-                    drive_file_id=drive_file.id,
-                    timestamp=ts,
-                    vector=vec,
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("Gemini frame embed failed at %.1fs for %s: %s", ts, drive_file.name, exc)
+    if settings.gemini_api_key and frame_paths:
+        await _embed_video_frames_parallel(drive_file.id, frame_paths, settings)
 
     cue_by_start = {round(c.start_sec, 3): c for c in cues}
     segments: list[VideoSegment] = []

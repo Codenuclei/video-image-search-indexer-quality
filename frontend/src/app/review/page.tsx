@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { apiClient, type Cluster, type Person } from "@/lib/api";
 import { Button, Card, FaceThumb, Input } from "@/components/ui";
 
@@ -10,6 +10,8 @@ export default function ReviewPage() {
   const [names, setNames] = useState<Record<number, string>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [namingClusterId, setNamingClusterId] = useState<number | null>(null);
+  const namingRef = useRef(false);
 
   async function load() {
     setLoading(true);
@@ -30,10 +32,20 @@ export default function ReviewPage() {
   }, []);
 
   async function nameCluster(id: number) {
+    if (namingRef.current || namingClusterId === id) return;
     const name = names[id]?.trim();
     if (!name) return;
-    await apiClient.nameCluster(id, name);
-    await load();
+    namingRef.current = true;
+    setNamingClusterId(id);
+    try {
+      await apiClient.nameCluster(id, name);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to name cluster");
+    } finally {
+      namingRef.current = false;
+      setNamingClusterId(null);
+    }
   }
 
   async function ignoreCluster(id: number) {
@@ -50,7 +62,9 @@ export default function ReviewPage() {
     <div className="space-y-6">
       <div>
         <h2 className="text-2xl font-semibold">Unknown Faces</h2>
-        <p className="text-sm text-zinc-400">Name a person once — future appearances auto-tag</p>
+        <p className="text-sm text-zinc-400">
+          Name a person once — future appearances auto-tag. Only faces with 80%+ detection confidence appear here.
+        </p>
       </div>
 
       {error && <Card className="border-red-800 text-red-300">{error}</Card>}
@@ -66,27 +80,42 @@ export default function ReviewPage() {
         {clusters.map((c) => (
           <Card key={c.id} className="space-y-3">
             <div className="flex gap-3">
-              <FaceThumb faceId={c.representative_face_id} className="h-20 w-20" />
-              <div>
+              <FaceThumb faceId={c.representative_face_id} className="h-20 w-20 shrink-0 rounded-lg" />
+              <div className="min-w-0">
                 <p className="font-medium">Cluster #{c.id}</p>
                 <p className="text-sm text-zinc-400">{c.member_count} face(s)</p>
                 {c.representative_confidence != null && (
                   <p className="text-xs text-zinc-500">{(c.representative_confidence * 100).toFixed(0)}% confidence</p>
                 )}
+                {c.appears_in.length > 0 && (
+                  <p className="text-xs text-zinc-500">
+                    In {c.appears_in.length} file{c.appears_in.length === 1 ? "" : "s"}
+                  </p>
+                )}
               </div>
             </div>
-            <div className="text-xs text-zinc-500">
-              {c.appears_in.map((m) => m.path).join(", ")}
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <Input
+                className="flex-1"
+                placeholder="Enter name..."
+                value={names[c.id] ?? ""}
+                disabled={namingClusterId === c.id}
+                onChange={(e) => setNames((n) => ({ ...n, [c.id]: e.target.value }))}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    nameCluster(c.id);
+                  }
+                }}
+              />
+              <Button
+                className="shrink-0"
+                disabled={namingClusterId === c.id || !names[c.id]?.trim()}
+                onClick={() => nameCluster(c.id)}
+              >
+                {namingClusterId === c.id ? "Saving…" : "Name"}
+              </Button>
             </div>
-      <div className="flex flex-col gap-2 sm:flex-row">
-        <Input
-          className="flex-1"
-          placeholder="Enter name..."
-          value={names[c.id] ?? ""}
-          onChange={(e) => setNames((n) => ({ ...n, [c.id]: e.target.value }))}
-        />
-        <Button className="shrink-0" onClick={() => nameCluster(c.id)}>Name</Button>
-      </div>
             <div className="flex flex-wrap gap-2">
               <Button variant="secondary" onClick={() => ignoreCluster(c.id)}>
                 Ignore

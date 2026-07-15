@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useParams } from "next/navigation";
+import { useEffect, useRef, useState } from "react";
+import { useParams, useRouter } from "next/navigation";
 import { Pencil } from "lucide-react";
-import { apiClient, type Person } from "@/lib/api";
+import { apiClient, type Person, type PersonRole } from "@/lib/api";
 import { Button, Card, FaceThumb, Input } from "@/components/ui";
 
 type PersonMedia = {
@@ -23,13 +23,17 @@ function formatTimestamp(sec: number): string {
 
 export default function PersonDetailPage() {
   const params = useParams();
+  const router = useRouter();
   const id = Number(params.id);
   const [person, setPerson] = useState<Person | null>(null);
   const [media, setMedia] = useState<PersonMedia[]>([]);
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState("");
   const [saving, setSaving] = useState(false);
+  const [roleSaving, setRoleSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const savingRef = useRef(false);
 
   useEffect(() => {
     if (!id) return;
@@ -41,12 +45,13 @@ export default function PersonDetailPage() {
   }, [id]);
 
   async function saveName() {
-    if (!person) return;
+    if (!person || savingRef.current || saving) return;
     const trimmed = name.trim();
     if (!trimmed) {
       setError("Name cannot be empty");
       return;
     }
+    savingRef.current = true;
     setSaving(true);
     setError(null);
     try {
@@ -57,7 +62,42 @@ export default function PersonDetailPage() {
     } catch (e) {
       setError(e instanceof Error ? e.message : "Rename failed");
     } finally {
+      savingRef.current = false;
       setSaving(false);
+    }
+  }
+
+  async function saveRole(nextRole: PersonRole) {
+    if (!person || roleSaving || nextRole === person.role) return;
+    setRoleSaving(true);
+    setError(null);
+    try {
+      const updated = await apiClient.updatePerson(person.id, { role: nextRole });
+      setPerson(updated);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not update role");
+    } finally {
+      setRoleSaving(false);
+    }
+  }
+
+  async function deleteName() {
+    if (!person) return;
+    if (
+      !window.confirm(
+        `Delete "${person.name}"? Faces will be unlinked and may return to the review queue.`
+      )
+    ) {
+      return;
+    }
+    setDeleting(true);
+    setError(null);
+    try {
+      await apiClient.deletePerson(person.id);
+      router.push("/people");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Delete failed");
+      setDeleting(false);
     }
   }
 
@@ -80,9 +120,13 @@ export default function PersonDetailPage() {
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter") saveName();
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    saveName();
+                  }
                   if (e.key === "Escape") cancelEdit();
                 }}
+                disabled={saving}
                 autoFocus
               />
               {error && <p className="text-sm text-destructive">{error}</p>}
@@ -100,17 +144,56 @@ export default function PersonDetailPage() {
               <div>
                 <h2 className="text-xl font-semibold sm:text-2xl">{person.name}</h2>
                 <p className="text-sm text-zinc-400">{person.occurrence_count} appearances across Drive</p>
+                <div className="mt-3 space-y-2">
+                  <p className="text-xs text-zinc-500">Role tag (used for student / teacher search)</p>
+                  <div className="flex flex-wrap gap-1">
+                    {([
+                      { value: null, label: "Unset" },
+                      { value: "student", label: "Student" },
+                      { value: "non_student", label: "Non-student" },
+                    ] as { value: PersonRole; label: string }[]).map((opt) => (
+                      <button
+                        key={opt.label}
+                        type="button"
+                        disabled={roleSaving}
+                        onClick={() => saveRole(opt.value)}
+                        className={`rounded-full px-2.5 py-1 text-xs ${
+                          person.role === opt.value
+                            ? opt.value === "student"
+                              ? "bg-blue-600 text-white"
+                              : opt.value === "non_student"
+                                ? "bg-amber-600 text-white"
+                                : "bg-muted text-foreground"
+                            : "bg-muted/60 text-muted-foreground hover:bg-muted"
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
               </div>
-              <button
-                type="button"
-                onClick={() => setEditing(true)}
-                title="Edit name"
-                className="mt-1 shrink-0 rounded-md p-2 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-              >
-                <Pencil size={16} />
-              </button>
+              <div className="mt-1 flex shrink-0 gap-1">
+                <button
+                  type="button"
+                  onClick={() => setEditing(true)}
+                  title="Edit name"
+                  className="rounded-md p-2 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                >
+                  <Pencil size={16} />
+                </button>
+                <Button
+                  variant="secondary"
+                  onClick={deleteName}
+                  disabled={deleting}
+                  className="text-destructive hover:text-destructive"
+                >
+                  {deleting ? "Deleting…" : "Delete name"}
+                </Button>
+              </div>
             </div>
           )}
+          {error && !editing && <p className="mt-2 text-sm text-destructive">{error}</p>}
         </div>
       </div>
 
