@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { Pencil } from "lucide-react";
 import { apiClient, type Person, type PersonRole } from "@/lib/api";
-import { Button, Card, FaceThumb, Input } from "@/components/ui";
+import { Button, Card, ConfirmDialog, FaceThumb, Input } from "@/components/ui";
 import { RoleSelector } from "@/components/role-selector";
 
 type PersonMedia = {
@@ -33,6 +33,7 @@ export default function PersonDetailPage() {
   const [saving, setSaving] = useState(false);
   const [roleSaving, setRoleSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const savingRef = useRef(false);
 
@@ -84,13 +85,6 @@ export default function PersonDetailPage() {
 
   async function deleteName() {
     if (!person) return;
-    if (
-      !window.confirm(
-        `Delete "${person.name}"? Faces will be unlinked and may return to the review queue.`
-      )
-    ) {
-      return;
-    }
     setDeleting(true);
     setError(null);
     try {
@@ -161,7 +155,7 @@ export default function PersonDetailPage() {
                 </button>
                 <Button
                   variant="secondary"
-                  onClick={deleteName}
+                  onClick={() => setConfirmDelete(true)}
                   disabled={deleting}
                   className="text-destructive hover:text-destructive"
                 >
@@ -190,6 +184,20 @@ export default function PersonDetailPage() {
         </ul>
         {media.length === 0 && <p className="text-sm text-zinc-500">No media linked yet.</p>}
       </Card>
+
+      {person && (
+        <ConfirmDialog
+          open={confirmDelete}
+          title={`Delete "${person.name}"?`}
+          message="Faces will be unlinked and may return to the review queue."
+          confirmLabel={deleting ? "Deleting…" : "Delete"}
+          onConfirm={() => {
+            setConfirmDelete(false);
+            deleteName();
+          }}
+          onCancel={() => setConfirmDelete(false)}
+        />
+      )}
     </div>
   );
 }
