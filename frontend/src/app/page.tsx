@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Bar, BarChart, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { apiClient, type IndexStatus } from "@/lib/api";
-import { Card, StatCard } from "@/components/ui";
+import { Card, ServiceErrorCard, StatCard } from "@/components/ui";
 
 const STATUS_ORDER = ["processed", "pending", "processing", "error", "skipped"] as const;
 
@@ -41,6 +41,16 @@ export default function DashboardPage() {
     return () => clearInterval(t);
   }, []);
 
+  function retryLoad() {
+    apiClient
+      .indexStatus()
+      .then((status) => {
+        setIndexStatus(status);
+        setError(null);
+      })
+      .catch((e) => setError(e instanceof Error ? e.message : "Failed to load dashboard"));
+  }
+
   const chartData = useMemo(() => {
     const counts = indexStatus?.counts_by_status ?? {};
     const rows = Object.entries(counts).map(([status, count]) => ({
@@ -66,7 +76,7 @@ export default function DashboardPage() {
         <p className="text-sm text-muted-foreground">Gemini Embedding 2 video search · Gemini image search · InsightFace detection</p>
       </div>
 
-      {error && <Card className="border-destructive text-destructive">{error}</Card>}
+      {error && <ServiceErrorCard message={error} onRetry={retryLoad} />}
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard label="Indexed" value={processed} />

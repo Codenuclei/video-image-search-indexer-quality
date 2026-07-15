@@ -1,10 +1,10 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { Pencil, Trash2 } from "lucide-react";
 import { apiClient, type Person, type PersonRole } from "@/lib/api";
-import { Button, Card, ConfirmDialog, FaceThumb, Input } from "@/components/ui";
+import { Button, Card, ConfirmDialog, FaceThumb, Input, ServiceErrorCard } from "@/components/ui";
 import { RoleSelector } from "@/components/role-selector";
 
 function PersonCard({
@@ -170,9 +170,19 @@ export default function PeoplePage() {
   const [persons, setPersons] = useState<Person[]>([]);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    apiClient.persons().then(setPersons).catch((e) => setError(e.message));
+  const load = useCallback(() => {
+    apiClient
+      .persons()
+      .then((items) => {
+        setPersons(items);
+        setError(null);
+      })
+      .catch((e) => setError(e instanceof Error ? e.message : "Failed to load people"));
   }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
 
   return (
     <div className="space-y-6">
@@ -184,7 +194,7 @@ export default function PeoplePage() {
         </p>
       </div>
 
-      {error && <Card className="border-destructive text-destructive">{error}</Card>}
+      {error && <ServiceErrorCard message={error} onRetry={load} />}
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
         {persons.map((p) => (

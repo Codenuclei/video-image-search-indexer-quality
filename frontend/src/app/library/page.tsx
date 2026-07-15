@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  AlertCircle,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
@@ -22,7 +21,7 @@ import {
   type LibraryFolder,
   type LibraryResponse,
 } from "@/lib/api";
-import { Button, Card, Input, StatCard } from "@/components/ui";
+import { Button, Card, Input, ServiceErrorCard, StatCard } from "@/components/ui";
 import { cn } from "@/lib/utils";
 
 type FilterMode = "all" | "missing_caption" | "missing_embed" | "pending" | "error";
@@ -368,12 +367,14 @@ export default function LibraryPage() {
       )}
 
       {error && (
-        <Card className="border-destructive/40 bg-destructive/10 text-destructive">
-          <div className="flex items-center gap-2 text-sm">
-            <AlertCircle size={16} />
-            {error}
-          </div>
-        </Card>
+        <ServiceErrorCard
+          message={error}
+          onRetry={() => {
+            setLoading(true);
+            load();
+          }}
+          retryLabel="Refresh"
+        />
       )}
 
       {summary && (

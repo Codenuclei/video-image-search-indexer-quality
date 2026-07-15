@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { apiClient, type Cluster, type Person } from "@/lib/api";
-import { Button, Card, FaceThumb, Input } from "@/components/ui";
+import { Button, Card, FaceThumb, Input, ServiceErrorCard } from "@/components/ui";
 
 type ClusterAction =
   | { type: "name"; clusterId: number }
@@ -122,7 +122,7 @@ export default function ReviewPage() {
       {successMessage && (
         <Card className="border-green-800 bg-green-950/30 text-green-200">{successMessage}</Card>
       )}
-      {error && <Card className="border-red-800 text-red-300">{error}</Card>}
+      {error && <ServiceErrorCard message={error} onRetry={() => load()} />}
       {initialLoading && <p className="text-zinc-400">Loading review queue…</p>}
       {refreshing && !initialLoading && (
         <p className="text-xs text-zinc-500">Refreshing queue…</p>
