@@ -76,7 +76,13 @@ export default function DashboardPage() {
         <p className="text-sm text-muted-foreground">Gemini Embedding 2 video search · Gemini image search · InsightFace detection</p>
       </div>
 
-      {error && <ServiceErrorCard message={error} onRetry={retryLoad} />}
+      {error && (
+        <ServiceErrorCard
+          message={error}
+          onRetry={retryLoad}
+          onDismiss={() => setError(null)}
+        />
+      )}
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard label="Indexed" value={processed} />

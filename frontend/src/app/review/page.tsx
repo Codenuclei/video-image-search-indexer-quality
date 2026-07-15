@@ -129,7 +129,9 @@ export default function ReviewPage() {
       {successMessage && (
         <Card className="border-green-800 bg-green-950/30 text-green-200">{successMessage}</Card>
       )}
-      {error && <ServiceErrorCard message={error} onRetry={() => load()} />}
+      {error && (
+        <ServiceErrorCard message={error} onRetry={() => load()} onDismiss={() => setError(null)} />
+      )}
       {initialLoading && <p className="text-zinc-400">Loading review queue…</p>}
       {refreshing && !initialLoading && (
         <p className="text-xs text-zinc-500">Refreshing queue…</p>
