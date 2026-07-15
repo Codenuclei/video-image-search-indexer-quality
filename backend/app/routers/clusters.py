@@ -8,6 +8,7 @@ from app.config import get_settings
 from app.db.models import ClusterStatus, DriveFile, Face, FaceCluster, Media
 from app.db.session import get_db
 from app.matching.service import ignore_cluster, merge_cluster_into_person, name_cluster
+from app.routers.persons import _serialize_person
 from app.schemas import ClusterOut, MediaOccurrence, MergeClusterRequest, NameClusterRequest, PersonOut
 
 router = APIRouter(prefix="/clusters", tags=["clusters"])
@@ -124,14 +125,15 @@ async def ignore_cluster_endpoint(cluster_id: int, session: AsyncSession = Depen
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-@router.post("/{cluster_id}/merge", status_code=204)
+@router.post("/{cluster_id}/merge", response_model=PersonOut)
 async def merge_cluster_endpoint(
     cluster_id: int,
     body: MergeClusterRequest,
     session: AsyncSession = Depends(get_db),
-) -> None:
+) -> PersonOut:
     try:
-        await merge_cluster_into_person(session, cluster_id, body.person_id)
+        person = await merge_cluster_into_person(session, cluster_id, body.person_id)
         await session.commit()
+        return await _serialize_person(session, person)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
