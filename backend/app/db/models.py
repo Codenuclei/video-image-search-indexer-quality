@@ -64,8 +64,10 @@ class DriveFile(Base):
         Enum(DriveFileStatus, name="drive_file_status"), default=DriveFileStatus.PENDING, nullable=False
     )
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    decode_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     gemini_document_name: Mapped[str | None] = mapped_column(String, nullable=True)
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    source: Mapped[str] = mapped_column(String, nullable=False, default="drive", server_default="drive")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     media: Mapped["Media | None"] = relationship(back_populates="drive_file", uselist=False)
@@ -99,6 +101,8 @@ class Person(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String, nullable=False)
+    # Manual tag: student | non_student (null = student by default for search)
+    role: Mapped[str | None] = mapped_column(String(32), nullable=True)
     representative_face_id: Mapped[int | None] = mapped_column(
         ForeignKey("faces.id", ondelete="SET NULL", use_alter=True, name="fk_person_representative_face"),
         nullable=True,
@@ -197,6 +201,24 @@ class OcrPage(Base):
     media: Mapped[Media] = relationship(back_populates="ocr_pages")
 
 
+class AppSettings(Base):
+    """Singleton (id=1) persisted UI/runtime toggles — survives deploys and restarts."""
+
+    __tablename__ = "app_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    auto_index_enabled: Mapped[bool] = mapped_column(default=False, nullable=False)
+    auto_index_interval_seconds: Mapped[int] = mapped_column(Integer, default=30, nullable=False)
+    follow_shortcut_folders: Mapped[bool] = mapped_column(default=True, nullable=False)
+    gemini_file_search_search_enabled: Mapped[bool] = mapped_column(default=False, nullable=False)
+    search_parallel_variants_enabled: Mapped[bool] = mapped_column(default=False, nullable=False)
+    search_use_captions: Mapped[bool] = mapped_column(default=False, nullable=False)
+    search_rerank_enabled: Mapped[bool] = mapped_column(default=True, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class FolderContext(Base):
     """User-supplied description / context for a Drive folder path."""
 
@@ -208,6 +230,16 @@ class FolderContext(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class IndexingFolderPause(Base):
+    """Folders excluded from further indexing (library stop button)."""
+
+    __tablename__ = "indexing_folder_pauses"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    folder_path: Mapped[str] = mapped_column(String, nullable=False, unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class VideoSegment(Base):

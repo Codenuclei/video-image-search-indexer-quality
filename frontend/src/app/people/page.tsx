@@ -1,33 +1,85 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { Pencil } from "lucide-react";
-import { apiClient, type Person } from "@/lib/api";
+import { Pencil, Trash2 } from "lucide-react";
+import { apiClient, type Person, type PersonRole } from "@/lib/api";
 import { Button, Card, FaceThumb, Input } from "@/components/ui";
+
+function roleLabel(role: PersonRole) {
+  if (role === "student") return "Student";
+  if (role === "non_student") return "Non-student";
+  return "Unset";
+}
+
+function RoleSelector({
+  role,
+  disabled,
+  onChange,
+}: {
+  role: PersonRole;
+  disabled?: boolean;
+  onChange: (role: PersonRole) => void;
+}) {
+  const options: { value: PersonRole; label: string }[] = [
+    { value: null, label: "Unset" },
+    { value: "student", label: "Student" },
+    { value: "non_student", label: "Non-student" },
+  ];
+  return (
+    <div className="flex flex-wrap gap-1">
+      {options.map((opt) => (
+        <button
+          key={opt.label}
+          type="button"
+          disabled={disabled}
+          onClick={() => onChange(opt.value)}
+          className={`rounded-full px-2.5 py-1 text-xs transition-colors ${
+            role === opt.value
+              ? opt.value === "student"
+                ? "bg-blue-600 text-white"
+                : opt.value === "non_student"
+                  ? "bg-amber-600 text-white"
+                  : "bg-muted text-foreground"
+              : "bg-muted/60 text-muted-foreground hover:bg-muted"
+          }`}
+        >
+          {opt.label}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 function PersonCard({
   person,
   onRenamed,
+  onDeleted,
 }: {
   person: Person;
   onRenamed: (updated: Person) => void;
+  onDeleted: (id: number) => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(person.name);
   const [saving, setSaving] = useState(false);
+  const [roleSaving, setRoleSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const savingRef = useRef(false);
 
   useEffect(() => {
     if (!editing) setName(person.name);
   }, [person.name, editing]);
 
   async function save() {
+    if (savingRef.current || saving) return;
     const trimmed = name.trim();
     if (!trimmed) {
       setError("Name cannot be empty");
       return;
     }
+    savingRef.current = true;
     setSaving(true);
     setError(null);
     try {
@@ -37,7 +89,41 @@ function PersonCard({
     } catch (e) {
       setError(e instanceof Error ? e.message : "Rename failed");
     } finally {
+      savingRef.current = false;
       setSaving(false);
+    }
+  }
+
+  async function saveRole(nextRole: PersonRole) {
+    if (roleSaving || nextRole === person.role) return;
+    setRoleSaving(true);
+    setError(null);
+    try {
+      const updated = await apiClient.updatePerson(person.id, { role: nextRole });
+      onRenamed(updated);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not update role");
+    } finally {
+      setRoleSaving(false);
+    }
+  }
+
+  async function remove() {
+    if (
+      !window.confirm(
+        `Delete "${person.name}"? Faces will be unlinked and may return to the review queue.`
+      )
+    ) {
+      return;
+    }
+    setDeleting(true);
+    setError(null);
+    try {
+      await apiClient.deletePerson(person.id);
+      onDeleted(person.id);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Delete failed");
+      setDeleting(false);
     }
   }
 
@@ -60,9 +146,13 @@ function PersonCard({
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter") save();
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    save();
+                  }
                   if (e.key === "Escape") cancel();
                 }}
+                disabled={saving}
                 autoFocus
               />
               {error && <p className="text-xs text-destructive">{error}</p>}
@@ -81,16 +171,32 @@ function PersonCard({
                 <Link href={`/people/${person.id}`} className="min-w-0 hover:underline">
                   <p className="truncate font-medium">{person.name}</p>
                 </Link>
-                <button
-                  type="button"
-                  onClick={() => setEditing(true)}
-                  title="Edit name"
-                  className="shrink-0 rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                >
-                  <Pencil size={14} />
-                </button>
+                <div className="flex shrink-0 gap-1">
+                  <button
+                    type="button"
+                    onClick={() => setEditing(true)}
+                    title="Edit name"
+                    className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                  >
+                    <Pencil size={14} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={remove}
+                    disabled={deleting}
+                    title="Delete name"
+                    className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
               </div>
               <p className="text-sm text-muted-foreground">{person.occurrence_count} appearances</p>
+              <p className="text-xs text-muted-foreground">
+                Tag: <span className="font-medium text-foreground">{roleLabel(person.role)}</span>
+              </p>
+              <RoleSelector role={person.role ?? null} disabled={roleSaving} onChange={saveRole} />
+              {error && <p className="text-xs text-destructive">{error}</p>}
             </>
           )}
         </div>
@@ -111,7 +217,10 @@ export default function PeoplePage() {
     <div className="space-y-6">
       <div>
         <h2 className="text-xl font-semibold sm:text-2xl">People</h2>
-        <p className="text-sm text-muted-foreground">Everyone recognized across your Drive</p>
+        <p className="text-sm text-muted-foreground">
+          Everyone recognized across your Drive. Mark people as Student or Non-student to improve
+          searches like &quot;teacher with students&quot;.
+        </p>
       </div>
 
       {error && <Card className="border-destructive text-destructive">{error}</Card>}
@@ -124,6 +233,7 @@ export default function PeoplePage() {
             onRenamed={(updated) =>
               setPersons((prev) => prev.map((item) => (item.id === updated.id ? updated : item)))
             }
+            onDeleted={(id) => setPersons((prev) => prev.filter((item) => item.id !== id))}
           />
         ))}
       </div>

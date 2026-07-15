@@ -20,6 +20,25 @@ async def ensure_schema(engine: AsyncEngine) -> None:
         await conn.execute(
             text("ALTER TABLE drive_files ADD COLUMN IF NOT EXISTS gemini_document_name VARCHAR")
         )
+        await conn.execute(
+            text("ALTER TABLE drive_files ADD COLUMN IF NOT EXISTS source VARCHAR NOT NULL DEFAULT 'drive'")
+        )
+        await conn.execute(
+            text("ALTER TABLE persons ADD COLUMN IF NOT EXISTS role VARCHAR(32)")
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE drive_files ADD COLUMN IF NOT EXISTS decode_attempts "
+                "INTEGER NOT NULL DEFAULT 0"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS follow_shortcut_folders "
+                "BOOLEAN NOT NULL DEFAULT true"
+            )
+        )
+        await conn.run_sync(Base.metadata.create_all)
     logger.info("Database schema verified")
 
 

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 import numpy as np
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
+from app.db.deadlock import retry_on_deadlock
 from app.db.models import (
     ClusterStatus,
     DriveFile,
@@ -16,6 +18,8 @@ from app.db.models import (
     Person,
     Recognition,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -55,32 +59,83 @@ async def _queue_gemini_refresh_for_faces(session: AsyncSession, face_ids: list[
     )
 
 
-async def rename_person(session: AsyncSession, person_id: int, name: str) -> Person:
+VALID_PERSON_ROLES = frozenset({"student", "non_student"})
+
+
+def normalize_person_role(role: str | None) -> str | None:
+    if role is None:
+        return None
+    value = role.strip().lower().replace("-", "_").replace(" ", "_")
+    if value in ("non_student", "nonstudent", "teacher", "teachers", "faculty", "staff"):
+        return "non_student"
+    if value in ("student", "students"):
+        return "student"
+    if value in VALID_PERSON_ROLES:
+        return value
+    raise ValueError("role must be student, non_student, or null to clear")
+
+
+async def update_person(
+    session: AsyncSession,
+    person_id: int,
+    *,
+    name: str | None = None,
+    set_role: bool = False,
+    role: str | None = None,
+) -> Person:
     person = await session.get(Person, person_id)
     if person is None:
         raise ValueError(f"Person {person_id} not found")
 
-    new_name = name.strip()
-    if not new_name:
-        raise ValueError("Name cannot be empty")
-    if person.name == new_name:
-        return person
+    changed = False
+    if name is not None:
+        new_name = name.strip()
+        if not new_name:
+            raise ValueError("Name cannot be empty")
+        if person.name != new_name:
+            person.name = new_name
+            changed = True
 
-    person.name = new_name
-    face_ids = list(
-        (await session.execute(select(Face.id).where(Face.person_id == person_id))).scalars().all()
-    )
-    await _queue_gemini_refresh_for_faces(session, face_ids)
-    await session.flush()
+    if set_role:
+        normalized = normalize_person_role(role) if role not in (None, "") else None
+        if person.role != normalized:
+            person.role = normalized
+            changed = True
+
+    if changed:
+        face_ids = list(
+            (await session.execute(select(Face.id).where(Face.person_id == person_id))).scalars().all()
+        )
+        await _queue_gemini_refresh_for_faces(session, face_ids)
+        await session.flush()
     return person
+
+
+async def rename_person(session: AsyncSession, person_id: int, name: str) -> Person:
+    return await update_person(session, person_id, name=name)
 
 
 async def name_cluster(session: AsyncSession, cluster_id: int, name: str) -> Person:
     cluster = await session.get(FaceCluster, cluster_id)
     if cluster is None:
         raise ValueError(f"Cluster {cluster_id} not found")
+    if cluster.status == ClusterStatus.NAMED:
+        raise ValueError(f"Cluster {cluster_id} is already named")
 
-    person = Person(name=name.strip(), representative_face_id=cluster.representative_face_id)
+    clean = name.strip()
+    if not clean:
+        raise ValueError("Name cannot be empty")
+
+    # Reuse an existing person with the same name instead of creating duplicates.
+    existing = (
+        await session.execute(
+            select(Person).where(func.lower(Person.name) == clean.lower())
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        return await merge_cluster_into_person(session, cluster_id, existing.id)
+
+    person = Person(name=clean, representative_face_id=cluster.representative_face_id)
     session.add(person)
     await session.flush()
 
@@ -107,16 +162,18 @@ async def ignore_cluster(session: AsyncSession, cluster_id: int) -> None:
     await session.flush()
 
 
-async def assign_face(
-    session: AsyncSession,
-    face: Face,
-    embedding: list[float],
-    settings: Settings | None = None,
-) -> MatchResult:
-    """Match a detected face to an existing cluster or create a new unknown cluster."""
-    settings = settings or get_settings()
-    threshold = settings.person_match_threshold
+async def _get_cluster_for_update(session: AsyncSession, cluster_id: int) -> FaceCluster | None:
+    return (
+        await session.execute(
+            select(FaceCluster).where(FaceCluster.id == cluster_id).with_for_update()
+        )
+    ).scalar_one_or_none()
 
+
+async def _find_best_cluster(
+    session: AsyncSession,
+    embedding: list[float],
+) -> tuple[FaceCluster | None, float]:
     clusters = (
         await session.execute(select(FaceCluster).where(FaceCluster.centroid.isnot(None)))
     ).scalars().all()
@@ -130,27 +187,48 @@ async def assign_face(
         if sim > best_sim:
             best_sim = sim
             best_cluster = cluster
+    return best_cluster, best_sim
+
+
+async def _assign_face_once(
+    session: AsyncSession,
+    face: Face,
+    embedding: list[float],
+    settings: Settings,
+) -> MatchResult:
+    """Match a detected face to an existing cluster or create a new unknown cluster."""
+    threshold = settings.person_match_threshold
+    candidate, best_sim = await _find_best_cluster(session, embedding)
 
     created_new = False
-    if best_cluster is not None and best_sim >= threshold:
-        cluster = best_cluster
-        n = cluster.member_count
-        old = np.asarray(cluster.centroid, dtype=np.float32)
-        new = np.asarray(embedding, dtype=np.float32)
-        cluster.centroid = ((old * n + new) / (n + 1)).tolist()
-        cluster.member_count = n + 1
-        if cluster.person_id is not None:
-            face.person_id = cluster.person_id
-            face.cluster_id = None
-        else:
-            face.cluster_id = cluster.id
-        if cluster.representative_face_id is None:
-            cluster.representative_face_id = face.id
-        else:
-            rep = await session.get(Face, cluster.representative_face_id)
-            if rep is None or face.detection_confidence > rep.detection_confidence:
-                cluster.representative_face_id = face.id
-    else:
+    matched = False
+
+    if candidate is not None and best_sim >= threshold:
+        cluster = await _get_cluster_for_update(session, candidate.id)
+        if cluster is not None and cluster.centroid is not None:
+            locked_sim = cosine_similarity(embedding, list(cluster.centroid))
+            if locked_sim >= threshold:
+                best_sim = locked_sim
+                n = cluster.member_count
+                old = np.asarray(cluster.centroid, dtype=np.float32)
+                new = np.asarray(embedding, dtype=np.float32)
+                cluster.centroid = ((old * n + new) / (n + 1)).tolist()
+                cluster.member_count = n + 1
+                if cluster.person_id is not None:
+                    face.person_id = cluster.person_id
+                    face.cluster_id = None
+                else:
+                    face.cluster_id = cluster.id
+                if cluster.representative_face_id is None:
+                    cluster.representative_face_id = face.id
+                else:
+                    with session.no_autoflush:
+                        rep = await session.get(Face, cluster.representative_face_id)
+                    if rep is None or face.detection_confidence > rep.detection_confidence:
+                        cluster.representative_face_id = face.id
+                matched = True
+
+    if not matched:
         cluster = FaceCluster(
             representative_face_id=face.id,
             status=ClusterStatus.UNKNOWN,
@@ -184,6 +262,20 @@ async def assign_face(
     )
 
 
+async def assign_face(
+    session: AsyncSession,
+    face: Face,
+    embedding: list[float],
+    settings: Settings | None = None,
+) -> MatchResult:
+    settings = settings or get_settings()
+
+    async def _run() -> MatchResult:
+        return await _assign_face_once(session, face, embedding, settings)
+
+    return await retry_on_deadlock(_run, label=f"assign_face face_id={face.id}")
+
+
 async def merge_cluster_into_person(session: AsyncSession, cluster_id: int, person_id: int) -> Person:
     cluster = await session.get(FaceCluster, cluster_id)
     person = await session.get(Person, person_id)
@@ -191,6 +283,8 @@ async def merge_cluster_into_person(session: AsyncSession, cluster_id: int, pers
         raise ValueError(f"Cluster {cluster_id} not found")
     if person is None:
         raise ValueError(f"Person {person_id} not found")
+    if cluster.status == ClusterStatus.NAMED and cluster.person_id == person_id:
+        return person
 
     faces = (await session.execute(select(Face).where(Face.cluster_id == cluster_id))).scalars().all()
     face_ids = []
@@ -203,3 +297,27 @@ async def merge_cluster_into_person(session: AsyncSession, cluster_id: int, pers
     await _queue_gemini_refresh_for_faces(session, face_ids)
     await session.flush()
     return person
+
+
+async def delete_person(session: AsyncSession, person_id: int) -> None:
+    """Remove a named person; linked clusters return to the unknown review queue."""
+    person = await session.get(Person, person_id)
+    if person is None:
+        raise ValueError(f"Person {person_id} not found")
+
+    face_ids = list(
+        (await session.execute(select(Face.id).where(Face.person_id == person_id))).scalars().all()
+    )
+    clusters = (
+        await session.execute(select(FaceCluster).where(FaceCluster.person_id == person_id))
+    ).scalars().all()
+    for cluster in clusters:
+        cluster.person_id = None
+        cluster.status = ClusterStatus.UNKNOWN
+
+    await session.execute(
+        update(Face).where(Face.person_id == person_id).values(person_id=None)
+    )
+    await _queue_gemini_refresh_for_faces(session, face_ids)
+    await session.delete(person)
+    await session.flush()

@@ -37,7 +37,7 @@ async def process_image_file(
     await clear_existing_media(session, drive_file.id)
 
     raw_bytes = await download_to_memory(client, drive_file.id)
-    image_bgr = decode_image_bgr(raw_bytes)
+    image_bgr = await run_cpu_bound(decode_image_bgr, raw_bytes, file_name=drive_file.name)
 
     media = Media(drive_file_id=drive_file.id, type=MediaType.IMAGE)
     session.add(media)
@@ -74,7 +74,9 @@ async def process_image_file(
     if settings.gemini_api_key:
         ok, buf = cv2.imencode(".jpg", image_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
         if ok:
-            await index_image_embedding(buf.tobytes(), drive_file.id)
+            jpeg = buf.tobytes()
+            await index_image_embedding(jpeg, drive_file.id)
+            # Captions are generated in batched backfill (image_caption_batch_size × parallel).
 
     logger.info("Detected %d unique faces in %s", len(tracker._tracks), drive_file.name)
     return media

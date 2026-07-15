@@ -1,3 +1,6 @@
+"use client";
+
+import { useState } from "react";
 import { cn } from "@/lib/utils";
 import { driveFilePreviewUrl } from "@/lib/api";
 
@@ -95,20 +98,46 @@ export function FilePreview({
   className?: string;
   onClick?: () => void;
 }) {
-  const previewUrl = driveFilePreviewUrl(driveFileId);
+  const previewUrl = driveFilePreviewUrl(driveFileId, mimeType);
+  const driveViewUrl = `https://drive.google.com/file/d/${driveFileId}/view`;
   const isImage = mimeType.startsWith("image/");
   const isPdf = mimeType === "application/pdf";
+  const [loaded, setLoaded] = useState(false);
+  const [failed, setFailed] = useState(false);
 
   if (isImage) {
     return (
-      // eslint-disable-next-line @next/next/no-img-element
-      <img
-        src={previewUrl}
-        alt={name}
-        loading="lazy"
-        onClick={onClick}
-        className={cn("h-full w-full object-cover", onClick && "cursor-pointer", className)}
-      />
+      <div className={cn("relative h-full w-full bg-black/30", className)}>
+        {!loaded && !failed && (
+          <div className="absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">
+            Loading…
+          </div>
+        )}
+        {failed ? (
+          <div className="flex h-full w-full flex-col items-center justify-center gap-2 p-4 text-center text-xs text-muted-foreground">
+            <span>Preview unavailable</span>
+            <a href={driveViewUrl} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
+              Open in Drive
+            </a>
+          </div>
+        ) : (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={previewUrl}
+            alt={name}
+            loading="lazy"
+            decoding="async"
+            onLoad={() => setLoaded(true)}
+            onError={() => setFailed(true)}
+            onClick={onClick}
+            className={cn(
+              "h-full w-full object-cover transition-opacity duration-200",
+              loaded ? "opacity-100" : "opacity-0",
+              onClick && "cursor-pointer"
+            )}
+          />
+        )}
+      </div>
     );
   }
 
@@ -126,12 +155,12 @@ export function FilePreview({
     <div className={cn("flex h-full w-full flex-col items-center justify-center gap-2 bg-muted/50 p-4 text-center", className)}>
       <span className="text-xs text-muted-foreground">{mimeType || "file"}</span>
       <a
-        href={previewUrl}
+        href={driveViewUrl}
         target="_blank"
         rel="noopener noreferrer"
         className="text-xs text-primary hover:underline"
       >
-        Open preview
+        Open in Drive
       </a>
     </div>
   );

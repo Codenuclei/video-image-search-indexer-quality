@@ -1,8 +1,11 @@
 export const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
+export type PersonRole = "student" | "non_student" | null;
+
 export type Person = {
   id: number;
   name: string;
+  role: PersonRole;
   representative_face_id: number | null;
   occurrence_count: number;
   created_at: string;
@@ -35,6 +38,22 @@ export type DriveFile = {
   modified_time: string | null;
   last_synced_at: string | null;
   error_message: string | null;
+  source?: string;
+};
+
+export type YoutubeRegisterResult = {
+  drive_file_id: string;
+  name: string;
+  youtube_video_id: string | null;
+  linked_to_drive: boolean;
+  download_queued?: boolean;
+  message: string;
+};
+
+export type YoutubeRegisterResponse = {
+  ok: boolean;
+  registered: YoutubeRegisterResult[];
+  index_scheduled: boolean;
 };
 
 export type IndexStatus = {
@@ -58,6 +77,11 @@ export type Settings = {
   gemini_file_search_store_display_name: string;
   auto_index_enabled: boolean;
   auto_index_interval_seconds: number;
+  follow_shortcut_folders: boolean;
+  gemini_file_search_search_enabled: boolean;
+  search_parallel_variants_enabled: boolean;
+  search_use_captions: boolean;
+  search_rerank_enabled: boolean;
 };
 
 export type SearchCitation = {
@@ -74,6 +98,8 @@ export type SearchResultFile = {
   path: string;
   mime_type: string;
   person_names: string[];
+  score?: number | null;
+  caption?: string | null;
 };
 
 export type SearchMoment = {
@@ -112,9 +138,79 @@ export type DriveSession = {
   selected_folder?: { id: string; name: string } | null;
 };
 
+export type LibraryFile = {
+  id: string;
+  name: string;
+  path: string;
+  folder_path: string;
+  mime_type: string;
+  status: string;
+  size: number | null;
+  source: string;
+  is_image: boolean;
+  is_video: boolean;
+  has_caption: boolean;
+  has_embedding: boolean;
+  caption_preview: string | null;
+  error_message: string | null;
+};
+
+export type LibraryFolder = {
+  name: string;
+  path: string;
+  file_count: number;
+  image_count: number;
+  captioned_count: number;
+  embedded_count: number;
+  pending_count: number;
+  error_count: number;
+  skipped_count: number;
+  indexing_paused: boolean;
+  folders: LibraryFolder[];
+  files: LibraryFile[];
+};
+
+export type LibraryMaintenance = {
+  caption_backfill_running: boolean;
+  embed_backfill_running: boolean;
+  last_caption_run_at: string | null;
+  last_embed_run_at: string | null;
+  last_caption_indexed: number;
+  last_embed_indexed: number;
+};
+
+export type LibraryResponse = {
+  tree: LibraryFolder;
+  summary: {
+    total_files: number;
+    images: number;
+    videos: number;
+    captioned: number;
+    embedded: number;
+    pending: number;
+    errors: number;
+    skipped: number;
+    caption_pct: number;
+  };
+  maintenance: LibraryMaintenance;
+  paused_folders: string[];
+};
+
+export type CaptionStats = {
+  processed_images: number;
+  visual_embeddings: number;
+  captioned: number;
+  remaining: number;
+  pct_captioned: number;
+  missing_captions: number;
+  missing_embeddings: number;
+  maintenance: LibraryMaintenance;
+};
+
 export type DriveTokenResponse = {
   accessToken: string;
   apiKey: string;
+  appId?: string | null;
 };
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
@@ -134,8 +230,22 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
 export const faceThumbnailUrl = (faceId: number | null) =>
   faceId ? `${API_BASE}/faces/${faceId}/thumbnail` : null;
 
-export const driveFilePreviewUrl = (driveFileId: string) =>
-  `${API_BASE}/drive/files/${driveFileId}/preview`;
+export const driveGoogleViewUrl = (driveFileId: string) =>
+  `https://drive.google.com/file/d/${driveFileId}/view`;
+
+/** Image/PDF previews served by Google Drive (not proxied through Railway). */
+export const driveFilePreviewUrl = (driveFileId: string, mimeType?: string) => {
+  if (mimeType?.startsWith("image/")) {
+    return `https://drive.google.com/thumbnail?id=${encodeURIComponent(driveFileId)}&sz=w1200`;
+  }
+  if (mimeType === "application/pdf") {
+    return `https://drive.google.com/file/d/${driveFileId}/preview`;
+  }
+  return driveGoogleViewUrl(driveFileId);
+};
+
+export const driveFileDownloadUrl = (driveFileId: string) =>
+  `${API_BASE}/drive/files/${driveFileId}/download`;
 
 export const apiAssetUrl = (path: string) =>
   path.startsWith("http") ? path : `${API_BASE}${path}`;
@@ -147,6 +257,9 @@ export const apiClient = {
   person: (id: number) => api<Person>(`/persons/${id}`),
   renamePerson: (id: number, name: string) =>
     api<Person>(`/persons/${id}`, { method: "PATCH", body: JSON.stringify({ name }) }),
+  updatePerson: (id: number, body: { name?: string; role?: PersonRole }) =>
+    api<Person>(`/persons/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  deletePerson: (id: number) => api<void>(`/persons/${id}`, { method: "DELETE" }),
   personMedia: (id: number) =>
     api<
       {
@@ -167,8 +280,29 @@ export const apiClient = {
     api<void>(`/clusters/${id}/merge`, { method: "POST", body: JSON.stringify({ person_id: personId }) }),
   syncDriveFiles: () => api<{ ok: boolean; scheduled: boolean }>("/drive/sync", { method: "POST" }),
   driveFiles: (status?: string) => api<DriveFile[]>(`/drive/files${status ? `?status=${status}` : ""}`),
+  driveLibrary: () => api<LibraryResponse>("/drive/library"),
+  pauseFolderIndexing: (folder_path: string) =>
+    api<{ ok: boolean; stopped: number; cancelled: number }>("/drive/library/folders/pause", {
+      method: "POST",
+      body: JSON.stringify({ folder_path }),
+    }),
+  resumeFolderIndexing: (folder_path: string) =>
+    api<{ ok: boolean; resumed: number }>("/drive/library/folders/resume", {
+      method: "POST",
+      body: JSON.stringify({ folder_path }),
+    }),
+  skipCorruptFiles: () =>
+    api<{ ok: boolean; skipped: number }>("/drive/skip-corrupt", { method: "POST" }),
+  captionStats: () => api<CaptionStats>("/index/captions"),
+  backfillCaptions: () => api<{ ok: boolean; scheduled: boolean }>("/backfill/image-captions", { method: "POST" }),
   retryDriveFile: (id: string) => api<DriveFile>(`/drive/files/${id}/retry`, { method: "POST" }),
   removeDriveFile: (id: string) => api<void>(`/drive/files/${id}`, { method: "DELETE" }),
+  youtubeVideos: () => api<DriveFile[]>("/youtube/videos"),
+  addYoutubeVideos: (urls: string[], indexNow = true, downloadLocal = true) =>
+    api<YoutubeRegisterResponse>("/youtube/videos", {
+      method: "POST",
+      body: JSON.stringify({ urls, index_now: indexNow, download_local: downloadLocal }),
+    }),
   indexStatus: () => api<IndexStatus>("/index"),
   triggerIndex: () => api<IndexStatus>("/index", { method: "POST" }),
   triggerReindex: () => api<IndexStatus>("/reindex", { method: "POST" }),

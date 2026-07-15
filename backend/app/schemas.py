@@ -15,6 +15,7 @@ class DriveFileOut(BaseModel):
     modified_time: datetime | None = None
     last_synced_at: datetime | None = None
     error_message: str | None = None
+    source: str = "drive"
 
     model_config = {"from_attributes": True}
 
@@ -84,6 +85,11 @@ class RenamePersonRequest(BaseModel):
     name: str
 
 
+class UpdatePersonRequest(BaseModel):
+    name: str | None = None
+    role: str | None = None  # student | non_student | null to clear
+
+
 class MergeClusterRequest(BaseModel):
     person_id: int
 
@@ -91,6 +97,7 @@ class MergeClusterRequest(BaseModel):
 class PersonOut(BaseModel):
     id: int
     name: str
+    role: str | None = None
     representative_face_id: int | None
     occurrence_count: int
     created_at: datetime
@@ -124,6 +131,8 @@ class SearchResultFile(BaseModel):
     path: str
     mime_type: str
     person_names: list[str] = []
+    score: float | None = None
+    caption: str | None = None
 
 
 class SearchMoment(BaseModel):
@@ -155,8 +164,18 @@ class SettingsOut(BaseModel):
     gemini_file_search_store_display_name: str
     auto_index_enabled: bool
     auto_index_interval_seconds: int
+    follow_shortcut_folders: bool
+    gemini_file_search_search_enabled: bool
+    search_parallel_variants_enabled: bool
+    search_use_captions: bool
+    search_rerank_enabled: bool
 
 
 class SettingsUpdate(BaseModel):
     auto_index_enabled: bool | None = None
     auto_index_interval_seconds: int | None = None
+    follow_shortcut_folders: bool | None = None
+    gemini_file_search_search_enabled: bool | None = None
+    search_parallel_variants_enabled: bool | None = None
+    search_use_captions: bool | None = None
+    search_rerank_enabled: bool | None = None

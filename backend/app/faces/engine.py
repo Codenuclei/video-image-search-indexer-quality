@@ -46,7 +46,8 @@ class FaceEngine:
         self._ensure_loaded()
         assert self._app is not None
 
-        faces = self._app.get(image_bgr)
+        with self._lock:
+            faces = self._app.get(image_bgr)
         results: list[DetectedFace] = []
         for face in faces:
             confidence = float(getattr(face, "det_score", 0.0) or 0.0)

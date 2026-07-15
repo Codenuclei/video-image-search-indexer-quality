@@ -15,6 +15,8 @@ import time
 from functools import lru_cache
 from pathlib import Path
 
+from app.gemini.rate_limit import gemini_embed_slot
+
 logger = logging.getLogger(__name__)
 
 _DIM   = 3072
@@ -33,14 +35,15 @@ def _embed_with_retry(contents, task_type: str) -> list[float]:
     client = _get_client()
     for attempt in range(8):
         try:
-            result = client.models.embed_content(
-                model=_MODEL,
-                contents=contents,
-                config=EmbedContentConfig(
-                    task_type=task_type,
-                    output_dimensionality=_DIM,
-                ),
-            )
+            with gemini_embed_slot():
+                result = client.models.embed_content(
+                    model=_MODEL,
+                    contents=contents,
+                    config=EmbedContentConfig(
+                        task_type=task_type,
+                        output_dimensionality=_DIM,
+                    ),
+                )
             return result.embeddings[0].values
         except Exception as exc:
             msg = str(exc)

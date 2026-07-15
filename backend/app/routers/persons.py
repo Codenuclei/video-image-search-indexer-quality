@@ -6,8 +6,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import DriveFile, Face, Media, Person
 from app.db.session import get_db
-from app.matching.service import rename_person
-from app.schemas import MediaOccurrence, PersonOut, RenamePersonRequest
+from app.matching.service import delete_person, update_person
+from app.schemas import MediaOccurrence, PersonOut, RenamePersonRequest, UpdatePersonRequest
 
 router = APIRouter(prefix="/persons", tags=["persons"])
 
@@ -21,7 +21,6 @@ async def _best_face_id(session: AsyncSession, person: Person) -> int | None:
     """Return the representative face ID, auto-picking the best available if not set."""
     if person.representative_face_id is not None:
         return person.representative_face_id
-    # Pick the highest-confidence face with a saved thumbnail for this person
     face = (
         await session.execute(
             select(Face)
@@ -33,19 +32,30 @@ async def _best_face_id(session: AsyncSession, person: Person) -> int | None:
     return face.id if face else None
 
 
+def _person_out(session: AsyncSession, person: Person, occurrence_count: int, face_id: int | None) -> PersonOut:
+    return PersonOut(
+        id=person.id,
+        name=person.name,
+        role=person.role,
+        representative_face_id=face_id,
+        occurrence_count=occurrence_count,
+        created_at=person.created_at,
+    )
+
+
+async def _serialize_person(session: AsyncSession, person: Person) -> PersonOut:
+    return _person_out(
+        session,
+        person,
+        await _occurrence_count(session, person.id),
+        await _best_face_id(session, person),
+    )
+
+
 @router.get("", response_model=list[PersonOut])
 async def list_persons(session: AsyncSession = Depends(get_db)) -> list[PersonOut]:
     persons = (await session.execute(select(Person).order_by(Person.name))).scalars().all()
-    return [
-        PersonOut(
-            id=p.id,
-            name=p.name,
-            representative_face_id=await _best_face_id(session, p),
-            occurrence_count=await _occurrence_count(session, p.id),
-            created_at=p.created_at,
-        )
-        for p in persons
-    ]
+    return [await _serialize_person(session, p) for p in persons]
 
 
 @router.get("/{person_id}", response_model=PersonOut)
@@ -53,35 +63,57 @@ async def get_person(person_id: int, session: AsyncSession = Depends(get_db)) ->
     person = await session.get(Person, person_id)
     if person is None:
         raise HTTPException(status_code=404, detail="Person not found")
-    return PersonOut(
-        id=person.id,
-        name=person.name,
-        representative_face_id=await _best_face_id(session, person),
-        occurrence_count=await _occurrence_count(session, person.id),
-        created_at=person.created_at,
-    )
+    return await _serialize_person(session, person)
 
 
 @router.patch("/{person_id}", response_model=PersonOut)
-async def update_person_name(
+async def update_person_endpoint(
     person_id: int,
-    body: RenamePersonRequest,
+    body: UpdatePersonRequest,
     session: AsyncSession = Depends(get_db),
 ) -> PersonOut:
-    """Rename a tagged person and refresh Gemini metadata on linked files."""
+    """Rename and/or set student / non-student role on a tagged person."""
+    if body.name is None and "role" not in body.model_fields_set:
+        raise HTTPException(status_code=400, detail="Provide name and/or role to update")
+
     try:
-        person = await rename_person(session, person_id, body.name)
+        person = await update_person(
+            session,
+            person_id,
+            name=body.name,
+            set_role="role" in body.model_fields_set,
+            role=body.role,
+        )
         await session.commit()
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    return PersonOut(
-        id=person.id,
-        name=person.name,
-        representative_face_id=await _best_face_id(session, person),
-        occurrence_count=await _occurrence_count(session, person.id),
-        created_at=person.created_at,
-    )
+    return await _serialize_person(session, person)
+
+
+@router.put("/{person_id}/name", response_model=PersonOut, include_in_schema=False)
+async def update_person_name_legacy(
+    person_id: int,
+    body: RenamePersonRequest,
+    session: AsyncSession = Depends(get_db),
+) -> PersonOut:
+    """Backward-compatible rename endpoint."""
+    try:
+        person = await update_person(session, person_id, name=body.name)
+        await session.commit()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return await _serialize_person(session, person)
+
+
+@router.delete("/{person_id}", status_code=204)
+async def delete_person_endpoint(person_id: int, session: AsyncSession = Depends(get_db)) -> None:
+    """Delete a person name; faces unlink and clusters return to the review queue."""
+    try:
+        await delete_person(session, person_id)
+        await session.commit()
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.get("/{person_id}/media", response_model=list[MediaOccurrence])

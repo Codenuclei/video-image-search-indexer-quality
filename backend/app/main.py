@@ -8,13 +8,20 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
+from app.runtime_settings import get_runtime_settings
+from app.db.app_settings_store import load_runtime_settings_from_db
 from app.db.schema import ensure_schema, recover_stuck_processing_files
+from app.pipelines.decode_recovery import (
+    quarantine_stuck_decode_errors,
+)
 from app.db.session import dispose_engine, get_engine, get_session_factory
 from app.dependencies import get_indexing_worker
 from app.fennec.client import get_fennec_client
-from app.routers import clusters, drive, drive_oauth, faces, fennec, folder_contexts, index, media, persons, qwen_vlm, search, settings, webhooks
+from app.routers import clusters, drive, drive_oauth, faces, fennec, folder_contexts, index, media, persons, qwen_vlm, search, settings, webhooks, youtube
 from app.svs.client import svs_ready  # kept for backwards compat — SVS disabled
+from app.pipelines.common import register_image_plugins
 from app.workers.auto_indexer import auto_index_loop
+from app.workers.maintenance import startup_maintenance
 
 logging.basicConfig(level=logging.INFO)
 
@@ -29,20 +36,42 @@ async def lifespan(app: FastAPI):
         settings_obj.gemini_file_search_store_display_name,
     )
 
+    register_image_plugins()
+
     await ensure_schema(get_engine())
+    await load_runtime_settings_from_db(get_session_factory())
     await recover_stuck_processing_files(get_session_factory())
+    quarantined = await quarantine_stuck_decode_errors(get_session_factory())
+    if quarantined:
+        logger.info("Startup: quarantined %d stuck decode-error file(s)", quarantined)
+
+    from app.drive.indexing_pause import skip_corrupt_files
+
+    async with get_session_factory()() as session:
+        corrupt_skipped = await skip_corrupt_files(session)
+        await session.commit()
+    if corrupt_skipped:
+        logger.info("Startup: skipped %d corrupt/unreadable file(s)", corrupt_skipped)
 
     stop_event = asyncio.Event()
-    auto_task = asyncio.create_task(auto_index_loop(get_indexing_worker(), stop_event))
-    if settings_obj.auto_index_enabled:
-        logger.info("Auto-index enabled (interval=%ss)", settings_obj.auto_index_interval_seconds)
+    worker = get_indexing_worker()
+    auto_task = asyncio.create_task(auto_index_loop(worker, stop_event))
+    maintenance_task = asyncio.create_task(startup_maintenance(worker))
+    runtime = get_runtime_settings()
+    if runtime.auto_index_enabled:
+        logger.info("Auto-index enabled (interval=%ss)", runtime.auto_index_interval_seconds)
 
     yield
 
     stop_event.set()
     auto_task.cancel()
+    maintenance_task.cancel()
     try:
         await auto_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await maintenance_task
     except asyncio.CancelledError:
         pass
     await dispose_engine()
@@ -79,6 +108,7 @@ app.include_router(media.router)
 app.include_router(folder_contexts.router)
 app.include_router(fennec.router)
 app.include_router(qwen_vlm.router)
+app.include_router(youtube.router)
 
 
 @app.get("/health")
@@ -121,9 +151,11 @@ async def health():
         try:
             from app.qdrant.client import collection_info_sync
             from app.qdrant.images import collection_info_sync as image_collection_info_sync
+            from app.qdrant.image_captions import collection_info_sync as caption_collection_info_sync
             video = await asyncio.to_thread(collection_info_sync)
             images = await asyncio.to_thread(image_collection_info_sync)
-            return {"status": "ok", "video": video, "images": images}
+            captions = await asyncio.to_thread(caption_collection_info_sync)
+            return {"status": "ok", "video": video, "images": images, "captions": captions}
         except Exception as exc:
             return {"status": "error", "error": str(exc)[:120]}
 
@@ -163,6 +195,15 @@ async def health():
                 "qdrant_images_collection": settings_obj.qdrant_images_collection,
                 "gemini_video_min_score": settings_obj.gemini_video_min_score,
                 "gemini_image_min_score": settings_obj.gemini_image_min_score,
+                "video_index_max_parallel": settings_obj.video_index_max_parallel,
+                "image_index_max_parallel": settings_obj.image_index_max_parallel,
+                "image_caption_batch_size": settings_obj.image_caption_batch_size,
+                "image_caption_batch_parallel": settings_obj.image_caption_batch_parallel,
+                "image_embed_backfill_parallel": settings_obj.image_embed_backfill_parallel,
+                "maintenance_batches_per_tick": settings_obj.maintenance_batches_per_tick,
+                "gemini_embed_max_concurrent": settings_obj.gemini_embed_max_concurrent,
+                "gemini_vlm_max_concurrent": settings_obj.gemini_vlm_max_concurrent,
+                "gemini_upload_max_concurrent": settings_obj.gemini_upload_max_concurrent,
             },
             "database": db_result,
             "google_drive": drive_result,

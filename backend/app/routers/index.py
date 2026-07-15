@@ -13,6 +13,13 @@ from app.dependencies import get_indexing_worker
 from app.runtime_settings import get_runtime_settings
 from app.schemas import IndexRunResult, IndexStatus
 from app.workers.indexer import IndexingWorker
+from app.workers.maintenance import (
+    count_missing_captions,
+    count_missing_embeddings,
+    maintenance_status,
+    run_caption_backfill,
+    run_embedding_backfill,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -24,50 +31,7 @@ async def _run_cycle(worker: IndexingWorker) -> None:
 
 
 async def _backfill_image_embeddings(worker: IndexingWorker) -> None:
-    """Embed already-processed images into Qdrant without re-detecting faces."""
-    from app.pipelines.common import decode_image_bgr, download_to_memory
-    from app.qdrant.images import existing_image_ids_sync
-    from app.search.images import index_image_embedding
-
-    import cv2
-
-    session_factory = get_session_factory()
-    async with session_factory() as session:
-        rows = (
-            await session.execute(
-                select(DriveFile.id).where(
-                    DriveFile.status == DriveFileStatus.PROCESSED,
-                    DriveFile.mime_type.like("image/%"),
-                )
-            )
-        ).all()
-    all_ids = [r[0] for r in rows]
-    if not all_ids:
-        logger.info("Backfill: no processed images found")
-        return
-
-    already = await asyncio.to_thread(existing_image_ids_sync, all_ids)
-    todo = [fid for fid in all_ids if fid not in already]
-    logger.info("Backfill: %d image(s) total, %d already embedded, %d to do",
-                len(all_ids), len(already), len(todo))
-
-    done = 0
-    for fid in todo:
-        try:
-            raw = await download_to_memory(worker._client, fid)  # noqa: SLF001
-            image_bgr = decode_image_bgr(raw)
-            if image_bgr is None:
-                continue
-            ok, buf = cv2.imencode(".jpg", image_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
-            if not ok:
-                continue
-            await index_image_embedding(buf.tobytes(), fid)
-            done += 1
-            if done % 25 == 0:
-                logger.info("Backfill progress: %d/%d", done, len(todo))
-        except Exception:  # noqa: BLE001
-            logger.exception("Backfill failed for image %s", fid)
-    logger.info("Backfill complete: embedded %d image(s)", done)
+    await run_embedding_backfill(worker)
 
 
 @router.post("/index", response_model=IndexStatus)
@@ -135,6 +99,221 @@ async def backfill_image_embeddings(
     """Backfill Qdrant image embeddings for already-processed images (non-destructive)."""
     background_tasks.add_task(_backfill_image_embeddings, worker)
     return {"ok": True, "scheduled": True}
+
+
+async def _backfill_image_captions(worker: IndexingWorker) -> None:
+    await run_caption_backfill(worker)
+
+
+@router.post("/backfill/image-captions")
+async def backfill_image_captions(
+    background_tasks: BackgroundTasks,
+    worker: IndexingWorker = Depends(get_indexing_worker),
+) -> dict[str, bool | str]:
+    """Batch-caption processed images (Gemini Flash, N per call) for fast search-time precision."""
+    background_tasks.add_task(_backfill_image_captions, worker)
+    return {"ok": True, "scheduled": True}
+
+
+async def _backfill_youtube_transcripts() -> None:
+    """Fetch YouTube captions for Drive videos with [videoId] in the filename."""
+    from app.db.models import Media, VideoSegment
+    from app.video.transcript_ingest import ingest_youtube_transcript_for_drive_file
+    from app.video.youtube_transcript import youtube_id_from_filename
+
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        rows = (
+            await session.execute(
+                select(DriveFile).where(DriveFile.mime_type.like("video/%"))
+            )
+        ).scalars().all()
+
+    candidates = [df for df in rows if youtube_id_from_filename(df.name)]
+    if not candidates:
+        logger.info("YouTube transcript backfill: no video files with [videoId] in name")
+        return
+
+    ingested = 0
+    skipped = 0
+    for drive_file in candidates:
+        async with session_factory() as session:
+            df = await session.get(DriveFile, drive_file.id)
+            if df is None:
+                continue
+            n = await ingest_youtube_transcript_for_drive_file(session, df)
+            await session.commit()
+            if n:
+                ingested += n
+            else:
+                skipped += 1
+
+    async with session_factory() as session:
+        video_count = (
+            await session.execute(
+                select(func.count(func.distinct(Media.drive_file_id))).select_from(VideoSegment).join(
+                    Media, VideoSegment.media_id == Media.id
+                ).where(VideoSegment.text != "")
+            )
+        ).scalar_one()
+
+    logger.info(
+        "YouTube transcript backfill done: %d video(s), %d cue(s) ingested, %d skipped, %d with text",
+        len(candidates),
+        ingested,
+        skipped,
+        video_count,
+    )
+
+
+@router.post("/backfill/youtube-transcripts")
+async def backfill_youtube_transcripts(
+    background_tasks: BackgroundTasks,
+) -> dict[str, bool | str]:
+    """Fetch public YouTube captions for indexed Drive videos (non-destructive addon)."""
+    background_tasks.add_task(_backfill_youtube_transcripts)
+    return {"ok": True, "scheduled": True}
+
+
+@router.get("/index/caption-audit")
+async def caption_audit(
+    session: AsyncSession = Depends(get_db),
+    filter: str = "all",
+    limit: int = 200,
+    offset: int = 0,
+) -> dict[str, object]:
+    """List processed images with stored caption text for debugging gaps."""
+    from app.qdrant.image_captions import (
+        caption_quality_stats_sync,
+        caption_word_count,
+        existing_caption_ids_sync,
+        get_captions_by_ids_sync,
+        is_valid_caption,
+    )
+
+    limit = max(1, min(limit, 1000))
+    offset = max(0, offset)
+    mode = (filter or "all").strip().lower()
+    if mode not in ("all", "missing", "invalid", "valid"):
+        raise HTTPException(status_code=400, detail="filter must be all, missing, invalid, or valid")
+
+    rows = list(
+        (
+            await session.execute(
+                select(DriveFile)
+                .where(
+                    DriveFile.status == DriveFileStatus.PROCESSED,
+                    DriveFile.mime_type.like("image/%"),
+                )
+                .order_by(DriveFile.path)
+                .offset(offset)
+                .limit(limit)
+            )
+        ).scalars().all()
+    )
+    ids = [df.id for df in rows]
+    existing = await asyncio.to_thread(existing_caption_ids_sync, ids)
+    captions = await asyncio.to_thread(get_captions_by_ids_sync, ids)
+
+    items: list[dict[str, object]] = []
+    for df in rows:
+        cap = (captions.get(df.id) or "").strip()
+        has_point = df.id in existing
+        valid = is_valid_caption(cap)
+        if not has_point:
+            status = "missing"
+        elif valid:
+            status = "valid"
+        else:
+            status = "invalid"
+        if mode != "all" and status != mode:
+            continue
+        items.append(
+            {
+                "drive_file_id": df.id,
+                "name": df.name,
+                "path": df.path,
+                "caption": cap or None,
+                "word_count": caption_word_count(cap),
+                "valid": valid,
+                "has_qdrant_point": has_point,
+                "status": status,
+            }
+        )
+
+    all_image_rows = (
+        await session.execute(
+            select(DriveFile.id).where(
+                DriveFile.status == DriveFileStatus.PROCESSED,
+                DriveFile.mime_type.like("image/%"),
+            )
+        )
+    ).all()
+    all_ids = [r[0] for r in all_image_rows]
+    quality = await asyncio.to_thread(caption_quality_stats_sync, all_ids)
+
+    return {
+        "filter": mode,
+        "offset": offset,
+        "limit": limit,
+        "returned": len(items),
+        "summary": quality,
+        "items": items,
+    }
+
+
+@router.get("/index/captions")
+async def caption_stats(session: AsyncSession = Depends(get_db)) -> dict[str, object]:
+    """How many images are captioned vs embedded vs processed."""
+    from app.qdrant.image_captions import collection_info_sync
+    from app.qdrant.images import collection_info_sync as image_collection_info_sync
+
+    processed_images = (
+        await session.execute(
+            select(func.count()).select_from(DriveFile).where(
+                DriveFile.status == DriveFileStatus.PROCESSED,
+                DriveFile.mime_type.like("image/%"),
+            )
+        )
+    ).scalar_one()
+
+    captions_info = await asyncio.to_thread(collection_info_sync)
+    images_info = await asyncio.to_thread(image_collection_info_sync)
+    qdrant_points = int(captions_info.get("points") or 0)
+    embedded = int(images_info.get("points") or 0)
+
+    from app.qdrant.image_captions import caption_quality_stats_sync
+
+    image_rows = (
+        await session.execute(
+            select(DriveFile.id).where(
+                DriveFile.status == DriveFileStatus.PROCESSED,
+                DriveFile.mime_type.like("image/%"),
+            )
+        )
+    ).all()
+    image_ids = [r[0] for r in image_rows]
+    quality = await asyncio.to_thread(caption_quality_stats_sync, image_ids)
+    captioned = int(quality["valid"])
+    invalid = int(quality["invalid"])
+
+    return {
+        "processed_images": processed_images,
+        "visual_embeddings": embedded,
+        "captioned": captioned,
+        "valid_captions": captioned,
+        "invalid_captions": invalid,
+        "qdrant_caption_points": qdrant_points,
+        "remaining": max(0, processed_images - captioned),
+        "pct_captioned": round(100.0 * captioned / processed_images, 1) if processed_images else 0.0,
+        "missing_captions": await count_missing_captions(),
+        "missing_embeddings": await count_missing_embeddings(),
+        "maintenance": maintenance_status(),
+        "collections": {
+            "images": images_info.get("collection"),
+            "captions": captions_info.get("collection"),
+        },
+    }
 
 
 @router.get("/index", response_model=IndexStatus)
