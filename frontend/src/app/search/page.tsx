@@ -1,19 +1,22 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { Download, ExternalLink, Play, X } from "lucide-react";
 import {
   apiAssetUrl,
   apiClient,
   API_BASE,
   driveFileDownloadUrl,
   driveFilePreviewUrl,
+  driveGoogleViewUrl,
+  driveVideoStreamUrl,
   type FolderContext,
   type Person,
   type SearchMoment,
   type SearchResponse,
   type SearchResultFile,
 } from "@/lib/api";
-import { Button, Card, FilePreview, Input, ServiceErrorCard } from "@/components/ui";
+import { Button, Card, FilePreview, IconButton, IconLink, Input, ServiceErrorCard } from "@/components/ui";
 
 function formatTimestamp(sec: number): string {
   const m = Math.floor(sec / 60);
@@ -51,6 +54,7 @@ export default function SearchPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [previewFile, setPreviewFile] = useState<SearchResultFile | null>(null);
+  const [previewMoment, setPreviewMoment] = useState<SearchMoment | null>(null);
 
   useEffect(() => {
     apiClient.persons().then(setPersons).catch(() => setPersons([]));
@@ -87,6 +91,7 @@ export default function SearchPage() {
     setLoading(true);
     setError(null);
     setPreviewFile(null);
+    setPreviewMoment(null);
     setLastSearchMode({ captions: useCaptions, rerank });
     try {
       const params = new URLSearchParams({ q: q.trim() });
@@ -249,6 +254,7 @@ export default function SearchPage() {
                         <MomentCard
                           key={`t-${moment.drive_file_id}-${moment.timestamp_sec}`}
                           moment={moment}
+                          onPreview={() => setPreviewMoment(moment)}
                         />
                       ))}
                     </ul>
@@ -264,6 +270,7 @@ export default function SearchPage() {
                         <MomentCard
                           key={`v-${moment.drive_file_id}-${moment.timestamp_sec}`}
                           moment={moment}
+                          onPreview={() => setPreviewMoment(moment)}
                         />
                       ))}
                     </ul>
@@ -339,21 +346,20 @@ export default function SearchPage() {
                         </div>
                       )}
                       <div className="flex flex-wrap items-center gap-2 pt-0.5">
-                        <a
+                        <IconLink
                           href={downloadUrl}
+                          icon={Download}
+                          label="Download"
+                          variant="primary"
                           download={file.name}
-                          className="inline-flex items-center rounded-md bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground hover:brightness-110"
-                        >
-                          Download
-                        </a>
-                        <a
+                        />
+                        <IconLink
                           href={driveUrl}
+                          icon={ExternalLink}
+                          label="Open in Drive"
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="text-xs text-muted-foreground hover:text-foreground hover:underline"
-                        >
-                          Open in Drive
-                        </a>
+                        />
                       </div>
                     </div>
                   </li>
@@ -382,13 +388,12 @@ export default function SearchPage() {
             className="relative inline-flex max-h-[90vh] max-w-[min(92vw,56rem)] flex-col overflow-hidden rounded-lg bg-card shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           >
-            <button
-              type="button"
+            <IconButton
+              icon={X}
+              label="Close"
               onClick={() => setPreviewFile(null)}
-              className="absolute right-3 top-3 z-10 rounded-md bg-black/60 px-2 py-1 text-sm text-white hover:bg-black/80"
-            >
-              Close
-            </button>
+              className="absolute right-3 top-3 z-10 bg-black/60 text-white hover:bg-black/80 hover:text-white"
+            />
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
               src={driveFilePreviewUrl(previewFile.drive_file_id, previewFile.mime_type)}
@@ -400,18 +405,28 @@ export default function SearchPage() {
               {previewFile.caption && (
                 <p className="mt-1 text-xs text-muted-foreground">{previewFile.caption}</p>
               )}
-              <div className="mt-3">
-                <a
+              <div className="mt-3 flex flex-wrap gap-2">
+                <IconLink
                   href={driveFileDownloadUrl(previewFile.drive_file_id)}
+                  icon={Download}
+                  label="Download"
+                  variant="primary"
                   download={previewFile.name}
-                  className="inline-flex items-center rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:brightness-110"
-                >
-                  Download
-                </a>
+                />
+                <IconLink
+                  href={driveGoogleViewUrl(previewFile.drive_file_id)}
+                  icon={ExternalLink}
+                  label="Open in Drive"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                />
               </div>
             </div>
           </div>
         </div>
+      )}
+      {previewMoment && (
+        <MomentPreviewModal moment={previewMoment} onClose={() => setPreviewMoment(null)} />
       )}
     </div>
   );
@@ -434,25 +449,32 @@ function matchLabel(matchType: string, score: number | null): string {
   return `${matchType}${pct}`;
 }
 
-function MomentCard({ moment }: { moment: SearchMoment }) {
-  const seekUrl = moment.video_url
-    ? moment.video_url.startsWith("http")
-      ? moment.video_url
-      : apiAssetUrl(moment.video_url)
-    : null;
+function MomentCard({ moment, onPreview }: { moment: SearchMoment; onPreview: () => void }) {
   const isFace = moment.match_type === "face_detected";
   const isTranscript = isTranscriptMatch(moment.match_type);
   const timeLabel = formatTimestampRange(moment.timestamp_sec, moment.end_timestamp_sec);
+  const driveUrl = driveGoogleViewUrl(moment.drive_file_id);
+  const downloadUrl = driveFileDownloadUrl(moment.drive_file_id);
 
   return (
     <li className="overflow-hidden rounded-md border border-border bg-muted/30">
-      <div className="relative aspect-video w-full overflow-hidden bg-black/40">
+      <button
+        type="button"
+        onClick={onPreview}
+        className="group relative aspect-video w-full overflow-hidden bg-black/40"
+        aria-label={`Preview ${moment.name} at ${timeLabel}`}
+      >
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
           src={apiAssetUrl(moment.preview_url)}
           alt={moment.name}
-          className="h-full w-full object-cover"
+          className="h-full w-full object-cover transition-transform group-hover:scale-[1.02]"
         />
+        <span className="absolute inset-0 flex items-center justify-center bg-black/0 transition-colors group-hover:bg-black/25">
+          <span className="rounded-full bg-black/70 p-2.5 text-white opacity-0 transition-opacity group-hover:opacity-100">
+            <Play size={22} fill="currentColor" aria-hidden />
+          </span>
+        </span>
         <span className="absolute bottom-2 left-2 rounded bg-black/70 px-2 py-0.5 text-xs text-white">
           {timeLabel}
         </span>
@@ -466,7 +488,7 @@ function MomentCard({ moment }: { moment: SearchMoment }) {
             face match
           </span>
         )}
-      </div>
+      </button>
       <div className="px-3 py-3 text-sm">
         <p className="font-medium">{moment.name}</p>
         <p className="mt-1 truncate text-xs text-muted-foreground" title={moment.path}>
@@ -489,16 +511,11 @@ function MomentCard({ moment }: { moment: SearchMoment }) {
           <span className={`rounded-full px-2 py-0.5 text-xs ${matchBadgeStyle(moment.match_type)}`}>
             {matchLabel(moment.match_type, moment.score ?? null)}
           </span>
-          {seekUrl && (
-            <a
-              href={seekUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-xs text-primary hover:underline"
-            >
-              {isTranscript ? `Play transcript at ${timeLabel}` : `Play at ${timeLabel}`}
-            </a>
-          )}
+        </div>
+        <div className="mt-2.5 flex flex-wrap items-center gap-2">
+          <IconButton icon={Play} label={`Play at ${timeLabel}`} variant="secondary" onClick={onPreview} />
+          <IconLink href={downloadUrl} icon={Download} label="Download" variant="primary" download={moment.name} />
+          <IconLink href={driveUrl} icon={ExternalLink} label="Open in Drive" target="_blank" rel="noopener noreferrer" />
         </div>
         {(moment.person_names ?? []).length > 0 && (
           <div className="mt-2 flex min-h-6 flex-wrap items-center gap-1.5">
@@ -517,5 +534,93 @@ function MomentCard({ moment }: { moment: SearchMoment }) {
         )}
       </div>
     </li>
+  );
+}
+
+function MomentPreviewModal({ moment, onClose }: { moment: SearchMoment; onClose: () => void }) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const isVideo = moment.mime_type.startsWith("video/");
+  const timeLabel = formatTimestampRange(moment.timestamp_sec, moment.end_timestamp_sec);
+  const streamUrl = driveVideoStreamUrl(moment.drive_file_id);
+  const driveUrl = driveGoogleViewUrl(moment.drive_file_id);
+  const downloadUrl = driveFileDownloadUrl(moment.drive_file_id);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !isVideo) return;
+
+    const seekToMoment = () => {
+      try {
+        video.currentTime = moment.timestamp_sec;
+      } catch {
+        /* ignore seek errors before metadata loads */
+      }
+    };
+
+    video.addEventListener("loadedmetadata", seekToMoment);
+    if (video.readyState >= 1) seekToMoment();
+    return () => video.removeEventListener("loadedmetadata", seekToMoment);
+  }, [moment.drive_file_id, moment.timestamp_sec, isVideo]);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4"
+      onClick={onClose}
+    >
+      <div
+        className="relative flex max-h-[92vh] w-full max-w-3xl flex-col overflow-hidden rounded-lg bg-card shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <IconButton
+          icon={X}
+          label="Close"
+          onClick={onClose}
+          className="absolute right-3 top-3 z-10 bg-black/60 text-white hover:bg-black/80 hover:text-white"
+        />
+        {isVideo ? (
+          <video
+            ref={videoRef}
+            src={streamUrl}
+            controls
+            playsInline
+            className="max-h-[60vh] w-full bg-black object-contain"
+          />
+        ) : (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={apiAssetUrl(moment.preview_url)}
+            alt={moment.name}
+            className="max-h-[60vh] w-full bg-black object-contain"
+          />
+        )}
+        <div className="border-t border-border px-4 py-3">
+          <p className="break-all text-sm font-medium text-foreground">{moment.name}</p>
+          <p className="mt-1 truncate text-xs text-muted-foreground" title={moment.path}>
+            {moment.path}
+          </p>
+          <p className="mt-1 text-xs text-muted-foreground">Moment at {timeLabel}</p>
+          {moment.snippet && (
+            <p className="mt-2 line-clamp-3 text-xs text-muted-foreground" title={moment.snippet}>
+              {moment.snippet}
+            </p>
+          )}
+          <div className="mt-3 flex flex-wrap gap-2">
+            {isVideo && (
+              <IconButton
+                icon={Play}
+                label={`Jump to ${timeLabel}`}
+                variant="secondary"
+                onClick={() => {
+                  const video = videoRef.current;
+                  if (video) video.currentTime = moment.timestamp_sec;
+                }}
+              />
+            )}
+            <IconLink href={downloadUrl} icon={Download} label="Download" variant="primary" download={moment.name} />
+            <IconLink href={driveUrl} icon={ExternalLink} label="Open in Drive" target="_blank" rel="noopener noreferrer" />
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }

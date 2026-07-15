@@ -1,9 +1,83 @@
 "use client";
 
 import { useState } from "react";
+import type { LucideIcon } from "lucide-react";
+import { ExternalLink } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { driveFilePreviewUrl, isServiceUnavailableMessage } from "@/lib/api";
+import { driveFilePreviewUrl, driveGoogleViewUrl, isServiceUnavailableMessage } from "@/lib/api";
 import { BackendDisconnectedOverlay } from "@/components/backend-disconnected-overlay";
+
+export function IconLink({
+  href,
+  icon: Icon,
+  label,
+  variant = "ghost",
+  className,
+  iconSize = 14,
+  ...props
+}: {
+  href: string;
+  icon: LucideIcon;
+  label: string;
+  variant?: "primary" | "secondary" | "ghost";
+  className?: string;
+  iconSize?: number;
+} & Omit<React.AnchorHTMLAttributes<HTMLAnchorElement>, "className">) {
+  const variants = {
+    primary: "bg-primary text-primary-foreground hover:brightness-110",
+    secondary: "border border-border bg-secondary text-secondary-foreground hover:bg-accent",
+    ghost: "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
+  };
+  return (
+    <a
+      href={href}
+      className={cn(
+        "inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
+        variants[variant],
+        className
+      )}
+      {...props}
+    >
+      <Icon size={iconSize} className="shrink-0" aria-hidden />
+      <span>{label}</span>
+    </a>
+  );
+}
+
+export function IconButton({
+  icon: Icon,
+  label,
+  variant = "ghost",
+  className,
+  iconSize = 14,
+  ...props
+}: {
+  icon: LucideIcon;
+  label: string;
+  variant?: "primary" | "secondary" | "ghost";
+  className?: string;
+  iconSize?: number;
+} & React.ButtonHTMLAttributes<HTMLButtonElement>) {
+  const variants = {
+    primary: "bg-primary text-primary-foreground hover:brightness-110",
+    secondary: "border border-border bg-secondary text-secondary-foreground hover:bg-accent",
+    ghost: "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
+  };
+  return (
+    <button
+      type="button"
+      className={cn(
+        "inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors disabled:pointer-events-none disabled:opacity-50",
+        variants[variant],
+        className
+      )}
+      {...props}
+    >
+      <Icon size={iconSize} className="shrink-0" aria-hidden />
+      <span>{label}</span>
+    </button>
+  );
+}
 
 export function Card({ className, children }: { className?: string; children: React.ReactNode }) {
   return (
@@ -203,9 +277,13 @@ export function FilePreview({
         {failed ? (
           <div className="flex h-full w-full flex-col items-center justify-center gap-2 p-4 text-center text-xs text-muted-foreground">
             <span>Preview unavailable</span>
-            <a href={driveViewUrl} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
-              Open in Drive
-            </a>
+            <IconLink
+              href={driveViewUrl}
+              icon={ExternalLink}
+              label="Open in Drive"
+              target="_blank"
+              rel="noopener noreferrer"
+            />
           </div>
         ) : (
           // eslint-disable-next-line @next/next/no-img-element
@@ -241,14 +319,13 @@ export function FilePreview({
   return (
     <div className={cn("flex h-full w-full flex-col items-center justify-center gap-2 bg-muted/50 p-4 text-center", className)}>
       <span className="text-xs text-muted-foreground">{mimeType || "file"}</span>
-      <a
+      <IconLink
         href={driveViewUrl}
+        icon={ExternalLink}
+        label="Open in Drive"
         target="_blank"
         rel="noopener noreferrer"
-        className="text-xs text-primary hover:underline"
-      >
-        Open in Drive
-      </a>
+      />
     </div>
   );
 }
