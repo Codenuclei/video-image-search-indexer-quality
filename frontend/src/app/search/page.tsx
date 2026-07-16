@@ -396,30 +396,32 @@ export default function SearchPage() {
           onClick={() => setPreviewFile(null)}
         >
           <div
-            className="relative inline-flex max-h-[90vh] max-w-[min(92vw,56rem)] flex-col overflow-hidden rounded-lg bg-card shadow-2xl"
+            className="relative flex w-full max-w-[min(92vw,40rem)] max-h-[90vh] flex-col overflow-hidden rounded-lg bg-card shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           >
-            <IconButton
-              icon={X}
-              label="Close"
-              onClick={() => setPreviewFile(null)}
-              className="absolute right-3 top-3 z-10 bg-black/60 text-white hover:bg-black/80 hover:text-white"
-            />
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src={driveFilePreviewUrl(previewFile.drive_file_id, previewFile.mime_type)}
-              alt={previewFile.name}
-              className="block max-h-[78vh] w-auto max-w-full object-contain"
-            />
-            <div className="border-t border-border px-4 py-3">
+            <div className="relative flex shrink-0 items-center justify-center bg-muted/20">
+              <IconButton
+                icon={X}
+                label="Close"
+                onClick={() => setPreviewFile(null)}
+                className="absolute right-3 top-3 z-10 bg-black/60 text-white hover:bg-black/80 hover:text-white"
+              />
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={driveFilePreviewUrl(previewFile.drive_file_id, previewFile.mime_type)}
+                alt={previewFile.name}
+                className="block max-h-[min(52vh,480px)] w-full object-contain"
+              />
+            </div>
+            <div className="min-h-0 shrink-0 overflow-y-auto border-t border-border px-4 py-3">
               <p className="break-all text-sm font-medium text-foreground">{previewFile.name}</p>
               {previewFile.caption && (
-                <p className="mt-1 text-xs text-muted-foreground">{previewFile.caption}</p>
+                <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{previewFile.caption}</p>
               )}
               {(previewFile.person_names ?? []).length > 0 && (
                 <PersonTags names={previewFile.person_names ?? []} className="mt-2" />
               )}
-              <div className="mt-3 flex flex-wrap gap-2">
+              <div className="mt-3 flex flex-wrap gap-2 pb-1">
                 <IconLink
                   href={driveFileDownloadUrl(previewFile.drive_file_id)}
                   icon={Download}
@@ -561,7 +563,7 @@ function MomentPreviewModal({ moment, onClose }: { moment: SearchMoment; onClose
       onClick={onClose}
     >
       <div
-        className="relative flex max-h-[92vh] w-full max-w-3xl flex-col overflow-hidden rounded-lg bg-card shadow-2xl"
+        className="relative flex w-full max-w-[min(92vw,40rem)] max-h-[90vh] flex-col overflow-hidden rounded-lg bg-card shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         <IconButton
@@ -571,14 +573,14 @@ function MomentPreviewModal({ moment, onClose }: { moment: SearchMoment; onClose
           className="absolute right-3 top-3 z-10 bg-black/60 text-white hover:bg-black/80 hover:text-white"
         />
         {isVideo ? (
-          <div className="bg-black">
+          <div className="shrink-0 bg-black">
             <video
               ref={videoRef}
               src={streamUrl}
               controls
               playsInline
               preload="metadata"
-              className="max-h-[60vh] w-full object-contain"
+              className="max-h-[min(52vh,480px)] w-full object-contain"
               onError={() => setVideoError("Video preview unavailable — try Open in Drive.")}
             />
             {videoError && (
@@ -586,14 +588,16 @@ function MomentPreviewModal({ moment, onClose }: { moment: SearchMoment; onClose
             )}
           </div>
         ) : (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            src={apiAssetUrl(moment.preview_url)}
-            alt={moment.name}
-            className="max-h-[60vh] w-full bg-black object-contain"
-          />
+          <div className="flex shrink-0 items-center justify-center bg-muted/20">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={apiAssetUrl(moment.preview_url)}
+              alt={moment.name}
+              className="max-h-[min(52vh,480px)] w-full object-contain"
+            />
+          </div>
         )}
-        <div className="border-t border-border px-4 py-3">
+        <div className="min-h-0 shrink-0 overflow-y-auto border-t border-border px-4 py-3">
           <p className="break-all text-sm font-medium text-foreground">{moment.name}</p>
           <p className="mt-1 truncate text-xs text-muted-foreground" title={moment.path}>
             {moment.path}
