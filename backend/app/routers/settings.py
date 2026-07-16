@@ -20,6 +20,8 @@ def _settings_out() -> SettingsOut:
         gemini_file_search_store_display_name=settings.gemini_file_search_store_display_name,
         auto_index_enabled=runtime.auto_index_enabled,
         auto_index_interval_seconds=runtime.auto_index_interval_seconds,
+        reindex_errored_files=runtime.reindex_errored_files,
+        reindex_skipped_files=runtime.reindex_skipped_files,
         follow_shortcut_folders=runtime.follow_shortcut_folders,
         gemini_file_search_search_enabled=runtime.gemini_file_search_search_enabled,
         search_parallel_variants_enabled=runtime.search_parallel_variants_enabled,
@@ -41,6 +43,8 @@ async def write_settings(
     runtime = update_runtime_settings(
         auto_index_enabled=payload.auto_index_enabled,
         auto_index_interval_seconds=payload.auto_index_interval_seconds,
+        reindex_errored_files=payload.reindex_errored_files,
+        reindex_skipped_files=payload.reindex_skipped_files,
         follow_shortcut_folders=payload.follow_shortcut_folders,
         gemini_file_search_search_enabled=payload.gemini_file_search_search_enabled,
         search_parallel_variants_enabled=payload.search_parallel_variants_enabled,

@@ -62,6 +62,8 @@ class Settings(BaseSettings):
 
     auto_index_enabled: bool = False
     auto_index_interval_seconds: int = 30
+    reindex_errored_files: bool = False
+    reindex_skipped_files: bool = False
 
     # Follow Google Drive folder shortcuts when listing/syncing the connected tree.
     follow_shortcut_folders: bool = True

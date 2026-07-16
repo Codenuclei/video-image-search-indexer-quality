@@ -35,6 +35,8 @@ from app.drive.indexing_pause import (
 )
 from app.drive.indexing_pause import file_under_folder, normalize_folder_path
 from app.db.deadlock import is_deadlock_error, retry_on_deadlock
+from app.runtime_settings import get_runtime_settings
+from app.workers.requeue_failed import requeue_failed_files
 
 logger = logging.getLogger(__name__)
 
@@ -607,6 +609,13 @@ class IndexingWorker:
             raise RuntimeError("An indexing cycle is already running")
         self._running = True
         try:
+            runtime = get_runtime_settings()
+            if runtime.reindex_errored_files or runtime.reindex_skipped_files:
+                await requeue_failed_files(
+                    self._session_factory,
+                    reindex_errored=runtime.reindex_errored_files,
+                    reindex_skipped=runtime.reindex_skipped_files,
+                )
             seen = await self.sync_file_list()
             summary = await self.process_pending(limit=limit)
             summary["discovered"] = seen

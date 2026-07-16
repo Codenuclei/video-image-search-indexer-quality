@@ -13,6 +13,8 @@ def _defaults_from_env() -> RuntimeSettings:
     return RuntimeSettings(
         auto_index_enabled=s.auto_index_enabled,
         auto_index_interval_seconds=max(30, s.auto_index_interval_seconds),
+        reindex_errored_files=s.reindex_errored_files,
+        reindex_skipped_files=s.reindex_skipped_files,
         follow_shortcut_folders=s.follow_shortcut_folders,
         gemini_file_search_search_enabled=s.gemini_file_search_search_enabled,
         search_parallel_variants_enabled=s.search_parallel_variants_enabled,
@@ -25,6 +27,8 @@ def _row_to_runtime(row: AppSettings) -> RuntimeSettings:
     return RuntimeSettings(
         auto_index_enabled=row.auto_index_enabled,
         auto_index_interval_seconds=max(30, row.auto_index_interval_seconds),
+        reindex_errored_files=getattr(row, "reindex_errored_files", False),
+        reindex_skipped_files=getattr(row, "reindex_skipped_files", False),
         follow_shortcut_folders=getattr(row, "follow_shortcut_folders", True),
         gemini_file_search_search_enabled=row.gemini_file_search_search_enabled,
         search_parallel_variants_enabled=row.search_parallel_variants_enabled,
@@ -36,6 +40,8 @@ def _row_to_runtime(row: AppSettings) -> RuntimeSettings:
 def _apply_runtime_to_row(row: AppSettings, runtime: RuntimeSettings) -> None:
     row.auto_index_enabled = runtime.auto_index_enabled
     row.auto_index_interval_seconds = max(30, runtime.auto_index_interval_seconds)
+    row.reindex_errored_files = runtime.reindex_errored_files
+    row.reindex_skipped_files = runtime.reindex_skipped_files
     row.follow_shortcut_folders = runtime.follow_shortcut_folders
     row.gemini_file_search_search_enabled = runtime.gemini_file_search_search_enabled
     row.search_parallel_variants_enabled = runtime.search_parallel_variants_enabled
