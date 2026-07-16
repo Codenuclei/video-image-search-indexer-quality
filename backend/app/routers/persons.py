@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import DriveFile, Face, Media, Person
 from app.db.session import get_db
-from app.matching.service import delete_person, update_person
+from app.matching.service import delete_person, refresh_gemini_for_person_background, update_person
 from app.schemas import MediaOccurrence, PersonOut, RenamePersonRequest, UpdatePersonRequest
 
 router = APIRouter(prefix="/persons", tags=["persons"])
@@ -92,6 +92,7 @@ async def get_person(person_id: int, session: AsyncSession = Depends(get_db)) ->
 async def update_person_endpoint(
     person_id: int,
     body: UpdatePersonRequest,
+    background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_db),
 ) -> PersonOut:
     """Rename and/or set student / non-student role on a tagged person."""
@@ -110,6 +111,9 @@ async def update_person_endpoint(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    if body.name is not None:
+        background_tasks.add_task(refresh_gemini_for_person_background, person_id)
+
     return await _serialize_person(session, person)
 
 
@@ -117,6 +121,7 @@ async def update_person_endpoint(
 async def update_person_name_legacy(
     person_id: int,
     body: RenamePersonRequest,
+    background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_db),
 ) -> PersonOut:
     """Backward-compatible rename endpoint."""
@@ -125,6 +130,7 @@ async def update_person_name_legacy(
         await session.commit()
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    background_tasks.add_task(refresh_gemini_for_person_background, person_id)
     return await _serialize_person(session, person)
 
 
