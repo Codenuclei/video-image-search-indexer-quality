@@ -74,6 +74,20 @@ async def _queue_gemini_refresh_for_person(session: AsyncSession, person_id: int
     )
 
 
+async def refresh_gemini_for_person_background(person_id: int) -> None:
+    """Re-queue linked Drive files after rename without blocking the HTTP response."""
+    from app.db.session import get_session_factory
+
+    factory = get_session_factory()
+    async with factory() as session:
+        try:
+            await _queue_gemini_refresh_for_person(session, person_id)
+            await session.commit()
+            logger.info("Background gemini refresh queued for person %s", person_id)
+        except Exception:  # noqa: BLE001
+            logger.exception("Background gemini refresh failed for person %s", person_id)
+
+
 VALID_PERSON_ROLES = frozenset({"student", "non_student"})
 
 
@@ -118,7 +132,6 @@ async def update_person(
             changed = True
 
     if changed:
-        await _queue_gemini_refresh_for_person(session, person_id)
         await session.flush()
     return person
 
@@ -317,7 +330,6 @@ async def delete_person(session: AsyncSession, person_id: int) -> None:
     if person is None:
         raise ValueError(f"Person {person_id} not found")
 
-    await _queue_gemini_refresh_for_person(session, person_id)
     await session.execute(
         update(FaceCluster)
         .where(FaceCluster.person_id == person_id)
