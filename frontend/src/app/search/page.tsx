@@ -17,6 +17,7 @@ import {
   type SearchResultFile,
 } from "@/lib/api";
 import { Button, Card, FilePreview, IconButton, IconLink, Input, PersonTags, ServiceErrorCard } from "@/components/ui";
+import { ModalOverlay } from "@/components/modal";
 
 function formatTimestamp(sec: number): string {
   const m = Math.floor(sec / 60);
@@ -390,16 +391,10 @@ export default function SearchPage() {
         </Card>
       )}
 
-      {previewFile && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4"
-          onClick={() => setPreviewFile(null)}
-        >
-          <div
-            className="relative flex w-full max-w-[min(92vw,40rem)] max-h-[90vh] flex-col overflow-hidden rounded-lg bg-card shadow-2xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="relative flex shrink-0 items-center justify-center bg-muted/20">
+      <ModalOverlay open={!!previewFile} onClose={() => setPreviewFile(null)}>
+        {previewFile && (
+          <div className="relative flex max-h-[min(88dvh,720px)] flex-col overflow-hidden rounded-lg bg-card shadow-2xl">
+            <div className="relative flex shrink-0 items-center justify-center bg-black">
               <IconButton
                 icon={X}
                 label="Close"
@@ -410,10 +405,10 @@ export default function SearchPage() {
               <img
                 src={driveFilePreviewUrl(previewFile.drive_file_id, previewFile.mime_type)}
                 alt={previewFile.name}
-                className="block max-h-[min(52vh,480px)] w-full object-contain"
+                className="block max-h-[min(48dvh,420px)] w-full object-contain"
               />
             </div>
-            <div className="min-h-0 shrink-0 overflow-y-auto border-t border-border px-4 py-3">
+            <div className="min-h-0 flex-1 overflow-y-auto border-t border-border px-4 py-3">
               <p className="break-all text-sm font-medium text-foreground">{previewFile.name}</p>
               {previewFile.caption && (
                 <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{previewFile.caption}</p>
@@ -439,11 +434,13 @@ export default function SearchPage() {
               </div>
             </div>
           </div>
-        </div>
-      )}
-      {previewMoment && (
-        <MomentPreviewModal moment={previewMoment} onClose={() => setPreviewMoment(null)} />
-      )}
+        )}
+      </ModalOverlay>
+      <ModalOverlay open={!!previewMoment} onClose={() => setPreviewMoment(null)}>
+        {previewMoment && (
+          <MomentPreviewPanel moment={previewMoment} onClose={() => setPreviewMoment(null)} />
+        )}
+      </ModalOverlay>
     </div>
   );
 }
@@ -541,7 +538,7 @@ function MomentCard({ moment, onPreview }: { moment: SearchMoment; onPreview: ()
   );
 }
 
-function MomentPreviewModal({ moment, onClose }: { moment: SearchMoment; onClose: () => void }) {
+function MomentPreviewPanel({ moment, onClose }: { moment: SearchMoment; onClose: () => void }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const isVideo = isVideoMoment(moment);
   const timeLabel = formatTimestampRange(moment.timestamp_sec, moment.end_timestamp_sec);
@@ -558,71 +555,64 @@ function MomentPreviewModal({ moment, onClose }: { moment: SearchMoment; onClose
   }, [moment.drive_file_id, moment.timestamp_sec, isVideo]);
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4"
-      onClick={onClose}
-    >
-      <div
-        className="relative flex w-full max-w-[min(92vw,40rem)] max-h-[90vh] flex-col overflow-hidden rounded-lg bg-card shadow-2xl"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <IconButton
-          icon={X}
-          label="Close"
-          onClick={onClose}
-          className="absolute right-3 top-3 z-10 bg-black/60 text-white hover:bg-black/80 hover:text-white"
-        />
-        {isVideo ? (
-          <div className="shrink-0 bg-black">
-            <video
-              ref={videoRef}
-              src={streamUrl}
-              controls
-              playsInline
-              preload="metadata"
-              className="max-h-[min(52vh,480px)] w-full object-contain"
-              onError={() => setVideoError("Video preview unavailable — try Open in Drive.")}
-            />
-            {videoError && (
-              <p className="px-4 py-2 text-xs text-destructive">{videoError}</p>
-            )}
-          </div>
-        ) : (
-          <div className="flex shrink-0 items-center justify-center bg-muted/20">
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src={apiAssetUrl(moment.preview_url)}
-              alt={moment.name}
-              className="max-h-[min(52vh,480px)] w-full object-contain"
-            />
-          </div>
-        )}
-        <div className="min-h-0 shrink-0 overflow-y-auto border-t border-border px-4 py-3">
-          <p className="break-all text-sm font-medium text-foreground">{moment.name}</p>
-          <p className="mt-1 truncate text-xs text-muted-foreground" title={moment.path}>
-            {moment.path}
+    <div className="relative flex max-h-[min(88dvh,720px)] flex-col overflow-hidden rounded-lg bg-card shadow-2xl">
+      <IconButton
+        icon={X}
+        label="Close"
+        onClick={onClose}
+        className="absolute right-3 top-3 z-10 bg-black/60 text-white hover:bg-black/80 hover:text-white"
+      />
+      {isVideo ? (
+        <div className="shrink-0 bg-black">
+          <video
+            ref={videoRef}
+            src={streamUrl}
+            controls
+            playsInline
+            preload="metadata"
+            className="max-h-[min(48dvh,420px)] w-full object-contain"
+            onError={() => setVideoError("Video preview unavailable — try Open in Drive.")}
+          />
+          {videoError && <p className="px-4 py-2 text-xs text-destructive">{videoError}</p>}
+        </div>
+      ) : (
+        <div className="flex shrink-0 items-center justify-center bg-black">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={apiAssetUrl(moment.preview_url)}
+            alt={moment.name}
+            className="max-h-[min(48dvh,420px)] w-full object-contain"
+          />
+        </div>
+      )}
+      <div className="min-h-0 flex-1 overflow-y-auto border-t border-border px-4 py-3">
+        <p className="break-all text-sm font-medium text-foreground">{moment.name}</p>
+        <p className="mt-1 truncate text-xs text-muted-foreground" title={moment.path}>
+          {moment.path}
+        </p>
+        <p className="mt-1 text-xs text-muted-foreground">Moment at {timeLabel}</p>
+        {moment.snippet && (
+          <p className="mt-2 line-clamp-3 text-xs text-muted-foreground" title={moment.snippet}>
+            {moment.snippet}
           </p>
-          <p className="mt-1 text-xs text-muted-foreground">Moment at {timeLabel}</p>
-          {moment.snippet && (
-            <p className="mt-2 line-clamp-3 text-xs text-muted-foreground" title={moment.snippet}>
-              {moment.snippet}
-            </p>
+        )}
+        {(moment.person_names ?? []).length > 0 && (
+          <PersonTags names={moment.person_names ?? []} className="mt-2" />
+        )}
+        <div className="mt-3 flex flex-wrap gap-2 pb-1">
+          {isVideo && (
+            <IconButton
+              icon={Play}
+              label={`Jump to ${timeLabel}`}
+              variant="secondary"
+              onClick={() => {
+                const video = videoRef.current;
+                if (video) seekVideoTo(video, moment.timestamp_sec);
+              }}
+            />
           )}
-          <div className="mt-3 flex flex-wrap gap-2">
-            {isVideo && (
-              <IconButton
-                icon={Play}
-                label={`Jump to ${timeLabel}`}
-                variant="secondary"
-                onClick={() => {
-                  const video = videoRef.current;
-                  if (video) seekVideoTo(video, moment.timestamp_sec);
-                }}
-              />
-            )}
-            <IconLink href={downloadUrl} icon={Download} label="Download" variant="primary" download={moment.name} />
-            <IconLink href={driveUrl} icon={ExternalLink} label="Open in Drive" target="_blank" rel="noopener noreferrer" />
-          </div>
+          <IconLink href={downloadUrl} icon={Download} label="Download" variant="primary" download={moment.name} />
+          <IconLink href={driveUrl} icon={ExternalLink} label="Open in Drive" target="_blank" rel="noopener noreferrer" />
         </div>
       </div>
     </div>
