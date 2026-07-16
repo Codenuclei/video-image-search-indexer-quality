@@ -4,7 +4,7 @@ import logging
 from dataclasses import dataclass
 
 import numpy as np
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
@@ -86,6 +86,40 @@ async def refresh_gemini_for_person_background(person_id: int) -> None:
             logger.info("Background gemini refresh queued for person %s", person_id)
         except Exception:  # noqa: BLE001
             logger.exception("Background gemini refresh failed for person %s", person_id)
+
+
+async def delete_person_background(person_id: int) -> None:
+    """Delete a person without blocking the HTTP response."""
+    import asyncio
+
+    from app.db.session import get_session_factory
+
+    factory = get_session_factory()
+    for attempt in range(6):
+        try:
+            async with factory() as session:
+                await delete_person(session, person_id)
+                await session.commit()
+            logger.info("Background delete completed for person %s", person_id)
+            return
+        except ValueError:
+            logger.warning("Background delete skipped — person %s not found", person_id)
+            return
+        except Exception as exc:  # noqa: BLE001
+            msg = str(exc).lower()
+            retriable = "deadlock detected" in msg or "lock timeout" in msg
+            if retriable and attempt < 5:
+                delay = 0.5 * (2**attempt)
+                logger.warning(
+                    "Background delete for person %s blocked (attempt %d/6) — retrying in %.1fs",
+                    person_id,
+                    attempt + 1,
+                    delay,
+                )
+                await asyncio.sleep(delay)
+                continue
+            logger.exception("Background delete failed for person %s", person_id)
+            return
 
 
 VALID_PERSON_ROLES = frozenset({"student", "non_student"})
@@ -330,13 +364,18 @@ async def delete_person(session: AsyncSession, person_id: int) -> None:
     if person is None:
         raise ValueError(f"Person {person_id} not found")
 
+    # Fail fast instead of hanging when the indexer holds row locks.
+    await session.execute(text("SET LOCAL lock_timeout = '10s'"))
+
+    # Break circular FK (person.representative_face_id -> faces.id).
+    person.representative_face_id = None
+    await session.flush()
+
+    # Reset clusters for review; faces/recognitions unlink via ON DELETE SET NULL.
     await session.execute(
         update(FaceCluster)
         .where(FaceCluster.person_id == person_id)
-        .values(person_id=None, status=ClusterStatus.UNKNOWN)
-    )
-    await session.execute(
-        update(Face).where(Face.person_id == person_id).values(person_id=None)
+        .values(status=ClusterStatus.UNKNOWN)
     )
     await session.delete(person)
     await session.flush()

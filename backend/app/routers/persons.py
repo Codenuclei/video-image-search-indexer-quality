@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import DriveFile, Face, Media, Person
 from app.db.session import get_db
-from app.matching.service import delete_person, refresh_gemini_for_person_background, update_person
+from app.matching.service import delete_person_background, refresh_gemini_for_person_background, update_person
 from app.schemas import MediaOccurrence, PersonOut, RenamePersonRequest, UpdatePersonRequest
 
 router = APIRouter(prefix="/persons", tags=["persons"])
@@ -135,13 +135,16 @@ async def update_person_name_legacy(
 
 
 @router.delete("/{person_id}", status_code=204)
-async def delete_person_endpoint(person_id: int, session: AsyncSession = Depends(get_db)) -> None:
+async def delete_person_endpoint(
+    person_id: int,
+    background_tasks: BackgroundTasks,
+    session: AsyncSession = Depends(get_db),
+) -> None:
     """Delete a person name; faces unlink and clusters return to the review queue."""
-    try:
-        await delete_person(session, person_id)
-        await session.commit()
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    person = await session.get(Person, person_id)
+    if person is None:
+        raise HTTPException(status_code=404, detail="Person not found")
+    background_tasks.add_task(delete_person_background, person_id)
 
 
 @router.get("/{person_id}/media", response_model=list[MediaOccurrence])
