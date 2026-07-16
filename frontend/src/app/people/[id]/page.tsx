@@ -56,12 +56,18 @@ export default function PersonDetailPage() {
     savingRef.current = true;
     setSaving(true);
     setError(null);
+    const previous = person;
+    setPerson({ ...person, name: trimmed });
+    setName(trimmed);
+    setEditing(false);
     try {
       const updated = await apiClient.renamePerson(person.id, trimmed);
       setPerson(updated);
       setName(updated.name);
-      setEditing(false);
     } catch (e) {
+      setPerson(previous);
+      setName(previous.name);
+      setEditing(true);
       setError(e instanceof Error ? e.message : "Rename failed");
     } finally {
       savingRef.current = false;
@@ -87,9 +93,9 @@ export default function PersonDetailPage() {
     if (!person) return;
     setDeleting(true);
     setError(null);
+    router.push("/people");
     try {
       await apiClient.deletePerson(person.id);
-      router.push("/people");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Delete failed");
       setDeleting(false);

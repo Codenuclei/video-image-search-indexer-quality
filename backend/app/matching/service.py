@@ -42,19 +42,34 @@ async def _queue_gemini_refresh_for_faces(session: AsyncSession, face_ids: list[
         return
     from app.db.models import Media
 
-    drive_ids = (
-        await session.execute(
-            select(Media.drive_file_id)
-            .join(Face, Face.media_id == Media.id)
-            .where(Face.id.in_(face_ids))
-            .distinct()
-        )
-    ).scalars().all()
-    if not drive_ids:
-        return
     await session.execute(
         update(DriveFile)
-        .where(DriveFile.id.in_(drive_ids))
+        .where(
+            DriveFile.id.in_(
+                select(Media.drive_file_id)
+                .join(Face, Face.media_id == Media.id)
+                .where(Face.id.in_(face_ids))
+                .distinct()
+            )
+        )
+        .values(status=DriveFileStatus.PENDING, gemini_document_name=None)
+    )
+
+
+async def _queue_gemini_refresh_for_person(session: AsyncSession, person_id: int) -> None:
+    """Re-queue Drive files linked to a person without loading every face id into memory."""
+    from app.db.models import Media
+
+    await session.execute(
+        update(DriveFile)
+        .where(
+            DriveFile.id.in_(
+                select(Media.drive_file_id)
+                .join(Face, Face.media_id == Media.id)
+                .where(Face.person_id == person_id)
+                .distinct()
+            )
+        )
         .values(status=DriveFileStatus.PENDING, gemini_document_name=None)
     )
 
@@ -103,10 +118,7 @@ async def update_person(
             changed = True
 
     if changed:
-        face_ids = list(
-            (await session.execute(select(Face.id).where(Face.person_id == person_id))).scalars().all()
-        )
-        await _queue_gemini_refresh_for_faces(session, face_ids)
+        await _queue_gemini_refresh_for_person(session, person_id)
         await session.flush()
     return person
 
@@ -305,19 +317,14 @@ async def delete_person(session: AsyncSession, person_id: int) -> None:
     if person is None:
         raise ValueError(f"Person {person_id} not found")
 
-    face_ids = list(
-        (await session.execute(select(Face.id).where(Face.person_id == person_id))).scalars().all()
+    await _queue_gemini_refresh_for_person(session, person_id)
+    await session.execute(
+        update(FaceCluster)
+        .where(FaceCluster.person_id == person_id)
+        .values(person_id=None, status=ClusterStatus.UNKNOWN)
     )
-    clusters = (
-        await session.execute(select(FaceCluster).where(FaceCluster.person_id == person_id))
-    ).scalars().all()
-    for cluster in clusters:
-        cluster.person_id = None
-        cluster.status = ClusterStatus.UNKNOWN
-
     await session.execute(
         update(Face).where(Face.person_id == person_id).values(person_id=None)
     )
-    await _queue_gemini_refresh_for_faces(session, face_ids)
     await session.delete(person)
     await session.flush()

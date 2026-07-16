@@ -25,7 +25,7 @@ export function IconLink({
 } & Omit<React.AnchorHTMLAttributes<HTMLAnchorElement>, "className">) {
   const variants = {
     primary: "bg-primary text-primary-foreground hover:brightness-110",
-    secondary: "border border-border bg-secondary text-secondary-foreground hover:bg-accent",
+    secondary: "border border-border bg-muted text-foreground hover:bg-accent",
     ghost: "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
   };
   return (
@@ -60,7 +60,7 @@ export function IconButton({
 } & React.ButtonHTMLAttributes<HTMLButtonElement>) {
   const variants = {
     primary: "bg-primary text-primary-foreground hover:brightness-110",
-    secondary: "border border-border bg-secondary text-secondary-foreground hover:bg-accent",
+    secondary: "border border-border bg-muted text-foreground hover:bg-accent",
     ghost: "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
   };
   return (
@@ -76,6 +76,26 @@ export function IconButton({
       <Icon size={iconSize} className="shrink-0" aria-hidden />
       <span>{label}</span>
     </button>
+  );
+}
+
+export function PersonTags({ names, className }: { names: string[]; className?: string }) {
+  if (!names.length) return null;
+  return (
+    <div className={cn("flex min-h-6 flex-wrap items-center gap-1.5", className)}>
+      <span className="shrink-0 text-[10px] font-semibold uppercase tracking-wide text-foreground/70">
+        People
+      </span>
+      {names.map((name) => (
+        <span
+          key={name}
+          className="inline-flex max-w-full items-center truncate rounded-full border border-primary/25 bg-primary/10 px-2 py-0.5 text-xs font-medium leading-none text-foreground"
+          title={name}
+        >
+          {name}
+        </span>
+      ))}
+    </div>
   );
 }
 
