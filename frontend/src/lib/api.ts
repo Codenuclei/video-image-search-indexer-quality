@@ -135,6 +135,8 @@ export type Settings = {
   gemini_file_search_store_display_name: string;
   auto_index_enabled: boolean;
   auto_index_interval_seconds: number;
+  reindex_errored_files: boolean;
+  reindex_skipped_files: boolean;
   follow_shortcut_folders: boolean;
   gemini_file_search_search_enabled: boolean;
   search_parallel_variants_enabled: boolean;

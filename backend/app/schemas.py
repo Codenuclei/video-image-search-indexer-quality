@@ -171,6 +171,8 @@ class SettingsOut(BaseModel):
     gemini_file_search_store_display_name: str
     auto_index_enabled: bool
     auto_index_interval_seconds: int
+    reindex_errored_files: bool
+    reindex_skipped_files: bool
     follow_shortcut_folders: bool
     gemini_file_search_search_enabled: bool
     search_parallel_variants_enabled: bool
@@ -181,6 +183,8 @@ class SettingsOut(BaseModel):
 class SettingsUpdate(BaseModel):
     auto_index_enabled: bool | None = None
     auto_index_interval_seconds: int | None = None
+    reindex_errored_files: bool | None = None
+    reindex_skipped_files: bool | None = None
     follow_shortcut_folders: bool | None = None
     gemini_file_search_search_enabled: bool | None = None
     search_parallel_variants_enabled: bool | None = None

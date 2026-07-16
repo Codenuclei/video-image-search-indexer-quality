@@ -38,6 +38,18 @@ async def ensure_schema(engine: AsyncEngine) -> None:
                 "BOOLEAN NOT NULL DEFAULT true"
             )
         )
+        await conn.execute(
+            text(
+                "ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS reindex_errored_files "
+                "BOOLEAN NOT NULL DEFAULT false"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS reindex_skipped_files "
+                "BOOLEAN NOT NULL DEFAULT false"
+            )
+        )
         await conn.run_sync(Base.metadata.create_all)
     logger.info("Database schema verified")
 

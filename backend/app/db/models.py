@@ -209,6 +209,8 @@ class AppSettings(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     auto_index_enabled: Mapped[bool] = mapped_column(default=False, nullable=False)
     auto_index_interval_seconds: Mapped[int] = mapped_column(Integer, default=30, nullable=False)
+    reindex_errored_files: Mapped[bool] = mapped_column(default=False, nullable=False)
+    reindex_skipped_files: Mapped[bool] = mapped_column(default=False, nullable=False)
     follow_shortcut_folders: Mapped[bool] = mapped_column(default=True, nullable=False)
     gemini_file_search_search_enabled: Mapped[bool] = mapped_column(default=False, nullable=False)
     search_parallel_variants_enabled: Mapped[bool] = mapped_column(default=False, nullable=False)

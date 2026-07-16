@@ -165,6 +165,44 @@ export default function SettingsPage() {
           <label className="flex cursor-pointer items-start gap-3 text-sm">
             <input
               type="checkbox"
+              checked={settings.reindex_errored_files}
+              disabled={saving}
+              onChange={(e) => {
+                const v = e.target.checked;
+                setSettings({ ...settings, reindex_errored_files: v });
+                persist({ reindex_errored_files: v });
+              }}
+              className="mt-0.5 h-4 w-4 shrink-0 rounded border-border bg-background accent-blue-500"
+            />
+            <span>
+              <span className="text-foreground">Retry errored files</span>
+              <span className="mt-1 block text-xs text-muted-foreground">
+                When ON, errored files are re-queued during auto-index cycles and manual index runs.
+              </span>
+            </span>
+          </label>
+          <label className="flex cursor-pointer items-start gap-3 text-sm">
+            <input
+              type="checkbox"
+              checked={settings.reindex_skipped_files}
+              disabled={saving}
+              onChange={(e) => {
+                const v = e.target.checked;
+                setSettings({ ...settings, reindex_skipped_files: v });
+                persist({ reindex_skipped_files: v });
+              }}
+              className="mt-0.5 h-4 w-4 shrink-0 rounded border-border bg-background accent-blue-500"
+            />
+            <span>
+              <span className="text-foreground">Retry skipped files</span>
+              <span className="mt-1 block text-xs text-muted-foreground">
+                When ON, skipped files are re-queued (except folder-paused and unsupported types).
+              </span>
+            </span>
+          </label>
+          <label className="flex cursor-pointer items-start gap-3 text-sm">
+            <input
+              type="checkbox"
               checked={settings.follow_shortcut_folders}
               disabled={saving}
               onChange={(e) => {

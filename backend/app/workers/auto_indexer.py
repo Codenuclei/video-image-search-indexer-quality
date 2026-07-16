@@ -7,6 +7,7 @@ from app.drive.google_client import DriveDirectError
 from app.runtime_settings import get_runtime_settings
 from app.workers.indexer import IndexingWorker
 from app.workers.maintenance import maintenance_tick
+from app.workers.requeue_failed import requeue_failed_files
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,12 @@ async def auto_index_loop(worker: IndexingWorker, stop_event: asyncio.Event) -> 
 
             if runtime.auto_index_enabled:
                 try:
+                    if runtime.reindex_errored_files or runtime.reindex_skipped_files:
+                        await requeue_failed_files(
+                            worker._session_factory,
+                            reindex_errored=runtime.reindex_errored_files,
+                            reindex_skipped=runtime.reindex_skipped_files,
+                        )
                     await worker.ensure_parallel_video_indexing()
                     await worker.ensure_parallel_image_indexing()
                     summary = await worker.process_pending()
