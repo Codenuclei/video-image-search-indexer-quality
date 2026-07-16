@@ -187,9 +187,8 @@ async def delete_drive_file(file_id: str, session: AsyncSession = Depends(get_db
 @router.get("/files/{file_id}/preview")
 async def preview_drive_file(file_id: str, session: AsyncSession = Depends(get_db)) -> Response:
     """Return indexed file bytes for inline preview in the UI."""
-    import os
-
     from app.config import get_settings
+    from app.pipelines.common import is_video_mime
     from app.video.youtube_cache import video_cache_path
     from app.video.youtube_registry import is_youtube_source
 
@@ -197,23 +196,32 @@ async def preview_drive_file(file_id: str, session: AsyncSession = Depends(get_d
     if drive_file is None:
         raise HTTPException(status_code=404, detail="File not found")
 
+    settings = get_settings()
+    local_path = video_cache_path(settings, drive_file)
+    if is_video_mime(drive_file.mime_type) and local_path.is_file():
+        media_type = drive_file.mime_type or "video/mp4"
+        return FileResponse(
+            local_path,
+            media_type=media_type,
+            filename=drive_file.name,
+            headers={"Accept-Ranges": "bytes", "Content-Disposition": f'inline; filename="{drive_file.name}"'},
+        )
+
     if is_youtube_source(drive_file):
-        settings = get_settings()
-        local_path = video_cache_path(settings, drive_file)
         if local_path.is_file():
             media_type = drive_file.mime_type or "video/webm"
             return FileResponse(
                 local_path,
                 media_type=media_type,
                 filename=drive_file.name,
-                headers={"Content-Disposition": f'inline; filename="{drive_file.name}"'},
+                headers={"Accept-Ranges": "bytes", "Content-Disposition": f'inline; filename="{drive_file.name}"'},
             )
         raise HTTPException(status_code=404, detail="YouTube local file not on volume yet")
 
     from app.db.session import get_session_factory
     from app.drive.google_client import DriveDirectClient
 
-    client = DriveDirectClient(session_factory=get_session_factory(), settings=get_settings())
+    client = DriveDirectClient(session_factory=get_session_factory(), settings=settings)
     try:
         content = await download_to_memory(client, file_id)
     except (DriveConnectorError, DriveDirectError) as exc:

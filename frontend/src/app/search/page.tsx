@@ -16,7 +16,7 @@ import {
   type SearchResponse,
   type SearchResultFile,
 } from "@/lib/api";
-import { Button, Card, FilePreview, IconButton, IconLink, Input, ServiceErrorCard } from "@/components/ui";
+import { Button, Card, FilePreview, IconButton, IconLink, Input, PersonTags, ServiceErrorCard } from "@/components/ui";
 
 function formatTimestamp(sec: number): string {
   const m = Math.floor(sec / 60);
@@ -38,6 +38,29 @@ function formatTimestampRange(start: number, end?: number | null): string {
     return `${startLabel}–${formatTimestamp(end)}`;
   }
   return startLabel;
+}
+
+function isVideoMoment(moment: SearchMoment): boolean {
+  if (moment.mime_type.startsWith("video/")) return true;
+  return /\.(mp4|mov|webm|mkv|avi|m4v)$/i.test(moment.name);
+}
+
+function seekVideoTo(video: HTMLVideoElement, timestampSec: number) {
+  const seek = () => {
+    try {
+      video.currentTime = timestampSec;
+      void video.play().catch(() => {
+        /* autoplay may be blocked until user interacts */
+      });
+    } catch {
+      /* metadata not ready yet */
+    }
+  };
+  if (video.readyState >= 1) {
+    seek();
+  } else {
+    video.addEventListener("loadedmetadata", seek, { once: true });
+  }
 }
 
 export default function SearchPage() {
@@ -331,19 +354,7 @@ export default function SearchPage() {
                         </p>
                       )}
                       {(file.person_names ?? []).length > 0 && (
-                        <div className="flex min-h-6 flex-wrap items-center gap-1.5">
-                          <span className="shrink-0 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                            People
-                          </span>
-                          {(file.person_names ?? []).map((name) => (
-                            <span
-                              key={name}
-                              className="inline-flex items-center rounded-full bg-primary/15 px-2 py-0.5 text-xs leading-none text-primary"
-                            >
-                              {name}
-                            </span>
-                          ))}
-                        </div>
+                        <PersonTags names={file.person_names ?? []} />
                       )}
                       <div className="flex flex-wrap items-center gap-2 pt-0.5">
                         <IconLink
@@ -404,6 +415,9 @@ export default function SearchPage() {
               <p className="break-all text-sm font-medium text-foreground">{previewFile.name}</p>
               {previewFile.caption && (
                 <p className="mt-1 text-xs text-muted-foreground">{previewFile.caption}</p>
+              )}
+              {(previewFile.person_names ?? []).length > 0 && (
+                <PersonTags names={previewFile.person_names ?? []} className="mt-2" />
               )}
               <div className="mt-3 flex flex-wrap gap-2">
                 <IconLink
@@ -518,19 +532,7 @@ function MomentCard({ moment, onPreview }: { moment: SearchMoment; onPreview: ()
           <IconLink href={driveUrl} icon={ExternalLink} label="Open in Drive" target="_blank" rel="noopener noreferrer" />
         </div>
         {(moment.person_names ?? []).length > 0 && (
-          <div className="mt-2 flex min-h-6 flex-wrap items-center gap-1.5">
-            <span className="shrink-0 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-              People
-            </span>
-            {(moment.person_names ?? []).map((name) => (
-              <span
-                key={name}
-                className="inline-flex items-center rounded-full bg-primary/15 px-2 py-0.5 text-xs leading-none text-primary"
-              >
-                {name}
-              </span>
-            ))}
-          </div>
+          <PersonTags names={moment.person_names ?? []} className="mt-2" />
         )}
       </div>
     </li>
@@ -539,27 +541,18 @@ function MomentCard({ moment, onPreview }: { moment: SearchMoment; onPreview: ()
 
 function MomentPreviewModal({ moment, onClose }: { moment: SearchMoment; onClose: () => void }) {
   const videoRef = useRef<HTMLVideoElement>(null);
-  const isVideo = moment.mime_type.startsWith("video/");
+  const isVideo = isVideoMoment(moment);
   const timeLabel = formatTimestampRange(moment.timestamp_sec, moment.end_timestamp_sec);
-  const streamUrl = driveVideoStreamUrl(moment.drive_file_id);
+  const streamUrl = `${driveVideoStreamUrl(moment.drive_file_id)}#t=${Math.floor(moment.timestamp_sec)}`;
   const driveUrl = driveGoogleViewUrl(moment.drive_file_id);
   const downloadUrl = driveFileDownloadUrl(moment.drive_file_id);
+  const [videoError, setVideoError] = useState<string | null>(null);
 
   useEffect(() => {
     const video = videoRef.current;
     if (!video || !isVideo) return;
-
-    const seekToMoment = () => {
-      try {
-        video.currentTime = moment.timestamp_sec;
-      } catch {
-        /* ignore seek errors before metadata loads */
-      }
-    };
-
-    video.addEventListener("loadedmetadata", seekToMoment);
-    if (video.readyState >= 1) seekToMoment();
-    return () => video.removeEventListener("loadedmetadata", seekToMoment);
+    setVideoError(null);
+    seekVideoTo(video, moment.timestamp_sec);
   }, [moment.drive_file_id, moment.timestamp_sec, isVideo]);
 
   return (
@@ -578,13 +571,20 @@ function MomentPreviewModal({ moment, onClose }: { moment: SearchMoment; onClose
           className="absolute right-3 top-3 z-10 bg-black/60 text-white hover:bg-black/80 hover:text-white"
         />
         {isVideo ? (
-          <video
-            ref={videoRef}
-            src={streamUrl}
-            controls
-            playsInline
-            className="max-h-[60vh] w-full bg-black object-contain"
-          />
+          <div className="bg-black">
+            <video
+              ref={videoRef}
+              src={streamUrl}
+              controls
+              playsInline
+              preload="metadata"
+              className="max-h-[60vh] w-full object-contain"
+              onError={() => setVideoError("Video preview unavailable — try Open in Drive.")}
+            />
+            {videoError && (
+              <p className="px-4 py-2 text-xs text-destructive">{videoError}</p>
+            )}
+          </div>
         ) : (
           // eslint-disable-next-line @next/next/no-img-element
           <img
@@ -612,7 +612,7 @@ function MomentPreviewModal({ moment, onClose }: { moment: SearchMoment; onClose
                 variant="secondary"
                 onClick={() => {
                   const video = videoRef.current;
-                  if (video) video.currentTime = moment.timestamp_sec;
+                  if (video) seekVideoTo(video, moment.timestamp_sec);
                 }}
               />
             )}

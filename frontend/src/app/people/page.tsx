@@ -11,10 +11,12 @@ function PersonCard({
   person,
   onRenamed,
   onDeleted,
+  onDeleteFailed,
 }: {
   person: Person;
   onRenamed: (updated: Person) => void;
   onDeleted: (id: number) => void;
+  onDeleteFailed: (person: Person) => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(person.name);
@@ -39,11 +41,16 @@ function PersonCard({
     savingRef.current = true;
     setSaving(true);
     setError(null);
+    const optimistic = { ...person, name: trimmed };
+    onRenamed(optimistic);
+    setEditing(false);
     try {
       const updated = await apiClient.renamePerson(person.id, trimmed);
       onRenamed(updated);
-      setEditing(false);
     } catch (e) {
+      onRenamed(person);
+      setEditing(true);
+      setName(person.name);
       setError(e instanceof Error ? e.message : "Rename failed");
     } finally {
       savingRef.current = false;
@@ -68,10 +75,11 @@ function PersonCard({
   async function remove() {
     setDeleting(true);
     setError(null);
+    onDeleted(person.id);
     try {
       await apiClient.deletePerson(person.id);
-      onDeleted(person.id);
     } catch (e) {
+      onDeleteFailed(person);
       setError(e instanceof Error ? e.message : "Delete failed");
       setDeleting(false);
     }
@@ -207,6 +215,11 @@ export default function PeoplePage() {
               setPersons((prev) => prev.map((item) => (item.id === updated.id ? updated : item)))
             }
             onDeleted={(id) => setPersons((prev) => prev.filter((item) => item.id !== id))}
+            onDeleteFailed={(restored) =>
+              setPersons((prev) =>
+                prev.some((item) => item.id === restored.id) ? prev : [...prev, restored].sort((a, b) => a.name.localeCompare(b.name))
+              )
+            }
           />
         ))}
       </div>
