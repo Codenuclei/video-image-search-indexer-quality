@@ -94,3 +94,64 @@ body {
     font-size: 16px;
   }
 }
+
+/* Dustbin delete animation: lid pops open while the bin wiggles. */
+@keyframes bin-lid-open {
+  0%,
+  100% {
+    transform: translateY(0) rotate(0deg);
+  }
+  35%,
+  65% {
+    transform: translateY(-2.5px) rotate(-24deg);
+  }
+}
+
+@keyframes bin-wiggle {
+  0%,
+  100% {
+    transform: rotate(0deg);
+  }
+  25% {
+    transform: rotate(-5deg);
+  }
+  75% {
+    transform: rotate(5deg);
+  }
+}
+
+.trash-lid,
+.trash-body {
+  transform-box: fill-box;
+  transition: transform 0.2s ease;
+}
+
+.trash-lid {
+  transform-origin: 85% 100%;
+}
+
+.trash-body {
+  transform-origin: 50% 90%;
+}
+
+.group\/trash:hover .trash-lid,
+.trash-animating .trash-lid {
+  animation: bin-lid-open 0.7s ease-in-out infinite;
+}
+
+.trash-animating .trash-body {
+  animation: bin-wiggle 0.7s ease-in-out infinite;
+}
+
+/* Card exit used when an item is deleted/ignored. */
+@keyframes card-vanish {
+  to {
+    opacity: 0;
+    transform: scale(0.92) translateY(10px);
+  }
+}
+
+.card-vanish {
+  animation: card-vanish 0.4s ease-in forwards;
+  pointer-events: none;
+}

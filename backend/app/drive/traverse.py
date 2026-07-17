@@ -36,7 +36,9 @@ def plan_child_traversal(child: dict, *, follow_shortcuts: bool) -> ChildTravers
         target_mime = details.get("targetMimeType") or ""
         if target_id and target_mime == FOLDER_MIME:
             return ChildTraversal(
-                include_in_listing=False,
+                # Include as a folder marker so Library shows the shortcut name
+                # even when the target was already visited under another path.
+                include_in_listing=True,
                 traverse_folder_id=target_id,
                 path_segment=name,
             )

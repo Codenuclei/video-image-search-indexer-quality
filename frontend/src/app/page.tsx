@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Bar, BarChart, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { apiClient, type IndexStatus } from "@/lib/api";
-import { Card, ServiceErrorCard, StatCard } from "@/components/ui";
+import { Card, LoadingLabel, ServiceErrorCard, StatCard } from "@/components/ui";
 
 const STATUS_ORDER = ["processed", "pending", "processing", "error", "skipped"] as const;
 
@@ -84,13 +84,25 @@ export default function DashboardPage() {
         />
       )}
 
+      {!indexStatus && !error && (
+        <p className="text-sm text-muted-foreground">
+          <LoadingLabel size={16}>Loading dashboard…</LoadingLabel>
+        </p>
+      )}
+
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard label="Indexed" value={processed} />
         <StatCard label="Pending" value={pending} />
         <StatCard label="Errors" value={errors} />
         <StatCard
           label="Indexer"
-          value={indexStatus?.is_running ? "Running" : "Idle"}
+          value={
+            !indexStatus ? "…" : indexStatus.is_running ? (
+              <LoadingLabel size={18}>Running</LoadingLabel>
+            ) : (
+              "Idle"
+            )
+          }
           hint={
             indexStatus?.last_run
               ? `Last: ${indexStatus.last_run.processed} processed, ${indexStatus.last_run.errored} errors`
@@ -101,7 +113,11 @@ export default function DashboardPage() {
 
       <Card>
         <h3 className="mb-3 font-medium">Drive file status</h3>
-        {chartData.length === 0 ? (
+        {!indexStatus ? (
+          <p className="text-sm text-muted-foreground">
+            <LoadingLabel size={14}>Loading chart…</LoadingLabel>
+          </p>
+        ) : chartData.length === 0 ? (
           <p className="text-sm text-muted-foreground">No files synced yet. Go to Folders to start indexing.</p>
         ) : (
           <>
@@ -116,12 +132,12 @@ export default function DashboardPage() {
                 </span>
               ))}
             </div>
-            <div className="h-52">
+            <div className="h-44 max-w-md">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart
                   data={chartData}
-                  margin={{ top: 4, right: 8, left: 0, bottom: 0 }}
-                  barCategoryGap="28%"
+                  margin={{ top: 8, right: 4, left: -8, bottom: 0 }}
+                  barCategoryGap="12%"
                 >
                   <XAxis
                     dataKey="label"
@@ -136,21 +152,25 @@ export default function DashboardPage() {
                     allowDecimals={false}
                     tickLine={false}
                     axisLine={false}
-                    width={36}
+                    width={32}
                   />
                   <Tooltip
-                    cursor={{ fill: "var(--muted)", opacity: 0.35 }}
+                    cursor={{ fill: "transparent" }}
                     contentStyle={{
-                      background: "var(--card)",
-                      border: "1px solid var(--border)",
-                      borderRadius: "var(--radius)",
-                      color: "var(--card-foreground)",
+                      background: "#0f172a",
+                      border: "1px solid #475569",
+                      borderRadius: 8,
+                      color: "#f8fafc",
                       fontSize: 12,
+                      boxShadow: "0 8px 24px rgba(0,0,0,0.35)",
+                      padding: "8px 12px",
                     }}
-                    formatter={(value: number) => [value, "Files"]}
+                    itemStyle={{ color: "#f8fafc", fontWeight: 500 }}
+                    labelStyle={{ color: "#f8fafc", fontWeight: 700, marginBottom: 4 }}
+                    formatter={(value: number) => [String(value), "Files"]}
                     labelFormatter={(label) => String(label)}
                   />
-                  <Bar dataKey="count" radius={[4, 4, 0, 0]} barSize={32}>
+                  <Bar dataKey="count" radius={[4, 4, 0, 0]} barSize={40} maxBarSize={48}>
                     {chartData.map((row) => (
                       <Cell key={row.status} fill={row.fill} />
                     ))}

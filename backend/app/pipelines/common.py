@@ -109,6 +109,22 @@ def save_face_thumbnail(face_id: int, jpeg_bytes: bytes, settings: Settings) -> 
     return path
 
 
+def save_body_crop_thumbnail(face_id: int, jpeg_bytes: bytes, settings: Settings) -> str | None:
+    """Clothing/body crop JPEG for re-id lab previews (`body_{face_id}.jpg`)."""
+    if not jpeg_bytes:
+        return None
+    os.makedirs(settings.thumbnail_dir, exist_ok=True)
+    path = os.path.join(settings.thumbnail_dir, f"body_{face_id}.jpg")
+    with open(path, "wb") as fh:
+        fh.write(jpeg_bytes)
+    return path
+
+
+def body_crop_path(face_id: int, settings: Settings | None = None) -> str:
+    settings = settings or get_settings()
+    return os.path.join(settings.thumbnail_dir, f"body_{face_id}.jpg")
+
+
 async def clear_existing_media(session: AsyncSession, drive_file_id: str) -> None:
     existing = (await session.execute(select(Media).where(Media.drive_file_id == drive_file_id))).scalar_one_or_none()
     if existing is not None:

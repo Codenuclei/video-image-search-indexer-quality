@@ -71,6 +71,26 @@ def build_library_tree(
     all_files: list[LibraryFileItem] = []
 
     for df in drive_files:
+        path_parts = [p for p in df.path.replace("\\", "/").split("/") if p]
+        is_folder_marker = df.mime_type == "application/vnd.google-apps.folder" or (
+            (df.error_message or "") == "folder_marker"
+        )
+
+        if is_folder_marker:
+            # Path is the folder itself — ensure the node exists even with zero files.
+            node = root
+            for i, part in enumerate(path_parts):
+                key = part.lower()
+                if key not in node.folders:
+                    sub_path = _folder_path(path_parts[: i + 1])
+                    node.folders[key] = LibraryFolderNode(
+                        name=part,
+                        path=sub_path,
+                        indexing_paused=sub_path in paused_set,
+                    )
+                node = node.folders[key]
+            continue
+
         is_image = df.mime_type.startswith("image/")
         is_video = df.mime_type.startswith("video/")
         has_cap = df.id in captioned_ids and bool((caption_texts.get(df.id) or "").strip())
@@ -78,7 +98,6 @@ def build_library_tree(
         cap_text = (caption_texts.get(df.id) or "").strip() or None
         preview = (cap_text[:120] + "…") if cap_text and len(cap_text) > 120 else cap_text
 
-        path_parts = [p for p in df.path.replace("\\", "/").split("/") if p]
         folder_parts = path_parts[:-1] if len(path_parts) > 1 else []
         folder_path = _folder_path(folder_parts)
 

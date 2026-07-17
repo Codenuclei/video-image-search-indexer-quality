@@ -17,7 +17,7 @@ from app.pipelines.decode_recovery import (
 from app.db.session import dispose_engine, get_engine, get_session_factory
 from app.dependencies import get_indexing_worker
 from app.fennec.client import get_fennec_client
-from app.routers import clusters, drive, drive_oauth, faces, fennec, folder_contexts, index, media, persons, qwen_vlm, search, settings, webhooks, youtube
+from app.routers import clusters, drive, drive_oauth, faces, fennec, folder_contexts, index, media, persons, qwen_vlm, reid, search, settings, webhooks, youtube
 from app.svs.client import svs_ready  # kept for backwards compat — SVS disabled
 from app.pipelines.common import register_image_plugins
 from app.workers.auto_indexer import auto_index_loop
@@ -109,6 +109,7 @@ app.include_router(folder_contexts.router)
 app.include_router(fennec.router)
 app.include_router(qwen_vlm.router)
 app.include_router(youtube.router)
+app.include_router(reid.router)
 
 
 @app.get("/health")

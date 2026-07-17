@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
+import { cn } from "@/lib/utils";
 
 /**
  * Full-viewport modal shell portaled to document.body so it covers the mobile
@@ -11,10 +12,12 @@ export function ModalOverlay({
   open,
   onClose,
   children,
+  contentClassName,
 }: {
   open: boolean;
   onClose: () => void;
   children: React.ReactNode;
+  contentClassName?: string;
 }) {
   const [mounted, setMounted] = useState(false);
 
@@ -35,12 +38,15 @@ export function ModalOverlay({
 
   return createPortal(
     <div
-      className="fixed inset-0 z-[100] overflow-y-auto bg-black/85 p-4 pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1rem,env(safe-area-inset-bottom))]"
+      className="fixed inset-0 z-[100] overflow-y-auto bg-black/85 p-3 pt-[max(0.75rem,env(safe-area-inset-top))] pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:p-4"
       onClick={onClose}
       role="presentation"
     >
-      <div className="flex min-h-[calc(100dvh-2rem)] items-center justify-center">
-        <div className="w-full max-w-[min(92vw,40rem)]" onClick={(e) => e.stopPropagation()}>
+      <div className="flex min-h-[calc(100dvh-1.5rem)] items-center justify-center sm:min-h-[calc(100dvh-2rem)]">
+        <div
+          className={cn("w-full max-w-[min(92vw,40rem)]", contentClassName)}
+          onClick={(e) => e.stopPropagation()}
+        >
           {children}
         </div>
       </div>

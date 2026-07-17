@@ -62,7 +62,7 @@ class _NoCloseSessionCtx:
 
 @requires_postgres
 @pytest.mark.asyncio
-async def test_sync_file_list_upserts_new_files_and_skips_folders(db_session):
+async def test_sync_file_list_upserts_files_and_folder_markers(db_session):
     listing = _listing(
         [
             _file("f1", "a.jpg", "image/jpeg"),
@@ -76,9 +76,13 @@ async def test_sync_file_list_upserts_new_files_and_skips_folders(db_session):
 
     assert seen == 2
     rows = (await db_session.execute(select(DriveFile))).scalars().all()
-    ids = {r.id for r in rows}
-    assert ids == {"f1", "f2"}
-    assert all(r.status == DriveFileStatus.PENDING for r in rows)
+    by_id = {r.id: r for r in rows}
+    assert set(by_id) == {"f1", "f2", "folder1"}
+    assert by_id["f1"].status == DriveFileStatus.PENDING
+    assert by_id["f2"].status == DriveFileStatus.PENDING
+    assert by_id["folder1"].mime_type == "application/vnd.google-apps.folder"
+    assert by_id["folder1"].status == DriveFileStatus.SKIPPED
+    assert by_id["folder1"].error_message == "folder_marker"
 
 
 @requires_postgres

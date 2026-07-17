@@ -105,19 +105,21 @@ function SidebarFooter({ email, onNavigate }: { email: string | null; onNavigate
         <LifeBuoy size={16} className="shrink-0" />
         Contact Support
       </a>
-      {email && (
-        <div className="flex items-center justify-between gap-2">
-          <p className="truncate text-[10px] text-muted-foreground">{email}</p>
+      <div className="flex items-center justify-between gap-2">
+          <div className="min-w-0">
+            <p className="text-[10px] font-medium text-sidebar-foreground">Profile</p>
+            {email && <p className="truncate text-[10px] text-muted-foreground">{email}</p>}
+          </div>
           <button
             type="button"
             onClick={() => setLogoutOpen(true)}
             title="Sign out"
-            className="flex h-8 w-8 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground"
+            className="flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground"
           >
             <LogOut size={13} />
+            Logout
           </button>
         </div>
-      )}
       <ConfirmDialog
         open={logoutOpen}
         title="Log out?"
@@ -163,15 +165,19 @@ export function Sidebar() {
 
   return (
     <>
-      {/* Desktop sidebar — unchanged layout at md+ */}
-      <aside className="hidden w-56 shrink-0 flex-col border-r border-sidebar-border bg-sidebar p-4 md:flex">
-        <div className="mb-8">
-          <BrandMark />
-        </div>
-        <IndexStatusBanner />
-        <NavLinks pathname={pathname} />
-        <div className="mt-auto">
-          <SidebarFooter email={email} />
+      {/* Desktop sidebar — sticky so Profile/Logout stay visible while main scrolls */}
+      <aside className="sticky top-0 z-30 hidden h-screen w-56 shrink-0 flex-col border-r border-sidebar-border bg-sidebar md:flex">
+        <div className="flex min-h-0 flex-1 flex-col p-4">
+          <div className="mb-6 shrink-0">
+            <BrandMark />
+          </div>
+          <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
+            <IndexStatusBanner />
+            <NavLinks pathname={pathname} />
+          </div>
+          <div className="mt-4 shrink-0">
+            <SidebarFooter email={email} />
+          </div>
         </div>
       </aside>
 

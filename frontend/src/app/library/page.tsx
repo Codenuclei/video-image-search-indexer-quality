@@ -10,7 +10,6 @@ import {
   FileImage,
   FileVideo,
   Folder,
-  Loader2,
   Pause,
   Play,
   RefreshCw,
@@ -26,13 +25,15 @@ import {
   type LibraryFolder,
   type LibraryResponse,
 } from "@/lib/api";
-import { Button, Card, IconLink, Input, ServiceErrorCard, StatCard } from "@/components/ui";
+import { Button, Card, IconLink, Input, LoadingLabel, ServiceErrorCard, Spinner, StatCard } from "@/components/ui";
+import { ManualFaceTagger } from "@/components/manual-face-tagger";
 import { cn } from "@/lib/utils";
 
 type FilterMode = "all" | "processed" | "skipped" | "missing_caption" | "missing_embed" | "pending" | "error";
 
+/** Shared header + row template so Name / Index / Caption / Embed / Size stay aligned. */
 const FILE_TABLE_COLS =
-  "grid w-full grid-cols-[minmax(0,1fr)_5.5rem_4.5rem_4.5rem_4.5rem] items-center gap-2 sm:grid-cols-[minmax(0,1.4fr)_5.5rem_4.5rem_4.5rem_4.5rem]";
+  "grid w-full grid-cols-[minmax(0,1fr)_7rem] items-center gap-x-2 sm:grid-cols-[minmax(0,1fr)_7.5rem_5rem_5rem_5.5rem]";
 
 function folderDisplayName(folder: LibraryFolder | null, path: string): string {
   if (!folder || path === "/") return "Drive root";
@@ -147,7 +148,7 @@ function FolderTreeItem({
             className="shrink-0 rounded p-0.5 text-muted-foreground transition-opacity hover:bg-muted hover:text-foreground"
           >
             {actionBusy === folder.path ? (
-              <Loader2 size={12} className="animate-spin" />
+              <Spinner size={12} />
             ) : folder.indexing_paused ? (
               <Play size={12} />
             ) : (
@@ -208,15 +209,17 @@ function FileRow({
         <Icon size={14} className="shrink-0 text-muted-foreground" />
         <span className="truncate font-medium">{file.name}</span>
       </span>
-      <span className={cn("justify-self-center rounded px-1.5 py-0.5 text-center text-[10px] font-medium uppercase", statusBadge(file.status))}>
-        {file.status}
+      <span className="flex min-w-0 items-center justify-center">
+        <span className={cn("max-w-full truncate rounded px-1.5 py-0.5 text-center text-[10px] font-medium uppercase", statusBadge(file.status))}>
+          {file.status}
+        </span>
       </span>
-      <span className="hidden justify-self-center sm:block">
+      <span className="hidden items-center justify-center sm:flex">
         {file.is_image ? (
           file.has_caption ? (
-            <CheckCircle2 size={14} className="mx-auto text-emerald-500" />
+            <CheckCircle2 size={14} className="text-emerald-500" />
           ) : file.status === "processed" ? (
-            <XCircle size={14} className="mx-auto text-amber-500" />
+            <XCircle size={14} className="text-amber-500" />
           ) : (
             <span className="text-muted-foreground">—</span>
           )
@@ -224,12 +227,12 @@ function FileRow({
           <span className="text-muted-foreground">n/a</span>
         )}
       </span>
-      <span className="hidden justify-self-center sm:block">
+      <span className="hidden items-center justify-center sm:flex">
         {file.is_image ? (
           file.has_embedding ? (
-            <CheckCircle2 size={14} className="mx-auto text-emerald-500" />
+            <CheckCircle2 size={14} className="text-emerald-500" />
           ) : file.status === "processed" ? (
-            <XCircle size={14} className="mx-auto text-amber-500" />
+            <XCircle size={14} className="text-amber-500" />
           ) : (
             <span className="text-muted-foreground">—</span>
           )
@@ -237,7 +240,7 @@ function FileRow({
           <span className="text-muted-foreground">n/a</span>
         )}
       </span>
-      <span className="hidden justify-self-end text-xs text-muted-foreground sm:block">{formatBytes(file.size)}</span>
+      <span className="hidden items-center justify-center text-xs text-muted-foreground sm:flex">{formatBytes(file.size)}</span>
     </button>
   );
 }
@@ -253,6 +256,7 @@ export default function LibraryPage() {
   const [search, setSearch] = useState("");
   const [folderActionBusy, setFolderActionBusy] = useState<string | null>(null);
   const [skipBusy, setSkipBusy] = useState(false);
+  const [manualFaceTag, setManualFaceTag] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -271,6 +275,13 @@ export default function LibraryPage() {
     const t = setInterval(load, 8000);
     return () => clearInterval(t);
   }, [load]);
+
+  useEffect(() => {
+    apiClient
+      .settings()
+      .then((s) => setManualFaceTag(Boolean(s.experimental_manual_face_tag)))
+      .catch(() => setManualFaceTag(false));
+  }, []);
 
   const selectedFolder = useMemo(() => {
     if (!data?.tree) return null;
@@ -367,7 +378,7 @@ export default function LibraryPage() {
             Refresh
           </Button>
           <Button variant="secondary" onClick={skipCorrupt} disabled={skipBusy}>
-            {skipBusy ? "Skipping…" : "Skip corrupt files"}
+            {skipBusy ? <LoadingLabel>Skipping…</LoadingLabel> : "Skip corrupt files"}
           </Button>
         </div>
       </div>
@@ -375,13 +386,12 @@ export default function LibraryPage() {
       {backfillActive && (
         <Card className="border-primary/30 bg-primary/5">
           <div className="flex items-center gap-2 text-sm text-primary">
-            <Loader2 size={16} className="animate-spin" />
-            <span>
+            <LoadingLabel size={16} className="text-primary">
               Auto backfill running
               {maintenance?.caption_backfill_running && " · captions"}
               {maintenance?.embed_backfill_running && " · embeddings"}
               {" — resumes automatically after deploys"}
-            </span>
+            </LoadingLabel>
           </div>
         </Card>
       )}
@@ -440,47 +450,49 @@ export default function LibraryPage() {
 
         {/* File list — center pane */}
         <section className="flex min-w-0 flex-1 flex-col">
-          <div className="grid gap-2 border-b border-border px-3 py-2 sm:grid-cols-[minmax(0,1fr)_11rem_11rem] sm:items-center">
+          <div className="space-y-2 border-b border-border px-3 py-2">
             <p className="min-w-0 text-sm font-medium">
               <span className="text-foreground">{folderDisplayName(selectedFolder, selectedFolderPath)}</span>
               <span className="ml-2 text-muted-foreground">
                 ({filteredFiles.length} file{filteredFiles.length === 1 ? "" : "s"})
               </span>
             </p>
-            <select
-              value={filter}
-              onChange={(e) => setFilter(e.target.value as FilterMode)}
-              className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-xs"
-            >
-              <option value="all">All files</option>
-              <option value="processed">Processed</option>
-              <option value="skipped">Skipped</option>
-              <option value="missing_caption">Missing caption</option>
-              <option value="missing_embed">Missing embed</option>
-              <option value="pending">Pending / processing</option>
-              <option value="error">Errors</option>
-            </select>
-            <Input
-              placeholder="Search in folder…"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="w-full py-1.5 text-xs"
-            />
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-stretch">
+              <select
+                value={filter}
+                onChange={(e) => setFilter(e.target.value as FilterMode)}
+                aria-label="Filter by status"
+                className="h-9 w-full min-w-0 basis-1/2 rounded-md border border-input bg-background px-2.5 text-xs sm:flex-1"
+              >
+                <option value="all">All files</option>
+                <option value="processed">Processed</option>
+                <option value="skipped">Skipped</option>
+                <option value="missing_caption">Missing caption</option>
+                <option value="missing_embed">Missing embed</option>
+                <option value="pending">Pending / processing</option>
+                <option value="error">Errors</option>
+              </select>
+              <Input
+                placeholder="Search in folder…"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                className="h-9 w-full min-w-0 basis-1/2 py-0 text-xs sm:flex-1"
+              />
+            </div>
           </div>
 
           <div className={cn(FILE_TABLE_COLS, "hidden border-b border-border bg-muted/30 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground sm:grid")}>
-            <span>Name</span>
-            <span className="text-center">Index</span>
-            <span className="text-center">Caption</span>
-            <span className="text-center">Embed</span>
-            <span className="text-right">Size</span>
+            <span className="min-w-0">Name</span>
+            <span className="flex items-center justify-center">Index</span>
+            <span className="flex items-center justify-center">Caption</span>
+            <span className="flex items-center justify-center">Embed</span>
+            <span className="flex items-center justify-center">Size</span>
           </div>
 
           <div className="min-h-0 flex-1 overflow-y-auto">
             {loading && !data ? (
-              <div className="flex items-center justify-center gap-2 py-16 text-sm text-muted-foreground">
-                <Loader2 size={18} className="animate-spin" />
-                Loading library…
+              <div className="flex items-center justify-center py-16 text-sm text-muted-foreground">
+                <LoadingLabel size={18}>Loading library…</LoadingLabel>
               </div>
             ) : filteredFiles.length === 0 ? (
               <p className="py-16 text-center text-sm text-muted-foreground">No files in this view</p>
@@ -505,12 +517,20 @@ export default function LibraryPage() {
           {selectedFile ? (
             <div className="space-y-3 p-3 text-sm">
               {selectedFile.is_image && (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img
-                  src={driveFilePreviewUrl(selectedFile.id, selectedFile.mime_type)}
-                  alt={selectedFile.name}
-                  className="w-full rounded-lg border border-border object-cover"
-                />
+                manualFaceTag ? (
+                  <ManualFaceTagger
+                    driveFileId={selectedFile.id}
+                    mimeType={selectedFile.mime_type}
+                    fileName={selectedFile.name}
+                  />
+                ) : (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={driveFilePreviewUrl(selectedFile.id, selectedFile.mime_type)}
+                    alt={selectedFile.name}
+                    className="w-full rounded-lg border border-border object-cover"
+                  />
+                )
               )}
               {selectedFile.is_video && (
                 <video

@@ -6,6 +6,9 @@ import { ExternalLink } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { driveFilePreviewUrl, driveGoogleViewUrl, isServiceUnavailableMessage } from "@/lib/api";
 import { BackendDisconnectedOverlay } from "@/components/backend-disconnected-overlay";
+import { LoadingLabel, Spinner } from "@/components/spinner";
+
+export { LoadingLabel, Spinner };
 
 export function IconLink({
   href,
@@ -79,22 +82,47 @@ export function IconButton({
   );
 }
 
-export function PersonTags({ names, className }: { names: string[]; className?: string }) {
+export function PersonTags({
+  names,
+  className,
+  links,
+}: {
+  names: string[];
+  className?: string;
+  /** Optional person_name → LinkedIn URL map; matched names become profile links. */
+  links?: Record<string, string>;
+}) {
   if (!names.length) return null;
   return (
     <div className={cn("flex min-h-6 flex-wrap items-center gap-1.5", className)}>
       <span className="shrink-0 text-[10px] font-semibold uppercase tracking-wide text-foreground/70">
         People
       </span>
-      {names.map((name) => (
-        <span
-          key={name}
-          className="inline-flex max-w-full items-center truncate rounded-full border border-primary/25 bg-primary/10 px-2 py-0.5 text-xs font-medium leading-none text-foreground"
-          title={name}
-        >
-          {name}
-        </span>
-      ))}
+      {names.map((name) => {
+        const linkedinUrl = links?.[name];
+        const chipClass =
+          "inline-flex max-w-full items-center gap-1 truncate rounded-full border border-primary/25 bg-primary/10 px-2 py-0.5 text-xs font-medium leading-none text-foreground";
+        if (linkedinUrl) {
+          return (
+            <a
+              key={name}
+              href={linkedinUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className={cn(chipClass, "border-sky-500/40 bg-sky-500/10 transition-colors hover:bg-sky-500/20")}
+              title={`${name} — LinkedIn profile`}
+            >
+              {name}
+              <ExternalLink size={10} aria-hidden className="shrink-0 text-sky-600 dark:text-sky-400" />
+            </a>
+          );
+        }
+        return (
+          <span key={name} className={chipClass} title={name}>
+            {name}
+          </span>
+        );
+      })}
     </div>
   );
 }
@@ -107,11 +135,19 @@ export function Card({ className, children }: { className?: string; children: Re
   );
 }
 
-export function StatCard({ label, value, hint }: { label: string; value: string | number; hint?: string }) {
+export function StatCard({
+  label,
+  value,
+  hint,
+}: {
+  label: string;
+  value: React.ReactNode;
+  hint?: string;
+}) {
   return (
     <Card>
       <p className="text-sm text-muted-foreground">{label}</p>
-      <p className="mt-1 text-3xl font-semibold text-foreground">{value}</p>
+      <div className="mt-1 text-3xl font-semibold text-foreground">{value}</div>
       {hint && <p className="mt-1 text-xs text-muted-foreground">{hint}</p>}
     </Card>
   );
@@ -166,7 +202,7 @@ export function ConfirmDialog({
   open: boolean;
   title: string;
   message: string;
-  confirmLabel?: string;
+  confirmLabel?: React.ReactNode;
   cancelLabel?: string;
   variant?: "primary" | "secondary" | "danger";
   onConfirm: () => void;
@@ -229,7 +265,7 @@ export function ServiceErrorCard({
       <p className="text-sm text-destructive">{message}</p>
       {onRetry && (
         <Button className="mt-3" variant="secondary" onClick={onRetry} disabled={retrying}>
-          {retrying ? "Retrying…" : retryLabel}
+          {retrying ? <LoadingLabel>Retrying…</LoadingLabel> : retryLabel}
         </Button>
       )}
     </Card>
@@ -291,7 +327,7 @@ export function FilePreview({
       <div className={cn("relative h-full w-full bg-black/30", className)}>
         {!loaded && !failed && (
           <div className="absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">
-            Loading…
+            <LoadingLabel size={16}>Loading…</LoadingLabel>
           </div>
         )}
         {failed ? (

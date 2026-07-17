@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { PlugZap } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { supportMailto } from "@/lib/support";
+import { LoadingLabel } from "@/components/spinner";
 
 function OverlayButton({
   children,
@@ -94,7 +95,7 @@ export function BackendDisconnectedOverlay({
 
           <div className="flex flex-col gap-2 sm:flex-row">
             <OverlayButton className="flex-1" onClick={onRetry} disabled={!onRetry || retrying}>
-              {retrying ? "Retrying…" : "Retry"}
+              {retrying ? <LoadingLabel>Retrying…</LoadingLabel> : "Retry"}
             </OverlayButton>
             <OverlayButton className="flex-1" variant="secondary" onClick={goDashboard}>
               Go back to Dashboard

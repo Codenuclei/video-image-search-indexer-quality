@@ -88,6 +88,23 @@ class NameClusterRequest(BaseModel):
     name: str
 
 
+class TagFaceRequest(BaseModel):
+    """Manual face tag (experimental mode) — names a single face only."""
+
+    name: str
+
+
+class ManualFaceBoxRequest(BaseModel):
+    """Draw a freeform box on an image and optionally name it (experimental)."""
+
+    drive_file_id: str
+    bbox_x: float
+    bbox_y: float
+    bbox_width: float
+    bbox_height: float
+    name: str | None = None
+
+
 class RenamePersonRequest(BaseModel):
     name: str
 
@@ -174,6 +191,7 @@ class SettingsOut(BaseModel):
     reindex_errored_files: bool
     reindex_skipped_files: bool
     follow_shortcut_folders: bool
+    experimental_manual_face_tag: bool
     gemini_file_search_search_enabled: bool
     search_parallel_variants_enabled: bool
     search_use_captions: bool
@@ -186,6 +204,7 @@ class SettingsUpdate(BaseModel):
     reindex_errored_files: bool | None = None
     reindex_skipped_files: bool | None = None
     follow_shortcut_folders: bool | None = None
+    experimental_manual_face_tag: bool | None = None
     gemini_file_search_search_enabled: bool | None = None
     search_parallel_variants_enabled: bool | None = None
     search_use_captions: bool | None = None

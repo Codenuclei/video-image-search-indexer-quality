@@ -28,7 +28,7 @@ from app.pipelines.common import (
 from app.pipelines.image import process_image_file
 from app.pipelines.video import process_video_file
 from app.pipelines.decode_recovery import apply_decode_failure, decode_max_attempts, is_decode_failure_error
-from app.drive.traverse import SHORTCUT_MIME
+from app.drive.traverse import FOLDER_MIME, SHORTCUT_MIME
 from app.drive.indexing_pause import (
     is_file_indexing_paused,
     load_paused_folder_paths,
@@ -432,9 +432,12 @@ class IndexingWorker:
         async with self._session_factory() as session:
             paused_paths = await load_paused_folder_paths(session)
             for entry in listing.files:
-                if entry.is_folder or entry.mime_type == SHORTCUT_MIME:
+                if entry.mime_type == SHORTCUT_MIME and not entry.is_folder:
                     continue
                 live_ids.add(entry.id)
+                if entry.is_folder or entry.mime_type == FOLDER_MIME:
+                    await self._upsert_folder_placeholder(session, entry)
+                    continue
                 seen += 1
                 was_new = await self._upsert_drive_file(session, entry, paused_paths=paused_paths)
                 if was_new:
@@ -468,6 +471,34 @@ class IndexingWorker:
             listing.truncated,
         )
         return seen
+
+    async def _upsert_folder_placeholder(self, session: AsyncSession, entry: ConnectorFile) -> None:
+        """Persist Drive folders (and folder-shortcut markers) so Library shows empty dirs."""
+        existing = await session.get(DriveFile, entry.id)
+        folder_path = entry.path if entry.path.startswith("/") else f"/{entry.path}" if entry.path else "/"
+        # Store as a folder marker: path is the folder itself (no trailing file name).
+        if existing is None:
+            session.add(
+                DriveFile(
+                    id=entry.id,
+                    name=entry.name,
+                    mime_type=FOLDER_MIME,
+                    path=folder_path,
+                    modified_time=entry.modified_time,
+                    size=None,
+                    status=DriveFileStatus.SKIPPED,
+                    error_message="folder_marker",
+                    source="drive",
+                )
+            )
+            return
+        existing.name = entry.name
+        existing.mime_type = FOLDER_MIME
+        existing.path = folder_path
+        existing.modified_time = entry.modified_time
+        existing.status = DriveFileStatus.SKIPPED
+        if existing.error_message != "folder_marker":
+            existing.error_message = "folder_marker"
 
     async def _upsert_drive_file(
         self,

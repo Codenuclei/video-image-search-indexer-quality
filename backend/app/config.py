@@ -67,6 +67,8 @@ class Settings(BaseSettings):
 
     # Follow Google Drive folder shortcuts when listing/syncing the connected tree.
     follow_shortcut_folders: bool = True
+    # Experimental Library overlay to manually name individual faces. Off by default.
+    experimental_manual_face_tag: bool = False
 
     # TIFF/RAW decode: max attempts before permanent skip (stops infinite requeue loops).
     decode_max_attempts: int = 1
@@ -146,6 +148,27 @@ class Settings(BaseSettings):
     image_caption_weight: float = 0.6
     image_caption_min_score: float = 0.55     # caption text-match precision gate
     image_visual_strong_score: float = 0.50   # keep on strong visual alone
+
+    # Append-only body/clothing re-id layer (body_signatures table).
+    reid_enabled: bool = True
+    reid_min_face_area_fraction: float = 0.015   # face must be prominent in frame
+    reid_min_body_coverage: float = 0.55         # ≥55% of expected full-body extent visible
+    reid_body_match_threshold: float = 0.60      # cosine similarity for candidate links
+    reid_backfill_max_parallel: int = 4
+
+    # Append-only reverse-image / people-web identification (face_web_matches).
+    # Preferred free path: Cohesivity Exa people search (image → Gemini clues → Exa).
+    # Optional paid fallback: SERPAPI_KEY for true Google Lens reverse image search.
+    # Free Google reverse image (SOME-1HING style). Hosted API first, scrape fallback.
+    google_reverse_api_url: str = "https://google-reverse-image-api.vercel.app/reverse"
+    # Official Google Cloud Vision Web Detection reverse-image API.
+    # Enable Cloud Vision API + billing on the key's Google Cloud project.
+    google_vision_api_key: str = ""
+    cohesivity_application_key: str = ""
+    cohesivity_exa_base_url: str = "https://cohesivity.ai/edge/exa-api"
+    serpapi_key: str = ""
+    # Public base URL so Google can fetch /faces/{id}/thumbnail for reverse search.
+    public_base_url: str = ""
 
     # Qwen3-VL sidecar (OpenAI-compatible vLLM) for local frame captioning
     qwen_vlm_enabled: bool = False

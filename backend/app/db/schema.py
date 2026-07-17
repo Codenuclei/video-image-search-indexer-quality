@@ -40,6 +40,12 @@ async def ensure_schema(engine: AsyncEngine) -> None:
         )
         await conn.execute(
             text(
+                "ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS experimental_manual_face_tag "
+                "BOOLEAN NOT NULL DEFAULT false"
+            )
+        )
+        await conn.execute(
+            text(
                 "ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS reindex_errored_files "
                 "BOOLEAN NOT NULL DEFAULT false"
             )
