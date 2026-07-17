@@ -8,6 +8,7 @@ __pycache__/
 # Env / secrets
 .env
 backend/.env
+.cohesivity
 
 # Data
 backend/data/

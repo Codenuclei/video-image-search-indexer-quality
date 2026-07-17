@@ -4,8 +4,9 @@ import { useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { Pencil } from "lucide-react";
 import { apiClient, type Person, type PersonRole } from "@/lib/api";
-import { Button, Card, ConfirmDialog, FaceThumb, Input } from "@/components/ui";
+import { Button, Card, ConfirmDialog, FaceThumb, Input, LoadingLabel } from "@/components/ui";
 import { RoleSelector } from "@/components/role-selector";
+import { AnimatedTrash } from "@/components/animated-trash";
 
 type PersonMedia = {
   media_id: number;
@@ -108,7 +109,13 @@ export default function PersonDetailPage() {
     setEditing(false);
   }
 
-  if (!person) return <p className="text-muted-foreground">Loading...</p>;
+  if (!person) {
+    return (
+      <p className="text-muted-foreground">
+        <LoadingLabel size={16}>Loading…</LoadingLabel>
+      </p>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -133,7 +140,7 @@ export default function PersonDetailPage() {
               {error && <p className="text-sm text-destructive">{error}</p>}
               <div className="flex gap-2">
                 <Button onClick={saveName} disabled={saving}>
-                  {saving ? "Saving…" : "Save"}
+                  {saving ? <LoadingLabel>Saving…</LoadingLabel> : "Save"}
                 </Button>
                 <Button variant="secondary" onClick={cancelEdit} disabled={saving}>
                   Cancel
@@ -163,9 +170,12 @@ export default function PersonDetailPage() {
                   variant="secondary"
                   onClick={() => setConfirmDelete(true)}
                   disabled={deleting}
-                  className="text-destructive hover:text-destructive"
+                  className="group/trash text-destructive hover:border-destructive/40 hover:text-destructive"
                 >
-                  {deleting ? "Deleting…" : "Delete name"}
+                  <span className="inline-flex items-center gap-1.5">
+                    <AnimatedTrash size={14} animating={deleting} />
+                    {deleting ? "Deleting…" : "Delete name"}
+                  </span>
                 </Button>
               </div>
             </div>
@@ -196,7 +206,7 @@ export default function PersonDetailPage() {
           open={confirmDelete}
           title={`Delete "${person.name}"?`}
           message="Faces will be unlinked and may return to the review queue."
-          confirmLabel={deleting ? "Deleting…" : "Delete"}
+          confirmLabel={deleting ? <LoadingLabel>Deleting…</LoadingLabel> : "Delete"}
           onConfirm={() => {
             setConfirmDelete(false);
             deleteName();

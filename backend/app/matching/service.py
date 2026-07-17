@@ -379,3 +379,86 @@ async def delete_person(session: AsyncSession, person_id: int) -> None:
     )
     await session.delete(person)
     await session.flush()
+
+
+async def tag_face_manual(session: AsyncSession, face_id: int, name: str) -> Person:
+    """
+    Lightweight append-only manual tag for a single face.
+    Does not requeue Drive files, touch Gemini, or rewrite cluster centroids.
+    """
+    clean = name.strip()
+    if not clean:
+        raise ValueError("Name cannot be empty")
+
+    face = await session.get(Face, face_id)
+    if face is None:
+        raise ValueError(f"Face {face_id} not found")
+
+    existing = (
+        await session.execute(select(Person).where(func.lower(Person.name) == clean.lower()))
+    ).scalar_one_or_none()
+    if existing is not None:
+        person = existing
+    else:
+        person = Person(name=clean, representative_face_id=face.id)
+        session.add(person)
+        await session.flush()
+
+    face.person_id = person.id
+    if person.representative_face_id is None:
+        person.representative_face_id = face.id
+
+    # Soft-link the face's unknown cluster to this person without bulk updates.
+    if face.cluster_id is not None:
+        cluster = await session.get(FaceCluster, face.cluster_id)
+        if cluster is not None and cluster.status != ClusterStatus.NAMED:
+            cluster.person_id = person.id
+            cluster.status = ClusterStatus.NAMED
+
+    await session.flush()
+    return person
+
+
+async def create_manual_face_box(
+    session: AsyncSession,
+    *,
+    drive_file_id: str,
+    bbox_x: float,
+    bbox_y: float,
+    bbox_width: float,
+    bbox_height: float,
+    name: str | None = None,
+) -> tuple[Face, Person | None]:
+    """
+    Append a user-drawn face box with no embedding / no clustering / no Gemini work.
+    Optionally assigns a person name in the same cheap write.
+    """
+    from app.db.models import Media
+
+    if bbox_width < 4 or bbox_height < 4:
+        raise ValueError("Box is too small — drag a larger region")
+
+    media = (
+        await session.execute(select(Media).where(Media.drive_file_id == drive_file_id))
+    ).scalar_one_or_none()
+    if media is None:
+        raise ValueError("Media not found for this file — index it first")
+
+    face = Face(
+        media_id=media.id,
+        bbox_x=float(bbox_x),
+        bbox_y=float(bbox_y),
+        bbox_width=float(bbox_width),
+        bbox_height=float(bbox_height),
+        detection_confidence=1.0,  # user-drawn
+        cluster_id=None,
+        person_id=None,
+    )
+    session.add(face)
+    await session.flush()
+
+    person: Person | None = None
+    if name and name.strip():
+        person = await tag_face_manual(session, face.id, name.strip())
+
+    return face, person

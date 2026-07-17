@@ -212,6 +212,7 @@ class AppSettings(Base):
     reindex_errored_files: Mapped[bool] = mapped_column(default=False, nullable=False)
     reindex_skipped_files: Mapped[bool] = mapped_column(default=False, nullable=False)
     follow_shortcut_folders: Mapped[bool] = mapped_column(default=True, nullable=False)
+    experimental_manual_face_tag: Mapped[bool] = mapped_column(default=False, nullable=False)
     gemini_file_search_search_enabled: Mapped[bool] = mapped_column(default=False, nullable=False)
     search_parallel_variants_enabled: Mapped[bool] = mapped_column(default=False, nullable=False)
     search_use_captions: Mapped[bool] = mapped_column(default=False, nullable=False)
@@ -241,6 +242,65 @@ class IndexingFolderPause(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     folder_path: Mapped[str] = mapped_column(String, nullable=False, unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+# Gemini Embedding 2 vectors (body crops) are 3072-dimensional.
+BODY_EMBEDDING_DIM = 3072
+
+
+class BodySignature(Base):
+    """
+    Append-only re-id layer: clothing/body-structure embedding for a detected face.
+
+    Only stored for prominent, (near-)full-body appearances. Links a body crop
+    embedding back to its face so unlabeled faces can be matched to persons via
+    body/clothing similarity within the same shoot/folder.
+    """
+
+    __tablename__ = "body_signatures"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    face_id: Mapped[int] = mapped_column(
+        ForeignKey("faces.id", ondelete="CASCADE"), unique=True, index=True, nullable=False
+    )
+    media_id: Mapped[int] = mapped_column(ForeignKey("media.id", ondelete="CASCADE"), index=True)
+    person_id: Mapped[int | None] = mapped_column(
+        ForeignKey("persons.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    # Body crop box in original image pixels.
+    body_x: Mapped[float] = mapped_column(Float, nullable=False)
+    body_y: Mapped[float] = mapped_column(Float, nullable=False)
+    body_width: Mapped[float] = mapped_column(Float, nullable=False)
+    body_height: Mapped[float] = mapped_column(Float, nullable=False)
+    # Gating metrics: face area fraction of the image + how much of the
+    # expected full-body extent actually fit inside the frame.
+    prominence: Mapped[float] = mapped_column(Float, nullable=False)
+    body_coverage: Mapped[float] = mapped_column(Float, nullable=False)
+    is_full_body: Mapped[bool] = mapped_column(default=False, nullable=False)
+    embedding: Mapped[list[float]] = mapped_column(Vector(BODY_EMBEDDING_DIM), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class FaceWebMatch(Base):
+    """
+    Append-only web-identification layer: reverse-image-search results for a
+    face thumbnail, including any discovered LinkedIn profile URL.
+    """
+
+    __tablename__ = "face_web_matches"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    face_id: Mapped[int] = mapped_column(ForeignKey("faces.id", ondelete="CASCADE"), index=True)
+    person_id: Mapped[int | None] = mapped_column(
+        ForeignKey("persons.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    provider: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    result_title: Mapped[str | None] = mapped_column(Text, nullable=True)
+    result_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    linkedin_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    score: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

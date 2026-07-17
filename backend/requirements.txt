@@ -25,3 +25,5 @@ aiosqlite==0.22.1
 google-auth-oauthlib>=1.2.0
 google-api-python-client>=2.150.0
 yt-dlp>=2025.1.0
+# Person / body bounding boxes for re-id lab (YOLOv8n; HOG fallback if missing)
+ultralytics>=8.3.0

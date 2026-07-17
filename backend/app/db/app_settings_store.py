@@ -16,6 +16,7 @@ def _defaults_from_env() -> RuntimeSettings:
         reindex_errored_files=s.reindex_errored_files,
         reindex_skipped_files=s.reindex_skipped_files,
         follow_shortcut_folders=s.follow_shortcut_folders,
+        experimental_manual_face_tag=s.experimental_manual_face_tag,
         gemini_file_search_search_enabled=s.gemini_file_search_search_enabled,
         search_parallel_variants_enabled=s.search_parallel_variants_enabled,
         search_use_captions=s.search_use_captions,
@@ -30,6 +31,7 @@ def _row_to_runtime(row: AppSettings) -> RuntimeSettings:
         reindex_errored_files=getattr(row, "reindex_errored_files", False),
         reindex_skipped_files=getattr(row, "reindex_skipped_files", False),
         follow_shortcut_folders=getattr(row, "follow_shortcut_folders", True),
+        experimental_manual_face_tag=getattr(row, "experimental_manual_face_tag", False),
         gemini_file_search_search_enabled=row.gemini_file_search_search_enabled,
         search_parallel_variants_enabled=row.search_parallel_variants_enabled,
         search_use_captions=row.search_use_captions,
@@ -43,6 +45,7 @@ def _apply_runtime_to_row(row: AppSettings, runtime: RuntimeSettings) -> None:
     row.reindex_errored_files = runtime.reindex_errored_files
     row.reindex_skipped_files = runtime.reindex_skipped_files
     row.follow_shortcut_folders = runtime.follow_shortcut_folders
+    row.experimental_manual_face_tag = runtime.experimental_manual_face_tag
     row.gemini_file_search_search_enabled = runtime.gemini_file_search_search_enabled
     row.search_parallel_variants_enabled = runtime.search_parallel_variants_enabled
     row.search_use_captions = runtime.search_use_captions

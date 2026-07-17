@@ -22,6 +22,10 @@ TIFF_EXTENSIONS = (".tif", ".tiff")
 RECOVERABLE_IMAGE_EXTENSIONS = TIFF_EXTENSIONS + RAW_EXTENSIONS
 
 _EXTENSION_TO_MIME: dict[str, str] = {
+    ".heic": "image/heic",
+    ".heif": "image/heif",
+    ".heics": "image/heic",
+    ".hif": "image/heif",
     ".tif": "image/tiff",
     ".tiff": "image/tiff",
     ".arw": "image/x-sony-arw",

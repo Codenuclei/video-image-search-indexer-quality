@@ -138,10 +138,25 @@ export type Settings = {
   reindex_errored_files: boolean;
   reindex_skipped_files: boolean;
   follow_shortcut_folders: boolean;
+  experimental_manual_face_tag: boolean;
   gemini_file_search_search_enabled: boolean;
   search_parallel_variants_enabled: boolean;
   search_use_captions: boolean;
   search_rerank_enabled: boolean;
+};
+
+export type FileFace = {
+  id: number;
+  media_id: number;
+  bbox_x: number;
+  bbox_y: number;
+  bbox_width: number;
+  bbox_height: number;
+  detection_confidence: number;
+  cluster_id: number | null;
+  person_id: number | null;
+  person_name?: string | null;
+  has_thumbnail: boolean;
 };
 
 export type SearchCitation = {
@@ -321,6 +336,101 @@ export const driveVideoStreamUrl = (driveFileId: string) =>
 export const apiAssetUrl = (path: string) =>
   path.startsWith("http") ? path : `${API_BASE}${path}`;
 
+export type ReidStatus = {
+  body_signatures: { total: number; labeled: number; unlabeled: number; full_body: number };
+  web_matches: { total: number; with_linkedin: number };
+  reverse_search_configured: boolean;
+  person_detector?: string;
+  yolov8_available?: boolean;
+};
+
+export type ReidCandidate = {
+  face_id: number;
+  matched_face_id: number;
+  person_id: number | null;
+  person_name: string | null;
+  body_similarity: number;
+  same_folder: boolean;
+  combined_score: number;
+  source_path: string | null;
+  matched_path: string | null;
+  is_full_body: boolean;
+};
+
+export type ReidGalleryItem = {
+  signature_id: number;
+  face_id: number;
+  person_id: number | null;
+  person_name: string | null;
+  drive_file_id: string;
+  file_name: string;
+  file_path: string;
+  mime_type: string;
+  prominence_pct: number;
+  body_coverage_pct: number;
+  is_full_body: boolean;
+  has_body_crop: boolean;
+  has_face_thumb: boolean;
+  has_proof?: boolean;
+  proof_url?: string | null;
+  candidate: ReidCandidate | null;
+};
+
+export type ReidProveResult = {
+  media_id: number;
+  drive_file_id: string;
+  file_name: string;
+  image_size: { width: number; height: number };
+  detector: string;
+  yolov8_available: boolean;
+  persons_detected: number;
+  faces_on_media: number;
+  faces_linked_to_person_box: number;
+  embedded: number;
+  proof_url: string;
+  persons: { x: number; y: number; w: number; h: number; confidence: number; backend: string }[];
+  links: { face_id: number; has_crop: boolean; embedded: boolean }[];
+};
+
+export type ReidBackfillStats = {
+  scanned: number;
+  embedded: number;
+  no_person_box?: number;
+  not_full_body: number;
+  errors: number;
+  relinked: number;
+  detector?: string;
+};
+
+export type OfficialImageSearchStatus = {
+  configured: boolean;
+  key_source: string | null;
+  api: string;
+  endpoint: string;
+  feature: string;
+  scope_required_if_using_oauth: string;
+  api_key_scopes: string;
+  enable_url: string;
+};
+
+export type OfficialImageSearchResult = {
+  provider: string;
+  key_source: string;
+  face_id?: number;
+  best_guess_labels: string[];
+  web_entities: { description?: string | null; entity_id?: string | null; score?: number | null }[];
+  full_matching_images: { url: string; score?: number | null }[];
+  partial_matching_images: { url: string; score?: number | null }[];
+  visually_similar_images: { url: string; score?: number | null }[];
+  pages_with_matching_images: {
+    url: string;
+    page_title?: string | null;
+    score?: number | null;
+    full_matching_images: { url: string; score?: number | null }[];
+    partial_matching_images: { url: string; score?: number | null }[];
+  }[];
+};
+
 export const apiClient = {
   health: () =>
     api<{ status: string; search?: string; fennec_enabled?: boolean; fennec_ready?: boolean }>("/health"),
@@ -425,6 +535,37 @@ export const apiClient = {
   },
   settings: () => api<Settings>("/settings"),
   updateSettings: (body: Partial<Settings>) => api<Settings>("/settings", { method: "PUT", body: JSON.stringify(body) }),
+  facesForFile: (driveFileId: string) => api<FileFace[]>(`/faces/by-file/${encodeURIComponent(driveFileId)}`),
+  tagFace: (faceId: number, name: string) =>
+    api<Person>(`/faces/${faceId}/tag`, { method: "POST", body: JSON.stringify({ name }) }),
+  createManualFaceBox: (body: {
+    drive_file_id: string;
+    bbox_x: number;
+    bbox_y: number;
+    bbox_width: number;
+    bbox_height: number;
+    name?: string | null;
+  }) =>
+    api<{ face: FileFace; person: { id: number; name: string } | null }>("/faces/manual-box", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  reidLinkedinMap: () => api<Record<string, string>>("/reid/linkedin-map"),
+  reidStatus: () => api<ReidStatus>("/reid/status"),
+  reidGallery: (limit = 48) => api<ReidGalleryItem[]>(`/reid/gallery?limit=${limit}`),
+  reidBackfill: (limit = 200) =>
+    api<ReidBackfillStats>(`/reid/backfill?limit=${limit}`, { method: "POST" }),
+  reidProve: (mediaId: number, embed = true) =>
+    api<ReidProveResult>(`/reid/prove/${mediaId}?embed=${embed ? "true" : "false"}`, { method: "POST" }),
+  reidProofUrl: (mediaId: number) => `${API_BASE}/reid/proof/${mediaId}`,
+  reidBodyCropUrl: (faceId: number) => `${API_BASE}/reid/body-crop/${faceId}`,
+  officialImageSearchStatus: () =>
+    api<OfficialImageSearchStatus>("/reid/official-image-search/status"),
+  officialImageSearch: (body: { face_id?: number; image_url?: string; max_results?: number }) =>
+    api<OfficialImageSearchResult>("/reid/official-image-search", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   folderContexts: () => api<FolderContext[]>("/folder-contexts"),
   upsertFolderContext: (folder_path: string, description: string) =>
     api<FolderContext>("/folder-contexts", {

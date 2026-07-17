@@ -12,6 +12,7 @@ class RuntimeSettings:
     reindex_errored_files: bool
     reindex_skipped_files: bool
     follow_shortcut_folders: bool
+    experimental_manual_face_tag: bool
     gemini_file_search_search_enabled: bool
     search_parallel_variants_enabled: bool
     search_use_captions: bool
@@ -29,6 +30,7 @@ def _env_defaults() -> RuntimeSettings:
         reindex_errored_files=settings.reindex_errored_files,
         reindex_skipped_files=settings.reindex_skipped_files,
         follow_shortcut_folders=settings.follow_shortcut_folders,
+        experimental_manual_face_tag=settings.experimental_manual_face_tag,
         gemini_file_search_search_enabled=settings.gemini_file_search_search_enabled,
         search_parallel_variants_enabled=settings.search_parallel_variants_enabled,
         search_use_captions=settings.search_use_captions,
@@ -55,6 +57,7 @@ def update_runtime_settings(
     reindex_errored_files: bool | None = None,
     reindex_skipped_files: bool | None = None,
     follow_shortcut_folders: bool | None = None,
+    experimental_manual_face_tag: bool | None = None,
     gemini_file_search_search_enabled: bool | None = None,
     search_parallel_variants_enabled: bool | None = None,
     search_use_captions: bool | None = None,
@@ -71,6 +74,8 @@ def update_runtime_settings(
         runtime.reindex_skipped_files = reindex_skipped_files
     if follow_shortcut_folders is not None:
         runtime.follow_shortcut_folders = follow_shortcut_folders
+    if experimental_manual_face_tag is not None:
+        runtime.experimental_manual_face_tag = experimental_manual_face_tag
     if gemini_file_search_search_enabled is not None:
         runtime.gemini_file_search_search_enabled = gemini_file_search_search_enabled
     if search_parallel_variants_enabled is not None:

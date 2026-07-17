@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { apiClient, type Settings } from "@/lib/api";
-import { Button, Card, Input } from "@/components/ui";
+import { Button, Card, Input, LoadingLabel } from "@/components/ui";
 
 export default function SettingsPage() {
   const [settings, setSettings] = useState<Settings | null>(null);
@@ -38,7 +38,11 @@ export default function SettingsPage() {
   }
 
   if (!settings) {
-    return <p className="text-muted-foreground">{error ?? "Loading..."}</p>;
+    return (
+      <p className="text-muted-foreground">
+        {error ?? <LoadingLabel size={16}>Loading…</LoadingLabel>}
+      </p>
+    );
   }
 
   return (
@@ -48,7 +52,11 @@ export default function SettingsPage() {
           <h2 className="text-2xl font-semibold text-foreground">Settings</h2>
           <p className="text-sm text-muted-foreground">Saved to database — persists across restarts</p>
         </div>
-        {saving && <span className="text-xs text-muted-foreground">Saving…</span>}
+        {saving && (
+          <span className="text-xs text-muted-foreground">
+            <LoadingLabel size={12}>Saving…</LoadingLabel>
+          </span>
+        )}
         {!saving && saved && <span className="text-xs text-emerald-600 dark:text-emerald-400">Saved</span>}
       </div>
 
@@ -239,6 +247,30 @@ export default function SettingsPage() {
           <Button onClick={saveInterval} disabled={saving}>
             Save interval
           </Button>
+        </Card>
+
+        <Card className="space-y-4">
+          <h3 className="font-medium text-foreground">Experimental</h3>
+          <label className="flex cursor-pointer items-start gap-3 text-sm">
+            <input
+              type="checkbox"
+              checked={settings.experimental_manual_face_tag}
+              disabled={saving}
+              onChange={(e) => {
+                const v = e.target.checked;
+                setSettings({ ...settings, experimental_manual_face_tag: v });
+                persist({ experimental_manual_face_tag: v });
+              }}
+              className="mt-0.5 h-4 w-4 shrink-0 rounded border-border bg-background accent-blue-500"
+            />
+            <span>
+              <span className="text-foreground">Manual face tagging</span>
+              <span className="mt-1 block text-xs text-muted-foreground">
+                Off by default. When ON, Library image details show face boxes so you can name individual
+                faces without re-indexing or Gemini uploads.
+              </span>
+            </span>
+          </label>
         </Card>
       </div>
     </div>

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Script from "next/script";
+import { LoadingLabel } from "@/components/spinner";
 
 const ALLOWED_DOMAIN = "mastersunion.org";
 const STORAGE_KEY = "dfi_auth";
@@ -116,8 +117,16 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
     (window as any).google.accounts.id.prompt();
   }, [gsiReady, mounted, email]);
 
-  // Still hydrating — render nothing to avoid flicker
-  if (!mounted) return null;
+  // Still hydrating
+  if (!mounted) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background">
+        <LoadingLabel size={18} className="text-muted-foreground">
+          Loading…
+        </LoadingLabel>
+      </div>
+    );
+  }
 
   // Authenticated — render the full app
   if (email) return <>{children}</>;
@@ -153,6 +162,11 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
         )}
 
         {/* GSI button rendered here */}
+        {!gsiReady && (
+          <p className="text-sm text-muted-foreground">
+            <LoadingLabel size={14}>Loading sign-in…</LoadingLabel>
+          </p>
+        )}
         <div id="gsi-button" className="flex justify-center" />
 
         <p className="text-xs text-muted-foreground">

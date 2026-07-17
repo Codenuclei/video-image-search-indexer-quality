@@ -16,7 +16,7 @@ import {
   type SearchResponse,
   type SearchResultFile,
 } from "@/lib/api";
-import { Button, Card, FilePreview, IconButton, IconLink, Input, PersonTags, ServiceErrorCard } from "@/components/ui";
+import { Button, Card, FilePreview, IconButton, IconLink, Input, LoadingLabel, PersonTags, ServiceErrorCard } from "@/components/ui";
 import { ModalOverlay } from "@/components/modal";
 
 function formatTimestamp(sec: number): string {
@@ -79,9 +79,11 @@ export default function SearchPage() {
   const [error, setError] = useState<string | null>(null);
   const [previewFile, setPreviewFile] = useState<SearchResultFile | null>(null);
   const [previewMoment, setPreviewMoment] = useState<SearchMoment | null>(null);
+  const [linkedinMap, setLinkedinMap] = useState<Record<string, string>>({});
 
   useEffect(() => {
     apiClient.persons().then(setPersons).catch(() => setPersons([]));
+    apiClient.reidLinkedinMap().then(setLinkedinMap).catch(() => {});
     apiClient.folderContexts().then(setFolderContexts).catch(() => {});
     apiClient
       .settings()
@@ -199,7 +201,7 @@ export default function SearchPage() {
         </div>
         <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
           <Button className="w-full sm:w-auto" onClick={search} disabled={loading}>
-            {loading ? "Searching…" : "Search"}
+            {loading ? <LoadingLabel>Searching…</LoadingLabel> : "Search"}
           </Button>
           <button
             type="button"
@@ -235,7 +237,9 @@ export default function SearchPage() {
       )}
 
       {loading && (
-        <p className="text-sm text-muted-foreground">Searching indexed media… visual queries can take up to a minute.</p>
+        <p className="text-sm text-muted-foreground">
+          <LoadingLabel size={16}>Searching indexed media… visual queries can take up to a minute.</LoadingLabel>
+        </p>
       )}
 
       {error && (
@@ -341,7 +345,7 @@ export default function SearchPage() {
                           {file.name}
                         </a>
                         {file.score != null && (
-                          <span className="shrink-0 rounded bg-violet-950/60 px-1.5 py-0.5 text-[10px] text-violet-300">
+                          <span className="shrink-0 rounded-md bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-amber-800 dark:bg-amber-400/15 dark:text-amber-200">
                             {Math.round(file.score * 100)}%
                           </span>
                         )}
@@ -355,7 +359,7 @@ export default function SearchPage() {
                         </p>
                       )}
                       {(file.person_names ?? []).length > 0 && (
-                        <PersonTags names={file.person_names ?? []} />
+                        <PersonTags names={file.person_names ?? []} links={linkedinMap} />
                       )}
                       <div className="flex flex-wrap items-center gap-2 pt-0.5">
                         <IconLink
@@ -414,7 +418,7 @@ export default function SearchPage() {
                 <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{previewFile.caption}</p>
               )}
               {(previewFile.person_names ?? []).length > 0 && (
-                <PersonTags names={previewFile.person_names ?? []} className="mt-2" />
+                <PersonTags names={previewFile.person_names ?? []} className="mt-2" links={linkedinMap} />
               )}
               <div className="mt-3 flex flex-wrap gap-2 pb-1">
                 <IconLink
@@ -446,11 +450,11 @@ export default function SearchPage() {
 }
 
 function matchBadgeStyle(matchType: string): string {
-  if (matchType === "face_detected") return "bg-amber-950 text-amber-300";
-  if (isTranscriptMatch(matchType)) return "bg-blue-950 text-blue-300";
-  if (matchType === "gemini_visual") return "bg-violet-950 text-violet-300";
-  if (matchType.startsWith("svs_visual")) return "bg-violet-950 text-violet-300";
-  return "bg-muted text-foreground";
+  if (matchType === "face_detected") return "bg-amber-500/15 text-amber-800 dark:bg-amber-950 dark:text-amber-300";
+  if (isTranscriptMatch(matchType)) return "bg-sky-500/15 text-sky-800 dark:bg-sky-950 dark:text-sky-300";
+  if (matchType === "gemini_visual") return "bg-emerald-500/15 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300";
+  if (matchType.startsWith("svs_visual")) return "bg-emerald-500/15 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300";
+  return "bg-muted text-muted-foreground";
 }
 
 function matchLabel(matchType: string, score: number | null): string {

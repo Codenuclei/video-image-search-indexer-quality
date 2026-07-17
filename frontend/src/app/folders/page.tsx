@@ -3,7 +3,7 @@
 import { useEffect, useState, useMemo, useCallback } from "react";
 import Script from "next/script";
 import { apiClient, type FolderContext, type DriveFile, type IndexStatus, type DriveSession, type Settings, API_BASE } from "@/lib/api";
-import { Button, Card, Input } from "@/components/ui";
+import { Button, Card, Input, LoadingLabel, Spinner } from "@/components/ui";
 import { formatDate } from "@/lib/utils";
 
 declare global {
@@ -286,7 +286,7 @@ export default function FoldersPage() {
         </div>
         <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
           <Button className="w-full sm:w-auto" onClick={() => runIndex(false)} disabled={busy || status?.is_running}>
-            {status?.is_running ? "Indexing..." : "Start Index"}
+            {status?.is_running || busy ? <LoadingLabel>Indexing…</LoadingLabel> : "Start Index"}
           </Button>
           <Button className="w-full sm:w-auto" variant="secondary" onClick={() => runIndex(true)} disabled={busy || status?.is_running}>
             Reindex All
@@ -316,7 +316,13 @@ export default function FoldersPage() {
             {driveSession?.connected ? (
               <>
                 <Button className="w-full sm:w-auto" onClick={openPicker} disabled={pickerBusy}>
-                  {pickerBusy ? "Opening…" : driveSession.selected_folder ? "Change folder" : "Choose folder"}
+                  {pickerBusy ? (
+                    <LoadingLabel>Opening…</LoadingLabel>
+                  ) : driveSession.selected_folder ? (
+                    "Change folder"
+                  ) : (
+                    "Choose folder"
+                  )}
                 </Button>
                 <Button className="w-full sm:w-auto" variant="secondary" onClick={disconnectDrive}>Disconnect</Button>
               </>
@@ -352,7 +358,8 @@ export default function FoldersPage() {
       <Card className={status?.is_running ? "border-blue-800 bg-blue-950/20" : ""}>
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <p className="text-sm font-medium">
+            <p className="flex items-center gap-2 text-sm font-medium">
+              {status?.is_running && <Spinner size={14} />}
               {status?.is_running ? "Indexing in progress" : "Indexer status"}
             </p>
             {status?.is_running && status.current_file ? (
@@ -464,7 +471,7 @@ export default function FoldersPage() {
                       />
                       <div className="flex gap-2">
                         <Button onClick={() => saveFolderContext(fp)} disabled={isSaving}>
-                          {isSaving ? "Saving…" : "Save & embed"}
+                          {isSaving ? <LoadingLabel>Saving…</LoadingLabel> : "Save & embed"}
                         </Button>
                         <Button variant="secondary" onClick={() => setEditingFolder(null)}>
                           Cancel

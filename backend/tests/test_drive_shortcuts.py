@@ -10,7 +10,7 @@ def test_real_folder_is_listed_and_traversed():
     assert plan.traverse_folder_id == "f1"
 
 
-def test_folder_shortcut_is_traversed_not_listed_when_enabled():
+def test_folder_shortcut_is_listed_and_traversed_when_enabled():
     plan = plan_child_traversal(
         {
             "id": "sc1",
@@ -23,7 +23,7 @@ def test_folder_shortcut_is_traversed_not_listed_when_enabled():
         },
         follow_shortcuts=True,
     )
-    assert plan.include_in_listing is False
+    assert plan.include_in_listing is True
     assert plan.traverse_folder_id == "real-folder-id"
     assert plan.path_segment == "UG iPhone Data"
 

@@ -51,6 +51,154 @@ async def list_drive_files(
     return list((await session.execute(stmt)).scalars().all())
 
 
+@router.get("/files/lookup-faces")
+async def lookup_file_faces(
+    name: str,
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, object]:
+    """
+    Diagnostic: resolve a Drive file by name substring, list its faces/clusters,
+    and report cosine similarity to named people + nearest other clusters.
+    """
+    from app.config import get_settings
+    from app.db.models import Face, FaceCluster, FaceEmbedding, Media, Person
+    from app.matching.service import cosine_similarity
+    import numpy as np
+
+    needle = (name or "").strip()
+    if len(needle) < 3:
+        raise HTTPException(status_code=400, detail="name must be at least 3 characters")
+
+    df = (
+        await session.execute(
+            select(DriveFile).where(DriveFile.name.ilike(f"%{needle}%")).limit(1)
+        )
+    ).scalar_one_or_none()
+    if df is None:
+        raise HTTPException(status_code=404, detail=f"No drive file matching {needle!r}")
+
+    media = (
+        await session.execute(select(Media).where(Media.drive_file_id == df.id))
+    ).scalar_one_or_none()
+    faces = (
+        list((await session.execute(select(Face).where(Face.media_id == media.id))).scalars().all())
+        if media
+        else []
+    )
+
+    persons = list((await session.execute(select(Person))).scalars().all())
+    person_cents: list[tuple[Person, list[float], int]] = []
+    for person in persons:
+        fems = (
+            await session.execute(
+                select(FaceEmbedding)
+                .join(Face, Face.id == FaceEmbedding.face_id)
+                .where(Face.person_id == person.id)
+                .limit(40)
+            )
+        ).scalars().all()
+        if not fems:
+            continue
+        cent = (
+            sum(np.asarray(x.embedding, dtype=np.float32) for x in fems) / len(fems)
+        ).tolist()
+        person_cents.append((person, cent, len(fems)))
+
+    threshold = get_settings().person_match_threshold
+    face_payloads: list[dict[str, object]] = []
+    for face in faces:
+        cluster = await session.get(FaceCluster, face.cluster_id) if face.cluster_id else None
+        person = await session.get(Person, face.person_id) if face.person_id else None
+        emb_row = await session.get(FaceEmbedding, face.id)
+        area = float(face.bbox_width * face.bbox_height)
+        aspect = float(face.bbox_width / face.bbox_height) if face.bbox_height else 0.0
+        entry: dict[str, object] = {
+            "face_id": face.id,
+            "detection_confidence": face.detection_confidence,
+            "bbox": {
+                "x": face.bbox_x,
+                "y": face.bbox_y,
+                "w": face.bbox_width,
+                "h": face.bbox_height,
+                "area": area,
+                "aspect_w_h": aspect,
+            },
+            "cluster_id": face.cluster_id,
+            "cluster_status": cluster.status.value if cluster else None,
+            "cluster_member_count": cluster.member_count if cluster else None,
+            "person_id": face.person_id,
+            "person_name": person.name if person else None,
+            "match_threshold": threshold,
+        }
+        if emb_row is not None:
+            vs_persons = sorted(
+                (
+                    {
+                        "similarity": round(cosine_similarity(list(emb_row.embedding), cent), 4),
+                        "person_id": p.id,
+                        "person_name": p.name,
+                        "sample_faces": n,
+                    }
+                    for p, cent, n in person_cents
+                ),
+                key=lambda x: float(x["similarity"]),
+                reverse=True,
+            )[:8]
+            entry["vs_named_people"] = vs_persons
+
+            if cluster is not None and cluster.centroid is not None:
+                others = (
+                    await session.execute(
+                        select(FaceCluster).where(
+                            FaceCluster.centroid.isnot(None),
+                            FaceCluster.id != cluster.id,
+                        )
+                    )
+                ).scalars().all()
+                scored: list[dict[str, object]] = []
+                for other in others:
+                    sim = cosine_similarity(list(cluster.centroid), list(other.centroid))
+                    other_person = (
+                        await session.get(Person, other.person_id) if other.person_id else None
+                    )
+                    scored.append(
+                        {
+                            "similarity": round(sim, 4),
+                            "cluster_id": other.id,
+                            "status": other.status.value,
+                            "member_count": other.member_count,
+                            "person_id": other.person_id,
+                            "person_name": other_person.name if other_person else None,
+                            "representative_face_id": other.representative_face_id,
+                            "band": (
+                                "auto_match"
+                                if sim >= threshold
+                                else "near_miss"
+                                if sim >= threshold - 0.15
+                                else "weak"
+                            ),
+                        }
+                    )
+                scored.sort(key=lambda x: float(x["similarity"]), reverse=True)
+                entry["vs_clusters_top"] = scored[:15]
+                entry["near_miss_named"] = [
+                    s for s in scored if s["band"] == "near_miss" and s["person_name"]
+                ][:10]
+        face_payloads.append(entry)
+
+    return {
+        "file": {
+            "id": df.id,
+            "name": df.name,
+            "path": df.path,
+            "status": df.status.value if hasattr(df.status, "value") else str(df.status),
+        },
+        "media_id": media.id if media else None,
+        "person_match_threshold": threshold,
+        "faces": face_payloads,
+    }
+
+
 @router.get("/library")
 async def drive_library(session: AsyncSession = Depends(get_db)) -> dict[str, object]:
     """Folder-wise library tree with caption/embed/index status per file."""

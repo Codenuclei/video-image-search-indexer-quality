@@ -32,7 +32,7 @@ GOOGLE_EXPORT_MIME: dict[str, str] = {
     "application/vnd.google-apps.presentation": "text/plain",
     "application/vnd.google-apps.drawing": "image/png",
 }
-MAX_ENTRIES = 5_000
+MAX_ENTRIES = 100_000
 _DRIVE_BASE = "https://www.googleapis.com/drive/v3"
 
 
@@ -162,6 +162,7 @@ class DriveDirectClient:
 
         results: list[ConnectorFile] = []
         truncated = False
+        file_count = 0
         visited_folders: set[str] = set()
 
         queue: list[tuple[str, list[str]]] = [(root_folder_id, [])]
@@ -176,39 +177,58 @@ class DriveDirectClient:
                 children = await _list_children(client, folder_id, access_token)
 
                 for child in children:
-                    if len(results) >= MAX_ENTRIES:
-                        truncated = True
-                        break
-
                     plan = plan_child_traversal(child, follow_shortcuts=follow_shortcuts)
                     child_path = "/".join([*path_parts, plan.path_segment]) if plan.path_segment else ""
-                    is_folder = child["mimeType"] == FOLDER_MIME
+                    child_mime = child.get("mimeType") or ""
+                    is_folder = child_mime == FOLDER_MIME or (
+                        child_mime == SHORTCUT_MIME
+                        and (child.get("shortcutDetails") or {}).get("targetMimeType") == FOLDER_MIME
+                    )
 
                     if plan.include_in_listing:
-                        results.append(
-                            ConnectorFile.model_validate(
-                                {
-                                    "id": child["id"],
-                                    "name": child["name"],
-                                    "mimeType": child["mimeType"],
-                                    "isFolder": is_folder,
-                                    "size": child.get("size"),
-                                    "modifiedTime": child.get("modifiedTime"),
-                                    "parentId": folder_id,
-                                    "path": child_path,
-                                }
+                        if not is_folder and file_count >= MAX_ENTRIES:
+                            truncated = True
+                        else:
+                            results.append(
+                                ConnectorFile.model_validate(
+                                    {
+                                        "id": child["id"],
+                                        "name": child["name"],
+                                        "mimeType": FOLDER_MIME if is_folder else child["mimeType"],
+                                        "isFolder": is_folder,
+                                        "size": child.get("size"),
+                                        "modifiedTime": child.get("modifiedTime"),
+                                        "parentId": folder_id,
+                                        "path": child_path,
+                                    }
+                                )
                             )
-                        )
+                            if not is_folder:
+                                file_count += 1
 
+                    # Always walk the tree so folder markers and remaining files are discovered.
                     if plan.traverse_folder_id and plan.traverse_folder_id not in visited_folders:
                         queue.append((plan.traverse_folder_id, [*path_parts, plan.path_segment]))
+                    elif (
+                        plan.traverse_folder_id
+                        and plan.traverse_folder_id in visited_folders
+                        and is_folder
+                        and plan.path_segment
+                    ):
+                        logger.info(
+                            "Drive shortcut %r → already-visited folder %s (path=/%s); "
+                            "files stay under the first path",
+                            child.get("name"),
+                            plan.traverse_folder_id,
+                            child_path,
+                        )
 
-                if truncated:
-                    break
-
-        if follow_shortcuts:
-            logger.debug(
-                "Drive listing followed folder shortcuts (%d folders visited)",
+        if truncated:
+            logger.warning(
+                "Drive listing hit MAX_ENTRIES=%d (files=%d folders_visited=%d). "
+                "Raise cap or narrow the selected root — some files may be missing from Library.",
+                MAX_ENTRIES,
+                file_count,
                 len(visited_folders),
             )
 
