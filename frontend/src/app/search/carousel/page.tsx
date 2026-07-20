@@ -59,15 +59,10 @@ export default function CarouselSearchPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [preview, setPreview] = useState<SearchMoment | null>(null);
-  const [addedCount, setAddedCount] = useState<number | null>(null);
   const railRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     apiClient.persons().then(setPersons).catch(() => setPersons([]));
-    apiClient
-      .youtubeVideos()
-      .then((v) => setAddedCount(v.length))
-      .catch(() => setAddedCount(null));
   }, []);
 
   useEffect(() => {
@@ -84,7 +79,6 @@ export default function CarouselSearchPage() {
       const params = new URLSearchParams({
         q: q.trim(),
         mime: "video",
-        source: "youtube",
       });
       if (person) params.set("person", person);
       const res = await fetch(`${API_BASE}/search?${params}`, { cache: "no-store" });
@@ -113,17 +107,14 @@ export default function CarouselSearchPage() {
       <div>
         <h2 className="text-xl font-semibold sm:text-2xl">Carousel Search</h2>
         <p className="text-sm text-muted-foreground">
-          Find moments in videos you added (YouTube library only). Results swipe as a carousel.
-          {addedCount != null && (
-            <span className="ml-1 text-foreground/80">· {addedCount} added video(s)</span>
-          )}
+          Find moments across all indexed videos (Drive + YouTube). Results swipe as a carousel.
         </p>
       </div>
 
       <div className="max-w-3xl space-y-2">
         <Input
           className="w-full"
-          placeholder="Search added videos (e.g. lecture, whiteboard, person speaking)…"
+          placeholder="Search all videos (e.g. lecture, whiteboard, person speaking)…"
           value={q}
           onChange={(e) => setQ(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && search()}
@@ -150,7 +141,7 @@ export default function CarouselSearchPage() {
 
       {loading && (
         <p className="text-sm text-muted-foreground">
-          <LoadingLabel size={16}>Searching added videos…</LoadingLabel>
+          <LoadingLabel size={16}>Searching all videos…</LoadingLabel>
         </p>
       )}
 
@@ -161,7 +152,7 @@ export default function CarouselSearchPage() {
       {!loading && moments.length === 0 && !error && (
         <Card>
           <p className="text-sm text-muted-foreground">
-            No moments yet. Add YouTube videos on Folders, wait for indexing, then search here.
+            No moments yet. Index videos on Folders, then search here.
           </p>
         </Card>
       )}
