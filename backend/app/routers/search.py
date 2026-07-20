@@ -135,6 +135,7 @@ async def search(
     person: str | None = None,
     mime: str | None = None,
     folder_path: str | None = None,
+    source: str | None = None,
     rerank: bool = True,
     captions: bool = False,
     session: AsyncSession = Depends(get_db),
@@ -147,6 +148,12 @@ async def search(
     mime_filter = (mime or "all").strip().lower()
     if mime_filter not in ("all", "image", "pdf", "video"):
         raise HTTPException(status_code=400, detail="mime must be all, image, pdf, or video")
+
+    source_filter = (source or "all").strip().lower()
+    if source_filter not in ("all", "youtube", "drive"):
+        raise HTTPException(status_code=400, detail="source must be all, youtube, or drive")
+    if source_filter == "all":
+        source_filter = None
 
     effective_persons, visual_query, role_ctx = await resolve_search_context(session, query, person)
 
@@ -381,6 +388,7 @@ async def search(
         folder_context=folder_description,
         rerank=use_rerank,
         action_query=action_query,
+        source=source_filter,
     )
     if len(effective_persons) > 1:
         required = {p.lower() for p in effective_persons}

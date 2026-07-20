@@ -35,6 +35,7 @@ async def search_video_moments(
     folder_context: str | None = None,
     rerank: bool = True,
     action_query: bool | None = None,
+    source: str | None = None,
 ) -> list[SearchMoment]:
     settings = get_settings()
     if not settings.video_indexing_enabled:
@@ -47,6 +48,9 @@ async def search_video_moments(
     is_action = action_query if action_query is not None else is_action_query(search_text)
     use_rerank = rerank and get_runtime_settings().search_rerank_enabled
     strict = True
+    source_filter = (source or "").strip().lower() or None
+    if source_filter in ("", "all"):
+        source_filter = None
 
     # Resolve best face thumbnail for person-context re-ranking
     face_thumbnail_path: str | None = None
@@ -114,7 +118,36 @@ async def search_video_moments(
         transcript_reranked=transcript_reranked,
         use_rerank=use_rerank,
     )
+    if source_filter:
+        merged = await _filter_moments_by_source(session, merged, source_filter)
     return merged[:settings.gemini_video_result_limit]
+
+
+async def _filter_moments_by_source(
+    session: AsyncSession,
+    moments: list[SearchMoment],
+    source: str,
+) -> list[SearchMoment]:
+    """Keep moments whose DriveFile.source matches (e.g. youtube-added videos)."""
+    if not moments:
+        return moments
+    ids = list({m.drive_file_id for m in moments})
+    rows = (
+        await session.execute(select(DriveFile.id, DriveFile.source).where(DriveFile.id.in_(ids)))
+    ).all()
+    by_id = {row.id: (row.source or "drive").lower() for row in rows}
+    kept: list[SearchMoment] = []
+    for moment in moments:
+        src = by_id.get(moment.drive_file_id)
+        if src is None and moment.drive_file_id.startswith("yt:"):
+            src = "youtube"
+        if src == source:
+            kept.append(moment)
+        elif source == "youtube" and (
+            moment.drive_file_id.startswith("yt:") or moment.path.startswith("/youtube/")
+        ):
+            kept.append(moment)
+    return kept
 
 
 def _filter_certain_moments(
