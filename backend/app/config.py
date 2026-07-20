@@ -153,7 +153,11 @@ class Settings(BaseSettings):
     reid_enabled: bool = True
     reid_min_face_area_fraction: float = 0.015   # face must be prominent in frame
     reid_min_body_coverage: float = 0.55         # ≥55% of expected full-body extent visible
-    reid_body_match_threshold: float = 0.60      # cosine similarity for candidate links
+    reid_body_match_threshold: float = 0.70      # body cosine alone is never enough for identity
+    # Head/face gate: same gown must NOT propose "Likely {person}" without ArcFace agreement.
+    reid_face_gate_threshold: float = 0.45
+    reid_candidate_face_weight: float = 0.75
+    reid_candidate_body_weight: float = 0.25
     reid_backfill_max_parallel: int = 4
 
     # Append-only reverse-image / people-web identification (face_web_matches).

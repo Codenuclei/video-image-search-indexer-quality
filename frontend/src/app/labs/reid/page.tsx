@@ -86,11 +86,18 @@ function GalleryCard({ item }: { item: ReidGalleryItem }) {
               {item.person_name}
             </p>
           ) : cand?.person_name ? (
-            <p className="flex items-center gap-1.5 font-semibold text-amber-800 dark:text-amber-200">
-              <GitMerge size={14} className="shrink-0" aria-hidden />
-              Likely {cand.person_name}
-              <span className="text-xs font-medium text-muted-foreground">
-                ({Math.round((cand.combined_score ?? 0) * 100)}%)
+            <p className="flex flex-col gap-0.5 font-semibold text-amber-800 dark:text-amber-200">
+              <span className="inline-flex items-center gap-1.5">
+                <GitMerge size={14} className="shrink-0" aria-hidden />
+                Likely {cand.person_name}
+                <span className="text-xs font-medium text-muted-foreground">
+                  ({Math.round((cand.combined_score ?? 0) * 100)}%)
+                </span>
+              </span>
+              <span className="text-[10px] font-medium text-muted-foreground">
+                head {Math.round((cand.face_similarity ?? 0) * 100)}% · body{" "}
+                {Math.round((cand.body_similarity ?? 0) * 100)}%
+                {cand.gated_by_face ? " · face-gated" : ""}
               </span>
             </p>
           ) : (
@@ -194,8 +201,9 @@ export default function ReidLabPage() {
             Body ID Lab
           </h2>
           <p className="mt-1 max-w-xl text-sm text-muted-foreground">
-            Experimental — <strong>YOLOv8n person boxes</strong> (Ultralytics), then Gemini body embed.
-            Not in the menu. Green = person, amber = face.
+            Experimental — <strong>YOLOv8n person boxes</strong>, then Gemini body embed.
+            &quot;Likely&quot; names require <strong>face agreement</strong> (same dress alone is rejected).
+            Green = person, amber = face.
           </p>
         </div>
         <div className="flex shrink-0 flex-wrap gap-2">

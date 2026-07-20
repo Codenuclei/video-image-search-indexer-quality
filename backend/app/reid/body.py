@@ -21,7 +21,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.db.models import BodySignature, DriveFile, Face, Media, MediaType, Person
+from app.db.models import BodySignature, DriveFile, Face, FaceEmbedding, Media, MediaType, Person
 from app.dependencies import get_drive_client
 from app.gemini.video_embeddings import embed_frame_sync
 from app.pipelines.common import (
@@ -336,6 +336,28 @@ async def backfill_body_signatures(
     return stats
 
 
+async def _best_face_similarity_to_person(
+    session: AsyncSession,
+    query_embedding: list[float],
+    person_id: int,
+) -> tuple[float, int | None]:
+    """Best ArcFace cosine similarity between query face and any face of person_id."""
+    dist = FaceEmbedding.embedding.cosine_distance(query_embedding).label("dist")
+    row = (
+        await session.execute(
+            select(FaceEmbedding.face_id, dist)
+            .join(Face, Face.id == FaceEmbedding.face_id)
+            .where(Face.person_id == person_id)
+            .order_by(dist)
+            .limit(1)
+        )
+    ).first()
+    if row is None:
+        return 0.0, None
+    face_id, distance = row
+    return 1.0 - float(distance), int(face_id)
+
+
 async def body_identification_candidates(
     session: AsyncSession,
     *,
@@ -343,12 +365,20 @@ async def body_identification_candidates(
     threshold: float | None = None,
 ) -> list[dict]:
     """
-    Further identification layer: for unlabeled faces with a body signature,
-    propose the nearest named person by clothing/body similarity. A same-folder
-    hit adds a small boost (same shoot → same outfit is far more likely).
+    Head-first identity proposals.
+
+    Body/clothing similarity alone is rejected (same graduation gown ≠ same person).
+    Flow:
+      1) Start from unlabeled face + its body crop embedding.
+      2) Rank named people by body similarity (shortlist).
+      3) Keep only shortlist entries whose ArcFace embedding also matches that person.
+      4) Score = face-weighted + body-weighted (face dominates).
     """
     settings = get_settings()
-    threshold = threshold if threshold is not None else settings.reid_body_match_threshold
+    body_threshold = threshold if threshold is not None else settings.reid_body_match_threshold
+    face_gate = settings.reid_face_gate_threshold
+    w_face = settings.reid_candidate_face_weight
+    w_body = settings.reid_candidate_body_weight
 
     unlabeled = (
         (
@@ -365,42 +395,70 @@ async def body_identification_candidates(
 
     candidates: list[dict] = []
     for sig in unlabeled:
+        face_emb = await session.get(FaceEmbedding, sig.face_id)
+        if face_emb is None or face_emb.embedding is None:
+            # No head embedding → cannot propose identity from dress.
+            continue
+
+        query_face = list(face_emb.embedding)
+        if not query_face:
+            continue
+
         dist = BodySignature.embedding.cosine_distance(sig.embedding).label("dist")
-        nearest = (
+        shortlist = (
             await session.execute(
                 select(BodySignature, dist)
                 .where(BodySignature.person_id.is_not(None))
                 .order_by(dist)
-                .limit(1)
+                .limit(8)
             )
-        ).first()
-        if nearest is None:
-            continue
-        match_sig, distance = nearest
-        similarity = 1.0 - float(distance)
-        if similarity < threshold:
+        ).all()
+        if not shortlist:
             continue
 
-        person = await session.get(Person, match_sig.person_id)
-        src_path = await _file_path_for_media(session, sig.media_id)
-        match_path = await _file_path_for_media(session, match_sig.media_id)
-        same_folder = bool(
-            src_path and match_path and os.path.dirname(src_path) == os.path.dirname(match_path)
-        )
-        candidates.append(
-            {
+        best: dict | None = None
+        for match_sig, distance in shortlist:
+            body_similarity = 1.0 - float(distance)
+            if body_similarity < body_threshold:
+                continue
+            if match_sig.person_id is None:
+                continue
+
+            face_similarity, matched_face_id = await _best_face_similarity_to_person(
+                session, query_face, match_sig.person_id
+            )
+            # Hard gate: head must agree. Same outfit without face match is dropped.
+            if face_similarity < face_gate:
+                continue
+
+            person = await session.get(Person, match_sig.person_id)
+            src_path = await _file_path_for_media(session, sig.media_id)
+            match_path = await _file_path_for_media(session, match_sig.media_id)
+            same_folder = bool(
+                src_path and match_path and os.path.dirname(src_path) == os.path.dirname(match_path)
+            )
+            combined = (w_face * face_similarity) + (w_body * body_similarity)
+            if same_folder:
+                combined = min(combined + 0.03, 1.0)
+            entry = {
                 "face_id": sig.face_id,
-                "matched_face_id": match_sig.face_id,
+                "matched_face_id": matched_face_id or match_sig.face_id,
                 "person_id": match_sig.person_id,
                 "person_name": person.name if person else None,
-                "body_similarity": round(similarity, 4),
+                "body_similarity": round(body_similarity, 4),
+                "face_similarity": round(face_similarity, 4),
                 "same_folder": same_folder,
-                "combined_score": round(min(similarity + (0.05 if same_folder else 0.0), 1.0), 4),
+                "combined_score": round(combined, 4),
                 "source_path": src_path,
                 "matched_path": match_path,
                 "is_full_body": sig.is_full_body,
+                "gated_by_face": True,
             }
-        )
+            if best is None or entry["combined_score"] > best["combined_score"]:
+                best = entry
+
+        if best is not None:
+            candidates.append(best)
 
     candidates.sort(key=lambda c: c["combined_score"], reverse=True)
     return candidates

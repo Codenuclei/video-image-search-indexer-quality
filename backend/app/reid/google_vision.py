@@ -34,11 +34,12 @@ class VisionKey:
 
 
 def _vision_key() -> VisionKey | None:
+    """Prefer Gemini key — same AI Studio/gen-lang-client project we already use."""
     settings = get_settings()
     candidates = (
         (settings.google_vision_api_key, "GOOGLE_VISION_API_KEY"),
-        (settings.google_api_key, "GOOGLE_API_KEY"),
         (settings.gemini_api_key, "GEMINI_API_KEY"),
+        (settings.google_api_key, "GOOGLE_API_KEY"),
     )
     for value, source in candidates:
         if value:
