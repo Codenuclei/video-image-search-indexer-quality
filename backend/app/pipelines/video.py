@@ -223,7 +223,18 @@ async def process_video_file(
 
     if is_youtube_source(drive_file):
         if not os.path.isfile(dest) or os.path.getsize(dest) <= 0:
-            raise FileNotFoundError(f"YouTube local cache missing for {drive_file.id}: {dest}")
+            # Download may have been skipped, or older builds wrote a bad path from
+            # title-based "extensions" (e.g. "Ep. #5"). Fetch onto the canonical path.
+            from app.video.youtube_local import ensure_youtube_video_local
+            from app.video.youtube_registry import youtube_id_from_drive_file
+
+            yt_id = youtube_id_from_drive_file(drive_file)
+            if not yt_id:
+                raise FileNotFoundError(f"YouTube local cache missing for {drive_file.id}: {dest}")
+            drive_file, _downloaded = await ensure_youtube_video_local(session, yt_id)
+            dest = _video_cache_path(settings, drive_file)
+            if not os.path.isfile(dest) or os.path.getsize(dest) <= 0:
+                raise FileNotFoundError(f"YouTube local cache missing for {drive_file.id}: {dest}")
         logger.info("Using shared YouTube library file: %s", dest)
     elif os.path.isfile(dest) and os.path.getsize(dest) > 0:
         logger.info("Reusing cached video: %s", dest)

@@ -350,11 +350,13 @@ export type ReidCandidate = {
   person_id: number | null;
   person_name: string | null;
   body_similarity: number;
+  face_similarity?: number;
   same_folder: boolean;
   combined_score: number;
   source_path: string | null;
   matched_path: string | null;
   is_full_body: boolean;
+  gated_by_face?: boolean;
 };
 
 export type ReidGalleryItem = {
