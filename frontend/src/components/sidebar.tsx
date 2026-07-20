@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import {
   FolderOpen,
+  GalleryHorizontal,
   HardDrive,
   Home,
   LifeBuoy,
@@ -28,10 +29,17 @@ const links = [
   { href: "/review", label: "Review Queue", icon: UserCheck, mobile: true },
   { href: "/people", label: "People", icon: Users, mobile: true },
   { href: "/search", label: "Search", icon: Search, mobile: true },
+  { href: "/search/carousel", label: "Carousel Search", icon: GalleryHorizontal, mobile: false },
   { href: "/library", label: "Library", icon: HardDrive, mobile: true },
   { href: "/folders", label: "Folders", icon: FolderOpen, mobile: true },
   { href: "/settings", label: "Settings", icon: Settings, mobile: false },
 ];
+
+function navActive(pathname: string, href: string): boolean {
+  if (href === "/") return pathname === "/";
+  if (href === "/search") return pathname === "/search";
+  return pathname === href || pathname.startsWith(`${href}/`);
+}
 
 function BrandMark({ compact = false }: { compact?: boolean }) {
   return (
@@ -75,7 +83,7 @@ function NavLinks({
             vertical
               ? "flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-150"
               : "flex min-h-11 min-w-0 flex-1 flex-col items-center justify-center gap-1 rounded-lg px-1 py-2 text-[10px] font-medium transition-colors",
-            pathname === href
+            navActive(pathname, href)
               ? vertical
                 ? "bg-sidebar-primary text-sidebar-primary-foreground shadow-sm"
                 : "text-primary"
@@ -161,7 +169,9 @@ export function Sidebar() {
     };
   }, [menuOpen]);
 
-  const currentPage = links.find((l) => l.href === pathname)?.label ?? "DriveFaceIndexer";
+  const currentPage =
+    links.find((l) => navActive(pathname, l.href) && l.href !== "/")?.label ??
+    (pathname === "/" ? "Dashboard" : "DriveFaceIndexer");
 
   return (
     <>
