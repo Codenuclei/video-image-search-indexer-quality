@@ -118,6 +118,16 @@ export type SkipStats = {
   by_reason: { reason: string; count: number }[];
 };
 
+export type RetrySkippedByReasonResult = {
+  ok: boolean;
+  reason: string;
+  requeued: number;
+  ineligible: number;
+  action: "requeue" | "resume_paused" | "unsupported" | string;
+  message: string;
+  folders_resumed?: number;
+};
+
 export type IndexErrorsPage = {
   total: number;
   offset: number;
@@ -922,6 +932,11 @@ export const apiClient = {
   indexStatus: () => api<IndexStatus>("/index"),
   goIndexerStatus: () => api<GoIndexerStatus>("/index/go/status"),
   skipStats: () => api<SkipStats>("/index/skip-stats"),
+  retrySkippedByReason: (reason: string) =>
+    api<RetrySkippedByReasonResult>("/index/skipped/retry", {
+      method: "POST",
+      body: JSON.stringify({ reason }),
+    }),
   indexErrors: (limit = 50, offset = 0) => {
     const params = new URLSearchParams({
       limit: String(limit),
