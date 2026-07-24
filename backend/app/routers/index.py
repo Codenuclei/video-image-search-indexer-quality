@@ -20,6 +20,7 @@ from app.schemas import (
     IndexLaneSlots,
     IndexRunResult,
     IndexStatus,
+    RetrySkippedByReasonIn,
 )
 from app.workers.indexer import IndexingWorker
 from app.workers.go_indexer_state import (
@@ -338,6 +339,8 @@ async def caption_stats(session: AsyncSession = Depends(get_db)) -> dict[str, ob
 @router.get("/index/skip-stats")
 async def skip_stats(session: AsyncSession = Depends(get_db)) -> dict[str, object]:
     """Aggregate skipped *media* by reason — folder markers are not skips."""
+    from app.workers.requeue_failed import normalize_skip_reason
+
     rows = (
         await session.execute(
             select(DriveFile.error_message, func.count())
@@ -354,23 +357,42 @@ async def skip_stats(session: AsyncSession = Depends(get_db)) -> dict[str, objec
     for msg, count in rows:
         n = int(count)
         total += n
-        raw = (msg or "unknown").strip()
-        if raw.startswith("indexing_paused"):
-            key = "indexing_paused"
-        elif raw.startswith("Unsupported mime type"):
-            key = "unsupported_mime"
-        elif raw.startswith("corrupt_file"):
-            key = "corrupt_file"
-        elif raw.startswith("decode_exhausted"):
-            key = "decode_exhausted"
-        else:
-            key = raw.split(":")[0][:64] if raw else "unknown"
+        key = normalize_skip_reason(msg)
         by_reason[key] = by_reason.get(key, 0) + n
     ranked = sorted(
         [{"reason": k, "count": v} for k, v in by_reason.items()],
         key=lambda x: -x["count"],
     )
     return {"total_skipped": total, "by_reason": ranked}
+
+
+@router.post("/index/skipped/retry")
+async def retry_skipped_by_reason(
+    body: RetrySkippedByReasonIn,
+    background_tasks: BackgroundTasks,
+    worker: IndexingWorker = Depends(get_indexing_worker),
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, object]:
+    """Re-queue (or resume) all media skipped for a given skip-stats reason key.
+
+    ``indexing_paused`` resumes paused folders (Library resume path).
+    ``unsupported_mime`` returns without requeueing.
+    Other reasons clear the skip and set files to PENDING.
+    """
+    from app.workers.requeue_failed import requeue_skipped_by_reason as _retry
+
+    reason = (body.reason or "").strip()
+    if not reason:
+        raise HTTPException(status_code=400, detail="reason is required")
+
+    result = await _retry(session, reason)
+    await session.commit()
+
+    requeued = int(result.get("requeued") or 0)
+    if requeued > 0 and not worker.is_running:
+        background_tasks.add_task(_run_cycle, worker)
+
+    return {"ok": True, **result}
 
 
 @router.get("/index/errors")

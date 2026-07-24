@@ -13,7 +13,7 @@ import {
   type SkipStats,
   API_BASE,
 } from "@/lib/api";
-import { Button, Card, Input, LoadingLabel, Spinner } from "@/components/ui";
+import { Button, Card, ConfirmDialog, Input, LoadingLabel, Spinner } from "@/components/ui";
 import { IndexErrorCard } from "@/components/index-error-card";
 import { ModalOverlay } from "@/components/modal";
 import { formatCount, humanizeIndexError, skipReasonMeta } from "@/lib/index-errors";
@@ -72,6 +72,10 @@ export default function FoldersPage() {
   const [queueTotal, setQueueTotal] = useState(0);
   const [queueItems, setQueueItems] = useState<DriveFile[]>([]);
   const [queueLoading, setQueueLoading] = useState(false);
+  const [retryingReason, setRetryingReason] = useState<string | null>(null);
+  const [confirmRetry, setConfirmRetry] = useState<{ reason: string; count: number; label: string } | null>(
+    null
+  );
 
   async function load() {
     try {
@@ -251,6 +255,54 @@ export default function FoldersPage() {
     } finally {
       setBusy(false);
     }
+  }
+
+  async function retryAllForReason(reason: string) {
+    setRetryingReason(reason);
+    setConfirmRetry(null);
+    try {
+      const res = await apiClient.retrySkippedByReason(reason);
+      if (res.action === "unsupported") {
+        toast.message(skipReasonMeta(reason).label, {
+          description: res.message || "These files cannot be indexed.",
+        });
+      } else if (res.requeued > 0) {
+        toast.success(
+          res.action === "resume_paused" ? "Folders resumed" : "Requeued for indexing",
+          {
+            description:
+              res.message ||
+              `${formatCount(res.requeued)} file${res.requeued === 1 ? "" : "s"} queued`,
+          }
+        );
+      } else {
+        toast.message("Nothing to retry", {
+          description: res.message || "No eligible files for this skip reason.",
+        });
+      }
+      await load();
+      if (queueOpen) await loadQueue(queueStatus, queueOffset);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Retry all failed";
+      toast.error("Retry all failed", { description: msg });
+    } finally {
+      setRetryingReason(null);
+    }
+  }
+
+  function requestRetryAll(reason: string, count: number) {
+    const meta = skipReasonMeta(reason);
+    if (!meta.retryable) {
+      toast.message(meta.label, {
+        description: "These skips cannot be requeued for indexing.",
+      });
+      return;
+    }
+    if (count > 100) {
+      setConfirmRetry({ reason, count, label: meta.label });
+      return;
+    }
+    void retryAllForReason(reason);
   }
 
   async function removeFile(id: string) {
@@ -611,36 +663,69 @@ export default function FoldersPage() {
           <div className="mt-4 border-t border-border/50 pt-4">
             {topSkipReasons.length > 0 && (
               <>
-                <div className="mb-3">
-                  <p className="text-sm font-medium text-foreground">Top skip reasons</p>
-                  <p className="text-xs text-muted-foreground">
-                    Why files were skipped
-                    {skipStats?.total_skipped != null
-                      ? ` · ${formatCount(skipStats.total_skipped)} total`
-                      : ""}
-                  </p>
+                <div className="mb-3 flex flex-wrap items-end justify-between gap-2">
+                  <div>
+                    <p className="text-sm font-medium text-foreground">Top skip reasons</p>
+                    <p className="text-xs text-muted-foreground">
+                      Why files were skipped
+                      {skipStats?.total_skipped != null
+                        ? ` · ${formatCount(skipStats.total_skipped)} total`
+                        : ""}
+                      {" · "}retry a reason to requeue those files
+                    </p>
+                  </div>
                 </div>
-                <ul className="space-y-2.5">
+                <ul className="divide-y divide-border/50 overflow-hidden rounded-lg border border-border/60 bg-muted/10">
                   {topSkipReasons.map((r) => {
                     const meta = skipReasonMeta(r.reason);
-                    const pct = Math.max(4, Math.round((r.count / maxSkipCount) * 100));
+                    const pct = Math.max(6, Math.round((r.count / maxSkipCount) * 100));
+                    const rowBusy = retryingReason === r.reason;
+                    const anyBusy = retryingReason != null;
                     return (
-                      <li key={r.reason} className="rounded-lg border border-border/50 bg-muted/15 px-3 py-2.5">
-                        <div className="flex items-baseline justify-between gap-3">
-                          <div className="min-w-0">
-                            <p className="truncate text-sm font-medium text-foreground">{meta.label}</p>
-                            <p className="truncate text-xs text-muted-foreground">{meta.hint}</p>
+                      <li
+                        key={r.reason}
+                        className="relative px-3 py-2.5 transition-colors hover:bg-muted/25"
+                      >
+                        <div
+                          className="pointer-events-none absolute inset-y-0 left-0 bg-muted-foreground/10"
+                          style={{ width: `${pct}%` }}
+                          aria-hidden
+                        />
+                        <div className="relative flex flex-wrap items-center gap-2 sm:gap-3">
+                          <div className="min-w-0 flex-1">
+                            <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                              <p className="truncate text-sm font-medium text-foreground">
+                                {meta.label}
+                              </p>
+                              <span className="shrink-0 rounded-md bg-background/80 px-1.5 py-0.5 text-xs font-semibold tabular-nums text-foreground ring-1 ring-border/60">
+                                {formatCount(r.count)}
+                              </span>
+                            </div>
+                            <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                              {meta.hint}
+                            </p>
                           </div>
-                          <span className="shrink-0 tabular-nums text-sm font-semibold text-foreground">
-                            {formatCount(r.count)}
-                          </span>
-                        </div>
-                        <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted/60">
-                          <div
-                            className="h-full rounded-full bg-muted-foreground/35"
-                            style={{ width: `${pct}%` }}
-                            aria-hidden
-                          />
+                          {meta.retryable ? (
+                            <Button
+                              variant="secondary"
+                              className="shrink-0 px-2.5 py-1.5 text-xs"
+                              disabled={anyBusy || busy}
+                              onClick={() => requestRetryAll(r.reason, r.count)}
+                            >
+                              {rowBusy ? (
+                                <LoadingLabel>{meta.retryLabel}…</LoadingLabel>
+                              ) : (
+                                meta.retryLabel
+                              )}
+                            </Button>
+                          ) : (
+                            <span
+                              className="shrink-0 rounded-md px-2 py-1 text-[11px] text-muted-foreground"
+                              title={meta.hint}
+                            >
+                              {meta.retryLabel}
+                            </span>
+                          )}
                         </div>
                       </li>
                     );
@@ -909,6 +994,20 @@ export default function FoldersPage() {
           </div>
         </Card>
       </ModalOverlay>
+
+      <ConfirmDialog
+        open={confirmRetry != null}
+        title={`Retry ${confirmRetry?.label ?? "skipped files"}?`}
+        message={`This will requeue ${formatCount(confirmRetry?.count ?? 0)} file${
+          (confirmRetry?.count ?? 0) === 1 ? "" : "s"
+        }. Large batches can keep the indexer busy for a while.`}
+        confirmLabel="Retry all"
+        variant="primary"
+        onCancel={() => setConfirmRetry(null)}
+        onConfirm={() => {
+          if (confirmRetry) void retryAllForReason(confirmRetry.reason);
+        }}
+      />
     </div>
   );
 }

@@ -1,40 +1,59 @@
 /** Human-readable labels for indexer skip-reason keys from /index/skip-stats. */
 const SKIP_REASON_META: Record<
   string,
-  { label: string; hint: string }
+  { label: string; hint: string; retryable: boolean; retryLabel: string }
 > = {
   indexing_paused: {
     label: "Indexing paused",
     hint: "Parent folder was stopped from indexing",
+    retryable: true,
+    retryLabel: "Resume & retry all",
   },
   folder_marker: {
     label: "Folder entries",
     hint: "Drive folders tracked as markers, not media",
+    retryable: false,
+    retryLabel: "Can't retry",
   },
   unsupported_mime: {
     label: "Unsupported type",
     hint: "File type is not indexed (docs, archives, etc.)",
+    retryable: false,
+    retryLabel: "Can't retry",
   },
   decode_exhausted: {
     label: "Decode failed",
     hint: "Image/video could not be decoded after retries",
+    retryable: true,
+    retryLabel: "Retry all",
   },
   corrupt_file: {
     label: "Corrupt file",
     hint: "File appears damaged or unreadable",
+    retryable: true,
+    retryLabel: "Retry all",
   },
   unknown: {
     label: "Other",
     hint: "Skipped for an unclassified reason",
+    retryable: true,
+    retryLabel: "Retry all",
   },
 };
 
-export function skipReasonMeta(reason: string): { label: string; hint: string } {
+export function skipReasonMeta(reason: string): {
+  label: string;
+  hint: string;
+  retryable: boolean;
+  retryLabel: string;
+} {
   const key = (reason || "unknown").trim();
   return (
     SKIP_REASON_META[key] ?? {
       label: key.replace(/_/g, " "),
       hint: "Skipped during indexing",
+      retryable: true,
+      retryLabel: "Retry all",
     }
   );
 }

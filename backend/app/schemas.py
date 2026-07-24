@@ -85,6 +85,12 @@ class GoIndexerStatusOut(BaseModel):
     last_reported_at: datetime | None = None
 
 
+class RetrySkippedByReasonIn(BaseModel):
+    """POST /index/skipped/retry — requeue or resume all skips for one reason key."""
+
+    reason: str
+
+
 class GoIndexerReportIn(BaseModel):
     files_ok: int = 0
     files_err: int = 0
