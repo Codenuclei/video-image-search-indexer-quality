@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Inter } from "next/font/google";
+import { Toaster } from "sonner";
 import "./globals.css";
 import { Sidebar } from "@/components/sidebar";
 import { AuthGate } from "@/components/auth-gate";
@@ -38,6 +39,20 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             </main>
           </div>
         </AuthGate>
+        <Toaster
+          position="bottom-center"
+          theme="dark"
+          richColors
+          closeButton
+          toastOptions={{
+            classNames: {
+              toast:
+                "border border-zinc-700/80 bg-zinc-950/95 text-zinc-100 shadow-xl backdrop-blur-sm",
+              description: "text-zinc-400 text-xs",
+              title: "text-sm font-medium text-zinc-100",
+            },
+          }}
+        />
       </body>
     </html>
   );

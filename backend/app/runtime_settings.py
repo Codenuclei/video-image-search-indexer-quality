@@ -17,6 +17,7 @@ class RuntimeSettings:
     search_parallel_variants_enabled: bool
     search_use_captions: bool
     search_rerank_enabled: bool
+    go_indexer_enabled: bool
 
 
 _runtime: RuntimeSettings | None = None
@@ -35,6 +36,7 @@ def _env_defaults() -> RuntimeSettings:
         search_parallel_variants_enabled=settings.search_parallel_variants_enabled,
         search_use_captions=settings.search_use_captions,
         search_rerank_enabled=settings.search_rerank_enabled,
+        go_indexer_enabled=settings.go_indexer_enabled,
     )
 
 
@@ -62,6 +64,7 @@ def update_runtime_settings(
     search_parallel_variants_enabled: bool | None = None,
     search_use_captions: bool | None = None,
     search_rerank_enabled: bool | None = None,
+    go_indexer_enabled: bool | None = None,
 ) -> RuntimeSettings:
     runtime = get_runtime_settings()
     if auto_index_enabled is not None:
@@ -84,4 +87,6 @@ def update_runtime_settings(
         runtime.search_use_captions = search_use_captions
     if search_rerank_enabled is not None:
         runtime.search_rerank_enabled = search_rerank_enabled
+    if go_indexer_enabled is not None:
+        runtime.go_indexer_enabled = go_indexer_enabled
     return runtime

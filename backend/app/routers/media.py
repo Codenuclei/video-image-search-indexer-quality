@@ -73,6 +73,8 @@ async def get_media_faces(media_id: int, session: AsyncSession = Depends(get_db)
 async def get_video_frame(
     drive_file_id: str,
     ts: float = Query(..., ge=0),
+    download: bool = Query(False),
+    filename: str | None = Query(None),
     session: AsyncSession = Depends(get_db),
 ) -> FileResponse:
     """
@@ -82,14 +84,25 @@ async def get_video_frame(
     1. Pre-extracted frame on disk (cached from pipeline or previous on-demand call)
     2. On-demand extraction via ffmpeg directly from Google Drive (cached for future calls)
     3. 404 if Drive is unreachable or ffmpeg fails
+
+    Pass download=1 to force Content-Disposition: attachment (browser save).
     """
     settings = get_settings()
     frames_dir = Path(settings.thumbnail_dir) / "video" / drive_file_id
     out_path = frames_dir / f"{ts:.3f}.jpg"
 
+    def _respond(path: Path) -> FileResponse:
+        safe = (filename or f"{drive_file_id}_{ts:.3f}.jpg").replace('"', "").replace("\n", "")
+        if not safe.lower().endswith((".jpg", ".jpeg", ".png", ".webp")):
+            safe = f"{safe}.jpg"
+        headers = {}
+        if download:
+            headers["Content-Disposition"] = f'attachment; filename="{safe}"'
+        return FileResponse(path, media_type="image/jpeg", headers=headers or None)
+
     # 1. Exact pre-extracted frame
     if out_path.is_file():
-        return FileResponse(out_path, media_type="image/jpeg")
+        return _respond(out_path)
 
     # 2. Nearest pre-extracted frame (within ±5 s tolerance)
     if frames_dir.is_dir():
@@ -98,7 +111,7 @@ async def get_video_frame(
             key=lambda p: abs(float(p.stem) - ts),
         )
         if candidates and abs(float(candidates[0].stem) - ts) <= 5.0:
-            return FileResponse(candidates[0], media_type="image/jpeg")
+            return _respond(candidates[0])
 
     # 3. Check VideoSegment.frame_path in DB (pre-indexed frames, any timestamp)
     seg = (
@@ -115,13 +128,13 @@ async def get_video_frame(
     ).scalar_one_or_none()
 
     if seg and seg.frame_path and Path(seg.frame_path).is_file():
-        return FileResponse(seg.frame_path, media_type="image/jpeg")
+        return _respond(Path(seg.frame_path))
 
     # 4. On-demand extraction via ffmpeg ← Google Drive API stream (last resort)
     frames_dir.mkdir(parents=True, exist_ok=True)
     ok = await _extract_frame_on_demand(drive_file_id, ts, out_path, settings, session)
     if ok and out_path.is_file():
-        return FileResponse(out_path, media_type="image/jpeg")
+        return _respond(out_path)
 
     raise HTTPException(status_code=404, detail="Frame not available")
 

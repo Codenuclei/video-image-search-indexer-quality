@@ -28,15 +28,98 @@ class IndexRunResult(BaseModel):
     deferred: int = 0
 
 
+class IndexLaneSlots(BaseModel):
+    active: int = 0
+    max: int = 0
+
+
 class IndexStatus(BaseModel):
     is_running: bool
     counts_by_status: dict[str, int]
     last_run: IndexRunResult | None = None
     last_run_at: datetime | None = None
     current_file: str | None = None
+    current_files: list[str] = []
+    # Per-lane lists so UI does not mix image filenames with video jobs.
+    current_image_files: list[str] = []
+    current_video_files: list[str] = []
+    image_slots: IndexLaneSlots = IndexLaneSlots()
+    video_slots: IndexLaneSlots = IndexLaneSlots()
+    active_image_jobs: int = 0
+    active_video_jobs: int = 0
     auto_index_enabled: bool = False
     auto_index_interval_seconds: int = 30
     pending_count: int = 0
+    go_indexer_enabled: bool = False
+    go_indexer_alive: bool = False
+    go_files_per_sec: float | None = None
+
+
+class GoIndexerClaimItem(BaseModel):
+    id: str
+    name: str
+    mime_type: str | None = None
+    size: int | None = None
+    path: str | None = None
+
+
+class GoIndexerClaimResponse(BaseModel):
+    enabled: bool
+    items: list[GoIndexerClaimItem]
+    max_parallel: int
+    canary_limit: int
+
+
+class GoIndexerStatusOut(BaseModel):
+    enabled: bool
+    alive: bool
+    last_heartbeat_at: datetime | None = None
+    max_parallel: int
+    canary_limit: int
+    claimed_open: int
+    last_files_ok: int = 0
+    last_files_err: int = 0
+    last_elapsed_ms: int = 0
+    last_files_per_sec: float = 0.0
+    last_download_bytes: int = 0
+    last_reported_at: datetime | None = None
+
+
+class GoIndexerReportIn(BaseModel):
+    files_ok: int = 0
+    files_err: int = 0
+    elapsed_ms: int = 0
+    download_bytes: int = 0
+
+
+class SettingsOut(BaseModel):
+    gemini_model: str
+    gemini_file_search_store_display_name: str
+    auto_index_enabled: bool
+    auto_index_interval_seconds: int
+    reindex_errored_files: bool
+    reindex_skipped_files: bool
+    follow_shortcut_folders: bool
+    experimental_manual_face_tag: bool
+    gemini_file_search_search_enabled: bool
+    search_parallel_variants_enabled: bool
+    search_use_captions: bool
+    search_rerank_enabled: bool
+    go_indexer_enabled: bool
+
+
+class SettingsUpdate(BaseModel):
+    auto_index_enabled: bool | None = None
+    auto_index_interval_seconds: int | None = None
+    reindex_errored_files: bool | None = None
+    reindex_skipped_files: bool | None = None
+    follow_shortcut_folders: bool | None = None
+    experimental_manual_face_tag: bool | None = None
+    gemini_file_search_search_enabled: bool | None = None
+    search_parallel_variants_enabled: bool | None = None
+    search_use_captions: bool | None = None
+    search_rerank_enabled: bool | None = None
+    go_indexer_enabled: bool | None = None
 
 
 class FaceOut(BaseModel):
@@ -181,31 +264,3 @@ class SearchResponse(BaseModel):
     citations: list[SearchCitationOut]
     files: list[SearchResultFile] = []
     moments: list[SearchMoment] = []
-
-
-class SettingsOut(BaseModel):
-    gemini_model: str
-    gemini_file_search_store_display_name: str
-    auto_index_enabled: bool
-    auto_index_interval_seconds: int
-    reindex_errored_files: bool
-    reindex_skipped_files: bool
-    follow_shortcut_folders: bool
-    experimental_manual_face_tag: bool
-    gemini_file_search_search_enabled: bool
-    search_parallel_variants_enabled: bool
-    search_use_captions: bool
-    search_rerank_enabled: bool
-
-
-class SettingsUpdate(BaseModel):
-    auto_index_enabled: bool | None = None
-    auto_index_interval_seconds: int | None = None
-    reindex_errored_files: bool | None = None
-    reindex_skipped_files: bool | None = None
-    follow_shortcut_folders: bool | None = None
-    experimental_manual_face_tag: bool | None = None
-    gemini_file_search_search_enabled: bool | None = None
-    search_parallel_variants_enabled: bool | None = None
-    search_use_captions: bool | None = None
-    search_rerank_enabled: bool | None = None

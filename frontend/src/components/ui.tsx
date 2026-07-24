@@ -2,9 +2,10 @@
 
 import { useState } from "react";
 import type { LucideIcon } from "lucide-react";
-import { ExternalLink } from "lucide-react";
+import { Download, ExternalLink } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { driveFilePreviewUrl, driveGoogleViewUrl, isServiceUnavailableMessage } from "@/lib/api";
+import { driveFileDownloadUrl, driveFilePreviewUrl, driveGoogleViewUrl, isServiceUnavailableMessage } from "@/lib/api";
+import { downloadFromUrl } from "@/lib/download";
 import { BackendDisconnectedOverlay } from "@/components/backend-disconnected-overlay";
 import { LoadingLabel, Spinner } from "@/components/spinner";
 
@@ -44,6 +45,63 @@ export function IconLink({
       <Icon size={iconSize} className="shrink-0" aria-hidden />
       <span>{label}</span>
     </a>
+  );
+}
+
+/** Cross-origin-safe download control (fetch → blob → save). */
+export function DownloadButton({
+  url,
+  filename,
+  label = "Download",
+  variant = "primary",
+  className,
+  iconSize = 14,
+  onClick,
+}: {
+  url: string;
+  filename: string;
+  label?: string;
+  variant?: "primary" | "secondary" | "ghost";
+  className?: string;
+  iconSize?: number;
+  onClick?: (e: React.MouseEvent) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const variants = {
+    primary: "bg-primary text-primary-foreground hover:brightness-110",
+    secondary: "border border-border bg-muted text-foreground hover:bg-accent",
+    ghost: "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
+  };
+
+  return (
+    <button
+      type="button"
+      disabled={busy || !url}
+      title={error || `Download ${filename}`}
+      aria-label={error || `Download ${filename}`}
+      className={cn(
+        "inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors disabled:opacity-60",
+        variants[variant],
+        className
+      )}
+      onClick={(e) => {
+        onClick?.(e);
+        e.preventDefault();
+        e.stopPropagation();
+        if (busy) return;
+        setBusy(true);
+        setError(null);
+        void downloadFromUrl(url, filename)
+          .catch((err) => {
+            setError(err instanceof Error ? err.message : "Download failed");
+          })
+          .finally(() => setBusy(false));
+      }}
+    >
+      <Download size={iconSize} className="shrink-0" aria-hidden />
+      <span>{busy ? "Downloading…" : error ? "Retry download" : label}</span>
+    </button>
   );
 }
 
@@ -127,9 +185,19 @@ export function PersonTags({
   );
 }
 
-export function Card({ className, children }: { className?: string; children: React.ReactNode }) {
+export function Card({
+  className,
+  children,
+  ...rest
+}: {
+  className?: string;
+  children: React.ReactNode;
+} & React.HTMLAttributes<HTMLDivElement>) {
   return (
-    <div className={cn("rounded-xl border border-border bg-card p-4 text-card-foreground shadow-sm", className)}>
+    <div
+      className={cn("rounded-xl border border-border bg-card p-4 text-card-foreground shadow-sm", className)}
+      {...rest}
+    >
       {children}
     </div>
   );
@@ -323,6 +391,7 @@ export function FilePreview({
   const [failed, setFailed] = useState(false);
 
   if (isImage) {
+    const downloadUrl = driveFileDownloadUrl(driveFileId);
     return (
       <div className={cn("relative h-full w-full bg-black/30", className)}>
         {!loaded && !failed && (
@@ -342,21 +411,28 @@ export function FilePreview({
             />
           </div>
         ) : (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            src={previewUrl}
-            alt={name}
-            loading="lazy"
-            decoding="async"
-            onLoad={() => setLoaded(true)}
-            onError={() => setFailed(true)}
-            onClick={onClick}
-            className={cn(
-              "h-full w-full object-cover transition-opacity duration-200",
-              loaded ? "opacity-100" : "opacity-0",
-              onClick && "cursor-pointer"
-            )}
-          />
+          <>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={previewUrl}
+              alt={name}
+              loading="lazy"
+              decoding="async"
+              onLoad={() => setLoaded(true)}
+              onError={() => setFailed(true)}
+              onClick={onClick}
+              className={cn(
+                "h-full w-full object-cover transition-opacity duration-200",
+                loaded ? "opacity-100" : "opacity-0",
+                onClick && "cursor-pointer"
+              )}
+            />
+            <DownloadButton
+              url={downloadUrl}
+              filename={name}
+              className="absolute bottom-2 right-2 z-10 bg-black/75 px-2 py-1 text-[11px] text-white shadow-sm backdrop-blur-sm hover:bg-black/90 hover:brightness-100"
+            />
+          </>
         )}
       </div>
     );

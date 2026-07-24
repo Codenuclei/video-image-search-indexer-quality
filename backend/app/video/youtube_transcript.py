@@ -80,14 +80,28 @@ def _pick_caption_track(tracks: list[dict], lang: str = "en") -> dict | None:
     if not tracks:
         return None
     lang = lang.lower()
+    # Prefer non-ASR (manual) English when both exist.
+    exact: list[dict] = []
     for track in tracks:
         code = (track.get("languageCode") or "").lower()
         if code == lang or code.startswith(f"{lang}-"):
-            return track
+            exact.append(track)
+    if exact:
+        for track in exact:
+            if track.get("kind") != "asr":
+                return track
+        return exact[0]
     for track in tracks:
         if track.get("kind") != "asr":
             return track
     return tracks[0]
+
+
+def _with_tlang(url: str, tlang: str) -> str:
+    clean = re.sub(r"([&?])tlang=[^&]*", r"\1", url or "")
+    clean = clean.rstrip("&?")
+    sep = "&" if "?" in clean else "?"
+    return f"{clean}{sep}tlang={tlang}"
 
 
 def _caption_tracks_from_player(player: dict) -> list[dict]:
@@ -267,9 +281,28 @@ async def _fetch_cues_via_get_transcript(
     return _get_transcript_response_to_cues(transcript_data)
 
 
+def _cues_look_like_lang(cues: list[VttCue], lang: str) -> bool:
+    """Heuristic: for lang=en, require mostly Latin / non-Indic text."""
+    if lang.lower() not in ("en", "en-us", "en-gb"):
+        return True
+    sample = " ".join((c.text or "") for c in cues[:20])
+    if not sample.strip():
+        return False
+    # Inline check to avoid importing search helpers from video layer.
+    if re.search(r"[\u0900-\u097F]", sample):
+        return False
+    letters = re.findall(r"[^\W\d_]", sample, flags=re.UNICODE)
+    if not letters:
+        return True
+    latin = sum(1 for ch in letters if ("A" <= ch <= "Z") or ("a" <= ch <= "z"))
+    return (latin / len(letters)) >= 0.75
+
+
 async def fetch_youtube_captions(video_id: str, *, lang: str = "en") -> list[VttCue]:
     """
     Fetch public YouTube captions via InnerTube (player + timedtext XML, then get_transcript).
+    Prefers the requested language track; when lang=en and only another language exists,
+    retries the timedtext URL with tlang=en (YouTube auto-translate).
     No Gemini / no extra Python deps beyond httpx.
     """
     embed_url = f"https://www.youtube.com/embed/{video_id}"
@@ -302,9 +335,54 @@ async def fetch_youtube_captions(video_id: str, *, lang: str = "en") -> list[Vtt
         track = _pick_caption_track(tracks, lang=lang)
         if track and track.get("baseUrl"):
             cues = await _fetch_cues_from_caption_url(client, track["baseUrl"], video_id=video_id)
-            if cues:
-                logger.info("YouTube %s: %d cues via innertube timedtext", video_id, len(cues))
+            if cues and _cues_look_like_lang(cues, lang):
+                logger.info("YouTube %s: %d cues via innertube timedtext (%s)", video_id, len(cues), lang)
                 return cues
+            # English requested but track missing / non-English → translate via tlang.
+            if lang.lower().startswith("en"):
+                source = track if track.get("baseUrl") else None
+                if source is None and tracks:
+                    source = tracks[0]
+                if source and source.get("baseUrl"):
+                    translated = await _fetch_cues_from_caption_url(
+                        client,
+                        _with_tlang(source["baseUrl"], "en"),
+                        video_id=video_id,
+                    )
+                    if translated and _cues_look_like_lang(translated, "en"):
+                        logger.info(
+                            "YouTube %s: %d cues via timedtext tlang=en",
+                            video_id,
+                            len(translated),
+                        )
+                        return translated
+            if cues:
+                logger.info(
+                    "YouTube %s: %d cues via timedtext (lang may not match %s)",
+                    video_id,
+                    len(cues),
+                    lang,
+                )
+                return cues
+
+        # No preferred track: try translating any available track to English.
+        if lang.lower().startswith("en") and tracks:
+            for candidate in tracks:
+                base = candidate.get("baseUrl")
+                if not base:
+                    continue
+                translated = await _fetch_cues_from_caption_url(
+                    client,
+                    _with_tlang(base, "en"),
+                    video_id=video_id,
+                )
+                if translated and _cues_look_like_lang(translated, "en"):
+                    logger.info(
+                        "YouTube %s: %d cues via alternate track tlang=en",
+                        video_id,
+                        len(translated),
+                    )
+                    return translated
 
         if api_key:
             try:

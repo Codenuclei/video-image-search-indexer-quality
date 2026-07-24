@@ -5,7 +5,6 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronRight,
-  Download,
   ExternalLink,
   FileImage,
   FileVideo,
@@ -25,7 +24,7 @@ import {
   type LibraryFolder,
   type LibraryResponse,
 } from "@/lib/api";
-import { Button, Card, IconLink, Input, LoadingLabel, ServiceErrorCard, Spinner, StatCard } from "@/components/ui";
+import { Button, Card, DownloadButton, IconLink, Input, LoadingLabel, ServiceErrorCard, Spinner, StatCard } from "@/components/ui";
 import { ManualFaceTagger } from "@/components/manual-face-tagger";
 import { cn } from "@/lib/utils";
 
@@ -541,12 +540,10 @@ export default function LibraryPage() {
                 />
               )}
               <div className="flex flex-wrap gap-2">
-                <IconLink
-                  href={driveFileDownloadUrl(selectedFile.id)}
-                  icon={Download}
-                  label="Download"
+                <DownloadButton
+                  url={driveFileDownloadUrl(selectedFile.id)}
+                  filename={selectedFile.name}
                   variant="primary"
-                  download={selectedFile.name}
                 />
                 <IconLink
                   href={driveGoogleViewUrl(selectedFile.id)}

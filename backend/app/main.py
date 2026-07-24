@@ -10,14 +10,32 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import get_settings
 from app.runtime_settings import get_runtime_settings
 from app.db.app_settings_store import load_runtime_settings_from_db
-from app.db.schema import ensure_schema, recover_stuck_processing_files
+from app.db.schema import ensure_schema, recover_aborted_transaction_errors, recover_stuck_processing_files
 from app.pipelines.decode_recovery import (
     quarantine_stuck_decode_errors,
 )
 from app.db.session import dispose_engine, get_engine, get_session_factory
 from app.dependencies import get_indexing_worker
 from app.fennec.client import get_fennec_client
-from app.routers import clusters, drive, drive_oauth, faces, fennec, folder_contexts, index, media, persons, qwen_vlm, reid, search, settings, webhooks, youtube
+from app.routers import (
+    carousel_script,
+    clusters,
+    drive,
+    drive_oauth,
+    faces,
+    fennec,
+    folder_contexts,
+    help as help_router,
+    index,
+    media,
+    persons,
+    qwen_vlm,
+    reid,
+    search,
+    settings,
+    webhooks,
+    youtube,
+)
 from app.svs.client import svs_ready  # kept for backwards compat — SVS disabled
 from app.pipelines.common import register_image_plugins
 from app.workers.auto_indexer import auto_index_loop
@@ -38,9 +56,14 @@ async def lifespan(app: FastAPI):
 
     register_image_plugins()
 
+    from app.video.youtube_download import prepare_youtube_cookies_at_startup
+
+    prepare_youtube_cookies_at_startup()
+
     await ensure_schema(get_engine())
     await load_runtime_settings_from_db(get_session_factory())
     await recover_stuck_processing_files(get_session_factory())
+    await recover_aborted_transaction_errors(get_session_factory())
     quarantined = await quarantine_stuck_decode_errors(get_session_factory())
     if quarantined:
         logger.info("Startup: quarantined %d stuck decode-error file(s)", quarantined)
@@ -99,6 +122,7 @@ app.include_router(drive_oauth.router)
 app.include_router(drive.router)
 app.include_router(index.router)
 app.include_router(search.router)
+app.include_router(carousel_script.router)
 app.include_router(webhooks.router)
 app.include_router(settings.router)
 app.include_router(persons.router)
@@ -110,6 +134,7 @@ app.include_router(fennec.router)
 app.include_router(qwen_vlm.router)
 app.include_router(youtube.router)
 app.include_router(reid.router)
+app.include_router(help_router.router)
 
 
 @app.get("/health")

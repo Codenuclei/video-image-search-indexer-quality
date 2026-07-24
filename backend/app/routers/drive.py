@@ -41,15 +41,53 @@ class FolderIndexingAction(BaseModel):
 @router.get("/files", response_model=list[DriveFileOut])
 async def list_drive_files(
     status: str | None = None,
+    source: str | None = None,
     limit: int = 200,
+    offset: int = 0,
     session: AsyncSession = Depends(get_db),
 ) -> list[DriveFile]:
     """Lists files as currently tracked from the connected Drive folder."""
-    stmt = select(DriveFile).order_by(DriveFile.path).limit(limit)
+    limit = max(1, min(limit, 500))
+    offset = max(0, offset)
+    stmt = select(DriveFile).order_by(DriveFile.path).offset(offset).limit(limit)
     if status:
         stmt = stmt.where(DriveFile.status == status)
+    if source:
+        stmt = stmt.where(DriveFile.source == source)
     return list((await session.execute(stmt)).scalars().all())
 
+
+@router.get("/files/page")
+async def list_drive_files_page(
+    status: str | None = None,
+    source: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, object]:
+    """Paginated file list with total count for queue modals."""
+    from sqlalchemy import func as sa_func
+
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
+    filters = []
+    if status:
+        filters.append(DriveFile.status == status)
+    if source:
+        filters.append(DriveFile.source == source)
+    count_stmt = select(sa_func.count()).select_from(DriveFile)
+    list_stmt = select(DriveFile).order_by(DriveFile.path).offset(offset).limit(limit)
+    for f in filters:
+        count_stmt = count_stmt.where(f)
+        list_stmt = list_stmt.where(f)
+    total = int((await session.execute(count_stmt)).scalar_one())
+    items = list((await session.execute(list_stmt)).scalars().all())
+    return {
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "items": [DriveFileOut.model_validate(i) for i in items],
+    }
 
 @router.get("/files/lookup-faces")
 async def lookup_file_faces(

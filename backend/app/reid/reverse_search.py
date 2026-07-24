@@ -26,6 +26,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.db.models import Face, FaceWebMatch, Person
+from app.reid.apify_lens import (
+    ApifyLensError,
+    ApifyLensNotConfigured,
+    apify_configured,
+    apify_lens_for_face_thumbnail,
+)
 from app.reid.cohesivity import cohesivity_application_key
 
 logger = logging.getLogger(__name__)
@@ -33,6 +39,7 @@ logger = logging.getLogger(__name__)
 _PROVIDER_GOOGLE = "google_reverse_image"
 _PROVIDER_EXA = "cohesivity_exa_people"
 _PROVIDER_SERPAPI = "serpapi_google_lens"
+_PROVIDER_APIFY = "apify_google_lens"
 _LINKEDIN_RE = re.compile(r"linkedin\.com/(in|pub)/", re.IGNORECASE)
 _MAX_STORED_RESULTS = 8
 _USER_AGENT = (
@@ -47,10 +54,11 @@ class ReverseSearchNotConfigured(RuntimeError):
 
 
 def provider_configured() -> bool:
-    """Google reverse needs a public thumbnail URL; Exa/SerpAPI are optional boosters."""
+    """Apify Lens preferred; Google reverse / Exa / SerpAPI remain available."""
     settings = get_settings()
     return bool(
-        settings.public_base_url
+        settings.apify_token
+        or settings.public_base_url
         or settings.google_redirect_uri
         or cohesivity_application_key()
         or settings.serpapi_key
@@ -296,9 +304,12 @@ def _persist_matches(
 
 async def reverse_search_face(session: AsyncSession, face_id: int) -> dict:
     """
-    1) Free Google reverse image on the public thumbnail.
-    2) Feed guessed name/text into Cohesivity Exa for LinkedIn (if configured).
-    3) SerpAPI Lens only if Google reverse fails and a key is set.
+    Identity-first reverse image:
+
+    1) Apify Google Lens (AI Mode + exact/visual) when APIFY_TOKEN is set.
+    2) Free Google reverse scrape on the public thumbnail.
+    3) Cohesivity Exa people enrichment for LinkedIn.
+    4) SerpAPI Lens only if nothing else returned results.
     """
     settings = get_settings()
     face = await session.get(Face, face_id)
@@ -313,41 +324,74 @@ async def reverse_search_face(session: AsyncSession, face_id: int) -> dict:
         known_name = person.name if person else None
 
     image_url = _public_thumbnail_url(face_id)
-    google = await google_reverse_image(image_url)
     results: list[dict] = []
     provider = _PROVIDER_GOOGLE
-    google_guess = (google or {}).get("resultText") or ""
-    similar_url = (google or {}).get("similarUrl") or ""
+    google_guess = ""
+    similar_url = ""
+    match_thumbnails: dict[str, str] = {}
 
-    if similar_url:
-        results.append(
-            {
-                "title": google_guess or "Google similar images",
-                "link": similar_url,
-                "score": None,
-            }
-        )
+    # 1) Apify Google Lens — closest to browser Lens identity results
+    if apify_configured():
+        try:
+            lens = await apify_lens_for_face_thumbnail(face.thumbnail_path, image_url=image_url)
+            google_guess = (lens.get("google_guess") or "").strip()
+            for hit in lens.get("matches") or []:
+                link = hit.get("link")
+                if not link:
+                    continue
+                results.append(
+                    {
+                        "title": hit.get("title") or link,
+                        "link": link,
+                        "score": hit.get("score"),
+                    }
+                )
+                if hit.get("thumbnail"):
+                    match_thumbnails[link] = hit["thumbnail"]
+            if results or google_guess:
+                provider = _PROVIDER_APIFY
+        except (ApifyLensNotConfigured, ApifyLensError, ValueError) as exc:
+            logger.warning("Apify Lens failed for face %s: %s", face_id, exc)
 
+    # 2) Free Google reverse (hosted + scrape) if Lens empty
+    if not results and not google_guess:
+        google = await google_reverse_image(image_url)
+        google_guess = (google or {}).get("resultText") or ""
+        similar_url = (google or {}).get("similarUrl") or ""
+        if similar_url:
+            results.append(
+                {
+                    "title": google_guess or "Google similar images",
+                    "link": similar_url,
+                    "score": None,
+                }
+            )
+
+    # 3) Exa people enrichment (LinkedIn) from Lens/Google guess or known name
     query_for_profiles = google_guess or known_name or ""
+    # Prefer a short name-like token from AI overview when present
+    if google_guess and len(google_guess) > 80:
+        # Keep first sentence / first line for Exa query
+        query_for_profiles = google_guess.split(".")[0].split("\n")[0].strip()[:120] or known_name or ""
     if query_for_profiles and cohesivity_application_key():
         exa_hits = await _exa_people_search(f"{query_for_profiles} LinkedIn")
-        if not exa_hits and google_guess:
-            exa_hits = await _exa_people_search(google_guess)
-        # Prefer LinkedIn hits; keep Google similar URL as context.
+        if not exa_hits and known_name:
+            exa_hits = await _exa_people_search(f"{known_name} LinkedIn")
         linkedin_first = [h for h in exa_hits if _LINKEDIN_RE.search(h["link"])]
         other = [h for h in exa_hits if not _LINKEDIN_RE.search(h["link"])]
-        results = linkedin_first + other + results
         if exa_hits:
-            provider = f"{_PROVIDER_GOOGLE}+{_PROVIDER_EXA}"
+            results = linkedin_first + other + results
+            provider = f"{provider}+{_PROVIDER_EXA}"
 
+    # 4) SerpAPI last resort
     if not results and settings.serpapi_key:
         results = await _serpapi_lens_search(image_url)
         provider = _PROVIDER_SERPAPI
 
-    if not google and not results and not settings.serpapi_key and not cohesivity_application_key():
+    if not results and not google_guess and not settings.serpapi_key and not cohesivity_application_key() and not apify_configured():
         raise ReverseSearchNotConfigured(
-            "Google reverse returned nothing and no Exa/SerpAPI fallback is configured. "
-            "Ensure PUBLIC_BASE_URL points at a reachable backend so Google can fetch the thumbnail."
+            "No reverse-image provider returned results. Set APIFY_TOKEN for Google Lens "
+            "(recommended), or ensure PUBLIC_BASE_URL + free Google reverse / Exa / SerpAPI."
         )
 
     stored, linkedin_url = _persist_matches(session, face=face, provider=provider, results=results)
@@ -360,12 +404,14 @@ async def reverse_search_face(session: AsyncSession, face_id: int) -> dict:
         "google_guess": google_guess or None,
         "result_count": len([m for m in stored if m.status == "found"]),
         "linkedin_url": linkedin_url,
+        "match_thumbnails": match_thumbnails,
         "matches": [
             {
                 "title": m.result_title,
                 "url": m.result_url,
                 "linkedin_url": m.linkedin_url,
                 "score": m.score,
+                "thumbnail": match_thumbnails.get(m.result_url or ""),
             }
             for m in stored
             if m.status == "found"

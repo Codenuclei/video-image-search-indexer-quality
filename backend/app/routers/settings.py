@@ -28,6 +28,7 @@ def _settings_out() -> SettingsOut:
         search_parallel_variants_enabled=runtime.search_parallel_variants_enabled,
         search_use_captions=runtime.search_use_captions,
         search_rerank_enabled=runtime.search_rerank_enabled,
+        go_indexer_enabled=runtime.go_indexer_enabled,
     )
 
 
@@ -52,6 +53,7 @@ async def write_settings(
         search_parallel_variants_enabled=payload.search_parallel_variants_enabled,
         search_use_captions=payload.search_use_captions,
         search_rerank_enabled=payload.search_rerank_enabled,
+        go_indexer_enabled=payload.go_indexer_enabled,
     )
     await save_runtime_settings_to_db(session, runtime)
     await session.commit()

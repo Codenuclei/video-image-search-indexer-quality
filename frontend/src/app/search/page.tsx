@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Download, ExternalLink, Play, X } from "lucide-react";
+import Link from "next/link";
+import { ExternalLink, GalleryHorizontal, Play, X } from "lucide-react";
 import {
   apiAssetUrl,
   apiClient,
@@ -16,7 +17,7 @@ import {
   type SearchResponse,
   type SearchResultFile,
 } from "@/lib/api";
-import { Button, Card, FilePreview, IconButton, IconLink, Input, LoadingLabel, PersonTags, ServiceErrorCard } from "@/components/ui";
+import { Button, Card, DownloadButton, FilePreview, IconButton, IconLink, Input, LoadingLabel, PersonTags, ServiceErrorCard } from "@/components/ui";
 import { ModalOverlay } from "@/components/modal";
 
 function formatTimestamp(sec: number): string {
@@ -151,6 +152,21 @@ export default function SearchPage() {
           Videos use frame search + optional re-ranking.
         </p>
       </div>
+
+      <Link href="/search/carousel" className="block max-w-3xl">
+        <Card className="flex items-center gap-3 transition hover:border-amber-500/40 hover:bg-muted/30">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-amber-500/15 text-amber-700 dark:text-amber-300">
+            <GalleryHorizontal size={20} aria-hidden />
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-semibold">Video Carousel</p>
+            <p className="text-xs text-muted-foreground">
+              Swipe through matched video moments with timestamps and playback.
+            </p>
+          </div>
+          <span className="text-xs font-medium text-muted-foreground">Open →</span>
+        </Card>
+      </Link>
 
       <div className="max-w-3xl space-y-2">
         <Input
@@ -362,12 +378,10 @@ export default function SearchPage() {
                         <PersonTags names={file.person_names ?? []} links={linkedinMap} />
                       )}
                       <div className="flex flex-wrap items-center gap-2 pt-0.5">
-                        <IconLink
-                          href={downloadUrl}
-                          icon={Download}
-                          label="Download"
+                        <DownloadButton
+                          url={downloadUrl}
+                          filename={file.name}
                           variant="primary"
-                          download={file.name}
                         />
                         <IconLink
                           href={driveUrl}
@@ -411,6 +425,11 @@ export default function SearchPage() {
                 alt={previewFile.name}
                 className="block max-h-[min(48dvh,420px)] w-full object-contain"
               />
+              <DownloadButton
+                url={driveFileDownloadUrl(previewFile.drive_file_id)}
+                filename={previewFile.name}
+                className="absolute bottom-3 left-3 z-10 bg-black/75 px-2.5 py-1.5 text-white shadow-sm backdrop-blur-sm hover:bg-black/90 hover:brightness-100"
+              />
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto border-t border-border px-4 py-3">
               <p className="break-all text-sm font-medium text-foreground">{previewFile.name}</p>
@@ -421,12 +440,10 @@ export default function SearchPage() {
                 <PersonTags names={previewFile.person_names ?? []} className="mt-2" links={linkedinMap} />
               )}
               <div className="mt-3 flex flex-wrap gap-2 pb-1">
-                <IconLink
-                  href={driveFileDownloadUrl(previewFile.drive_file_id)}
-                  icon={Download}
-                  label="Download"
+                <DownloadButton
+                  url={driveFileDownloadUrl(previewFile.drive_file_id)}
+                  filename={previewFile.name}
                   variant="primary"
-                  download={previewFile.name}
                 />
                 <IconLink
                   href={driveGoogleViewUrl(previewFile.drive_file_id)}
@@ -531,7 +548,7 @@ function MomentCard({ moment, onPreview }: { moment: SearchMoment; onPreview: ()
         </div>
         <div className="mt-2.5 flex flex-wrap items-center gap-2">
           <IconButton icon={Play} label={`Play at ${timeLabel}`} variant="secondary" onClick={onPreview} />
-          <IconLink href={downloadUrl} icon={Download} label="Download" variant="primary" download={moment.name} />
+          <DownloadButton url={downloadUrl} filename={moment.name} variant="primary" />
           <IconLink href={driveUrl} icon={ExternalLink} label="Open in Drive" target="_blank" rel="noopener noreferrer" />
         </div>
         {(moment.person_names ?? []).length > 0 && (
@@ -615,7 +632,7 @@ function MomentPreviewPanel({ moment, onClose }: { moment: SearchMoment; onClose
               }}
             />
           )}
-          <IconLink href={downloadUrl} icon={Download} label="Download" variant="primary" download={moment.name} />
+          <DownloadButton url={downloadUrl} filename={moment.name} variant="primary" />
           <IconLink href={driveUrl} icon={ExternalLink} label="Open in Drive" target="_blank" rel="noopener noreferrer" />
         </div>
       </div>

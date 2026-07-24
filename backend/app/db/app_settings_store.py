@@ -21,6 +21,7 @@ def _defaults_from_env() -> RuntimeSettings:
         search_parallel_variants_enabled=s.search_parallel_variants_enabled,
         search_use_captions=s.search_use_captions,
         search_rerank_enabled=s.search_rerank_enabled,
+        go_indexer_enabled=getattr(s, "go_indexer_enabled", False),
     )
 
 
@@ -36,6 +37,7 @@ def _row_to_runtime(row: AppSettings) -> RuntimeSettings:
         search_parallel_variants_enabled=row.search_parallel_variants_enabled,
         search_use_captions=row.search_use_captions,
         search_rerank_enabled=row.search_rerank_enabled,
+        go_indexer_enabled=getattr(row, "go_indexer_enabled", False),
     )
 
 
@@ -50,6 +52,7 @@ def _apply_runtime_to_row(row: AppSettings, runtime: RuntimeSettings) -> None:
     row.search_parallel_variants_enabled = runtime.search_parallel_variants_enabled
     row.search_use_captions = runtime.search_use_captions
     row.search_rerank_enabled = runtime.search_rerank_enabled
+    row.go_indexer_enabled = runtime.go_indexer_enabled
 
 
 async def load_runtime_settings_from_db(session_factory: async_sessionmaker[AsyncSession]) -> RuntimeSettings:

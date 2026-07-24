@@ -4,7 +4,7 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
@@ -17,6 +17,8 @@ from app.drive.schemas import ConnectorFile
 from app.gemini.service import GeminiFileSearchService, get_gemini_service
 from app.gemini.tags import person_names_for_drive_file
 from app.pipelines.common import (
+    INDEXABLE_IMAGE_TYPES,
+    INDEXABLE_VIDEO_TYPES,
     download_image_for_upload,
     download_to_temp_file,
     file_has_media,
@@ -34,21 +36,52 @@ from app.drive.indexing_pause import (
     load_paused_folder_paths,
 )
 from app.drive.indexing_pause import file_under_folder, normalize_folder_path
-from app.db.deadlock import is_deadlock_error, retry_on_deadlock
+from app.db.deadlock import is_deadlock_error, is_transient_db_error, retry_on_deadlock
 from app.runtime_settings import get_runtime_settings
+from app.workers.index_errors import friendly_index_error_message
 from app.workers.requeue_failed import requeue_failed_files
+from app.workers.claim_order import claim_window, pending_order_by
 
 logger = logging.getLogger(__name__)
 
 
+def _log_skip(drive_file: DriveFile, reason: str) -> None:
+    logger.info(
+        "index_skip reason=%s file_id=%s mime=%s size=%s name=%s",
+        reason,
+        drive_file.id,
+        drive_file.mime_type,
+        drive_file.size,
+        drive_file.name,
+    )
+
+
 def _record_index_failure(drive_file: DriveFile, exc: Exception) -> None:
-    msg = str(exc)[:2000]
-    if is_decode_failure_error(msg):
-        apply_decode_failure(drive_file, msg)
+    raw = str(exc)[:2000]
+    msg = friendly_index_error_message(exc, max_len=500)
+    if is_decode_failure_error(raw):
+        apply_decode_failure(drive_file, raw)
+    elif is_transient_db_error(exc):
+        # Don't leave files stuck in ERROR forever for lock/abort fallout —
+        # auto-index will pick them up again.
+        drive_file.status = DriveFileStatus.PENDING
+        drive_file.error_message = None
+        logger.warning(
+            "index_requeue_transient file_id=%s mime=%s err=%s",
+            drive_file.id,
+            drive_file.mime_type,
+            raw[:200],
+        )
     else:
         drive_file.status = DriveFileStatus.ERROR
         drive_file.error_message = msg
-
+        logger.warning(
+            "index_error file_id=%s mime=%s size=%s err=%s",
+            drive_file.id,
+            drive_file.mime_type,
+            drive_file.size,
+            raw[:200],
+        )
 
 class IndexingWorker:
     """Syncs Drive files and uploads supported media into a Gemini File Search store."""
@@ -67,9 +100,14 @@ class IndexingWorker:
         self.last_run_at: datetime | None = None
         self._video_tasks: dict[str, asyncio.Task] = {}
         self._image_tasks: dict[str, asyncio.Task] = {}
+        self._video_started_at: dict[str, float] = {}
+        self._image_started_at: dict[str, float] = {}
+        self._image_refill_lock = asyncio.Lock()
+        self._video_refill_lock = asyncio.Lock()
 
     @property
     def active_video_count(self) -> int:
+        self._prune_video_tasks()
         return len(self._video_tasks)
 
     def _prune_video_tasks(self) -> None:
@@ -83,18 +121,9 @@ class IndexingWorker:
                 logger.error("Background video index task %s failed: %s", fid, exc)
 
     async def _occupied_video_ids(self, session: AsyncSession) -> set[str]:
-        processing = list(
-            (
-                await session.execute(
-                    select(DriveFile).where(DriveFile.status == DriveFileStatus.PROCESSING)
-                )
-            ).scalars().all()
-        )
-        occupied: set[str] = set(self._video_tasks.keys())
-        for drive_file in processing:
-            if is_video_mime(drive_file.mime_type):
-                occupied.add(drive_file.id)
-        return occupied
+        """Only in-flight video tasks count as occupied (orphans are adopted separately)."""
+        del session
+        return set(self._video_tasks.keys())
 
     def _prune_image_tasks(self) -> None:
         done = [fid for fid, task in self._image_tasks.items() if task.done()]
@@ -108,43 +137,152 @@ class IndexingWorker:
 
     @property
     def active_image_count(self) -> int:
+        self._prune_image_tasks()
         return len(self._image_tasks)
 
+    def _image_max_parallel(self) -> int:
+        max_parallel = max(1, self._settings.image_index_max_parallel)
+        runtime = get_runtime_settings()
+        from app.workers.go_indexer_state import go_is_alive
+
+        # Reserve slots for the Go canary when it is toggled on and heartbeating.
+        if runtime.go_indexer_enabled and go_is_alive(
+            max_age_seconds=self._settings.go_indexer_heartbeat_seconds
+        ):
+            reserved = max(0, min(self._settings.go_indexer_max_parallel, max_parallel - 1))
+            max_parallel = max(1, max_parallel - reserved)
+        return max_parallel
+
     async def _occupied_image_ids(self, session: AsyncSession) -> set[str]:
-        processing = list(
-            (
-                await session.execute(
-                    select(DriveFile).where(DriveFile.status == DriveFileStatus.PROCESSING)
-                )
-            ).scalars().all()
+        """Only in-flight image tasks count as occupied.
+
+        Orphaned PROCESSING rows (no live task, e.g. after restart) must not block
+        new claims — they are adopted or re-queued in ensure_parallel_image_indexing.
+        """
+        del session  # signature kept for call-site symmetry with video path
+        return set(self._image_tasks.keys())
+
+    def _start_image_task(self, file_id: str) -> None:
+        self._image_started_at[file_id] = asyncio.get_event_loop().time()
+        self._image_tasks[file_id] = asyncio.create_task(
+            self._run_image_index_job(file_id),
+            name=f"image-index-{file_id[:8]}",
         )
-        occupied: set[str] = set(self._image_tasks.keys())
-        for drive_file in processing:
-            if is_image_mime(drive_file.mime_type, drive_file.name):
-                occupied.add(drive_file.id)
-        return occupied
+
+    def _schedule_image_refill(self) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        loop.create_task(self._refill_image_slots(), name="image-slot-refill")
+
+    def _schedule_video_refill(self) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        loop.create_task(self._refill_video_slots(), name="video-slot-refill")
+
+    async def _refill_image_slots(self) -> None:
+        async with self._image_refill_lock:
+            try:
+                await self.ensure_parallel_image_indexing()
+            except Exception:  # noqa: BLE001
+                logger.exception("Image slot refill failed")
+
+    async def _refill_video_slots(self) -> None:
+        async with self._video_refill_lock:
+            try:
+                await self.ensure_parallel_video_indexing()
+            except Exception:  # noqa: BLE001
+                logger.exception("Video slot refill failed")
 
     async def ensure_parallel_image_indexing(self) -> int:
         """Start background image index jobs up to image_index_max_parallel."""
         self._prune_image_tasks()
-        max_parallel = max(1, self._settings.image_index_max_parallel)
+        max_parallel = self._image_max_parallel()
+        started = 0
+
+        # Adopt orphaned PROCESSING images (restart / lost task) before claiming PENDING.
+        # Never steal files the Go canary currently owns (fresh heartbeat + open claims).
+        from app.workers.go_indexer_state import go_claimed_ids, go_is_alive
+
+        go_owned: set[str] = set()
+        if get_runtime_settings().go_indexer_enabled and go_is_alive(
+            max_age_seconds=self._settings.go_indexer_heartbeat_seconds
+        ):
+            go_owned = go_claimed_ids()
+
+        async with self._session_factory() as session:
+            paused_paths = await load_paused_folder_paths(session)
+            processing = list(
+                (
+                    await session.execute(
+                        select(DriveFile).where(DriveFile.status == DriveFileStatus.PROCESSING)
+                    )
+                ).scalars().all()
+            )
+            adopt_ids: list[str] = []
+            requeue_ids: list[str] = []
+            for drive_file in processing:
+                if not is_image_mime(drive_file.mime_type, drive_file.name):
+                    continue
+                if drive_file.id in self._image_tasks:
+                    continue
+                if drive_file.id in go_owned:
+                    continue
+                if is_file_indexing_paused(drive_file.path, paused_paths):
+                    requeue_ids.append(drive_file.id)
+                    continue
+                if len(self._image_tasks) + len(adopt_ids) >= max_parallel:
+                    requeue_ids.append(drive_file.id)
+                    continue
+                adopt_ids.append(drive_file.id)
+
+            for file_id in requeue_ids:
+                row = next((f for f in processing if f.id == file_id), None)
+                if row is not None:
+                    row.status = DriveFileStatus.PENDING
+                    row.error_message = None
+            if requeue_ids:
+                await session.commit()
+                logger.info(
+                    "Re-queued %d orphaned PROCESSING image(s) that exceeded image slots",
+                    len(requeue_ids),
+                )
+
+        for file_id in adopt_ids:
+            if file_id in self._image_tasks:
+                continue
+            self._start_image_task(file_id)
+            started += 1
+            logger.info("Adopted orphaned PROCESSING image index for %s", file_id)
+
         claimed_ids: list[str] = []
 
         async with self._session_factory() as session:
             occupied = await self._occupied_image_ids(session)
             slots = max_parallel - len(occupied)
             if slots <= 0:
-                return 0
+                return started
 
             paused_paths = await load_paused_folder_paths(session)
 
+            # Filter image MIME in SQL so a large non-image backlog cannot starve
+            # the claim window (size-ordered PENDING scan).
             pending = list(
                 (
                     await session.execute(
                         select(DriveFile)
-                        .where(DriveFile.status == DriveFileStatus.PENDING)
-                        .order_by(DriveFile.modified_time.desc().nulls_last(), DriveFile.name)
-                        .limit(slots * 4)
+                        .where(
+                            DriveFile.status == DriveFileStatus.PENDING,
+                            or_(
+                                DriveFile.mime_type.in_(tuple(INDEXABLE_IMAGE_TYPES)),
+                                DriveFile.mime_type.like("image/%"),
+                            ),
+                        )
+                        .order_by(*pending_order_by(self._settings))
+                        .limit(claim_window(self._settings, slots))
                     )
                 ).scalars().all()
             )
@@ -161,6 +299,7 @@ class IndexingWorker:
                 if drive_file.id in occupied:
                     continue
                 drive_file.status = DriveFileStatus.PROCESSING
+                drive_file.last_synced_at = datetime.now(timezone.utc)
                 claimed_ids.append(drive_file.id)
                 occupied.add(drive_file.id)
 
@@ -168,13 +307,14 @@ class IndexingWorker:
                 await session.commit()
 
         for file_id in claimed_ids:
-            self._image_tasks[file_id] = asyncio.create_task(
-                self._run_image_index_job(file_id),
-                name=f"image-index-{file_id[:8]}",
-            )
+            self._start_image_task(file_id)
             logger.info("Started parallel image index for %s", file_id)
 
-        return len(claimed_ids)
+        return started + len(claimed_ids)
+
+    async def index_claimed_image(self, file_id: str) -> None:
+        """Complete indexing for a file already claimed (e.g. by the Go canary)."""
+        await self._run_image_index_job(file_id)
 
     async def cancel_indexing_under_folder(self, folder_path: str) -> int:
         """Cancel in-flight index jobs for files under a folder path."""
@@ -229,43 +369,96 @@ class IndexingWorker:
                     )
                     if is_missing:
                         await remove_drive_file(error_session, failed, gemini=gemini)
-                    elif is_deadlock_error(exc):
+                    elif is_transient_db_error(exc):
                         failed.status = DriveFileStatus.PENDING
                         failed.error_message = None
-                        logger.warning("Re-queued %s after repeated deadlocks", file_id)
+                        logger.warning("Re-queued %s after transient DB error", file_id)
                     else:
                         _record_index_failure(failed, exc)
                     await error_session.commit()
         finally:
             self._image_tasks.pop(file_id, None)
+            self._image_started_at.pop(file_id, None)
+            self._schedule_image_refill()
+
+    def _start_video_task(self, file_id: str) -> None:
+        self._video_started_at[file_id] = asyncio.get_event_loop().time()
+        self._video_tasks[file_id] = asyncio.create_task(
+            self._run_video_index_job(file_id),
+            name=f"video-index-{file_id[:8]}",
+        )
 
     async def ensure_parallel_video_indexing(self) -> int:
         """
         Start background index jobs for pending videos up to video_index_max_parallel.
-        Never touches videos already PROCESSING — only claims other PENDING videos.
+        Adopts orphaned PROCESSING videos, then claims other PENDING videos.
         """
         self._prune_video_tasks()
+        await self.release_stalled_processing()
         if not self._settings.video_indexing_enabled:
             return 0
 
         max_parallel = max(1, self._settings.video_index_max_parallel)
+        started = 0
+
+        async with self._session_factory() as session:
+            paused_paths = await load_paused_folder_paths(session)
+            processing = list(
+                (
+                    await session.execute(
+                        select(DriveFile).where(DriveFile.status == DriveFileStatus.PROCESSING)
+                    )
+                ).scalars().all()
+            )
+            adopt_ids: list[str] = []
+            for drive_file in processing:
+                if not is_video_mime(drive_file.mime_type):
+                    continue
+                if drive_file.id in self._video_tasks:
+                    continue
+                if is_file_indexing_paused(drive_file.path, paused_paths):
+                    continue
+                if len(self._video_tasks) + len(adopt_ids) >= max_parallel:
+                    continue
+                adopt_ids.append(drive_file.id)
+
+        for file_id in adopt_ids:
+            if file_id in self._video_tasks:
+                continue
+            self._start_video_task(file_id)
+            started += 1
+            logger.info("Adopted orphaned PROCESSING video index for %s", file_id)
+
         claimed_ids: list[str] = []
 
         async with self._session_factory() as session:
             occupied = await self._occupied_video_ids(session)
             slots = max_parallel - len(occupied)
             if slots <= 0:
-                return 0
+                now = asyncio.get_event_loop().time()
+                for fid in occupied:
+                    started_at = self._video_started_at.get(fid)
+                    elapsed = (now - started_at) if started_at is not None else -1
+                    logger.info("video_slot_busy file_id=%s elapsed_sec=%.0f", fid, elapsed)
+                return started
 
             paused_paths = await load_paused_folder_paths(session)
 
+            # Filter video MIME in SQL so a large image backlog cannot starve
+            # video claims (INDEX_PREFER_SMALL_FILES puts videos at the back).
             pending = list(
                 (
                     await session.execute(
                         select(DriveFile)
-                        .where(DriveFile.status == DriveFileStatus.PENDING)
-                        .order_by(DriveFile.modified_time.desc().nulls_last(), DriveFile.name)
-                        .limit(slots * 4)
+                        .where(
+                            DriveFile.status == DriveFileStatus.PENDING,
+                            or_(
+                                DriveFile.mime_type.in_(tuple(INDEXABLE_VIDEO_TYPES)),
+                                DriveFile.mime_type.like("video/%"),
+                            ),
+                        )
+                        .order_by(*pending_order_by(self._settings))
+                        .limit(claim_window(self._settings, slots))
                     )
                 ).scalars().all()
             )
@@ -280,6 +473,7 @@ class IndexingWorker:
                 if drive_file.id in occupied:
                     continue
                 drive_file.status = DriveFileStatus.PROCESSING
+                drive_file.last_synced_at = datetime.now(timezone.utc)
                 claimed_ids.append(drive_file.id)
                 occupied.add(drive_file.id)
 
@@ -287,13 +481,10 @@ class IndexingWorker:
                 await session.commit()
 
         for file_id in claimed_ids:
-            self._video_tasks[file_id] = asyncio.create_task(
-                self._run_video_index_job(file_id),
-                name=f"video-index-{file_id[:8]}",
-            )
+            self._start_video_task(file_id)
             logger.info("Started parallel video index for %s", file_id)
 
-        return len(claimed_ids)
+        return started + len(claimed_ids)
 
     async def _run_video_index_job(self, file_id: str) -> None:
         """Same video pipeline as sequential indexing, isolated session per file."""
@@ -344,12 +535,69 @@ class IndexingWorker:
                     )
                     if is_missing:
                         await remove_drive_file(error_session, failed, gemini=gemini)
+                    elif is_transient_db_error(exc):
+                        failed.status = DriveFileStatus.PENDING
+                        failed.error_message = None
+                        logger.warning("Re-queued video %s after transient DB error", file_id)
                     else:
                         failed.status = DriveFileStatus.ERROR
-                        failed.error_message = str(exc)[:2000]
+                        failed.error_message = friendly_index_error_message(exc, max_len=500)
                     await error_session.commit()
         finally:
             self._video_tasks.pop(file_id, None)
+            self._video_started_at.pop(file_id, None)
+            self._schedule_video_refill()
+
+    async def release_stalled_processing(self) -> int:
+        """Mark long-stuck PROCESSING videos as ERROR so slots free up."""
+        stall_sec = max(60, int(self._settings.video_index_stall_seconds or 900))
+        now = datetime.now(timezone.utc)
+        loop_now = asyncio.get_event_loop().time()
+        released = 0
+
+        async with self._session_factory() as session:
+            processing = list(
+                (
+                    await session.execute(
+                        select(DriveFile).where(DriveFile.status == DriveFileStatus.PROCESSING)
+                    )
+                ).scalars().all()
+            )
+            for drive_file in processing:
+                if not is_video_mime(drive_file.mime_type):
+                    continue
+                started_mono = self._video_started_at.get(drive_file.id)
+                if started_mono is not None:
+                    elapsed = loop_now - started_mono
+                elif drive_file.last_synced_at is not None:
+                    elapsed = (now - drive_file.last_synced_at).total_seconds()
+                else:
+                    elapsed = stall_sec + 1
+                if elapsed < stall_sec:
+                    logger.info(
+                        "video_slot_active file_id=%s elapsed_sec=%.0f name=%s",
+                        drive_file.id,
+                        elapsed,
+                        drive_file.name,
+                    )
+                    continue
+                task = self._video_tasks.get(drive_file.id)
+                if task and not task.done():
+                    task.cancel()
+                drive_file.status = DriveFileStatus.ERROR
+                drive_file.error_message = (
+                    f"index_stall: processing exceeded {stall_sec}s without completion"
+                )[:2000]
+                released += 1
+                logger.warning(
+                    "video_slot_stalled file_id=%s elapsed_sec=%.0f name=%s",
+                    drive_file.id,
+                    elapsed,
+                    drive_file.name,
+                )
+            if released:
+                await session.commit()
+        return released
 
     async def _index_non_video_file(
         self,
@@ -491,14 +739,14 @@ class IndexingWorker:
                     source="drive",
                 )
             )
+            # Not an indexing skip — structural placeholder for Library only.
             return
         existing.name = entry.name
         existing.mime_type = FOLDER_MIME
         existing.path = folder_path
         existing.modified_time = entry.modified_time
         existing.status = DriveFileStatus.SKIPPED
-        if existing.error_message != "folder_marker":
-            existing.error_message = "folder_marker"
+        existing.error_message = "folder_marker"
 
     async def _upsert_drive_file(
         self,
@@ -565,8 +813,8 @@ class IndexingWorker:
                         await session.execute(
                             select(DriveFile)
                             .where(DriveFile.status == DriveFileStatus.PENDING)
-                            .order_by(DriveFile.modified_time.desc().nulls_last(), DriveFile.name)
-                            .limit(20)
+                            .order_by(*pending_order_by(self._settings))
+                            .limit(claim_window(self._settings, 1))
                         )
                     ).scalars().all()
                 )
@@ -588,6 +836,7 @@ class IndexingWorker:
                     drive_file.error_message = (
                         f"Unsupported mime type for indexing: {drive_file.mime_type}"
                     )
+                    _log_skip(drive_file, "unsupported_mime")
                     await session.commit()
                     summary["skipped"] += 1
                     processed_count += 1
@@ -622,10 +871,10 @@ class IndexingWorker:
                         if failed is not None:
                             if is_missing:
                                 await remove_drive_file(error_session, failed, gemini=gemini)
-                            elif is_deadlock_error(exc):
+                            elif is_transient_db_error(exc):
                                 failed.status = DriveFileStatus.PENDING
                                 failed.error_message = None
-                                logger.warning("Re-queued %s after repeated deadlocks", file_id)
+                                logger.warning("Re-queued %s after transient DB error", file_id)
                             else:
                                 _record_index_failure(failed, exc)
                             await error_session.commit()
@@ -647,8 +896,12 @@ class IndexingWorker:
                     reindex_errored=runtime.reindex_errored_files,
                     reindex_skipped=runtime.reindex_skipped_files,
                 )
-            seen = await self.sync_file_list()
+            # Drain known pending work before the (possibly long) Drive listing sync.
             summary = await self.process_pending(limit=limit)
+            seen = await self.sync_file_list()
+            more = await self.process_pending(limit=limit)
+            for key, value in more.items():
+                summary[key] = summary.get(key, 0) + value
             summary["discovered"] = seen
             self.last_run_summary = summary
             self.last_run_at = datetime.now(timezone.utc)

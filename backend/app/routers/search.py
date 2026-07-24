@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.db.session import get_db, get_session_factory
 from app.runtime_settings import get_runtime_settings
-from app.schemas import SearchResponse, SearchResultFile
+from app.schemas import SearchMoment, SearchResponse, SearchResultFile
 from app.gemini.service import SearchCitation, get_gemini_service
 from app.gemini.caption_filter import filter_images_by_caption_llm
 from app.gemini.rerank import rerank_image_files
@@ -44,7 +44,9 @@ from app.search.local import (
     resolve_search_context,
     role_context_active,
     text_matches_query,
+    SearchRoleContext,
 )
+
 
 def _apply_vector_metadata(
     base_files: list[SearchResultFile],
@@ -76,6 +78,34 @@ def _apply_vector_metadata(
         seen.add(item.drive_file_id)
 
     return merged
+
+
+async def _filter_moments_for_context(
+    session: AsyncSession,
+    moments: list[SearchMoment],
+    *,
+    effective_persons: list[str],
+    role_ctx: SearchRoleContext,
+) -> list[SearchMoment]:
+    """Apply multi-person and role filters to video moment hits."""
+    if len(effective_persons) > 1:
+        required = {p.lower() for p in effective_persons}
+        moments = [
+            m for m in moments
+            if required.issubset({n.lower() for n in m.person_names})
+        ]
+    if role_context_active(role_ctx) and moments:
+        valid_ids = set(
+            await resolve_role_matching_file_ids(
+                session,
+                list({m.drive_file_id for m in moments}),
+                person_names=effective_persons,
+                role_ctx=role_ctx,
+            )
+        )
+        moments = [m for m in moments if m.drive_file_id in valid_ids]
+    return moments
+
 
 router = APIRouter(prefix="/search", tags=["search"])
 logger = logging.getLogger(__name__)
@@ -192,6 +222,34 @@ async def search(
         ).scalar_one_or_none()
         if fc:
             folder_description = fc.description
+
+    # Video-only (Carousel / mime=video): skip image pipelines entirely.
+    # Uses Gemini Embedding 2 → Qdrant frame search + transcript/face + VLM rerank.
+    if mime_filter == "video":
+        moments = await search_video_moments(
+            session,
+            query=query,
+            visual_query=visual_query,
+            person_name=primary_person,
+            folder_path=folder_path,
+            folder_context=folder_description,
+            rerank=use_rerank,
+            action_query=action_query,
+            source=source_filter,
+        )
+        moments = await _filter_moments_for_context(
+            session,
+            moments,
+            effective_persons=effective_persons,
+            role_ctx=role_ctx,
+        )
+        return SearchResponse(
+            query=query,
+            answer="",
+            files=[],
+            citations=[],
+            moments=moments,
+        )
 
     vector_text = query if person_focused else (visual_query or query)
     session_factory = get_session_factory()
@@ -390,25 +448,13 @@ async def search(
         action_query=action_query,
         source=source_filter,
     )
-    if len(effective_persons) > 1:
-        required = {p.lower() for p in effective_persons}
-        moments = [
-            m for m in moments
-            if required.issubset({n.lower() for n in m.person_names})
-        ]
-    if role_context_active(role_ctx) and moments:
-        valid_ids = set(
-            await resolve_role_matching_file_ids(
-                session,
-                list({m.drive_file_id for m in moments}),
-                person_names=effective_persons,
-                role_ctx=role_ctx,
-            )
-        )
-        moments = [m for m in moments if m.drive_file_id in valid_ids]
-    if mime_filter == "video":
-        files = []
-    elif mime_filter in ("image", "pdf"):
+    moments = await _filter_moments_for_context(
+        session,
+        moments,
+        effective_persons=effective_persons,
+        role_ctx=role_ctx,
+    )
+    if mime_filter in ("image", "pdf"):
         moments = []
 
     # Append-only: caption-text LLM filter (only when caption matching is active).
