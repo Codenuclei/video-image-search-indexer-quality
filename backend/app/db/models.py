@@ -217,6 +217,7 @@ class AppSettings(Base):
     search_parallel_variants_enabled: Mapped[bool] = mapped_column(default=False, nullable=False)
     search_use_captions: Mapped[bool] = mapped_column(default=False, nullable=False)
     search_rerank_enabled: Mapped[bool] = mapped_column(default=True, nullable=False)
+    go_indexer_enabled: Mapped[bool] = mapped_column(default=False, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )

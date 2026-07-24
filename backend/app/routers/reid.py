@@ -12,12 +12,13 @@ from __future__ import annotations
 
 import os
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.reid.face_search import search_faces_by_image_bytes, search_faces_by_image_url
 from app.reid.body import (
     backfill_body_signatures,
     body_gallery,
@@ -83,6 +84,7 @@ async def reid_status(session: AsyncSession = Depends(get_db)) -> dict:
         },
         "web_matches": {"total": web_matches, "with_linkedin": linkedin},
         "reverse_search_configured": provider_configured(),
+        "apify_google_lens_configured": bool(get_settings().apify_token),
         "person_detector": "yolov8n" if yolov8_available() else "opencv_hog",
         "yolov8_available": yolov8_available(),
     }
@@ -219,6 +221,145 @@ async def reid_official_image_search(
                 "https://www.googleapis.com/auth/cloud-platform."
             ),
         ) from exc
+
+
+@router.post("/faces/search")
+async def search_uploaded_face(
+    file: UploadFile = File(...),
+    limit: int = 20,
+    session: AsyncSession = Depends(get_db),
+) -> dict:
+    """Upload a face photo → ArcFace embed → pgvector ANN → ranked internal profiles."""
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Empty upload")
+    if len(raw) > 12 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Image too large (max 12MB)")
+    try:
+        return await search_faces_by_image_bytes(session, raw, limit=max(1, min(limit, 50)))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+class FaceSearchByUrlRequest(BaseModel):
+    image_url: str = Field(..., min_length=8)
+    limit: int = Field(default=20, ge=1, le=50)
+
+
+@router.post("/faces/search-by-url")
+async def search_face_by_url(
+    body: FaceSearchByUrlRequest,
+    session: AsyncSession = Depends(get_db),
+) -> dict:
+    """Reverse-match a public portrait URL (used by Executive Leaders mini-cards)."""
+    try:
+        return await search_faces_by_image_url(session, body.image_url, limit=body.limit)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Image fetch failed: {exc}") from exc
+
+
+class FaceCrawlRequest(BaseModel):
+    urls: list[str] = Field(default_factory=list, max_length=20)
+
+
+@router.post("/faces/crawl")
+async def crawl_external_faces(
+    body: FaceCrawlRequest,
+    session: AsyncSession = Depends(get_db),
+) -> dict:
+    """
+    MVP: fetch public image URLs, detect faces, match against the internal index.
+    Does not invent private LinkedIn scraping.
+    """
+    from app.reid.external_crawl import crawl_image_urls
+
+    targets = [u.strip() for u in body.urls if u and u.strip()]
+    if not targets:
+        raise HTTPException(status_code=400, detail="Provide at least one image URL")
+    return await crawl_image_urls(session, targets)
+
+
+class LeadershipScanRequest(BaseModel):
+    tab: str = Field(default="executive", description="board | executive | faculty")
+    page_url: str = Field(default="https://mastersunion.org/about-us")
+    run_web_reverse: bool = False
+    match_limit: int = Field(default=8, ge=1, le=30)
+
+
+@router.get("/leadership/roster")
+async def leadership_roster(
+    tab: str = "executive",
+    page_url: str = "https://mastersunion.org/about-us",
+) -> dict:
+    """Live-scrape Masters' Union About Us leadership tab (e.g. Executive Leaders)."""
+    from app.reid.mu_leadership import fetch_leadership_roster
+
+    try:
+        return await fetch_leadership_roster(tab, page_url=page_url)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Scrape failed: {exc}") from exc
+
+
+@router.post("/leadership/scan")
+async def leadership_scan(
+    body: LeadershipScanRequest,
+    session: AsyncSession = Depends(get_db),
+) -> dict:
+    """
+    Scrape leadership portraits from About Us and reverse-match each face
+    against the internal index (optional Apify Lens enrichment).
+    Default tab=executive → data-rel master2 Executive Leaders.
+    """
+    from app.reid.mu_leadership import scan_leadership_faces
+
+    try:
+        return await scan_leadership_faces(
+            session,
+            tab=body.tab,
+            page_url=body.page_url,
+            match_limit=body.match_limit,
+            run_web_reverse=body.run_web_reverse,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Leadership scan failed: {exc}") from exc
+
+
+class LeadershipNameTagRequest(BaseModel):
+    name: str = Field(..., min_length=1, description="Website display name for the leader")
+    role: str | None = Field(default=None, description="Optional title from About Us")
+    cluster_ids: list[int] = Field(default_factory=list)
+    face_ids: list[int] = Field(default_factory=list)
+
+
+@router.post("/leadership/name-tag")
+async def leadership_name_tag(
+    body: LeadershipNameTagRequest,
+    session: AsyncSession = Depends(get_db),
+) -> dict:
+    """
+    Auto name-tag reverse-search matches using the scraped website name.
+    Creates or reuses a Person, then names/merges unknown clusters and tags faces.
+    """
+    from app.reid.mu_leadership import name_tag_from_website
+
+    try:
+        result = await name_tag_from_website(
+            session,
+            name=body.name,
+            role=body.role,
+            cluster_ids=body.cluster_ids,
+            face_ids=body.face_ids,
+        )
+        await session.commit()
+        return result
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/linkedin-map")

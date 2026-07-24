@@ -1,0 +1,270 @@
+/* Scoped to .dfi-ui-demo — Masters' Union design system (exact tokens) */
+
+.dfi-ui-demo {
+  /* Brand accents — from MU Marketing Site design system */
+  --mu-sky: #39b6d8;
+  --mu-orange: #e38330;
+  --mu-yellow: #f7d344;
+  --mu-sky-wash: #eaf7fb;
+  --mu-orange-wash: #fbeee3;
+  --mu-yellow-wash: #fef8e0;
+  --mu-success: #1f8a5b;
+  --mu-success-wash: #e4f3ec;
+  --mu-error: #c8442b;
+
+  /* Neutrals */
+  --mu-white: #ffffff;
+  --mu-n50: #fafafa;
+  --mu-n100: #f5f5f5;
+  --mu-n200: #e5e5e5;
+  --mu-n300: #d4d4d4;
+  --mu-n400: #a3a3a3;
+  --mu-n500: #737373;
+  --mu-n600: #525252;
+  --mu-n700: #404040;
+  --mu-n800: #262626;
+  --mu-n900: #171717;
+  --mu-n950: #090909;
+
+  /* Demo aliases (keep component classnames working) */
+  --demo-white: var(--mu-white);
+  --demo-cream: var(--mu-white);
+  --demo-frost: var(--mu-n50);
+  --demo-warm: var(--mu-yellow-wash);
+  --demo-accent: var(--mu-yellow);
+  --demo-ink: var(--mu-n950);
+  --demo-stone: var(--mu-n600);
+  --demo-lime: var(--mu-yellow);
+  --demo-rose: var(--mu-orange-wash);
+  --demo-peach: var(--mu-sky-wash);
+  --demo-apricot: var(--mu-yellow-wash);
+  --demo-olive: var(--mu-success-wash);
+  --demo-olive-deep: var(--mu-orange);
+  --demo-panel: var(--mu-sky-wash);
+  --demo-panel-alt: var(--mu-orange-wash);
+
+  --demo-radius: 12px; /* MU card radius-lg */
+  --demo-radius-btn: 8px; /* MU radius-md */
+  --demo-pill: 999px;
+  --demo-max: 1200px;
+  --demo-gap: 64px;
+
+  color: var(--mu-n950);
+  background: var(--mu-white);
+  font-weight: 400;
+  -webkit-font-smoothing: antialiased;
+}
+
+.dfi-ui-demo ::selection {
+  background: var(--mu-yellow);
+  color: var(--mu-n950);
+}
+
+.dfi-ui-demo .demo-container {
+  width: 100%;
+  max-width: var(--demo-max);
+  margin-inline: auto;
+}
+
+.dfi-ui-demo .demo-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--demo-gap);
+}
+
+.dfi-ui-demo .demo-card {
+  border-radius: var(--demo-radius);
+  background: var(--mu-white);
+  border: 1px solid var(--mu-n200);
+  box-shadow: 0 1px 2px rgba(9, 9, 9, 0.04);
+  padding: 1.5rem;
+}
+
+.dfi-ui-demo .demo-card-ink {
+  border-radius: var(--demo-radius);
+  background: var(--mu-n950);
+  color: var(--mu-white);
+  border: 1px solid var(--mu-n950);
+  padding: 2rem;
+}
+
+.dfi-ui-demo .demo-input {
+  border-radius: var(--demo-radius-btn);
+  background: var(--mu-white);
+  border: 1.5px solid var(--mu-n300);
+  min-height: 44px;
+}
+
+.dfi-ui-demo .demo-input:focus-within {
+  border-color: var(--mu-n950);
+  box-shadow: 0 0 0 3px rgba(57, 182, 216, 0.45);
+}
+
+.dfi-ui-demo .demo-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  border-radius: var(--demo-radius-btn);
+  font-weight: 600;
+  padding: 0.65rem 1.15rem;
+  font-size: 0.875rem;
+  line-height: 1.25;
+  border: 1.5px solid transparent;
+  transition: transform 0.12s ease, background 0.15s ease, opacity 0.15s ease;
+}
+
+.dfi-ui-demo .demo-btn:active {
+  transform: translateY(1px) scale(0.99);
+}
+
+.dfi-ui-demo .demo-btn:hover {
+  opacity: 0.92;
+}
+
+.dfi-ui-demo .demo-btn-ghost {
+  background: transparent;
+  color: var(--mu-n950);
+  border-color: var(--mu-n950);
+}
+
+.dfi-ui-demo .demo-btn-frost {
+  background: var(--mu-n100);
+  color: var(--mu-n950);
+  border-color: var(--mu-n200);
+}
+
+.dfi-ui-demo .demo-btn-lime {
+  /* MU accent button — yellow fill, dark text */
+  background: var(--mu-yellow);
+  color: var(--mu-n950);
+  border-color: var(--mu-yellow);
+}
+
+.dfi-ui-demo .demo-btn-olive {
+  /* MU primary — black fill */
+  background: var(--mu-n950);
+  color: var(--mu-white);
+  border-color: var(--mu-n950);
+}
+
+.dfi-ui-demo .demo-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--mu-n600);
+}
+
+.dfi-ui-demo .demo-eyebrow::before {
+  content: "";
+  width: 18px;
+  height: 2px;
+  background: var(--mu-sky);
+  flex-shrink: 0;
+}
+
+.dfi-ui-demo .demo-section-title {
+  margin-top: 0.4rem;
+  font-size: 1.75rem;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+  line-height: 1.12;
+  color: var(--mu-n950);
+}
+
+.dfi-ui-demo .demo-card-ink .demo-section-title {
+  color: var(--mu-white);
+}
+
+.dfi-ui-demo .demo-card-ink .demo-eyebrow {
+  color: var(--mu-n400);
+}
+
+.dfi-ui-demo .demo-card-ink .demo-eyebrow::before {
+  background: var(--mu-yellow);
+}
+
+.dfi-ui-demo .demo-scribble {
+  background: linear-gradient(transparent 55%, var(--mu-yellow) 55%, var(--mu-yellow) 92%, transparent 92%);
+  padding: 0 0.1em;
+}
+
+@keyframes demo-rise {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes demo-lane-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+    transform: scaleX(0.94);
+  }
+  50% {
+    opacity: 1;
+    transform: scaleX(1);
+  }
+}
+
+@keyframes demo-marquee {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+.dfi-ui-demo .demo-rise {
+  animation: demo-rise 0.55s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.dfi-ui-demo .demo-rise-d1 {
+  animation-delay: 0.05s;
+}
+.dfi-ui-demo .demo-rise-d2 {
+  animation-delay: 0.1s;
+}
+.dfi-ui-demo .demo-rise-d3 {
+  animation-delay: 0.15s;
+}
+.dfi-ui-demo .demo-rise-d4 {
+  animation-delay: 0.2s;
+}
+.dfi-ui-demo .demo-rise-d5 {
+  animation-delay: 0.25s;
+}
+.dfi-ui-demo .demo-rise-d6 {
+  animation-delay: 0.3s;
+}
+
+.dfi-ui-demo .demo-lane-bar {
+  transform-origin: left center;
+  animation: demo-lane-pulse 2.4s ease-in-out infinite;
+}
+
+.dfi-ui-demo .demo-lane-bar-delay {
+  animation-delay: 0.7s;
+}
+
+.dfi-ui-demo .demo-marquee-track {
+  animation: demo-marquee 28s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dfi-ui-demo .demo-rise,
+  .dfi-ui-demo .demo-lane-bar,
+  .dfi-ui-demo .demo-marquee-track {
+    animation: none !important;
+  }
+}

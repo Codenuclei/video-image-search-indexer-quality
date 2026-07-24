@@ -2,8 +2,9 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import {
+  CircleHelp,
   FolderOpen,
   GalleryHorizontal,
   HardDrive,
@@ -11,6 +12,7 @@ import {
   LifeBuoy,
   LogOut,
   Menu,
+  ScanFace,
   Search,
   Settings,
   UserCheck,
@@ -24,14 +26,24 @@ import { ConfirmDialog } from "@/components/ui";
 import { getAuthEmail, signOut } from "@/components/auth-gate";
 import { supportMailto } from "@/lib/support";
 
-const links = [
+type NavLink = {
+  href: string;
+  label: string;
+  icon: typeof Home;
+  mobile: boolean;
+  section?: "find";
+};
+
+const links: NavLink[] = [
   { href: "/", label: "Dashboard", icon: Home, mobile: true },
   { href: "/review", label: "Review Queue", icon: UserCheck, mobile: true },
   { href: "/people", label: "People", icon: Users, mobile: true },
-  { href: "/search", label: "Search", icon: Search, mobile: true },
-  { href: "/search/carousel", label: "Carousel Search", icon: GalleryHorizontal, mobile: false },
+  { href: "/search", label: "Search", icon: Search, mobile: true, section: "find" },
+  { href: "/search/carousel", label: "Video Carousel", icon: GalleryHorizontal, mobile: true, section: "find" },
+  { href: "/labs/reverse-face", label: "Reverse Face", icon: ScanFace, mobile: false, section: "find" },
   { href: "/library", label: "Library", icon: HardDrive, mobile: true },
   { href: "/folders", label: "Folders", icon: FolderOpen, mobile: true },
+  { href: "/help", label: "How to / FAQ", icon: CircleHelp, mobile: false },
   { href: "/settings", label: "Settings", icon: Settings, mobile: false },
 ];
 
@@ -59,6 +71,44 @@ function BrandMark({ compact = false }: { compact?: boolean }) {
   );
 }
 
+function NavItem({
+  href,
+  label,
+  icon: Icon,
+  pathname,
+  vertical,
+  onNavigate,
+}: {
+  href: string;
+  label: string;
+  icon: typeof Home;
+  pathname: string;
+  vertical: boolean;
+  onNavigate?: () => void;
+}) {
+  return (
+    <Link
+      href={href}
+      onClick={onNavigate}
+      className={cn(
+        vertical
+          ? "flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-150"
+          : "flex min-h-11 min-w-0 flex-1 flex-col items-center justify-center gap-1 rounded-lg px-1 py-2 text-[10px] font-medium transition-colors",
+        navActive(pathname, href)
+          ? vertical
+            ? "bg-sidebar-primary text-sidebar-primary-foreground shadow-sm"
+            : "text-primary"
+          : vertical
+            ? "text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+            : "text-muted-foreground hover:text-foreground"
+      )}
+    >
+      <Icon size={vertical ? 16 : 18} className="shrink-0" />
+      <span className={cn(!vertical && "truncate")}>{vertical ? label : label.split(" ")[0]}</span>
+    </Link>
+  );
+}
+
 function NavLinks({
   pathname,
   onNavigate,
@@ -72,32 +122,52 @@ function NavLinks({
 }) {
   const items = mobileOnly ? links.filter((l) => l.mobile) : links;
 
-  return (
-    <nav className={cn(vertical ? "space-y-0.5" : "flex items-center justify-around gap-1")}>
-      {items.map(({ href, label, icon: Icon }) => (
-        <Link
-          key={href}
-          href={href}
-          onClick={onNavigate}
-          className={cn(
-            vertical
-              ? "flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-150"
-              : "flex min-h-11 min-w-0 flex-1 flex-col items-center justify-center gap-1 rounded-lg px-1 py-2 text-[10px] font-medium transition-colors",
-            navActive(pathname, href)
-              ? vertical
-                ? "bg-sidebar-primary text-sidebar-primary-foreground shadow-sm"
-                : "text-primary"
-              : vertical
-                ? "text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-                : "text-muted-foreground hover:text-foreground"
-          )}
+  if (!vertical) {
+    return (
+      <nav className="flex items-center justify-around gap-1">
+        {items.map(({ href, label, icon }) => (
+          <NavItem
+            key={href}
+            href={href}
+            label={label}
+            icon={icon}
+            pathname={pathname}
+            vertical={false}
+            onNavigate={onNavigate}
+          />
+        ))}
+      </nav>
+    );
+  }
+
+  const nodes: ReactNode[] = [];
+  let findLabelShown = false;
+  for (const item of items) {
+    if (item.section === "find" && !findLabelShown) {
+      findLabelShown = true;
+      nodes.push(
+        <p
+          key="find-heading"
+          className="px-3 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground"
         >
-          <Icon size={vertical ? 16 : 18} className="shrink-0" />
-          <span className={cn(!vertical && "truncate")}>{vertical ? label : label.split(" ")[0]}</span>
-        </Link>
-      ))}
-    </nav>
-  );
+          Find
+        </p>
+      );
+    }
+    nodes.push(
+      <NavItem
+        key={item.href}
+        href={item.href}
+        label={item.label}
+        icon={item.icon}
+        pathname={pathname}
+        vertical
+        onNavigate={onNavigate}
+      />
+    );
+  }
+
+  return <nav className="space-y-0.5">{nodes}</nav>;
 }
 
 function SidebarFooter({ email, onNavigate }: { email: string | null; onNavigate?: () => void }) {

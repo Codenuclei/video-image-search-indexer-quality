@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import { apiClient, type Settings } from "@/lib/api";
 import { Button, Card, Input, LoadingLabel } from "@/components/ui";
 
@@ -228,6 +229,26 @@ export default function SettingsPage() {
               </span>
             </span>
           </label>
+          <label className="flex cursor-pointer items-start gap-3 text-sm">
+            <input
+              type="checkbox"
+              checked={settings.go_indexer_enabled}
+              disabled={saving}
+              onChange={(e) => {
+                const v = e.target.checked;
+                setSettings({ ...settings, go_indexer_enabled: v });
+                persist({ go_indexer_enabled: v });
+              }}
+              className="mt-0.5 h-4 w-4 shrink-0 rounded border-border bg-background accent-blue-500"
+            />
+            <span>
+              <span className="text-foreground">Go indexer canary</span>
+              <span className="mt-1 block text-xs text-muted-foreground">
+                Off by default. When ON, a Go sidecar can claim a few pending images in parallel with
+                Python (<code>scripts/go-indexer-poc</code>). Banner shows Go active + files/sec after a run.
+              </span>
+            </span>
+          </label>
           <p className="text-xs text-muted-foreground">
             Drive Connector polls every 30s and sends a webhook when files change. This interval is a
             fallback poll.
@@ -271,6 +292,16 @@ export default function SettingsPage() {
               </span>
             </span>
           </label>
+          <p className="border-t border-border pt-3 text-xs text-muted-foreground">
+            Labs:{" "}
+            <Link
+              href="/labs/ui-demo"
+              className="text-foreground underline-offset-2 hover:underline"
+            >
+              UI revamp demo
+            </Link>
+            <span className="text-muted-foreground/80"> · private preview, not in nav</span>
+          </p>
         </Card>
       </div>
     </div>

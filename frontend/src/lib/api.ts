@@ -99,6 +99,139 @@ export type DriveFile = {
   source?: string;
 };
 
+export type DriveFilesPage = {
+  total: number;
+  offset: number;
+  limit: number;
+  items: DriveFile[];
+};
+
+export type DriveFilesQuery = {
+  status?: string;
+  source?: string;
+  limit?: number;
+  offset?: number;
+};
+
+export type SkipStats = {
+  total_skipped: number;
+  by_reason: { reason: string; count: number }[];
+};
+
+export type IndexErrorsPage = {
+  total: number;
+  offset: number;
+  limit: number;
+  items: DriveFile[];
+};
+
+export type HowToResponse = {
+  source: string;
+  page: string;
+  answer: string;
+  warning?: string;
+};
+
+export type FaceSearchAppearance = {
+  media_id: number;
+  drive_file_id: string;
+  name: string;
+  path: string;
+  media_type: string;
+  frame_timestamp?: number | null;
+};
+
+export type FaceSearchMatch = {
+  face_id: number;
+  person_id: number | null;
+  person_name: string;
+  score: number;
+  distance: number;
+  linkedin_url: string | null;
+  cluster_id?: number | null;
+  cluster_status?: string | null;
+  cluster_member_count?: number | null;
+  appears_in?: FaceSearchAppearance[];
+};
+
+export type FaceSearchResponse = {
+  faces_detected: number;
+  query_confidence?: number;
+  matches: FaceSearchMatch[];
+  message?: string;
+};
+
+export type FaceCrawlResult = {
+  url: string;
+  ok: boolean;
+  error?: string;
+  search?: FaceSearchResponse;
+};
+
+export type FaceCrawlResponse = {
+  crawled: number;
+  results: FaceCrawlResult[];
+};
+
+export type LeadershipPerson = {
+  name: string;
+  role: string;
+  image_url: string;
+  linkedin_url?: string;
+};
+
+export type LeadershipRoster = {
+  source_url: string;
+  tab: string;
+  section_id: string;
+  label: string;
+  count: number;
+  people: LeadershipPerson[];
+};
+
+export type LeadershipScanResult = {
+  name: string;
+  role: string;
+  image_url: string;
+  linkedin_url?: string | null;
+  ok: boolean;
+  error?: string;
+  faces_detected?: number;
+  internal_matches?: FaceSearchMatch[];
+  matched_person?: string;
+  match_score?: number;
+  name_alignment?: boolean;
+};
+
+export type LeadershipScanResponse = {
+  source_url: string;
+  tab: string;
+  section_id: string;
+  label: string;
+  count: number;
+  matched: number;
+  results: LeadershipScanResult[];
+};
+
+export type LeadershipNameTagResponse = {
+  ok: boolean;
+  named: string;
+  person: {
+    id: number;
+    name: string;
+    role?: string | null;
+    representative_face_id?: number | null;
+    occurrence_count: number;
+  };
+  actions: {
+    type: string;
+    id: number;
+    ok: boolean;
+    action?: string;
+    error?: string;
+  }[];
+};
+
 export type YoutubeRegisterResult = {
   drive_file_id: string;
   name: string;
@@ -114,6 +247,11 @@ export type YoutubeRegisterResponse = {
   index_scheduled: boolean;
 };
 
+export type IndexLaneSlots = {
+  active: number;
+  max: number;
+};
+
 export type IndexStatus = {
   is_running: boolean;
   counts_by_status: Record<string, number>;
@@ -126,8 +264,34 @@ export type IndexStatus = {
   } | null;
   last_run_at: string | null;
   current_file: string | null;
+  current_files?: string[];
+  current_image_files?: string[];
+  current_video_files?: string[];
+  image_slots?: IndexLaneSlots;
+  video_slots?: IndexLaneSlots;
+  active_image_jobs?: number;
+  active_video_jobs?: number;
   auto_index_enabled: boolean;
   auto_index_interval_seconds: number;
+  pending_count?: number;
+  go_indexer_enabled?: boolean;
+  go_indexer_alive?: boolean;
+  go_files_per_sec?: number | null;
+};
+
+export type GoIndexerStatus = {
+  enabled: boolean;
+  alive: boolean;
+  last_heartbeat_at: string | null;
+  max_parallel: number;
+  canary_limit: number;
+  claimed_open: number;
+  last_files_ok: number;
+  last_files_err: number;
+  last_elapsed_ms: number;
+  last_files_per_sec: number;
+  last_download_bytes: number;
+  last_reported_at: string | null;
 };
 
 export type Settings = {
@@ -143,6 +307,7 @@ export type Settings = {
   search_parallel_variants_enabled: boolean;
   search_use_captions: boolean;
   search_rerank_enabled: boolean;
+  go_indexer_enabled: boolean;
 };
 
 export type FileFace = {
@@ -199,6 +364,220 @@ export type SearchResponse = {
   citations: SearchCitation[];
   files: SearchResultFile[];
   moments: SearchMoment[];
+};
+
+export type CarouselPresetItem = {
+  id: string;
+  label: string;
+  blurb: string;
+};
+
+export type CarouselPresets = {
+  hooks: CarouselPresetItem[];
+  topics: CarouselPresetItem[];
+};
+
+export type CarouselSnapshotContext = {
+  drive_file_id: string;
+  name: string;
+  timestamp_sec: number;
+  end_timestamp_sec?: number | null;
+  snippet?: string | null;
+  match_type?: string | null;
+  preview_url?: string | null;
+};
+
+export type CarouselScriptTurn = {
+  role: string;
+  content: string;
+};
+
+export type CarouselScriptRequest = {
+  prompt: string;
+  hooks: string[];
+  topics: string[];
+  snapshot?: CarouselSnapshotContext | null;
+  history?: CarouselScriptTurn[];
+};
+
+export type CarouselScriptResponse = {
+  source: string;
+  script: string;
+  hooks: string[];
+  topics: string[];
+  warning?: string;
+};
+
+export type CarouselExpandResponse = {
+  source: string;
+  kind: string;
+  items: CarouselPresetItem[];
+  warning?: string;
+};
+
+export type CarouselOutlineSlide = {
+  index: number;
+  hook_line: string;
+  caption?: string | null;
+  drive_file_id: string;
+  name: string;
+  timestamp_sec: number;
+  end_timestamp_sec?: number | null;
+  snippet?: string | null;
+  match_type?: string | null;
+  preview_url?: string | null;
+  moment_index: number;
+  /** Chosen display frame timestamp inside the spoken span (may differ from mid-span). */
+  frame_ts?: number | null;
+  /** How the preview frame was chosen. */
+  frame_source?: "ai" | "heuristic" | "fallback" | string | null;
+  instagram_ready?: boolean | null;
+  frame_candidates?: number[] | null;
+};
+
+export type CarouselOutlineRequest = {
+  script: string;
+  moments: CarouselSnapshotContext[];
+  hooks?: string[];
+  topics?: string[];
+  slide_count?: number;
+  title?: string;
+};
+
+export type CarouselOutlineResponse = {
+  source: string;
+  title: string;
+  slide_count: number;
+  hooks: string[];
+  topics: string[];
+  slides: CarouselOutlineSlide[];
+  cues?: CarouselCueItem[];
+  warning?: string;
+};
+
+export type CarouselCueItem = {
+  kind: "hook" | "topic" | string;
+  id: string;
+  label: string;
+  snapshot?: CarouselSnapshotContext | null;
+  score?: number;
+  cue_text?: string | null;
+};
+
+export type CarouselCuesRequest = {
+  hooks?: string[];
+  topics?: string[];
+  moments?: CarouselSnapshotContext[];
+  drive_file_id?: string;
+};
+
+export type CarouselCuesResponse = {
+  source: string;
+  hooks: string[];
+  topics: string[];
+  cues: CarouselCueItem[];
+};
+
+export type CarouselTranscriptSubtopic = {
+  title: string;
+  start_sec: number;
+  end_sec?: number | null;
+  explanation: string;
+};
+
+export type CarouselTranscriptTopic = {
+  title: string;
+  start_sec: number;
+  end_sec?: number | null;
+  explanation: string;
+  subtopics: CarouselTranscriptSubtopic[];
+};
+
+export type CarouselTranscriptTopicsRequest = {
+  drive_file_id: string;
+};
+
+export type CarouselTranscriptTopicsResponse = {
+  source: string;
+  drive_file_id: string;
+  name: string;
+  cue_count: number;
+  topics: CarouselTranscriptTopic[];
+  warning?: string;
+};
+
+export type CarouselRecentVideo = {
+  id: string;
+  name: string;
+  mime_type: string;
+  path: string | null;
+  size: number | null;
+  modified_time: string | null;
+  last_synced_at: string | null;
+  created_at?: string | null;
+  status: string;
+  has_captions?: boolean;
+  cue_count?: number;
+};
+
+export type CarouselPipelineTheme = {
+  theme_id: string;
+  title: string;
+  start_sec: number;
+  end_sec?: number | null;
+  summary: string;
+  harmonized?: boolean;
+  search_entity?: string | null;
+};
+
+export type CarouselPipelineThemesResponse = {
+  source: string;
+  drive_file_id: string;
+  name: string;
+  search_entity?: string | null;
+  person_name?: string | null;
+  person_found?: boolean | null;
+  harmonized: boolean;
+  cue_count?: number;
+  themes: CarouselPipelineTheme[];
+  error?: string;
+  message?: string;
+  warning?: string;
+};
+
+export type CarouselVerbatimItem = {
+  id: string;
+  text: string;
+  start_sec: number;
+  end_sec?: number | null;
+  verbatim?: boolean;
+  translated?: boolean;
+  original_text?: string | null;
+  english_source?: string | null;
+};
+
+export type CarouselPipelineExtractResponse = {
+  drive_file_id: string;
+  theme_id?: string | null;
+  theme_ids?: string[];
+  hooks: CarouselVerbatimItem[];
+  topics: CarouselVerbatimItem[];
+  previews: {
+    start_sec: number;
+    end_sec?: number | null;
+    text: string;
+    label: string;
+    theme_id?: string | null;
+    theme_title?: string | null;
+  }[];
+  intent?: string | null;
+  intent_score?: number | null;
+  intent_source?: string | null;
+  verbatim: boolean;
+  hooks_english?: boolean;
+  topics_english?: boolean;
+  any_translated?: boolean;
+  english_source?: string | null;
 };
 
 export type FolderContext = {
@@ -305,6 +684,13 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
     if (res.status === 204) return undefined as T;
     return res.json();
   } catch (error) {
+    // Preserve abort so callers can ignore cancelled requests.
+    if (
+      (error instanceof DOMException || error instanceof Error) &&
+      error.name === "AbortError"
+    ) {
+      throw error;
+    }
     throw new Error(formatApiError(error));
   }
 }
@@ -340,6 +726,7 @@ export type ReidStatus = {
   body_signatures: { total: number; labeled: number; unlabeled: number; full_body: number };
   web_matches: { total: number; with_linkedin: number };
   reverse_search_configured: boolean;
+  apify_google_lens_configured?: boolean;
   person_detector?: string;
   yolov8_available?: boolean;
 };
@@ -433,6 +820,23 @@ export type OfficialImageSearchResult = {
   }[];
 };
 
+export type FaceReverseSearchResult = {
+  face_id: number;
+  provider: string;
+  image_url: string;
+  google_guess: string | null;
+  result_count: number;
+  linkedin_url: string | null;
+  match_thumbnails?: Record<string, string>;
+  matches: {
+    title: string | null;
+    url: string | null;
+    linkedin_url: string | null;
+    score: number | null;
+    thumbnail?: string | null;
+  }[];
+};
+
 export const apiClient = {
   health: () =>
     api<{ status: string; search?: string; fennec_enabled?: boolean; fennec_ready?: boolean }>("/health"),
@@ -472,7 +876,26 @@ export const apiClient = {
   mergeCluster: (id: number, personId: number) =>
     api<Person>(`/clusters/${id}/merge`, { method: "POST", body: JSON.stringify({ person_id: personId }) }),
   syncDriveFiles: () => api<{ ok: boolean; scheduled: boolean }>("/drive/sync", { method: "POST" }),
-  driveFiles: (status?: string) => api<DriveFile[]>(`/drive/files${status ? `?status=${status}` : ""}`),
+  driveFiles: (statusOrOpts?: string | DriveFilesQuery) => {
+    const opts: DriveFilesQuery =
+      typeof statusOrOpts === "string" ? { status: statusOrOpts } : statusOrOpts ?? {};
+    const params = new URLSearchParams();
+    if (opts.status) params.set("status", opts.status);
+    if (opts.source) params.set("source", opts.source);
+    if (opts.limit != null) params.set("limit", String(opts.limit));
+    if (opts.offset != null) params.set("offset", String(opts.offset));
+    const qs = params.toString();
+    return api<DriveFile[]>(`/drive/files${qs ? `?${qs}` : ""}`);
+  },
+  driveFilesPage: (opts?: DriveFilesQuery) => {
+    const params = new URLSearchParams();
+    if (opts?.status) params.set("status", opts.status);
+    if (opts?.source) params.set("source", opts.source);
+    if (opts?.limit != null) params.set("limit", String(opts.limit));
+    if (opts?.offset != null) params.set("offset", String(opts.offset));
+    const qs = params.toString();
+    return api<DriveFilesPage>(`/drive/files/page${qs ? `?${qs}` : ""}`);
+  },
   driveLibrary: () => api<LibraryResponse>("/drive/library"),
   pauseFolderIndexing: (folder_path: string) =>
     api<{ ok: boolean; stopped: number; cancelled: number }>("/drive/library/folders/pause", {
@@ -497,8 +920,178 @@ export const apiClient = {
       body: JSON.stringify({ urls, index_now: indexNow, download_local: downloadLocal }),
     }),
   indexStatus: () => api<IndexStatus>("/index"),
+  goIndexerStatus: () => api<GoIndexerStatus>("/index/go/status"),
+  skipStats: () => api<SkipStats>("/index/skip-stats"),
+  indexErrors: (limit = 50, offset = 0) => {
+    const params = new URLSearchParams({
+      limit: String(limit),
+      offset: String(offset),
+    });
+    return api<IndexErrorsPage>(`/index/errors?${params}`);
+  },
   triggerIndex: () => api<IndexStatus>("/index", { method: "POST" }),
   triggerReindex: () => api<IndexStatus>("/reindex", { method: "POST" }),
+  howto: (page: string, question: string) =>
+    api<HowToResponse>("/help/howto", {
+      method: "POST",
+      body: JSON.stringify({ page, question }),
+    }),
+  carouselPresets: () => api<CarouselPresets>("/search/carousel/presets"),
+  expandCarouselPresets: (kind: "hooks" | "topics", seed = "", count = 4) =>
+    api<CarouselExpandResponse>("/search/carousel/presets/expand", {
+      method: "POST",
+      body: JSON.stringify({ kind, seed, count }),
+    }),
+  generateCarouselScript: (body: CarouselScriptRequest) =>
+    api<CarouselScriptResponse>("/search/carousel/script", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  generateCarouselOutline: (body: CarouselOutlineRequest) =>
+    api<CarouselOutlineResponse>("/search/carousel/outline", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  matchCarouselCues: (body: CarouselCuesRequest) =>
+    api<CarouselCuesResponse>("/search/carousel/cues", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  analyzeCarouselTranscriptTopics: (driveFileId: string) =>
+    api<CarouselTranscriptTopicsResponse>("/search/carousel/transcript-topics", {
+      method: "POST",
+      body: JSON.stringify({ drive_file_id: driveFileId }),
+    }),
+  carouselRecentVideos: (limit = 5, captionedOnly = true) =>
+    api<{ items: CarouselRecentVideo[]; captioned_only?: boolean }>(
+      `/search/carousel/recent-videos?limit=${limit}&captioned_only=${captionedOnly ? "true" : "false"}`
+    ),
+  carouselVideos: (opts?: { q?: string; limit?: number; offset?: number; captionedOnly?: boolean }) => {
+    const params = new URLSearchParams();
+    if (opts?.q) params.set("q", opts.q);
+    params.set("limit", String(opts?.limit ?? 20));
+    params.set("offset", String(opts?.offset ?? 0));
+    params.set("captioned_only", opts?.captionedOnly === false ? "false" : "true");
+    return api<{
+      items: CarouselRecentVideo[];
+      q?: string | null;
+      captioned_only?: boolean;
+      limit?: number;
+      offset?: number;
+      has_more?: boolean;
+    }>(`/search/carousel/videos?${params}`);
+  },
+  carouselPipelineThemes: (
+    driveFileId: string,
+    opts?: { searchEntity?: string; personName?: string; signal?: AbortSignal }
+  ) =>
+    api<CarouselPipelineThemesResponse>("/search/carousel/pipeline/themes", {
+      method: "POST",
+      body: JSON.stringify({
+        drive_file_id: driveFileId,
+        search_entity: opts?.searchEntity ?? "",
+        person_name: opts?.personName ?? "",
+      }),
+      signal: opts?.signal,
+    }),
+  carouselPipelineExtract: (body: {
+    drive_file_id: string;
+    theme_id?: string;
+    title?: string;
+    start_sec?: number;
+    end_sec?: number | null;
+    summary?: string;
+    search_entity?: string;
+    themes?: {
+      theme_id?: string;
+      title?: string;
+      start_sec: number;
+      end_sec?: number | null;
+      summary?: string;
+    }[];
+  }) =>
+    api<CarouselPipelineExtractResponse>("/search/carousel/pipeline/extract", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  carouselPipelineIntent: (body: {
+    theme_title?: string;
+    theme_summary?: string;
+    theme_titles?: string[];
+    theme_summaries?: string[];
+    hooks?: string[];
+    topics?: string[];
+    search_entity?: string;
+  }) =>
+    api<{ intent?: string | null; intent_score?: number | null; intent_source?: string | null }>(
+      "/search/carousel/pipeline/intent",
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      }
+    ),
+  searchUploadedFace: async (file: File, limit = 20): Promise<FaceSearchResponse> => {
+    const params = new URLSearchParams({ limit: String(limit) });
+    const form = new FormData();
+    form.append("file", file);
+    try {
+      const res = await fetch(`${API_BASE}/reid/faces/search?${params}`, {
+        method: "POST",
+        body: form,
+        cache: "no-store",
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        if (res.status >= 500) throw new Error(SERVICE_UNAVAILABLE_MESSAGE);
+        throw new Error(formatApiError(new Error(text || res.statusText)));
+      }
+      return res.json();
+    } catch (error) {
+      throw new Error(formatApiError(error));
+    }
+  },
+  searchFaceByUrl: (imageUrl: string, limit = 20) =>
+    api<FaceSearchResponse>("/reid/faces/search-by-url", {
+      method: "POST",
+      body: JSON.stringify({ image_url: imageUrl, limit }),
+    }),
+  crawlFaceUrls: (urls: string[]) =>
+    api<FaceCrawlResponse>("/reid/faces/crawl", {
+      method: "POST",
+      body: JSON.stringify({ urls }),
+    }),
+  leadershipRoster: (tab = "executive") =>
+    api<LeadershipRoster>(`/reid/leadership/roster?tab=${encodeURIComponent(tab)}`),
+  leadershipScan: (opts?: {
+    tab?: string;
+    run_web_reverse?: boolean;
+    match_limit?: number;
+  }) =>
+    api<LeadershipScanResponse>("/reid/leadership/scan", {
+      method: "POST",
+      body: JSON.stringify({
+        tab: opts?.tab ?? "executive",
+        run_web_reverse: opts?.run_web_reverse ?? false,
+        match_limit: opts?.match_limit ?? 8,
+      }),
+    }),
+  leadershipNameTag: (body: {
+    name: string;
+    role?: string | null;
+    cluster_ids?: number[];
+    face_ids?: number[];
+  }) =>
+    api<LeadershipNameTagResponse>("/reid/leadership/name-tag", {
+      method: "POST",
+      body: JSON.stringify({
+        name: body.name,
+        role: body.role ?? undefined,
+        cluster_ids: body.cluster_ids ?? [],
+        face_ids: body.face_ids ?? [],
+      }),
+    }),
+  // Shared visual search: images via Qdrant embeddings; videos (mime=video) via
+  // Gemini frame embeddings + Qdrant + optional VLM rerank. Carousel uses mime=video.
   search: async (q: string, person?: string, mime?: string): Promise<SearchResponse> => {
     const params = new URLSearchParams({ q });
     if (person?.trim()) params.set("person", person.trim());
@@ -568,6 +1161,14 @@ export const apiClient = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  reverseSearchFace: (faceId: number) =>
+    api<FaceReverseSearchResult>(`/reid/faces/${faceId}/reverse-search`, { method: "POST" }),
+  googleLensUrlForFace: (faceId: number) => {
+    const thumb = faceThumbnailUrl(faceId);
+    return thumb
+      ? `https://lens.google.com/uploadbyurl?url=${encodeURIComponent(thumb)}`
+      : null;
+  },
   folderContexts: () => api<FolderContext[]>("/folder-contexts"),
   upsertFolderContext: (folder_path: string, description: string) =>
     api<FolderContext>("/folder-contexts", {

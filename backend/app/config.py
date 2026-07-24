@@ -43,7 +43,21 @@ class Settings(BaseSettings):
     search_variant_max_parallel: int = 0   # 0 = auto (cpu cores); parallel variant embed+Qdrant
     search_llm_batch_parallel: int = 0     # 0 = auto; caption filter + rerank batch concurrency
     cpu_thread_pool_size: int = 0          # 0 = os.cpu_count()
-    image_index_max_parallel: int = 6      # concurrent image index jobs (face detect + embed)
+    # Concurrent image jobs (face detect + embed). On 24 vCPU Railway, 8–10 is a
+    # solid default; raise via IMAGE_INDEX_MAX_PARALLEL if Gemini/CPU headroom allows.
+    image_index_max_parallel: int = 10
+    # Optional Go sidecar canary (claim/download in Go, complete via Python ingest).
+    go_indexer_enabled: bool = False
+    go_indexer_max_parallel: int = 2
+    go_indexer_canary_limit: int = 20
+    go_indexer_heartbeat_seconds: float = 60.0
+    go_indexer_claim_stall_seconds: float = 900.0
+    # Prefer smaller pending files first so the queue keeps moving.
+    index_prefer_small_files: bool = True
+    # How many pending rows to scan per claim round (multiplied by free slots).
+    index_claim_window_multiplier: int = 40
+    # Requeue/error PROCESSING videos stuck longer than this (seconds).
+    video_index_stall_seconds: int = 900
 
     # Image caption/embedding backfill throughput (maintenance loop).
     image_caption_batch_parallel: int = 6   # concurrent Gemini describe batches
@@ -90,6 +104,14 @@ class Settings(BaseSettings):
     # Only face clusters at or above this detection confidence appear in the review queue.
     review_queue_min_confidence: float = 0.80
 
+    # yt-dlp cookies for YouTube downloads on servers (Railway). Prefer a volume
+    # path (YTDLP_COOKIES_FILE / YOUTUBE_COOKIES_FILE) or paste Netscape cookie
+    # contents into YTDLP_COOKIES / YOUTUBE_COOKIES (written to a temp file at runtime).
+    ytdlp_cookies_file: str = ""
+    youtube_cookies_file: str = ""
+    ytdlp_cookies: str = ""
+    youtube_cookies: str = ""
+
     # Video indexing (ffmpeg frames + VTT transcript + Gemini VLM)
     video_indexing_enabled: bool = True
     video_cache_dir: str = "./data/videos"
@@ -97,8 +119,9 @@ class Settings(BaseSettings):
     video_max_sample_frames: int = 300
     video_max_gemini_frames: int = 12
     video_vlm_enrich: bool = True
-    # Max videos indexing at the same time (each uses the same pipeline).
-    video_index_max_parallel: int = 3
+    # Max videos at once. InsightFace/CPU lock → diminishing returns above ~3–4;
+    # raise via VIDEO_INDEX_MAX_PARALLEL only if ffmpeg/Gemini headroom shows idle.
+    video_index_max_parallel: int = 4
 
     # Gemini API client-side concurrency (tune to your tier; see ai.google.dev rate limits).
     # Embedding 2: high RPM (~40k) — safe default 24 concurrent frame embeds.
@@ -168,6 +191,10 @@ class Settings(BaseSettings):
     # Official Google Cloud Vision Web Detection reverse-image API.
     # Enable Cloud Vision API + billing on the key's Google Cloud project.
     google_vision_api_key: str = ""
+    # Apify Google Lens (preferred for identity — AI Mode / exact matches).
+    # Token from https://console.apify.com/account/integrations
+    apify_token: str = ""
+    apify_google_lens_actor: str = "borderline/google-lens"
     cohesivity_application_key: str = ""
     cohesivity_exa_base_url: str = "https://cohesivity.ai/edge/exa-api"
     serpapi_key: str = ""

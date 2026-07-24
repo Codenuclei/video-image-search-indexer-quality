@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 
@@ -8,7 +9,6 @@ from sqlalchemy import func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
-from app.db.deadlock import retry_on_deadlock
 from app.db.models import (
     ClusterStatus,
     DriveFile,
@@ -327,12 +327,36 @@ async def assign_face(
     embedding: list[float],
     settings: Settings | None = None,
 ) -> MatchResult:
+    """
+    Match a face into a cluster.
+
+    Uses a SAVEPOINT per attempt so a deadlock on one face does not abort the
+    outer file transaction (which would poison later faces with
+    InFailedSQLTransactionError and leave the Drive file in ERROR forever).
+    """
+    from app.db.deadlock import is_transient_db_error
+
     settings = settings or get_settings()
-
-    async def _run() -> MatchResult:
-        return await _assign_face_once(session, face, embedding, settings)
-
-    return await retry_on_deadlock(_run, label=f"assign_face face_id={face.id}")
+    last_exc: BaseException | None = None
+    for attempt in range(4):
+        try:
+            async with session.begin_nested():
+                return await _assign_face_once(session, face, embedding, settings)
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            if not is_transient_db_error(exc) or attempt >= 3:
+                raise
+            delay = 0.08 * (2**attempt)
+            logger.warning(
+                "assign_face retry %d/4 for face_id=%s after %s (%.2fs)",
+                attempt + 1,
+                face.id,
+                type(exc).__name__,
+                delay,
+            )
+            await asyncio.sleep(delay)
+    assert last_exc is not None
+    raise last_exc
 
 
 async def merge_cluster_into_person(session: AsyncSession, cluster_id: int, person_id: int) -> Person:

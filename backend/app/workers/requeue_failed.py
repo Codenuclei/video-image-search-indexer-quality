@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db.models import DriveFile, DriveFileStatus
+from app.config import get_settings
 from app.drive.indexing_pause import (
     is_file_indexing_paused,
     is_indexing_paused_message,
@@ -62,8 +63,8 @@ async def requeue_failed_files(
                     await session.execute(
                         select(DriveFile)
                         .where(DriveFile.status == DriveFileStatus.ERROR)
-                        .order_by(DriveFile.modified_time.desc().nulls_last(), DriveFile.name)
-                        .limit(batch_limit * 2)
+                        .order_by(*pending_order_by(get_settings()))
+                        .limit(batch_limit * 4)
                     )
                 ).scalars().all()
             )
@@ -83,8 +84,8 @@ async def requeue_failed_files(
                     await session.execute(
                         select(DriveFile)
                         .where(DriveFile.status == DriveFileStatus.SKIPPED)
-                        .order_by(DriveFile.modified_time.desc().nulls_last(), DriveFile.name)
-                        .limit(batch_limit * 2)
+                        .order_by(*pending_order_by(get_settings()))
+                        .limit(batch_limit * 4)
                     )
                 ).scalars().all()
             )

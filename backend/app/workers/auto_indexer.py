@@ -26,14 +26,8 @@ async def auto_index_loop(worker: IndexingWorker, stop_event: asyncio.Event) -> 
         interval = max(30, runtime.auto_index_interval_seconds)
 
         if not worker.is_running:
-            try:
-                seen = await worker.sync_file_list()
-                logger.debug("Auto file-list sync: %d file(s)", seen)
-            except DriveDirectError as exc:
-                logger.warning("Auto file-list sync skipped: %s", exc)
-            except Exception:  # noqa: BLE001 — keep the loop alive
-                logger.exception("Auto file-list sync failed")
-
+            # Process the existing queue first. Full Drive sync can take many minutes on
+            # large trees and used to starve pending claims every tick.
             if runtime.auto_index_enabled:
                 try:
                     if runtime.reindex_errored_files or runtime.reindex_skipped_files:
@@ -48,6 +42,21 @@ async def auto_index_loop(worker: IndexingWorker, stop_event: asyncio.Event) -> 
                     logger.info("Auto-index processing: %s", summary)
                 except Exception:  # noqa: BLE001
                     logger.exception("Auto-index processing failed")
+
+            try:
+                seen = await worker.sync_file_list()
+                logger.debug("Auto file-list sync: %d file(s)", seen)
+            except DriveDirectError as exc:
+                logger.warning("Auto file-list sync skipped: %s", exc)
+            except Exception:  # noqa: BLE001 — keep the loop alive
+                logger.exception("Auto file-list sync failed")
+
+            if runtime.auto_index_enabled:
+                try:
+                    await worker.ensure_parallel_video_indexing()
+                    await worker.ensure_parallel_image_indexing()
+                except Exception:  # noqa: BLE001
+                    logger.exception("Post-sync parallel slot fill failed")
 
             try:
                 await maintenance_tick(worker)

@@ -56,6 +56,12 @@ async def ensure_schema(engine: AsyncEngine) -> None:
                 "BOOLEAN NOT NULL DEFAULT false"
             )
         )
+        await conn.execute(
+            text(
+                "ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS go_indexer_enabled "
+                "BOOLEAN NOT NULL DEFAULT false"
+            )
+        )
         await conn.run_sync(Base.metadata.create_all)
     logger.info("Database schema verified")
 
@@ -71,4 +77,27 @@ async def recover_stuck_processing_files(session_factory: async_sessionmaker[Asy
         count = result.rowcount or 0
         if count:
             logger.warning("Reset %d file(s) stuck in processing state", count)
+        return count
+
+
+async def recover_aborted_transaction_errors(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> int:
+    """Re-queue ERROR files left by InFailedSQLTransactionError face-cluster fallout."""
+    async with session_factory() as session:
+        result = await session.execute(
+            update(DriveFile)
+            .where(
+                DriveFile.status == DriveFileStatus.ERROR,
+                DriveFile.error_message.ilike("%transaction aborted%"),
+            )
+            .values(status=DriveFileStatus.PENDING, error_message=None)
+        )
+        await session.commit()
+        count = result.rowcount or 0
+        if count:
+            logger.warning(
+                "Re-queued %d file(s) stuck on aborted face-cluster transactions",
+                count,
+            )
         return count

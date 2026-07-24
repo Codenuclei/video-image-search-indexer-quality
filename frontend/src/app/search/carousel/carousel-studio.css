@@ -1,0 +1,543 @@
+﻿/* Carousel studio â€” app theme tokens (globals.css), denser product UI */
+.carousel-studio {
+  --studio-ease: cubic-bezier(0.16, 1, 0.3, 1);
+  --studio-dur: 360ms;
+  color: var(--foreground);
+  -webkit-font-smoothing: antialiased;
+}
+
+.carousel-studio ::selection {
+  background: var(--muted);
+  color: var(--foreground);
+}
+
+.carousel-studio .studio-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+
+.carousel-studio .studio-eyebrow::before {
+  content: "";
+  width: 12px;
+  height: 1.5px;
+  background: var(--muted-foreground);
+  flex-shrink: 0;
+}
+
+.carousel-studio .studio-title {
+  margin-top: 0.25rem;
+  font-size: clamp(1.25rem, 2.5vw, 1.5rem);
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  line-height: 1.25;
+  color: var(--foreground);
+}
+
+.carousel-studio .studio-lede {
+  margin-top: 0.35rem;
+  max-width: 36rem;
+  font-size: 0.875rem;
+  font-weight: 400;
+  line-height: 1.5;
+  color: var(--muted-foreground);
+}
+
+.carousel-studio .studio-panel {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--card);
+}
+
+.carousel-studio .studio-panel-sunken {
+  background: var(--muted);
+}
+
+.carousel-studio .studio-section-label {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+
+.carousel-studio .studio-input,
+.carousel-studio .studio-select,
+.carousel-studio .studio-textarea {
+  width: 100%;
+  border: 1px solid var(--input);
+  border-radius: calc(var(--radius) - 2px);
+  background: var(--background);
+  color: var(--foreground);
+  font-size: 0.875rem;
+  font-weight: 400;
+  outline: none;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.carousel-studio .studio-input,
+.carousel-studio .studio-select {
+  height: 36px;
+  padding: 0 12px;
+}
+
+.carousel-studio .studio-textarea {
+  min-height: 96px;
+  padding: 10px 12px;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.carousel-studio .studio-input:focus,
+.carousel-studio .studio-select:focus,
+.carousel-studio .studio-textarea:focus {
+  border-color: var(--ring);
+  box-shadow: 0 0 0 2px color-mix(in oklch, var(--ring) 35%, transparent);
+}
+
+.carousel-studio .studio-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 36px;
+  padding: 0 14px;
+  border: 1px solid transparent;
+  border-radius: calc(var(--radius) - 2px);
+  font-size: 0.875rem;
+  font-weight: 500;
+  line-height: 1;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease, transform 120ms ease;
+}
+
+.carousel-studio .studio-btn:active:not(:disabled) {
+  transform: translateY(1px) scale(0.99);
+}
+
+.carousel-studio .studio-btn:disabled {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+.carousel-studio .studio-btn:focus-visible {
+  box-shadow: 0 0 0 2px color-mix(in oklch, var(--ring) 45%, transparent);
+}
+
+.carousel-studio .studio-btn-primary {
+  background: var(--primary);
+  color: var(--primary-foreground);
+}
+
+.carousel-studio .studio-btn-primary:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.carousel-studio .studio-btn-accent {
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  border-color: var(--border);
+}
+
+.carousel-studio .studio-btn-accent:hover:not(:disabled) {
+  background: var(--accent);
+  color: var(--accent-foreground);
+}
+
+.carousel-studio .studio-btn-secondary {
+  background: var(--background);
+  color: var(--foreground);
+  border-color: var(--border);
+}
+
+.carousel-studio .studio-btn-secondary:hover:not(:disabled) {
+  background: var(--muted);
+}
+
+.carousel-studio .studio-btn-ghost {
+  background: transparent;
+  color: var(--muted-foreground);
+  border-color: transparent;
+  height: 32px;
+  padding: 0 10px;
+  font-size: 0.8125rem;
+}
+
+.carousel-studio .studio-btn-ghost:hover:not(:disabled) {
+  background: var(--muted);
+  color: var(--foreground);
+}
+
+.carousel-studio .studio-btn-sm {
+  height: 32px;
+  padding: 0 12px;
+  font-size: 0.8125rem;
+}
+
+@keyframes studio-rise {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes studio-hooks-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(18px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes studio-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.carousel-studio .studio-rise {
+  animation: studio-rise var(--studio-dur) var(--studio-ease) both;
+}
+
+.carousel-studio .studio-rise-delay {
+  animation: studio-rise var(--studio-dur) var(--studio-ease) 80ms both;
+}
+
+.carousel-studio .studio-hooks-reveal {
+  animation: studio-hooks-reveal 480ms var(--studio-ease) both;
+}
+
+.carousel-studio .studio-fade-in {
+  animation: studio-fade 280ms var(--studio-ease) both;
+}
+
+.carousel-studio .studio-preset {
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+  gap: 2px;
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) - 2px);
+  background: var(--card);
+  padding: 10px 12px;
+  text-align: left;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+.carousel-studio .studio-preset:hover {
+  border-color: color-mix(in oklch, var(--foreground) 25%, var(--border));
+}
+
+.carousel-studio .studio-preset[data-on="true"] {
+  border-color: var(--foreground);
+  background: var(--muted);
+}
+
+.carousel-studio .studio-preset-label {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.carousel-studio .studio-preset-blurb {
+  font-size: 0.75rem;
+  font-weight: 400;
+  line-height: 1.4;
+  color: var(--muted-foreground);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .carousel-studio .studio-rise,
+  .carousel-studio .studio-rise-delay,
+  .carousel-studio .studio-hooks-reveal,
+  .carousel-studio .studio-fade-in {
+    animation: none;
+  }
+}
+
+/* â€”â€” Instagram-style carousel result (Phase 5) â€”â€” */
+.carousel-studio .ig-post {
+  max-width: 26.5rem;
+  margin-inline: auto;
+}
+
+.carousel-studio .ig-post-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0 0.15rem 0.65rem;
+}
+
+.carousel-studio .ig-post-title {
+  min-width: 0;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--foreground);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.carousel-studio .ig-post-count {
+  flex-shrink: 0;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+  color: var(--muted-foreground);
+}
+
+.carousel-studio .ig-stage {
+  position: relative;
+  border-radius: 0.75rem;
+  overflow: hidden;
+  background: #0a0a0a;
+  border: 1px solid color-mix(in oklch, var(--border) 80%, #000);
+  box-shadow: 0 10px 28px color-mix(in oklch, #000 22%, transparent);
+}
+
+.carousel-studio .ig-track {
+  display: flex;
+  overflow-x: auto;
+  scroll-snap-type: x mandatory;
+  scroll-behavior: smooth;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  touch-action: pan-x;
+}
+
+.carousel-studio .ig-track::-webkit-scrollbar {
+  display: none;
+}
+
+.carousel-studio .ig-slide {
+  position: relative;
+  flex: 0 0 100%;
+  width: 100%;
+  aspect-ratio: 4 / 5;
+  scroll-snap-align: start;
+  scroll-snap-stop: always;
+  background: #111;
+}
+
+.carousel-studio .ig-slide img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.carousel-studio .ig-slide-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.75rem;
+  color: color-mix(in oklch, #fff 45%, transparent);
+  background:
+    linear-gradient(135deg, #1a1a1a 0%, #0d0d0d 50%, #1f1f1f 100%);
+}
+
+.carousel-studio .ig-slide-scrim {
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(
+      to top,
+      rgba(0, 0, 0, 0.82) 0%,
+      rgba(0, 0, 0, 0.45) 28%,
+      rgba(0, 0, 0, 0.08) 52%,
+      transparent 68%
+    );
+  pointer-events: none;
+}
+
+.carousel-studio .ig-slide-body {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 1;
+  padding: 1.15rem 1rem 1rem;
+  color: #fff;
+}
+
+.carousel-studio .ig-slide-hook {
+  margin: 0;
+  font-size: clamp(0.95rem, 2.6vw, 1.05rem);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.35;
+  text-wrap: pretty;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
+}
+
+.carousel-studio .ig-slide-meta {
+  margin-top: 0.45rem;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  color: color-mix(in oklch, #fff 62%, transparent);
+}
+
+.carousel-studio .ig-nav {
+  position: absolute;
+  top: 50%;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border: 0;
+  border-radius: 999px;
+  background: color-mix(in oklch, #fff 88%, transparent);
+  color: #111;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.28);
+  transform: translateY(-50%);
+  opacity: 0;
+  transition: opacity 140ms ease, transform 140ms ease;
+  cursor: pointer;
+}
+
+.carousel-studio .ig-stage:hover .ig-nav,
+.carousel-studio .ig-nav:focus-visible {
+  opacity: 1;
+}
+
+.carousel-studio .ig-nav:hover {
+  transform: translateY(-50%) scale(1.04);
+}
+
+.carousel-studio .ig-nav:disabled {
+  opacity: 0 !important;
+  pointer-events: none;
+}
+
+.carousel-studio .ig-nav-prev {
+  left: 0.55rem;
+}
+
+.carousel-studio .ig-nav-next {
+  right: 0.55rem;
+}
+
+.carousel-studio .ig-dots {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  padding: 0.75rem 0 0.15rem;
+}
+
+.carousel-studio .ig-dot {
+  width: 0.375rem;
+  height: 0.375rem;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: color-mix(in oklch, var(--muted-foreground) 45%, transparent);
+  cursor: pointer;
+  transition: background 120ms ease, transform 120ms ease, width 120ms ease;
+}
+
+.carousel-studio .ig-dot[data-on="true"] {
+  width: 0.55rem;
+  background: var(--foreground);
+  transform: scale(1.05);
+}
+
+.carousel-studio .ig-caption-row {
+  margin-top: 0.65rem;
+  padding: 0 0.15rem;
+}
+
+.carousel-studio .ig-caption-row p {
+  margin: 0;
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  color: var(--foreground);
+}
+
+.carousel-studio .ig-caption-row strong {
+  font-weight: 600;
+}
+
+.carousel-studio .ig-filmstrip {
+  display: flex;
+  gap: 0.4rem;
+  margin-top: 0.85rem;
+  padding: 0.15rem;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.carousel-studio .ig-thumb {
+  position: relative;
+  flex: 0 0 auto;
+  width: 3.25rem;
+  aspect-ratio: 4 / 5;
+  overflow: hidden;
+  border: 1.5px solid transparent;
+  border-radius: 0.35rem;
+  background: var(--muted);
+  padding: 0;
+  cursor: pointer;
+  opacity: 0.55;
+  transition: opacity 120ms ease, border-color 120ms ease;
+}
+
+.carousel-studio .ig-thumb[data-on="true"] {
+  opacity: 1;
+  border-color: var(--foreground);
+}
+
+.carousel-studio .ig-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.carousel-studio .ig-thumb-num {
+  position: absolute;
+  left: 0.2rem;
+  bottom: 0.15rem;
+  font-size: 0.5625rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7);
+}
+
+@media (max-width: 480px) {
+  .carousel-studio .ig-nav {
+    opacity: 0.85;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .carousel-studio .ig-track {
+    scroll-behavior: auto;
+  }
+}
