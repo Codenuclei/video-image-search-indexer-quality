@@ -463,6 +463,46 @@ export type CarouselOutlineResponse = {
   slides: CarouselOutlineSlide[];
   cues?: CarouselCueItem[];
   warning?: string;
+  /** Multi-carousel generate: one entry per topic + mixed narratives. */
+  carousels?: CarouselGeneratedItem[];
+  carousel_count?: number;
+  intent?: string | null;
+};
+
+export type CarouselGeneratedItem = {
+  id: string;
+  kind: "topic" | "mixed" | string;
+  title: string;
+  topic_labels: string[];
+  slide_count: number;
+  slides: CarouselOutlineSlide[];
+  hooks?: string[];
+  topics?: string[];
+};
+
+export type CarouselTimedPick = {
+  id?: string;
+  text: string;
+  start_sec: number;
+  end_sec?: number | null;
+  theme_id?: string | null;
+};
+
+export type CarouselGenerateRequest = {
+  drive_file_id: string;
+  video_name?: string;
+  intent?: string;
+  themes?: {
+    theme_id?: string;
+    title?: string;
+    start_sec: number;
+    end_sec?: number | null;
+    summary?: string;
+  }[];
+  hooks?: CarouselTimedPick[];
+  topics?: CarouselTimedPick[];
+  min_slides?: number;
+  max_slides?: number;
 };
 
 export type CarouselCueItem = {
@@ -561,9 +601,11 @@ export type CarouselVerbatimItem = {
   start_sec: number;
   end_sec?: number | null;
   verbatim?: boolean;
+  analysed?: boolean;
   translated?: boolean;
   original_text?: string | null;
   english_source?: string | null;
+  theme_id?: string | null;
 };
 
 export type CarouselPipelineExtractResponse = {
@@ -1045,6 +1087,11 @@ export const apiClient = {
         body: JSON.stringify(body),
       }
     ),
+  carouselPipelineGenerate: (body: CarouselGenerateRequest) =>
+    api<CarouselOutlineResponse>("/search/carousel/pipeline/generate", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   searchUploadedFace: async (file: File, limit = 20): Promise<FaceSearchResponse> => {
     const params = new URLSearchParams({ limit: String(limit) });
     const form = new FormData();

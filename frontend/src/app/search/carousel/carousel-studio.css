@@ -269,10 +269,16 @@
   }
 }
 
-/* â€”â€” Instagram-style carousel result (Phase 5) â€”â€” */
+/* —— Instagram-style carousel result (Phase 5) —— */
 .carousel-studio .ig-post {
   max-width: 26.5rem;
   margin-inline: auto;
+}
+
+.carousel-studio [role="tablist"][aria-label="Generated carousels"] {
+  max-height: 9.5rem;
+  overflow-y: auto;
+  padding-bottom: 0.15rem;
 }
 
 .carousel-studio .ig-post-header {

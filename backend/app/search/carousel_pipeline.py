@@ -4,7 +4,9 @@ Rules enforced here:
 - Contextual integrity: theme boundaries snap to cue starts (never mid-cue).
 - Zero repetition: non-overlapping theme ranges; unique hook/topic strings.
 - Person filter (when used) is presence-only: themes are never reframed around a person.
-- Hooks are complete spoken lines; topics are theme-derived labels (not raw dumps).
+- Hooks are analysed from transcript windows into punchy carousel lines (not verbatim dumps);
+  time spans stay aligned to the spoken utterance for frames.
+- Topics are theme-derived cohesive labels with semantic dedupe (not raw dumps).
 - Hooks/topics prefer English: use parallel English cues when present, else translate.
 """
 
@@ -218,7 +220,7 @@ def extract_hooks_and_topics(
     english_cues: list[tuple[float, float | None, str]] | None = None,
 ) -> dict[str, Any]:
     """
-    Hooks: complete contextual spoken lines from the theme window (never mid-thought scraps).
+    Hooks: candidate spoken windows (later analysed into punchy display hooks).
     Topics: thematic labels derived from the selected theme — not raw transcript dumps.
 
     When english_cues are provided (parallel English caption track), hooks are pulled
@@ -285,6 +287,26 @@ async def extract_hooks_and_topics_async(
     if english_cues and any(needs_english(h.get("text", "")) for h in base["hooks"]):
         base["hooks"] = _swap_hooks_with_english_cues(base["hooks"], english_cues)
 
+    # Analyse hooks from the spoken lines (display text is crafted, span stays aligned
+    # to the source utterance). Never ship raw transcript dumps as hook text.
+    if base.get("hooks"):
+        crafted: list[dict[str, Any]] | None = None
+        if api_key:
+            try:
+                crafted = await _llm_craft_hooks(
+                    hooks=base["hooks"],
+                    theme_title=theme_title,
+                    theme_summary=theme_summary,
+                    api_key=api_key,
+                    model=model,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("hook analysis failed, using heuristic craft: %s", exc)
+        if crafted:
+            base["hooks"] = crafted
+        else:
+            base["hooks"] = heuristic_craft_hooks(base["hooks"], theme_title=theme_title)
+
     if api_key:
         window = _cues_in_range(
             active_english or prefer_english_cues(cues),
@@ -310,6 +332,21 @@ async def extract_hooks_and_topics_async(
         except Exception as exc:  # noqa: BLE001
             logger.warning("theme topic generation failed: %s", exc)
 
+    # Semantic dedupe: merge near-duplicate topic labels (same idea, different wording).
+    if api_key and len(base.get("topics") or []) >= 2:
+        try:
+            base["topics"] = await dedupe_topics_semantic(
+                base["topics"],
+                theme_title=theme_title,
+                api_key=api_key,
+                model=model,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("topic semantic dedupe failed: %s", exc)
+            base["topics"] = _heuristic_topic_dedupe(base["topics"])
+    elif len(base.get("topics") or []) >= 2:
+        base["topics"] = _heuristic_topic_dedupe(base["topics"])
+
     base = await ensure_english_display_texts(
         base,
         english_cues=english_cues,
@@ -317,6 +354,175 @@ async def extract_hooks_and_topics_async(
         model=model,
     )
     return base
+
+
+async def _llm_craft_hooks(
+    *,
+    hooks: list[dict[str, Any]],
+    theme_title: str,
+    theme_summary: str,
+    api_key: str,
+    model: str,
+) -> list[dict[str, Any]]:
+    """Rewrite spoken windows into punchy carousel hook lines (keep time spans).
+
+    Display text is analysed/crafted from the transcript — never a verbatim cue dump.
+    start_sec / end_sec stay aligned to the original spoken span for frame selection.
+    """
+    import asyncio
+
+    from google import genai
+    from google.genai import types
+
+    if not hooks:
+        return []
+
+    payload = []
+    for i, h in enumerate(hooks):
+        payload.append(
+            {
+                "i": i,
+                "spoken": str(h.get("text") or "").strip()[:400],
+                "start_sec": h.get("start_sec"),
+                "end_sec": h.get("end_sec"),
+            }
+        )
+
+    prompt = (
+        "You analyse spoken transcript windows and derive sharp Instagram carousel HOOK lines.\n"
+        "CRITICAL:\n"
+        "- Derive a punchy hook FROM each spoken window — do NOT copy the transcript verbatim.\n"
+        "- Rewrite into a complete, self-contained hook (roughly 6–18 words).\n"
+        "- Prefer natural English; translate meaning if the spoken line is Hindi/Hinglish/other.\n"
+        "- Keep the idea, energy, and claim of what was said — sharpen it for a slide overlay.\n"
+        "- No mid-clause scraps; no ellipsis dumps of the cue.\n"
+        "- Return one hook per input index; keep the same order.\n"
+        f"Theme: {theme_title}\n"
+        f"Theme summary: {theme_summary}\n"
+        "Return ONLY a JSON array of objects: "
+        '{"i": number, "hook": "crafted English hook"}.\n\n'
+        f"Spoken windows:\n{json.dumps(payload, ensure_ascii=False)}"
+    )
+    client = genai.Client(api_key=api_key)
+    resp = await asyncio.to_thread(
+        client.models.generate_content,
+        model=model,
+        contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
+        config=types.GenerateContentConfig(
+            temperature=0.45,
+            response_mime_type="application/json",
+        ),
+    )
+    raw = json.loads((resp.text or "").strip() or "[]")
+    if not isinstance(raw, list):
+        return []
+
+    by_i: dict[int, str] = {}
+    for row in raw:
+        if not isinstance(row, dict):
+            continue
+        try:
+            i = int(row.get("i"))
+        except (TypeError, ValueError):
+            continue
+        hook = str(row.get("hook") or row.get("text") or "").strip()
+        hook = " ".join(hook.split())
+        if hook and 0 <= i < len(hooks):
+            by_i[i] = hook[:280]
+
+    if not by_i:
+        return []
+
+    out: list[dict[str, Any]] = []
+    for i, h in enumerate(hooks):
+        row = dict(h)
+        crafted = by_i.get(i)
+        if crafted:
+            spoken = str(row.get("text") or "").strip()
+            # If LLM echoed the transcript, fall back to a local punchy rewrite.
+            if _nearly_verbatim(crafted, spoken):
+                crafted = _heuristic_hook_line(spoken, theme_title=theme_title) or _trim_to_clause(
+                    crafted, 16
+                )
+            row["original_text"] = row.get("original_text") or spoken
+            row["text"] = crafted
+            row["verbatim"] = False
+            row["analysed"] = True
+            row["contextual"] = True
+        out.append(row)
+    return out
+
+
+def heuristic_craft_hooks(
+    hooks: list[dict[str, Any]],
+    *,
+    theme_title: str = "",
+) -> list[dict[str, Any]]:
+    """Local punchy rewrite when Gemini craft is unavailable — never ship raw cue dumps."""
+    out: list[dict[str, Any]] = []
+    for h in hooks:
+        row = dict(h)
+        spoken = str(row.get("text") or "").strip()
+        if not spoken:
+            out.append(row)
+            continue
+        crafted = _heuristic_hook_line(spoken, theme_title=theme_title)
+        if crafted and crafted.lower() != spoken.lower():
+            row["original_text"] = row.get("original_text") or spoken
+            row["text"] = crafted
+            row["verbatim"] = False
+            row["analysed"] = True
+            row["contextual"] = True
+        else:
+            # Still compress long dumps into a carousel-ready clause.
+            trimmed = _trim_to_clause(spoken, 16)
+            if trimmed != spoken:
+                row["original_text"] = row.get("original_text") or spoken
+                row["text"] = trimmed
+                row["verbatim"] = False
+                row["analysed"] = True
+            row["contextual"] = True
+        out.append(row)
+    return out
+
+
+def _heuristic_hook_line(spoken: str, *, theme_title: str = "") -> str:
+    """Derive a short carousel hook from a spoken window without an LLM."""
+    text = " ".join((spoken or "").split()).strip().strip("\"'")
+    if not text:
+        return ""
+    # Prefer first complete sentence / clause.
+    m = re.search(r"^(.+?[.!?])(?:\s|$)", text)
+    clause = (m.group(1) if m else text).strip()
+    words = clause.split()
+    if len(words) > 16:
+        clause = _trim_to_clause(clause, 16)
+        words = clause.split()
+    # Drop filler openers that make dumps feel like captions.
+    clause = re.sub(
+        r"^(?:so|and|but|well|um+|uh+|you know|like|okay|ok|right)[,:\s]+",
+        "",
+        clause,
+        flags=re.I,
+    ).strip()
+    if not clause:
+        clause = " ".join(words[:12])
+    # Title-case lightly only when the line is a short claim.
+    if 4 <= len(clause.split()) <= 10 and theme_title and theme_title.lower() in clause.lower():
+        return clause[:280]
+    if not clause[0:1].isupper() and clause:
+        clause = clause[0].upper() + clause[1:]
+    return clause[:280]
+
+
+def _nearly_verbatim(crafted: str, spoken: str, *, threshold: float = 0.82) -> bool:
+    """True when crafted text largely copies the spoken line token-for-token."""
+    a = {t for t in re.findall(r"[a-z0-9']+", (crafted or "").lower()) if len(t) > 2}
+    b = {t for t in re.findall(r"[a-z0-9']+", (spoken or "").lower()) if len(t) > 2}
+    if not a or not b:
+        return False
+    overlap = len(a & b) / max(len(a), 1)
+    return overlap >= threshold and abs(len(a) - len(b)) <= max(3, len(b) // 4)
 
 
 def _swap_hooks_with_english_cues(
@@ -739,14 +945,18 @@ async def _llm_topics_from_theme(
 
     entity = (search_entity or "").strip()
     prompt = (
-        "You invent short thematic TOPIC LABELS for a video carousel from one selected theme.\n"
+        "You invent a cohesive set of thematic TOPIC LABELS for a video carousel "
+        "from one selected theme — a narrative set that hangs together, not scattered tags.\n"
         "Topics must be generated ideas/angles grounded in the theme — NOT raw transcript quotes.\n"
         "Rules:\n"
-        "- 4–8 topics\n"
+        "- 4–8 topics that form a coherent story arc for this theme\n"
         "- Each topic: 2–8 words, title-case or short phrase\n"
         "- MUST be natural English (translate ideas if transcript is Hindi/Hinglish/other)\n"
         "- No incomplete thoughts; each must stand alone as a slide theme\n"
         "- Do not paste spoken dialogue as a topic\n"
+        "- Do NOT invent near-duplicates (e.g. 'Student-First Philosophy' and "
+        "'Student-Centric Decisions' are the SAME idea — keep only one)\n"
+        "- Prefer distinct angles that advance the narrative\n"
         f"Theme title: {theme_title}\n"
         f"Theme summary: {theme_summary}\n"
         f"Search entity: {entity or '(none)'}\n"
@@ -937,6 +1147,174 @@ def _as_float(value: Any) -> float | None:
         return None
 
 
+def _token_set(text: str) -> set[str]:
+    stop = {
+        "the", "a", "an", "and", "or", "to", "of", "in", "on", "for", "with", "is", "are",
+        "that", "this", "it", "as", "at", "by", "from", "be", "you", "your", "our", "we",
+        "first", "centric", "based", "driven", "oriented", "focused", "approach", "philosophy",
+        "decisions", "decision", "mindset", "way", "ways",
+    }
+    out: set[str] = set()
+    for raw in re.findall(r"[a-z0-9']+", (text or "").lower()):
+        if raw in stop or len(raw) <= 2:
+            continue
+        # Light stemming so "students" ≈ "student".
+        token = raw[:-1] if len(raw) > 4 and raw.endswith("s") and not raw.endswith("ss") else raw
+        out.add(token)
+    return out
+
+
+def _jaccard(a: set[str], b: set[str]) -> float:
+    if not a or not b:
+        return 0.0
+    return len(a & b) / len(a | b)
+
+
+def heuristic_topic_dedupe(
+    topics: list[dict[str, Any]],
+    *,
+    threshold: float = 0.45,
+) -> list[dict[str, Any]]:
+    """Drop near-duplicate topic labels by token overlap (e.g. student-first ≈ student-centric)."""
+    kept: list[dict[str, Any]] = []
+    kept_tokens: list[set[str]] = []
+    for row in topics:
+        if not isinstance(row, dict):
+            continue
+        text = str(row.get("text") or "").strip()
+        if not text:
+            continue
+        toks = _token_set(text)
+        if any(_jaccard(toks, existing) >= threshold for existing in kept_tokens):
+            continue
+        kept.append(dict(row))
+        kept_tokens.append(toks)
+    for i, t in enumerate(kept):
+        t["id"] = f"topic_{i + 1}"
+    return kept
+
+
+# Back-compat private alias
+_heuristic_topic_dedupe = heuristic_topic_dedupe
+
+
+async def dedupe_topics_semantic(
+    topics: list[dict[str, Any]],
+    *,
+    theme_title: str = "",
+    api_key: str,
+    model: str,
+) -> list[dict[str, Any]]:
+    """Merge semantically duplicate topics via LLM; fall back to token overlap."""
+    if len(topics) < 2:
+        return topics
+
+    # Fast path: heuristic first; if nothing merges, still ask LLM for cohesion.
+    heuristic = _heuristic_topic_dedupe(topics)
+
+    import asyncio
+
+    from google import genai
+    from google.genai import types
+
+    payload = [
+        {
+            "i": i,
+            "text": str(t.get("text") or "").strip(),
+            "start_sec": t.get("start_sec"),
+            "end_sec": t.get("end_sec"),
+        }
+        for i, t in enumerate(topics)
+        if str(t.get("text") or "").strip()
+    ]
+    if len(payload) < 2:
+        return topics
+
+    prompt = (
+        "Merge duplicate / near-duplicate TOPIC LABELS into a unique cohesive set.\n"
+        "Examples of duplicates to merge: 'Student-First Philosophy' + "
+        "'Student-Centric Decisions' → keep one best label.\n"
+        "Rules:\n"
+        "- Keep only UNIQUE ideas (semantic similarity / content overlap = merge)\n"
+        "- Prefer the clearest, most carousel-ready label when merging\n"
+        "- Preserve a coherent narrative set for the theme — drop redundant or scattered labels\n"
+        "- Return topics in chronological preference (use earliest start_sec of the merge group)\n"
+        f"Theme: {theme_title or '(none)'}\n"
+        "Return ONLY a JSON array of objects: "
+        '{"text": "label", "from_indices": [i, ...]}.\n\n'
+        f"Topics:\n{json.dumps(payload, ensure_ascii=False)}"
+    )
+    try:
+        client = genai.Client(api_key=api_key)
+        resp = await asyncio.to_thread(
+            client.models.generate_content,
+            model=model,
+            contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
+            config=types.GenerateContentConfig(
+                temperature=0.2,
+                response_mime_type="application/json",
+            ),
+        )
+        raw = json.loads((resp.text or "").strip() or "[]")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("LLM topic dedupe failed: %s", exc)
+        return heuristic
+
+    if not isinstance(raw, list) or not raw:
+        return heuristic
+
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in raw:
+        if not isinstance(row, dict):
+            continue
+        label = str(row.get("text") or "").strip()
+        if not label:
+            continue
+        key = label.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        indices = row.get("from_indices") or row.get("indices") or []
+        src = topics[0]
+        best_start = None
+        best_end = None
+        if isinstance(indices, list) and indices:
+            for idx in indices:
+                try:
+                    i = int(idx)
+                except (TypeError, ValueError):
+                    continue
+                if 0 <= i < len(topics):
+                    cand = topics[i]
+                    s = cand.get("start_sec")
+                    try:
+                        s_f = float(s) if s is not None else None
+                    except (TypeError, ValueError):
+                        s_f = None
+                    if s_f is not None and (best_start is None or s_f < best_start):
+                        best_start = s_f
+                        best_end = cand.get("end_sec")
+                        src = cand
+        item = dict(src)
+        item["text"] = label[:120]
+        if best_start is not None:
+            item["start_sec"] = float(best_start)
+            item["end_sec"] = best_end
+        item["verbatim"] = False
+        item["generated"] = True
+        out.append(item)
+        if len(out) >= _MAX_TOPICS:
+            break
+
+    if not out:
+        return heuristic
+    for i, t in enumerate(out):
+        t["id"] = f"topic_{i + 1}"
+    # Second pass: heuristic on LLM output to catch leftover near-dupes.
+    return _heuristic_topic_dedupe(out)
+
+
 def cue_preview_lines(
     cues: list[tuple[float, float | None, str]],
     *,
@@ -1012,7 +1390,7 @@ def merge_theme_extracts(
     hooks.sort(key=lambda r: (float(r.get("start_sec") or 0), str(r.get("text") or "")))
     topics.sort(key=lambda r: (float(r.get("start_sec") or 0), str(r.get("text") or "")))
     hooks = hooks[: max(1, int(max_hooks))]
-    topics = topics[: max(1, int(max_topics))]
+    topics = _heuristic_topic_dedupe(topics)[: max(1, int(max_topics))]
     for i, h in enumerate(hooks):
         h["id"] = f"hook_{i + 1}"
     for i, t in enumerate(topics):

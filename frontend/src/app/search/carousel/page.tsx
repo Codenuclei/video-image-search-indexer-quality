@@ -17,12 +17,12 @@ import {
   driveFileDownloadUrl,
   driveVideoStreamUrl,
   formatApiError,
+  type CarouselGeneratedItem,
   type CarouselOutlineResponse,
   type CarouselOutlineSlide,
   type CarouselPipelineExtractResponse,
   type CarouselPipelineTheme,
   type CarouselRecentVideo,
-  type CarouselSnapshotContext,
   type CarouselVerbatimItem,
   type Person,
 } from "@/lib/api";
@@ -81,19 +81,6 @@ function toggleText(list: string[], text: string): string[] {
   return list.includes(text) ? list.filter((x) => x !== text) : [...list, text];
 }
 
-/** Mid-span frame when end is known; otherwise spoken-window start. */
-function framePreviewUrl(
-  driveFileId: string,
-  startSec: number,
-  endSec?: number | null
-): string {
-  const start = Number(startSec) || 0;
-  const end = endSec != null ? Number(endSec) : NaN;
-  const ts =
-    Number.isFinite(end) && end > start ? Math.round((start + (end - start) * 0.5) * 100) / 100 : start;
-  return `/media/video/${driveFileId}/frame?ts=${ts}`;
-}
-
 function resolvePick(
   text: string,
   items: CarouselVerbatimItem[]
@@ -103,46 +90,6 @@ function resolvePick(
   const lower = text.toLowerCase();
   return items.find(
     (x) => x.text.toLowerCase() === lower || x.text.includes(text) || text.includes(x.text)
-  );
-}
-
-function pickToMoment(
-  text: string,
-  items: CarouselVerbatimItem[],
-  kind: "hook" | "topic",
-  video: CarouselRecentVideo,
-  themes: CarouselPipelineTheme[]
-): CarouselSnapshotContext {
-  const item = resolvePick(text, items);
-  const covering =
-    themes.find(
-      (t) =>
-        item != null &&
-        item.start_sec >= t.start_sec - 0.05 &&
-        (t.end_sec == null || item.start_sec <= Number(t.end_sec) + 0.25)
-    ) ?? themes[0];
-  const start = item?.start_sec ?? covering?.start_sec ?? 0;
-  const end = item?.end_sec ?? covering?.end_sec ?? null;
-  return {
-    drive_file_id: video.id,
-    name: video.name,
-    timestamp_sec: start,
-    end_timestamp_sec: end,
-    snippet: text,
-    match_type: kind,
-    preview_url: framePreviewUrl(video.id, start, end),
-  };
-}
-
-function fallbackTheme(themes: CarouselPipelineTheme[]): CarouselPipelineTheme {
-  return (
-    themes[0] ?? {
-      theme_id: "theme",
-      title: "Theme",
-      start_sec: 0,
-      end_sec: null,
-      summary: "",
-    }
   );
 }
 
@@ -196,6 +143,8 @@ export default function CarouselSearchPage() {
   const [previewCue, setPreviewCue] = useState<{ start_sec: number; text: string } | null>(null);
   const [building, setBuilding] = useState(false);
   const [outline, setOutline] = useState<CarouselOutlineResponse | null>(null);
+  const [generatedCarousels, setGeneratedCarousels] = useState<CarouselGeneratedItem[]>([]);
+  const [activeCarouselId, setActiveCarouselId] = useState<string | null>(null);
   const [outlineError, setOutlineError] = useState<string | null>(null);
   const outlineRef = useRef<HTMLDivElement>(null);
 
@@ -205,6 +154,13 @@ export default function CarouselSearchPage() {
     if (fromPerson && fromObject) return `${fromPerson} / ${fromObject}`;
     return fromPerson || fromObject || searchEntity.trim();
   }, [personPick, objectQuery, searchEntity]);
+
+  const activeGeneratedCarousel = useMemo(() => {
+    if (!generatedCarousels.length) return null;
+    return (
+      generatedCarousels.find((c) => c.id === activeCarouselId) ?? generatedCarousels[0] ?? null
+    );
+  }, [generatedCarousels, activeCarouselId]);
 
   /** Phase 4 markers: selected hooks/topics (+ theme anchors), never raw first-theme dumps. */
   const selectionPreviewMarkers = useMemo(() => {
@@ -313,6 +269,8 @@ export default function CarouselSearchPage() {
     setPhaseIntentScore(null);
     setPreviewCue(null);
     setOutline(null);
+    setGeneratedCarousels([]);
+    setActiveCarouselId(null);
     setOutlineError(null);
     setPersonNotFound(null);
   }, []);
@@ -410,6 +368,8 @@ export default function CarouselSearchPage() {
     setPhaseIntent(null);
     setPhaseIntentScore(null);
     setOutline(null);
+    setGeneratedCarousels([]);
+    setActiveCarouselId(null);
     setOutlineError(null);
     if (phase > 2) setPhase(2);
   }
@@ -483,57 +443,63 @@ export default function CarouselSearchPage() {
     if (!selectedVideo || !selectedThemes.length || !extract) return;
     setBuilding(true);
     setOutlineError(null);
+    setGeneratedCarousels([]);
+    setActiveCarouselId(null);
     try {
-      const moments: CarouselSnapshotContext[] = [
-        ...selectedHooks.map((text) =>
-          pickToMoment(text, extract.hooks, "hook", selectedVideo, selectedThemes)
-        ),
-        ...selectedTopics.map((text) =>
-          pickToMoment(text, extract.topics, "topic", selectedVideo, selectedThemes)
-        ),
-      ].sort((a, b) => a.timestamp_sec - b.timestamp_sec);
-
-      if (!moments.length) {
-        const first = fallbackTheme(selectedThemes);
-        moments.push({
-          drive_file_id: selectedVideo.id,
-          name: selectedVideo.name,
-          timestamp_sec: first.start_sec,
-          end_timestamp_sec: first.end_sec ?? null,
-          snippet: completePhrase(first.summary) || first.title,
-          match_type: "theme",
-          preview_url: framePreviewUrl(selectedVideo.id, first.start_sec, first.end_sec),
+      const toTimed = (texts: string[], items: CarouselVerbatimItem[]) =>
+        texts.map((text) => {
+          const item = resolvePick(text, items);
+          return {
+            id: item?.id,
+            text,
+            start_sec: item?.start_sec ?? 0,
+            end_sec: item?.end_sec ?? null,
+            theme_id: item?.theme_id ?? null,
+          };
         });
+
+      const topicPicks = toTimed(selectedTopics, extract.topics);
+      const hookPicks = toTimed(selectedHooks, extract.hooks);
+      // Prefer topics as carousel seeds; if only hooks selected, still generate.
+      if (!topicPicks.length && !hookPicks.length) {
+        setOutlineError("Select at least one topic or hook.");
+        return;
       }
 
-      const intentLine = phaseIntent || extract.intent;
-      const scriptParts = [
-        intentLine ? `Intent: ${intentLine}` : "",
-        ...selectedThemes.map(
-          (t) => `Theme: ${completePhrase(t.title) || t.title} — ${t.summary || ""}`.trim()
-        ),
-        ...selectedHooks.map((h) => `Hook: ${h}`),
-        ...selectedTopics.map((t) => `Topic: ${t}`),
-      ].filter(Boolean);
-
-      const slideCount = Math.min(8, Math.max(1, moments.length));
-      const videoBase = selectedVideo.name
-        .replace(/\.[^.]+$/, "")
-        .replace(/\s*\[[^\]]+\]\s*$/, "")
-        .trim();
-      const themeLabel =
-        selectedThemes
-          .map((t) => completePhrase(t.title) || completePhrase(t.summary) || t.title)
-          .filter(Boolean)
-          .join(" · ") || "Carousel";
-      const res = await apiClient.generateCarouselOutline({
-        script: scriptParts.join("\n"),
-        moments,
-        hooks: selectedHooks,
-        topics: selectedTopics,
-        slide_count: slideCount,
-        title: `${videoBase} — ${themeLabel}`.slice(0, 180),
+      const res = await apiClient.carouselPipelineGenerate({
+        drive_file_id: selectedVideo.id,
+        video_name: selectedVideo.name,
+        intent: phaseIntent || extract.intent || undefined,
+        themes: selectedThemes.map((t) => ({
+          theme_id: t.theme_id,
+          title: t.title,
+          start_sec: t.start_sec,
+          end_sec: t.end_sec,
+          summary: t.summary,
+        })),
+        hooks: hookPicks,
+        topics: topicPicks.length ? topicPicks : hookPicks,
+        min_slides: 3,
+        max_slides: 6,
       });
+
+      const list =
+        res.carousels && res.carousels.length
+          ? res.carousels
+          : [
+              {
+                id: "carousel_1",
+                kind: "topic" as const,
+                title: res.title,
+                topic_labels: res.topics ?? selectedTopics,
+                slide_count: res.slide_count,
+                slides: res.slides,
+                hooks: res.hooks,
+                topics: res.topics,
+              },
+            ];
+      setGeneratedCarousels(list);
+      setActiveCarouselId(list[0]?.id ?? null);
       setOutline(res);
       setPhase(5);
       requestAnimationFrame(() => {
@@ -542,6 +508,8 @@ export default function CarouselSearchPage() {
     } catch (e) {
       setOutlineError(formatApiError(e, "Carousel generation failed"));
       setOutline(null);
+      setGeneratedCarousels([]);
+      setActiveCarouselId(null);
     } finally {
       setBuilding(false);
     }
@@ -806,26 +774,27 @@ export default function CarouselSearchPage() {
         <section className="studio-panel p-4 sm:p-6" data-testid="carousel-phase-3">
           <p className="studio-section-label">3 · Hooks & topics</p>
           <h2 className="mt-1 text-base font-semibold text-foreground">
-            Full-context hooks · theme-generated topics
+            Analysed hooks · unique theme topics
           </h2>
           <p className="mt-1 text-sm text-muted-foreground">
             Merged from{" "}
             {selectedThemes.length === 1
               ? `“${selectedThemes[0].title}”`
               : `${selectedThemes.length} selected themes`}{" "}
-            · toggle any combination to continue.
-            {extract.any_translated ? " Some hooks were translated for display." : ""}
+            · hooks are crafted from spoken windows (not transcript dumps) · topics are
+            deduped for unique angles. Toggle any combination to continue.
+            {extract.any_translated ? " Some lines were translated for display." : ""}
           </p>
           <div className="mt-4 grid gap-6 sm:grid-cols-2">
             <VerbatimList
-              label="Hooks (spoken, full context)"
+              label="Hooks (analysed from transcript)"
               items={extract.hooks}
               selected={selectedHooks}
               onToggle={(text) => setSelectedHooks((prev) => toggleText(prev, text))}
               onPreview={(item) => setPreviewCue({ start_sec: item.start_sec, text: item.text })}
             />
             <VerbatimList
-              label="Topics (from selected themes)"
+              label="Topics (unique, cohesive)"
               items={extract.topics}
               selected={selectedTopics}
               onToggle={(text) => setSelectedTopics((prev) => toggleText(prev, text))}
@@ -915,23 +884,30 @@ export default function CarouselSearchPage() {
               onClick={() => void generateCarousel()}
               disabled={building || (!selectedHooks.length && !selectedTopics.length)}
             >
-              {building ? <LoadingLabel>Building carousel…</LoadingLabel> : "Generate carousel"}
+              {building ? (
+                <LoadingLabel>Building carousels…</LoadingLabel>
+              ) : (
+                "Generate carousels"
+              )}
             </button>
           </div>
         </section>
       )}
 
       <div ref={outlineRef}>
-        {(phase >= 5 || outline) && (
+        {(phase >= 5 || outline || generatedCarousels.length > 0) && (
           <section className="studio-panel space-y-4 p-4 sm:p-6" data-testid="carousel-phase-5">
             <div>
-              <p className="studio-section-label">5 · Carousel</p>
+              <p className="studio-section-label">5 · Carousels</p>
               <h2 className="mt-1 text-base font-semibold text-foreground">
-                {outline?.title || "Carousel cards"}
+                {generatedCarousels.length > 1
+                  ? `${generatedCarousels.length} carousels`
+                  : activeGeneratedCarousel?.title || outline?.title || "Carousel cards"}
               </h2>
               <p className="mt-1 text-sm text-muted-foreground">
-                Instagram-style pager — swipe or use arrows; each card keeps exact hook text and its
-                frame.
+                One multi-slide carousel per selected topic, plus mixed narratives that combine
+                topics. Browse below — each uses Instagram-style paging with analysed hook text and
+                span-aligned frames.
               </p>
             </div>
 
@@ -941,10 +917,45 @@ export default function CarouselSearchPage() {
               </p>
             )}
 
-            {outline && (
+            {generatedCarousels.length > 1 && (
+              <div
+                className="flex flex-wrap gap-2"
+                role="tablist"
+                aria-label="Generated carousels"
+              >
+                {generatedCarousels.map((c) => {
+                  const on = c.id === activeCarouselId;
+                  const kindLabel = c.kind === "mixed" ? "Mixed" : "Topic";
+                  return (
+                    <button
+                      key={c.id}
+                      type="button"
+                      role="tab"
+                      aria-selected={on}
+                      className={cn(
+                        "rounded-lg border px-3 py-2 text-left text-xs transition",
+                        on
+                          ? "border-foreground bg-muted font-semibold text-foreground"
+                          : "border-border text-muted-foreground hover:border-muted-foreground/40 hover:text-foreground"
+                      )}
+                      onClick={() => setActiveCarouselId(c.id)}
+                    >
+                      <span className="block text-[10px] font-bold uppercase tracking-wider opacity-70">
+                        {kindLabel} · {c.slide_count} slides
+                      </span>
+                      <span className="mt-0.5 line-clamp-2 max-w-[14rem]">
+                        {c.topic_labels?.join(" · ") || c.title}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
+            {activeGeneratedCarousel && (
               <InstagramCarouselPost
-                title={outline.title}
-                slides={outline.slides}
+                title={activeGeneratedCarousel.title}
+                slides={activeGeneratedCarousel.slides}
                 onOpenSlide={(slide) =>
                   setPreviewCue({
                     start_sec: slide.timestamp_sec,
@@ -1272,6 +1283,10 @@ function VerbatimList({
                 {item.translated ? (
                   <span className="mt-1 block text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
                     Translated
+                  </span>
+                ) : item.analysed ? (
+                  <span className="mt-1 block text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                    Analysed
                   </span>
                 ) : null}
               </button>
