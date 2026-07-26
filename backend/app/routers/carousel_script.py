@@ -22,7 +22,9 @@ from app.search.carousel_pipeline import (
     build_harmonized_themes,
     cue_preview_lines,
     deduce_directional_intent,
+    dedupe_topics_semantic,
     extract_hooks_and_topics_async,
+    heuristic_topic_dedupe,
 )
 from app.search.english_text import cues_need_english, is_english_text
 from app.pipelines.common import is_video_mime
@@ -154,6 +156,30 @@ class PipelineIntentRequest(BaseModel):
     # Optional multi-theme titles/summaries for cohesive narrative intent.
     theme_titles: list[str] = Field(default_factory=list, max_length=12)
     theme_summaries: list[str] = Field(default_factory=list, max_length=12)
+
+
+class TimedPick(BaseModel):
+    """A selected hook or topic with its spoken span (for multi-carousel generate)."""
+
+    id: str = Field(default="", max_length=64)
+    text: str = Field(..., min_length=1, max_length=400)
+    start_sec: float = 0
+    end_sec: float | None = None
+    theme_id: str | None = Field(default=None, max_length=64)
+
+
+class CarouselGenerateRequest(BaseModel):
+    """Generate one carousel per topic + mixed multi-topic carousels."""
+
+    drive_file_id: str = Field(..., min_length=1, max_length=128)
+    video_name: str = Field(default="", max_length=400)
+    intent: str = Field(default="", max_length=800)
+    themes: list[PipelineThemeSlice] = Field(default_factory=list, max_length=12)
+    hooks: list[TimedPick] = Field(default_factory=list, max_length=24)
+    topics: list[TimedPick] = Field(default_factory=list, max_length=24)
+    # Min slides per carousel (Instagram-style multi-card); capped at 8.
+    min_slides: int = Field(default=3, ge=2, le=8)
+    max_slides: int = Field(default=6, ge=2, le=8)
 
 
 @router.get("/presets")
@@ -679,6 +705,21 @@ async def carousel_pipeline_extract(
     # Cap lists but keep chronological coverage across themes; re-id after merge.
     hooks = all_hooks[:16]
     topics = all_topics[:16]
+    # Final semantic / heuristic dedupe across themes so near-duplicate labels collapse.
+    if settings.gemini_api_key and len(topics) >= 2:
+        try:
+            topics = await dedupe_topics_semantic(
+                topics,
+                theme_title=" → ".join(s.title for s in slices if (s.title or "").strip())[:200],
+                api_key=settings.gemini_api_key,
+                model=settings.gemini_model,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("extract topic dedupe failed: %s", exc)
+            topics = heuristic_topic_dedupe(topics)
+    elif len(topics) >= 2:
+        topics = heuristic_topic_dedupe(topics)
+    topics = topics[:16]
     for i, h in enumerate(hooks):
         h["id"] = f"hook_{i + 1}"
     for i, t in enumerate(topics):
@@ -921,6 +962,341 @@ async def match_carousel_cues(body: CueMatchRequest) -> dict[str, Any]:
         "topics": topic_labels,
         "cues": cues,
     }
+
+
+@router.post("/pipeline/generate")
+async def carousel_pipeline_generate(
+    body: CarouselGenerateRequest,
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Generate Instagram-style carousels: one per topic + mixed multi-topic sets.
+
+    Each carousel has multiple slides (exact-span frames + analysed hook text).
+    Never returns a single one-image "carousel".
+    """
+    settings = get_settings()
+    drive_file_id = body.drive_file_id.strip()
+    if not drive_file_id:
+        raise HTTPException(status_code=400, detail="drive_file_id is required")
+
+    video_name = (body.video_name or "").strip()
+    if not video_name:
+        drive_file = await session.get(DriveFile, drive_file_id)
+        video_name = (drive_file.name if drive_file else "") or drive_file_id
+
+    topics = [t for t in (body.topics or []) if (t.text or "").strip()]
+    hooks = [h for h in (body.hooks or []) if (h.text or "").strip()]
+    if not topics and not hooks:
+        raise HTTPException(status_code=400, detail="Select at least one topic or hook")
+
+    min_slides = min(max(int(body.min_slides), 2), 8)
+    max_slides = min(max(int(body.max_slides), min_slides), 8)
+
+    # Prefer topics as carousel seeds; fall back to hooks-as-topics if needed.
+    seeds = topics if topics else [
+        TimedPick(
+            id=h.id or f"hook_{i}",
+            text=h.text,
+            start_sec=h.start_sec,
+            end_sec=h.end_sec,
+            theme_id=h.theme_id,
+        )
+        for i, h in enumerate(hooks)
+    ]
+
+    carousels: list[dict[str, Any]] = []
+
+    # 1) One carousel per selected topic — multi-slide beats spanning that topic.
+    for i, topic in enumerate(seeds):
+        moments = _beats_for_topic(
+            topic=topic,
+            hooks=hooks,
+            themes=list(body.themes or []),
+            video_id=drive_file_id,
+            video_name=video_name,
+            min_slides=min_slides,
+            max_slides=max_slides,
+        )
+        slides = _slides_from_timed_picks(moments, len(moments))
+        slides = await _polish_outline_frames(slides, session)
+        title = _complete_line(
+            f"{video_name.rsplit('.', 1)[0] if '.' in video_name else video_name} — {topic.text}",
+            max_len=160,
+        )
+        carousels.append(
+            {
+                "id": f"topic_{i + 1}",
+                "kind": "topic",
+                "title": title,
+                "topic_labels": [topic.text],
+                "slide_count": len(slides),
+                "slides": slides,
+                "hooks": [m.snippet for m in moments if (m.match_type or "") == "hook" and m.snippet],
+                "topics": [topic.text],
+            }
+        )
+
+    # 2) Mixed carousels that combine selected topics into cohesive narratives.
+    if len(seeds) >= 2:
+        mixed_groups = _mixed_topic_groups(seeds)
+        for gi, group in enumerate(mixed_groups):
+            moments = _beats_for_mixed_topics(
+                group=group,
+                hooks=hooks,
+                video_id=drive_file_id,
+                video_name=video_name,
+                min_slides=min_slides,
+                max_slides=max_slides,
+            )
+            if len(moments) < 2:
+                continue
+            slides = _slides_from_timed_picks(moments, len(moments))
+            slides = await _polish_outline_frames(slides, session)
+            labels = [t.text for t in group]
+            label_join = " · ".join(labels[:3])
+            title = _complete_line(
+                f"{video_name.rsplit('.', 1)[0] if '.' in video_name else video_name} — {label_join}",
+                max_len=160,
+            )
+            carousels.append(
+                {
+                    "id": f"mixed_{gi + 1}",
+                    "kind": "mixed",
+                    "title": title,
+                    "topic_labels": labels,
+                    "slide_count": len(slides),
+                    "slides": slides,
+                    "hooks": [
+                        m.snippet for m in moments if (m.match_type or "") == "hook" and m.snippet
+                    ],
+                    "topics": labels,
+                }
+            )
+
+    if not carousels:
+        raise HTTPException(status_code=400, detail="Could not build any carousels from selection")
+
+    # Legacy single-outline shape: first carousel (FE can still read slides at top level).
+    primary = carousels[0]
+    return {
+        "source": "multi_carousel",
+        "title": primary["title"],
+        "slide_count": primary["slide_count"],
+        "hooks": [h.text for h in hooks],
+        "topics": [t.text for t in seeds],
+        "slides": primary["slides"],
+        "carousels": carousels,
+        "carousel_count": len(carousels),
+        "intent": (body.intent or "").strip() or None,
+    }
+
+
+def _pick_end(start: float, end: float | None, *, default_span: float = 4.0) -> float:
+    s = float(start or 0)
+    if end is not None:
+        try:
+            e = float(end)
+            if e > s:
+                return e
+        except (TypeError, ValueError):
+            pass
+    return s + default_span
+
+
+def _beats_for_topic(
+    *,
+    topic: TimedPick,
+    hooks: list[TimedPick],
+    themes: list[PipelineThemeSlice],
+    video_id: str,
+    video_name: str,
+    min_slides: int,
+    max_slides: int,
+) -> list[SnapshotContext]:
+    """Multi-slide beats for one topic: topic card + spoken hooks + span subdivisions."""
+    t_start = float(topic.start_sec or 0)
+    t_end = _pick_end(t_start, topic.end_sec, default_span=12.0)
+
+    # Widen to the covering theme so the carousel spans that topic's narrative beats.
+    win_start, win_end = t_start, t_end
+    covering = _covering_theme(t_start, themes)
+    if covering is not None:
+        win_start = min(win_start, float(covering.start_sec or 0))
+        win_end = max(win_end, _pick_end(float(covering.start_sec or 0), covering.end_sec, default_span=30.0))
+    pad = max(2.0, (t_end - t_start) * 0.25)
+    win_start -= pad
+    win_end += pad
+
+    moments: list[SnapshotContext] = []
+    used_ts: list[float] = []
+
+    def add_moment(text: str, start: float, end: float | None, kind: str) -> bool:
+        if len(moments) >= max_slides:
+            return False
+        s = float(start)
+        # Avoid duplicate-looking slides from near-identical frames.
+        if any(abs(s - prev) < 1.5 for prev in used_ts):
+            return False
+        moments.append(
+            SnapshotContext(
+                drive_file_id=video_id,
+                name=video_name,
+                timestamp_sec=s,
+                end_timestamp_sec=end,
+                snippet=(text or "").strip()[:400] or None,
+                match_type=kind,
+                preview_url=_frame_preview_url(video_id, s, end),
+            )
+        )
+        used_ts.append(s)
+        return True
+
+    # Opening beat: analysed topic label as the slide line.
+    add_moment(topic.text, t_start, topic.end_sec, "topic")
+
+    in_window = sorted(
+        (h for h in hooks if win_start - 0.5 <= float(h.start_sec or 0) <= win_end + 0.5),
+        key=lambda h: float(h.start_sec or 0),
+    )
+    for h in in_window:
+        if len(moments) >= max_slides:
+            break
+        add_moment(h.text, float(h.start_sec or 0), h.end_sec, "hook")
+
+    # Still thin: pull nearest spoken hooks from anywhere in the selection.
+    if len(moments) < min_slides:
+        nearest = sorted(
+            (h for h in hooks if h not in in_window),
+            key=lambda h: abs(float(h.start_sec or 0) - t_start),
+        )
+        for h in nearest:
+            if len(moments) >= min_slides:
+                break
+            add_moment(h.text, float(h.start_sec or 0), h.end_sec, "hook")
+
+    # Last resort: subdivide the window with topic-derived beat lines (>= 5s stride).
+    if len(moments) < min_slides:
+        need = min_slides - len(moments)
+        stride = max(5.0, (win_end - win_start) / (need + 1))
+        for i in range(need):
+            s = round(t_start + stride * (i + 1), 2)
+            e = round(s + max(3.0, stride * 0.6), 2)
+            add_moment(_topic_beat_line(topic.text, i + 1, need), s, e, "topic")
+
+    moments.sort(key=lambda m: float(m.timestamp_sec or 0))
+    return moments[:max_slides]
+
+
+def _covering_theme(
+    start_sec: float,
+    themes: list[PipelineThemeSlice],
+) -> PipelineThemeSlice | None:
+    for t in themes:
+        t_start = float(t.start_sec or 0)
+        t_end = t.end_sec
+        if start_sec >= t_start - 0.5 and (t_end is None or start_sec <= float(t_end) + 0.5):
+            return t
+    return themes[0] if themes else None
+
+
+def _topic_beat_line(topic: str, beat: int, total: int) -> str:
+    label = (topic or "Theme").strip()
+    if total <= 1:
+        return label
+    suffixes = [
+        f"{label}",
+        f"Why {label} matters",
+        f"How {label} shows up",
+        f"The shift: {label}",
+        f"Takeaway — {label}",
+    ]
+    return suffixes[min(beat, len(suffixes) - 1)]
+
+
+def _mixed_topic_groups(seeds: list[TimedPick]) -> list[list[TimedPick]]:
+    """Build cohesive mixed groups: adjacent pairs + optional full-set narrative."""
+    ordered = sorted(seeds, key=lambda t: float(t.start_sec or 0))
+    groups: list[list[TimedPick]] = []
+    # Adjacent pairs (narrative neighbors in time).
+    for i in range(len(ordered) - 1):
+        groups.append([ordered[i], ordered[i + 1]])
+    # Full set when 3–5 topics (one cohesive multi-topic story).
+    if 3 <= len(ordered) <= 5:
+        groups.append(list(ordered))
+    elif len(ordered) > 5:
+        # First half + second half as two broader mixes.
+        mid = len(ordered) // 2
+        groups.append(ordered[: mid + 1])
+        groups.append(ordered[mid:])
+    # Cap mixed carousels so we don't explode.
+    return groups[:4]
+
+
+def _beats_for_mixed_topics(
+    *,
+    group: list[TimedPick],
+    hooks: list[TimedPick],
+    video_id: str,
+    video_name: str,
+    min_slides: int,
+    max_slides: int,
+) -> list[SnapshotContext]:
+    """Interleave topic cards + related hooks across a mixed topic group."""
+    moments: list[SnapshotContext] = []
+    g_start = min(float(t.start_sec or 0) for t in group)
+    g_end = max(_pick_end(float(t.start_sec or 0), t.end_sec) for t in group)
+
+    def add(
+        text: str,
+        start: float,
+        end: float | None,
+        kind: str,
+    ) -> None:
+        if len(moments) >= max_slides:
+            return
+        s = float(start)
+        if any(abs(s - float(m.timestamp_sec or 0)) < 1.5 for m in moments):
+            return
+        moments.append(
+            SnapshotContext(
+                drive_file_id=video_id,
+                name=video_name,
+                timestamp_sec=s,
+                end_timestamp_sec=end,
+                snippet=(text or "").strip()[:400] or None,
+                match_type=kind,
+                preview_url=_frame_preview_url(video_id, s, end),
+            )
+        )
+
+    for t in sorted(group, key=lambda x: float(x.start_sec or 0)):
+        add(t.text, float(t.start_sec or 0), t.end_sec, "topic")
+
+    related = [
+        h
+        for h in hooks
+        if g_start - 1.0 <= float(h.start_sec or 0) <= g_end + 1.0
+    ]
+    related.sort(key=lambda h: float(h.start_sec or 0))
+    # Spread hooks evenly into remaining slots.
+    remaining = max_slides - len(moments)
+    if remaining > 0 and related:
+        step = max(1, len(related) / remaining)
+        for i in range(min(remaining, len(related))):
+            h = related[min(len(related) - 1, int(i * step))]
+            add(h.text, float(h.start_sec or 0), h.end_sec, "hook")
+
+    if len(moments) < min_slides and group:
+        need = min_slides - len(moments)
+        stride = max(5.0, (g_end - g_start) / (need + 1))
+        for i in range(need):
+            t = group[i % len(group)]
+            s = round(g_start + stride * (i + 1), 2)
+            e = round(s + max(3.0, stride * 0.6), 2)
+            add(_topic_beat_line(t.text, i + 1, need), s, e, "topic")
+
+    moments.sort(key=lambda m: float(m.timestamp_sec or 0))
+    return moments[:max_slides]
 
 
 @router.post("/outline")
