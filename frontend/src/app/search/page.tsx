@@ -1,8 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import Link from "next/link";
-import { ExternalLink, GalleryHorizontal, Play, X } from "lucide-react";
+import { ExternalLink, Play, X } from "lucide-react";
 import {
   apiAssetUrl,
   apiClient,
@@ -121,9 +120,12 @@ export default function SearchPage() {
     setPreviewMoment(null);
     setLastSearchMode({ captions: useCaptions, rerank });
     try {
+      const safeMime = mime === "video" ? "all" : mime;
+      if (mime === "video") setMime("all");
       const params = new URLSearchParams({ q: q.trim() });
       if (person) params.set("person", person);
-      if (mime !== "all") params.set("mime", mime);
+      // Video search is disabled on main Search — use /search/carousel instead.
+      if (safeMime !== "all") params.set("mime", safeMime);
       if (folderPath) params.set("folder_path", folderPath);
       if (!rerank) params.set("rerank", "false");
       if (useCaptions) params.set("captions", "true");
@@ -141,32 +143,16 @@ export default function SearchPage() {
   const files = (results?.files ?? []).filter(
     (f) => f.score != null || !f.mime_type.startsWith("image/")
   );
-  const moments = results?.moments ?? [];
 
   return (
     <div className="space-y-6">
       <div>
         <h2 className="text-xl font-semibold sm:text-2xl">Search</h2>
         <p className="text-sm text-muted-foreground">
-          Visual search via Gemini embeddings. Toggle captions for text-description matching (slower, stricter).
-          Videos use frame search + optional re-ranking.
+          Visual search via Gemini embeddings. Toggle captions for text-description matching
+          (slower, stricter).
         </p>
       </div>
-
-      <Link href="/search/carousel" className="block max-w-3xl">
-        <Card className="flex items-center gap-3 transition hover:border-amber-500/40 hover:bg-muted/30">
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-amber-500/15 text-amber-700 dark:text-amber-300">
-            <GalleryHorizontal size={20} aria-hidden />
-          </div>
-          <div className="min-w-0 flex-1">
-            <p className="text-sm font-semibold">Video Carousel</p>
-            <p className="text-xs text-muted-foreground">
-              Swipe through matched video moments with timestamps and playback.
-            </p>
-          </div>
-          <span className="text-xs font-medium text-muted-foreground">Open →</span>
-        </Card>
-      </Link>
 
       <div className="max-w-3xl space-y-2">
         <Input
@@ -179,13 +165,12 @@ export default function SearchPage() {
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
           <select
             className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-ring"
-            value={mime}
+            value={mime === "video" ? "all" : mime}
             onChange={(e) => setMime(e.target.value)}
           >
             <option value="all">All files</option>
             <option value="image">Images only</option>
             <option value="pdf">PDFs only</option>
-            <option value="video">Videos only</option>
           </select>
           <select
             className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-ring"
@@ -273,60 +258,14 @@ export default function SearchPage() {
             </li>
             <li>
               {lastSearchMode.rerank
-                ? "Re-rank ON — results are re-ordered by AI relevance (images and videos)."
+                ? "Re-rank ON — results are re-ordered by AI relevance (images)."
                 : "Re-rank OFF — raw vector similarity order (no AI re-ordering)."}
             </li>
           </ul>
         </Card>
       )}
 
-      {results && moments.length > 0 && (
-        <>
-          {(() => {
-            const transcriptMoments = moments.filter((m) => isTranscriptMatch(m.match_type));
-            const otherMoments = moments.filter((m) => !isTranscriptMatch(m.match_type));
-            return (
-              <>
-                {transcriptMoments.length > 0 && (
-                  <Card>
-                    <h3 className="mb-1 font-medium">Transcript matches ({transcriptMoments.length})</h3>
-                    <p className="mb-4 text-xs text-muted-foreground">
-                      Exact phrase/word match in video captions — frame shown at spoken timestamp
-                    </p>
-                    <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                      {transcriptMoments.map((moment) => (
-                        <MomentCard
-                          key={`t-${moment.drive_file_id}-${moment.timestamp_sec}`}
-                          moment={moment}
-                          onPreview={() => setPreviewMoment(moment)}
-                        />
-                      ))}
-                    </ul>
-                  </Card>
-                )}
-                {otherMoments.length > 0 && (
-                  <Card>
-                    <h3 className="mb-4 font-medium">
-                      {transcriptMoments.length > 0 ? "Visual moments" : "Video moments"} ({otherMoments.length})
-                    </h3>
-                    <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                      {otherMoments.map((moment) => (
-                        <MomentCard
-                          key={`v-${moment.drive_file_id}-${moment.timestamp_sec}`}
-                          moment={moment}
-                          onPreview={() => setPreviewMoment(moment)}
-                        />
-                      ))}
-                    </ul>
-                  </Card>
-                )}
-              </>
-            );
-          })()}
-        </>
-      )}
-
-      {results && mime !== "video" && (
+      {results && (
         <Card>
           <h3 className="mb-4 font-medium">Matching files ({files.length})</h3>
           {files.length === 0 ? (
@@ -397,15 +336,6 @@ export default function SearchPage() {
               })}
             </ul>
           )}
-        </Card>
-      )}
-
-      {results && mime === "video" && moments.length === 0 && (
-        <Card>
-          <p className="text-sm text-muted-foreground">
-            No matching video moments. Make sure the video is indexed
-            (check the Folders page). Once indexed, frames are embedded with Gemini Embedding 2 automatically.
-          </p>
         </Card>
       )}
 
