@@ -781,8 +781,9 @@ export default function CarouselSearchPage() {
             {selectedThemes.length === 1
               ? `“${selectedThemes[0].title}”`
               : `${selectedThemes.length} selected themes`}{" "}
-            · hooks are crafted from spoken windows (not transcript dumps) · topics are
-            deduped for unique angles. Toggle any combination to continue.
+            · each hook is a genuine Instagram-style rewrite from the spoken window (not a
+            transcript dump — expand a chip to see the source line) · topics are unique,
+            non-overlapping narrative angles. Toggle any combination to continue.
             {extract.any_translated ? " Some lines were translated for display." : ""}
           </p>
           <div className="mt-4 grid gap-6 sm:grid-cols-2">
@@ -1280,13 +1281,21 @@ function VerbatimList({
                   {fmtTs(item.start_sec)}
                 </span>
                 <span className="mt-0.5 block text-foreground">{display}</span>
+                {item.analysed && item.original_text && item.original_text !== item.text ? (
+                  <span className="mt-1 block text-[10px] leading-snug text-muted-foreground">
+                    <span className="font-semibold uppercase tracking-wide">From transcript · </span>
+                    <span className="line-clamp-2 italic">
+                      {item.original_text}
+                    </span>
+                  </span>
+                ) : null}
                 {item.translated ? (
-                  <span className="mt-1 block text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                    Translated
+                  <span className="mt-1 block text-[10px] font-medium uppercase tracking-wide text-emerald-700 dark:text-emerald-400">
+                    Genuine hook · translated
                   </span>
                 ) : item.analysed ? (
-                  <span className="mt-1 block text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                    Analysed
+                  <span className="mt-1 block text-[10px] font-medium uppercase tracking-wide text-emerald-700 dark:text-emerald-400">
+                    Genuine hook · analysed
                   </span>
                 ) : null}
               </button>
