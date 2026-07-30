@@ -16,9 +16,10 @@ _DIM = 3072
 @lru_cache(maxsize=1)
 def _client() -> QdrantClient:
     from app.config import get_settings
+    from app.qdrant.client import make_qdrant_client
 
     settings = get_settings()
-    client = QdrantClient(url=settings.qdrant_url, timeout=30)
+    client = make_qdrant_client(settings.qdrant_url, timeout=30)
     _ensure_collection(client, settings.qdrant_images_collection)
     return client
 

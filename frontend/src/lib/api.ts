@@ -1,4 +1,48 @@
-export const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+/**
+ * Where the backend lives, resolved once from the page's own origin.
+ *
+ * A single build-time URL cannot be right for every visitor: loopback is the
+ * fast path but only works on the host machine, while an HTTPS page (Cloudflare
+ * tunnel) may not call an http:// backend at all — the browser blocks it as
+ * mixed content. So decide in the browser, where the origin is known:
+ *
+ *   localhost / 127.0.0.1  → loopback; local use never leaves the machine
+ *   LAN IP                 → same host, API port
+ *   tunnel / other origin  → the configured public URL, protocol-matched
+ */
+const LOOPBACK_API = (process.env.NEXT_PUBLIC_API_URL_LOCAL ?? "http://127.0.0.1:8000").replace(/\/+$/, "");
+const PUBLIC_API = (process.env.NEXT_PUBLIC_API_URL ?? "").replace(/\/+$/, "");
+const API_PORT = process.env.NEXT_PUBLIC_API_PORT ?? "8000";
+
+const isLoopbackUrl = (url: string) =>
+  /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?(\/|$)/.test(url);
+
+function resolveApiBase(): string {
+  // Server-side rendering happens on the host, so loopback is always correct.
+  if (typeof window === "undefined") return LOOPBACK_API || PUBLIC_API;
+
+  const { hostname, protocol } = window.location;
+  if (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]") {
+    return LOOPBACK_API;
+  }
+
+  // A plain-http page means we were served directly off this machine (localhost
+  // handled above, so: LAN address). The backend is reachable on the same host,
+  // which beats sending LAN traffic out to the tunnel and back.
+  if (protocol === "http:") {
+    return `http://${hostname}:${API_PORT}`;
+  }
+
+  // https page — the tunnel. Only an https backend is usable here; an http one
+  // would be blocked as mixed content.
+  if (PUBLIC_API.startsWith("https://") && !isLoopbackUrl(PUBLIC_API)) {
+    return PUBLIC_API;
+  }
+
+  return `https://${hostname}:${API_PORT}`;
+}
+
+export const API_BASE = resolveApiBase();
 
 export const SERVICE_UNAVAILABLE_MESSAGE =
   "Can't reach the DFI service right now. It may be starting up or temporarily unavailable.";
@@ -428,6 +472,12 @@ export type CarouselExpandResponse = {
 export type CarouselOutlineSlide = {
   index: number;
   hook_line: string;
+  /** Exact transcript line for editing before image selection. */
+  transcript_text?: string | null;
+  /** Source-language line when display text was translated to English. */
+  original_text?: string | null;
+  translated?: boolean | null;
+  english_source?: string | null;
   caption?: string | null;
   drive_file_id: string;
   name: string;
@@ -440,9 +490,11 @@ export type CarouselOutlineSlide = {
   /** Chosen display frame timestamp inside the spoken span (may differ from mid-span). */
   frame_ts?: number | null;
   /** How the preview frame was chosen. */
-  frame_source?: "ai" | "heuristic" | "fallback" | string | null;
+  frame_source?: "ai" | "heuristic" | "fallback" | "deferred" | "manual" | string | null;
   instagram_ready?: boolean | null;
+  images_ready?: boolean | null;
   frame_candidates?: number[] | null;
+  frame_quality?: Record<string, unknown> | null;
 };
 
 export type CarouselOutlineRequest = {
@@ -466,18 +518,28 @@ export type CarouselOutlineResponse = {
   /** Multi-carousel generate: one entry per topic + mixed narratives. */
   carousels?: CarouselGeneratedItem[];
   carousel_count?: number;
+  images_ready?: boolean;
   intent?: string | null;
+  quality?: {
+    candidates?: number;
+    kept?: number;
+    rejected?: Record<string, number>;
+    slides_polished?: number;
+  };
 };
 
 export type CarouselGeneratedItem = {
   id: string;
-  kind: "topic" | "mixed" | string;
+  kind: "hook" | "topic" | "mixed" | string;
   title: string;
   topic_labels: string[];
   slide_count: number;
   slides: CarouselOutlineSlide[];
   hooks?: string[];
+  hook_goal?: string | null;
   topics?: string[];
+  images_ready?: boolean;
+  plan_source?: string | null;
 };
 
 export type CarouselTimedPick = {
@@ -486,6 +548,9 @@ export type CarouselTimedPick = {
   start_sec: number;
   end_sec?: number | null;
   theme_id?: string | null;
+  topic_id?: string | null;
+  topic_text?: string | null;
+  time_ranges?: { start_sec: number; end_sec?: number | null }[];
 };
 
 export type CarouselGenerateRequest = {
@@ -503,6 +568,8 @@ export type CarouselGenerateRequest = {
   topics?: CarouselTimedPick[];
   min_slides?: number;
   max_slides?: number;
+  /** When false (default), return transcript slides only — no Gemini frame calls. */
+  select_images?: boolean;
 };
 
 export type CarouselCueItem = {
@@ -590,6 +657,11 @@ export type CarouselPipelineThemesResponse = {
   harmonized: boolean;
   cue_count?: number;
   themes: CarouselPipelineTheme[];
+  cache_hit?: boolean;
+  generated?: boolean;
+  save_id?: number | null;
+  transcript_hash?: string | null;
+  model?: string | null;
   error?: string;
   message?: string;
   warning?: string;
@@ -606,6 +678,27 @@ export type CarouselVerbatimItem = {
   original_text?: string | null;
   english_source?: string | null;
   theme_id?: string | null;
+  topic_id?: string | null;
+  topic_text?: string | null;
+  subtopic_id?: string | null;
+  subtopic_text?: string | null;
+  explanation?: string | null;
+  parent_topic_id?: string | null;
+  is_subtopic?: boolean;
+  has_subtopics?: boolean;
+};
+
+export type CarouselTopicTreeNode = {
+  id: string;
+  text: string;
+  start_sec: number;
+  end_sec?: number | null;
+  /** Non-contiguous spans when a thread recurs across the talk. */
+  time_ranges?: { start_sec: number; end_sec?: number | null }[];
+  explanation?: string | null;
+  theme_id?: string | null;
+  subtopics?: CarouselTopicTreeNode[];
+  hooks?: CarouselVerbatimItem[];
 };
 
 export type CarouselPipelineExtractResponse = {
@@ -614,6 +707,8 @@ export type CarouselPipelineExtractResponse = {
   theme_ids?: string[];
   hooks: CarouselVerbatimItem[];
   topics: CarouselVerbatimItem[];
+  topic_tree?: CarouselTopicTreeNode[];
+  save_id?: number | null;
   previews: {
     start_sec: number;
     end_sec?: number | null;
@@ -630,6 +725,46 @@ export type CarouselPipelineExtractResponse = {
   topics_english?: boolean;
   any_translated?: boolean;
   english_source?: string | null;
+  transcript_meta?: {
+    cue_count_total?: number;
+    theme_count?: number;
+    transcript_chars_sent?: number;
+    chunks_used?: number;
+    topic_tree_count?: number;
+    flat_topic_count?: number;
+    hook_count?: number;
+    topics_with_multi_ranges?: number;
+    verbatim_guard?: {
+      checked?: number;
+      rejected_verbatim?: number;
+      rewritten?: number;
+      dropped?: number;
+    };
+    per_theme?: Record<string, unknown>[];
+  } | null;
+};
+
+export type CarouselGenerationSaveListItem = {
+  id: number;
+  drive_file_id: string;
+  kind?: "topics_hooks" | "themes" | string;
+  theme_key: string;
+  label?: string | null;
+  created_at?: string | null;
+  source?: string | null;
+  model?: string | null;
+  transcript_hash?: string | null;
+  hook_count?: number;
+  topic_count?: number;
+  theme_count?: number;
+};
+
+export type CarouselTranscriptFrameItem = {
+  start_sec: number;
+  end_sec?: number | null;
+  text: string;
+  frame_ts: number;
+  preview_url: string;
 };
 
 export type FolderContext = {
@@ -1040,7 +1175,12 @@ export const apiClient = {
   },
   carouselPipelineThemes: (
     driveFileId: string,
-    opts?: { searchEntity?: string; personName?: string; signal?: AbortSignal }
+    opts?: {
+      searchEntity?: string;
+      personName?: string;
+      force?: boolean;
+      signal?: AbortSignal;
+    }
   ) =>
     api<CarouselPipelineThemesResponse>("/search/carousel/pipeline/themes", {
       method: "POST",
@@ -1048,6 +1188,7 @@ export const apiClient = {
         drive_file_id: driveFileId,
         search_entity: opts?.searchEntity ?? "",
         person_name: opts?.personName ?? "",
+        force: Boolean(opts?.force),
       }),
       signal: opts?.signal,
     }),
@@ -1090,8 +1231,92 @@ export const apiClient = {
   carouselPipelineGenerate: (body: CarouselGenerateRequest) =>
     api<CarouselOutlineResponse>("/search/carousel/pipeline/generate", {
       method: "POST",
+      body: JSON.stringify({ ...body, select_images: Boolean(body.select_images) }),
+    }),
+  carouselPipelineSelectImages: (body: {
+    drive_file_id: string;
+    carousels: CarouselGeneratedItem[];
+  }) =>
+    api<CarouselOutlineResponse>("/search/carousel/pipeline/select-images", {
+      method: "POST",
       body: JSON.stringify(body),
     }),
+  carouselPipelineSaves: (
+    driveFileId: string,
+    limit = 20,
+    kind: "topics_hooks" | "themes" = "topics_hooks"
+  ) =>
+    api<{ items: CarouselGenerationSaveListItem[] }>(
+      `/search/carousel/pipeline/saves?drive_file_id=${encodeURIComponent(driveFileId)}&limit=${limit}&kind=${encodeURIComponent(kind)}`
+    ),
+  carouselPipelineSaveGet: (saveId: number) =>
+    api<{
+      id: number;
+      drive_file_id: string;
+      kind?: string;
+      theme_key: string;
+      label?: string | null;
+      created_at?: string | null;
+      source?: string | null;
+      model?: string | null;
+      transcript_hash?: string | null;
+      payload: CarouselPipelineExtractResponse & {
+        selected_hooks?: string[];
+        selected_topics?: string[];
+        themes?: CarouselPipelineTheme[];
+        source?: string;
+        cue_count?: number;
+      };
+    }>(`/search/carousel/pipeline/saves/${saveId}`),
+  carouselPipelineSaveCreate: (body: {
+    drive_file_id: string;
+    theme_key?: string;
+    label?: string;
+    topic_tree?: CarouselTopicTreeNode[];
+    hooks?: CarouselVerbatimItem[];
+    topics?: CarouselVerbatimItem[];
+    selected_hooks?: string[];
+    selected_topics?: string[];
+    intent?: string | null;
+    intent_score?: number | null;
+    themes?: CarouselPipelineTheme[];
+  }) =>
+    api<{ id: number; created_at?: string | null }>("/search/carousel/pipeline/saves", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  carouselPipelineShuffle: (body: {
+    topic_tree?: CarouselTopicTreeNode[];
+    hooks?: CarouselVerbatimItem[];
+    topics?: CarouselVerbatimItem[];
+    count_hooks?: number;
+    count_topics?: number;
+  }) =>
+    api<{
+      selected_hooks: string[];
+      selected_topics: string[];
+      hooks: CarouselVerbatimItem[];
+      topics: CarouselVerbatimItem[];
+    }>("/search/carousel/pipeline/shuffle", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  carouselTranscriptFrames: (opts: {
+    driveFileId: string;
+    startSec?: number;
+    endSec?: number | null;
+    limit?: number;
+  }) => {
+    const params = new URLSearchParams({
+      drive_file_id: opts.driveFileId,
+      start_sec: String(opts.startSec ?? 0),
+      limit: String(opts.limit ?? 40),
+    });
+    if (opts.endSec != null) params.set("end_sec", String(opts.endSec));
+    return api<{ drive_file_id: string; items: CarouselTranscriptFrameItem[] }>(
+      `/search/carousel/pipeline/transcript-frames?${params}`
+    );
+  },
   searchUploadedFace: async (file: File, limit = 20): Promise<FaceSearchResponse> => {
     const params = new URLSearchParams({ limit: String(limit) });
     const form = new FormData();

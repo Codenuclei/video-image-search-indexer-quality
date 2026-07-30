@@ -20,11 +20,12 @@ from typing import Any, Callable, Awaitable
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MAX_CANDIDATES = 6
-DEFAULT_TIMEOUT_SEC = 28.0
+DEFAULT_MAX_CANDIDATES = 12
+DEFAULT_TIMEOUT_SEC = 32.0
 _MAX_JPEG_BYTES = 512 * 1024
 _DOWNSCALE_MAX_DIM = 640
 _NEAREST_TOLERANCE_SEC = 1.25
+_HARD_CAP_CANDIDATES = 16
 
 
 @dataclass(frozen=True)
@@ -33,6 +34,7 @@ class FrameCandidate:
     timestamp_sec: float
     label: str  # "heuristic" | "sample"
     preview_url: str | None = None
+    quality_score: float = 0.0
 
 
 @dataclass
@@ -43,6 +45,7 @@ class FramePickResult:
     instagram_ready: bool
     ranked_timestamps: list[float] = field(default_factory=list)
     warning: str | None = None
+    quality_stats: dict[str, Any] | None = None
 
 
 def heuristic_frame_ts(start_sec: float, end_sec: float | None) -> float:
@@ -68,8 +71,8 @@ def sample_candidate_timestamps(
 ) -> list[float]:
     """Sample timestamps across a spoken span (capped).
 
-    Prefer start / 25% / mid / 75% / end when the window is short; for longer
-    windows, also sample about every ``step_sec`` (default 0.75s) then cap.
+    Prefer start / 20% / mid / 80% / end when the window is short; for longer
+    windows, also sample about every ``step_sec`` (default 0.4s) then cap.
     Always includes the heuristic mid-span timestamp.
     """
     s = float(start_sec or 0.0)
@@ -78,15 +81,15 @@ def sample_candidate_timestamps(
         e = s
     dur = e - s
     heuristic = heuristic_frame_ts(s, e if end_sec is not None else None)
-    cap = max(1, min(int(max_candidates), 8))
+    cap = max(1, min(int(max_candidates), _HARD_CAP_CANDIDATES))
 
     if dur < 0.05:
         return [round(s, 2)]
 
-    fractions = (0.0, 0.25, 0.5, 0.75, 1.0)
+    fractions = (0.0, 0.15, 0.35, 0.5, 0.65, 0.85, 1.0)
     points = [round(s + dur * f, 2) for f in fractions]
 
-    interval = float(step_sec) if step_sec is not None else 0.75
+    interval = float(step_sec) if step_sec is not None else 0.4
     if dur >= interval * 2:
         t = s
         while t <= e + 1e-9:
@@ -135,17 +138,272 @@ def sample_candidate_timestamps(
     return keep[:cap]
 
 
+def sample_candidate_timestamps_multi(
+    ranges: list[tuple[float, float | None]],
+    *,
+    max_candidates: int = DEFAULT_MAX_CANDIDATES,
+    step_sec: float | None = 0.4,
+) -> list[float]:
+    """Sample across one or more (possibly non-contiguous) time ranges."""
+    if not ranges:
+        return []
+    per = max(3, int(max_candidates) // max(1, len(ranges)))
+    points: list[float] = []
+    for start, end in ranges:
+        points.extend(
+            sample_candidate_timestamps(
+                start, end, max_candidates=per, step_sec=step_sec
+            )
+        )
+    # Global dedupe + cap
+    seen: set[float] = set()
+    out: list[float] = []
+    for ts in sorted(points):
+        key = round(ts, 2)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(key)
+    cap = max(1, min(int(max_candidates), _HARD_CAP_CANDIDATES))
+    if len(out) <= cap:
+        return out
+    # Evenly thin
+    step = (len(out) - 1) / max(cap - 1, 1)
+    thinned = [out[min(len(out) - 1, int(round(i * step)))] for i in range(cap)]
+    # unique preserve order
+    final: list[float] = []
+    seen2: set[float] = set()
+    for ts in thinned:
+        if ts not in seen2:
+            seen2.add(ts)
+            final.append(ts)
+    return final[:cap]
+
+
+def score_frame_quality(jpeg_bytes: bytes | None) -> dict[str, Any]:
+    """Cheap quality signals: sharpness, exposure, contrast, pixelation. No model calls."""
+    stats: dict[str, Any] = {
+        "ok": False,
+        "sharpness": 0.0,
+        "brightness": 0.0,
+        "contrast": 0.0,
+        "pixelation": 0.0,
+        "score": 0.0,
+        "reject": None,
+        "phash": None,
+    }
+    if not jpeg_bytes:
+        stats["reject"] = "missing"
+        return stats
+    try:
+        import cv2
+        import numpy as np
+
+        from app.video.pixelation import PIXELATION_SCORE_THRESHOLD, evaluate_pixelation
+
+        arr = np.frombuffer(jpeg_bytes, dtype=np.uint8)
+        bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        if bgr is None or bgr.size == 0:
+            stats["reject"] = "decode"
+            return stats
+        h, w = bgr.shape[:2]
+        if h < 48 or w < 48:
+            stats["reject"] = "tiny"
+            return stats
+        # Keep a full-res copy for pixelation (NEAREST-downscales internally).
+        # Linear/area downscale for sharpness would smear mosaic tiles.
+        bgr_full = bgr
+        # Downscale for speed
+        scale = min(1.0, 320.0 / max(h, w))
+        if scale < 1.0:
+            bgr = cv2.resize(bgr, (max(1, int(w * scale)), max(1, int(h * scale))))
+        gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+        sharp = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+        brightness = float(gray.mean())
+        contrast = float(gray.std())
+        # Very dark / blown / flat / blurry → reject (before pixelation work)
+        if brightness < 18:
+            stats.update(sharpness=sharp, brightness=brightness, contrast=contrast, reject="black")
+            return stats
+        if brightness > 245:
+            stats.update(sharpness=sharp, brightness=brightness, contrast=contrast, reject="blown")
+            return stats
+        if contrast < 8:
+            stats.update(sharpness=sharp, brightness=brightness, contrast=contrast, reject="flat")
+            return stats
+        if sharp < 25:
+            stats.update(sharpness=sharp, brightness=brightness, contrast=contrast, reject="blurry")
+            return stats
+        pix_flag, pix_details = evaluate_pixelation(
+            bgr_full, threshold=PIXELATION_SCORE_THRESHOLD
+        )
+        pix_score = float(pix_details.get("score") or 0.0)
+        if pix_flag:
+            stats.update(
+                sharpness=sharp,
+                brightness=brightness,
+                contrast=contrast,
+                pixelation=pix_score,
+                reject="pixelated",
+                pixelation_macroblock=float(pix_details.get("macroblock_score") or 0.0),
+                pixelation_local_frac=float(pix_details.get("local_mosaic_frac") or 0.0),
+            )
+            return stats
+        # Perceptual-ish hash (8x8 average) for near-dupe detection
+        tiny = cv2.resize(gray, (8, 8), interpolation=cv2.INTER_AREA)
+        avg = float(tiny.mean())
+        bits = "".join("1" if int(v) > avg else "0" for v in tiny.flatten())
+        # Prefer mid brightness + high sharpness + decent contrast
+        bright_term = 1.0 - abs(brightness - 128.0) / 128.0
+        score = sharp * 0.55 + contrast * 2.5 + bright_term * 40.0
+        stats.update(
+            ok=True,
+            sharpness=sharp,
+            brightness=brightness,
+            contrast=contrast,
+            pixelation=pix_score,
+            score=score,
+            reject=None,
+            phash=bits,
+            pixelation_macroblock=float(pix_details.get("macroblock_score") or 0.0),
+            pixelation_local_frac=float(pix_details.get("local_mosaic_frac") or 0.0),
+        )
+        return stats
+    except Exception as exc:  # noqa: BLE001
+        stats["reject"] = f"error:{str(exc)[:40]}"
+        return stats
+
+
+def _hamming(a: str | None, b: str | None) -> int:
+    if not a or not b or len(a) != len(b):
+        return 64
+    return sum(ch1 != ch2 for ch1, ch2 in zip(a, b))
+
+
+def filter_frame_candidates_by_quality(
+    images: list[bytes | None],
+    *,
+    timestamps: list[float] | None = None,
+    max_keep: int = DEFAULT_MAX_CANDIDATES,
+    min_keep: int = 2,
+) -> tuple[list[int], dict[str, Any]]:
+    """Filter/rank candidate indices by cheap image quality + phash dedupe.
+
+    Returns ``(kept_indices_in_quality_order, reject_stats)``.
+    """
+    n = len(images)
+    reject_counts: dict[str, int] = {}
+    scored: list[tuple[float, int, str | None]] = []  # score, idx, phash
+    for i, img in enumerate(images):
+        q = score_frame_quality(img)
+        reason = q.get("reject")
+        if reason:
+            reject_counts[str(reason)] = reject_counts.get(str(reason), 0) + 1
+            continue
+        scored.append((float(q.get("score") or 0), i, q.get("phash")))
+
+    # If everything rejected, fall back to least-bad — but NEVER re-admit
+    # hard quality rejects (pixelation / exposure / blur / flat).
+    _HARD_REJECT = {
+        "pixelated",
+        "black",
+        "blown",
+        "decode",
+        "missing",
+        "tiny",
+        "flat",
+        "blurry",
+    }
+    if not scored:
+        fallback: list[tuple[float, int, str | None]] = []
+        for i, img in enumerate(images):
+            q = score_frame_quality(img)
+            reason = str(q.get("reject") or "")
+            if reason in _HARD_REJECT or reason.startswith("error:"):
+                continue
+            fallback.append((float(q.get("score") or 0), i, q.get("phash")))
+        fallback.sort(reverse=True)
+        if not fallback:
+            stats = {
+                "rejected": dict(reject_counts),
+                "fallback": True,
+                "scored": 0,
+                "kept": 0,
+                "hard_reject_only": True,
+            }
+            return [], stats
+        kept = [i for _, i, _ in fallback[: max(1, min(max_keep, n))]]
+        stats = {
+            "rejected": dict(reject_counts),
+            "fallback": True,
+            "scored": 0,
+        }
+        return kept, stats
+
+    scored.sort(reverse=True)
+    kept: list[int] = []
+    kept_hashes: list[str] = []
+    dupes = 0
+    for score, idx, ph in scored:
+        if ph and any(_hamming(ph, prev) <= 6 for prev in kept_hashes):
+            dupes += 1
+            continue
+        # Prefer temporal spacing when timestamps provided
+        if timestamps and kept:
+            ts = float(timestamps[idx])
+            if any(abs(ts - float(timestamps[j])) < 0.35 for j in kept):
+                dupes += 1
+                continue
+        kept.append(idx)
+        if ph:
+            kept_hashes.append(ph)
+        if len(kept) >= max_keep:
+            break
+
+    # Guarantee a minimum set for Gemini ranking
+    if len(kept) < min_keep:
+        for _, idx, ph in scored:
+            if idx in kept:
+                continue
+            kept.append(idx)
+            if len(kept) >= min_keep:
+                break
+
+    stats = {
+        "rejected": dict(reject_counts),
+        "near_duplicates": dupes,
+        "scored": len(scored),
+        "fallback": False,
+    }
+    logger.info(
+        "frame quality filter: candidates=%d scored=%d kept=%d rejects=%s dupes=%d",
+        n,
+        len(scored),
+        len(kept),
+        reject_counts,
+        dupes,
+    )
+    return kept, stats
+
+
 def build_frame_candidates(
     drive_file_id: str,
     start_sec: float,
     end_sec: float | None,
     *,
     max_candidates: int = DEFAULT_MAX_CANDIDATES,
+    extra_ranges: list[tuple[float, float | None]] | None = None,
 ) -> list[FrameCandidate]:
     """Build labeled candidates; heuristic mid-span is marked ``heuristic``."""
     fid = (drive_file_id or "").strip()
     heuristic = heuristic_frame_ts(start_sec, end_sec)
-    stamps = sample_candidate_timestamps(start_sec, end_sec, max_candidates=max_candidates)
+    ranges: list[tuple[float, float | None]] = [(start_sec, end_sec)]
+    for r in extra_ranges or []:
+        ranges.append(r)
+    if len(ranges) > 1:
+        stamps = sample_candidate_timestamps_multi(ranges, max_candidates=max_candidates)
+    else:
+        stamps = sample_candidate_timestamps(start_sec, end_sec, max_candidates=max_candidates)
     out: list[FrameCandidate] = []
     for i, ts in enumerate(stamps):
         label = "heuristic" if abs(ts - heuristic) < 0.011 else "sample"
@@ -160,6 +418,7 @@ def build_frame_candidates(
             timestamp_sec=c.timestamp_sec,
             label="heuristic",
             preview_url=c.preview_url,
+            quality_score=c.quality_score,
         )
     return out
 
@@ -389,8 +648,10 @@ async def select_frame_for_span(
     max_candidates: int = DEFAULT_MAX_CANDIDATES,
     timeout_sec: float = DEFAULT_TIMEOUT_SEC,
     ensure_frame: Callable[[str, float], Awaitable[bytes | None]] | None = None,
+    extra_ranges: list[tuple[float, float | None]] | None = None,
+    avoid_timestamps: list[float] | None = None,
 ) -> FramePickResult:
-    """Harvest candidates → Gemini rank → readiness fallback for one slide span."""
+    """Harvest candidates → quality filter → Gemini rank → readiness fallback."""
     fid = (drive_file_id or "").strip()
     heuristic = heuristic_frame_ts(start_sec, end_sec)
     heuristic_url = f"/media/video/{fid}/frame?ts={heuristic}" if fid else None
@@ -405,15 +666,39 @@ async def select_frame_for_span(
         base.warning = "missing drive_file_id"
         return base
 
-    candidates = build_frame_candidates(
-        fid, start_sec, end_sec, max_candidates=max_candidates
+    avoid = [float(x) for x in (avoid_timestamps or [])]
+    # Prefer a mid-span heuristic that isn't already used by another slide.
+    if avoid and any(abs(heuristic - a) < 0.45 for a in avoid):
+        span_end = float(end_sec) if end_sec is not None else start_sec + 2.0
+        for frac in (0.25, 0.75, 0.1, 0.9):
+            alt = round(float(start_sec) + max(0.0, span_end - float(start_sec)) * frac, 2)
+            if not any(abs(alt - a) < 0.45 for a in avoid):
+                heuristic = alt
+                heuristic_url = f"/media/video/{fid}/frame?ts={heuristic}"
+                base = FramePickResult(
+                    timestamp_sec=heuristic,
+                    preview_url=heuristic_url,
+                    frame_source="heuristic",
+                    instagram_ready=False,
+                    ranked_timestamps=[heuristic],
+                )
+                break
+
+    # Oversample, then quality-filter down to max_candidates for Gemini.
+    harvest_n = min(_HARD_CAP_CANDIDATES, max(int(max_candidates) * 2, int(max_candidates)))
+    raw_candidates = build_frame_candidates(
+        fid,
+        start_sec,
+        end_sec,
+        max_candidates=harvest_n,
+        extra_ranges=extra_ranges,
     )
-    if len(candidates) < 2 or not api_key:
+    if len(raw_candidates) < 2 or not api_key:
         return base
 
     async def _run() -> FramePickResult:
-        images: list[bytes | None] = []
-        for c in candidates:
+        raw_images: list[bytes | None] = []
+        for c in raw_candidates:
             data = load_cached_frame_bytes(thumbnail_dir, fid, c.timestamp_sec)
             if data is None and ensure_frame is not None:
                 try:
@@ -421,18 +706,85 @@ async def select_frame_for_span(
                 except Exception as exc:  # noqa: BLE001
                     logger.debug("ensure_frame failed %s@%.2f: %s", fid, c.timestamp_sec, exc)
                     data = None
-            images.append(data)
+            raw_images.append(data)
 
-        if sum(1 for x in images if x) < 1:
-            out = FramePickResult(
+        if sum(1 for x in raw_images if x) < 1:
+            return FramePickResult(
                 timestamp_sec=heuristic,
                 preview_url=heuristic_url,
                 frame_source="heuristic",
                 instagram_ready=False,
-                ranked_timestamps=[c.timestamp_sec for c in candidates],
+                ranked_timestamps=[c.timestamp_sec for c in raw_candidates],
                 warning="no frame images available",
+                quality_stats={"candidates": len(raw_candidates), "kept": 0},
             )
-            return out
+
+        kept_idx, qstats = filter_frame_candidates_by_quality(
+            raw_images,
+            timestamps=[c.timestamp_sec for c in raw_candidates],
+            max_keep=max(2, min(int(max_candidates), _HARD_CAP_CANDIDATES)),
+            min_keep=2,
+        )
+        candidates: list[FrameCandidate] = []
+        images: list[bytes | None] = []
+        for new_i, old_i in enumerate(kept_idx):
+            c = raw_candidates[old_i]
+            if avoid and any(abs(float(c.timestamp_sec) - a) < 0.45 for a in avoid):
+                continue
+            candidates.append(
+                FrameCandidate(
+                    index=len(candidates),
+                    timestamp_sec=c.timestamp_sec,
+                    label=c.label,
+                    preview_url=c.preview_url,
+                )
+            )
+            images.append(raw_images[old_i])
+
+        # If avoid wiped everything, fall back to quality-kept without avoid.
+        if not candidates and kept_idx:
+            for new_i, old_i in enumerate(kept_idx):
+                c = raw_candidates[old_i]
+                candidates.append(
+                    FrameCandidate(
+                        index=new_i,
+                        timestamp_sec=c.timestamp_sec,
+                        label=c.label,
+                        preview_url=c.preview_url,
+                    )
+                )
+                images.append(raw_images[old_i])
+
+        # Ensure a heuristic-labeled candidate remains when possible.
+        if candidates and not any(c.label == "heuristic" for c in candidates):
+            mid_i = min(
+                range(len(candidates)),
+                key=lambda i: abs(candidates[i].timestamp_sec - heuristic),
+            )
+            c = candidates[mid_i]
+            candidates[mid_i] = FrameCandidate(
+                index=c.index,
+                timestamp_sec=c.timestamp_sec,
+                label="heuristic",
+                preview_url=c.preview_url,
+            )
+
+        quality_meta = {
+            "candidates": len(raw_candidates),
+            "kept": len(candidates),
+            **qstats,
+        }
+
+        if not candidates:
+            return FramePickResult(
+                timestamp_sec=heuristic,
+                preview_url=heuristic_url,
+                frame_source="heuristic",
+                instagram_ready=False,
+                ranked_timestamps=[c.timestamp_sec for c in raw_candidates],
+                warning="all candidates failed quality (pixelation/exposure)",
+                quality_stats=quality_meta,
+            )
 
         order, ready = await asyncio.to_thread(
             rank_candidates_with_gemini_sync,
@@ -443,13 +795,16 @@ async def select_frame_for_span(
             model=model,
         )
         if not order:
+            # Fall back to best quality-filtered sample (index 0 after quality sort).
+            chosen = candidates[0]
             return FramePickResult(
-                timestamp_sec=heuristic,
-                preview_url=heuristic_url,
+                timestamp_sec=chosen.timestamp_sec,
+                preview_url=chosen.preview_url or heuristic_url,
                 frame_source="heuristic",
                 instagram_ready=False,
                 ranked_timestamps=[c.timestamp_sec for c in candidates],
                 warning="gemini rank unavailable",
+                quality_stats=quality_meta,
             )
         heuristic_index = next(
             (c.index for c in candidates if c.label == "heuristic"),
@@ -473,6 +828,7 @@ async def select_frame_for_span(
             frame_source=source,
             instagram_ready=ig_ready,
             ranked_timestamps=ranked_ts or [c.timestamp_sec for c in candidates],
+            quality_stats=quality_meta,
         )
 
     try:
@@ -497,7 +853,11 @@ async def polish_slides_instagram_frames(
     ensure_frame: Callable[[str, float], Awaitable[bytes | None]] | None = None,
     concurrency: int = 2,
 ) -> list[dict[str, Any]]:
-    """Apply Instagram frame polish to outline slides (mutates copies)."""
+    """Apply Instagram frame polish to outline slides (mutates copies).
+
+    Frames are chosen inside each slide's transcript span. Previously used
+    timestamps are avoided so adjacent slides don't share the same still.
+    """
     if not slides:
         return slides
     if not api_key:
@@ -506,9 +866,10 @@ async def polish_slides_instagram_frames(
             s.setdefault("instagram_ready", False)
         return slides
 
-    sem = asyncio.Semaphore(max(1, concurrency))
-
-    async def _one(slide: dict[str, Any]) -> dict[str, Any]:
+    # Sequential: each slide's pick can reserve a timestamp for later slides.
+    used_frame_ts: list[float] = []
+    out_slides: list[dict[str, Any]] = []
+    for slide in slides:
         out = dict(slide)
         start = float(out.get("timestamp_sec") or 0)
         end = out.get("end_timestamp_sec")
@@ -517,28 +878,32 @@ async def polish_slides_instagram_frames(
         except (TypeError, ValueError):
             end_f = None
         fid = str(out.get("drive_file_id") or "")
-        hook = str(out.get("hook_line") or out.get("snippet") or "")
-        async with sem:
-            pick = await select_frame_for_span(
-                drive_file_id=fid,
-                start_sec=start,
-                end_sec=end_f,
-                hook_line=hook,
-                thumbnail_dir=thumbnail_dir,
-                api_key=api_key,
-                model=model,
-                max_candidates=max_candidates,
-                timeout_sec=timeout_sec,
-                ensure_frame=ensure_frame,
-            )
+        hook = str(
+            out.get("transcript_text") or out.get("hook_line") or out.get("snippet") or ""
+        )
+        pick = await select_frame_for_span(
+            drive_file_id=fid,
+            start_sec=start,
+            end_sec=end_f,
+            hook_line=hook,
+            thumbnail_dir=thumbnail_dir,
+            api_key=api_key,
+            model=model,
+            max_candidates=max_candidates,
+            timeout_sec=timeout_sec,
+            ensure_frame=ensure_frame,
+            avoid_timestamps=used_frame_ts,
+        )
         out["preview_url"] = pick.preview_url
         out["frame_ts"] = pick.timestamp_sec
         out["frame_source"] = pick.frame_source
         out["instagram_ready"] = pick.instagram_ready
         if pick.ranked_timestamps:
-            out["frame_candidates"] = pick.ranked_timestamps[:8]
+            out["frame_candidates"] = pick.ranked_timestamps[:16]
         if pick.warning:
             out["frame_warning"] = pick.warning
-        return out
-
-    return list(await asyncio.gather(*(_one(s) for s in slides)))
+        if pick.quality_stats:
+            out["frame_quality"] = pick.quality_stats
+        used_frame_ts.append(float(pick.timestamp_sec))
+        out_slides.append(out)
+    return out_slides

@@ -62,6 +62,49 @@ async def ensure_schema(engine: AsyncEngine) -> None:
                 "BOOLEAN NOT NULL DEFAULT false"
             )
         )
+        # Carousel generation saves: themes vs topics/hooks + cache keys
+        await conn.execute(
+            text(
+                "ALTER TABLE carousel_generation_saves ADD COLUMN IF NOT EXISTS kind "
+                "VARCHAR(32) NOT NULL DEFAULT 'topics_hooks'"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE carousel_generation_saves ADD COLUMN IF NOT EXISTS model "
+                "VARCHAR(128)"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE carousel_generation_saves ADD COLUMN IF NOT EXISTS transcript_hash "
+                "VARCHAR(64)"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE carousel_generation_saves ADD COLUMN IF NOT EXISTS source "
+                "VARCHAR(32)"
+            )
+        )
+        await conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_carousel_generation_saves_kind "
+                "ON carousel_generation_saves (kind)"
+            )
+        )
+        await conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_carousel_generation_saves_transcript_hash "
+                "ON carousel_generation_saves (transcript_hash)"
+            )
+        )
+        await conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_carousel_gen_saves_drive_kind_created "
+                "ON carousel_generation_saves (drive_file_id, kind, created_at DESC)"
+            )
+        )
         await conn.run_sync(Base.metadata.create_all)
     logger.info("Database schema verified")
 

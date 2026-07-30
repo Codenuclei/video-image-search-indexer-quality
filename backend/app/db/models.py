@@ -5,6 +5,7 @@ from datetime import datetime
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import DateTime, Enum, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -320,3 +321,22 @@ class VideoSegment(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     media: Mapped[Media] = relationship(back_populates="video_segments")
+
+
+class CarouselGenerationSave(Base):
+    """Autosaved carousel studio generations (themes or topics/hooks)."""
+
+    __tablename__ = "carousel_generation_saves"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    drive_file_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    # 'topics_hooks' (default) | 'themes'
+    kind: Mapped[str] = mapped_column(String(32), nullable=False, default="topics_hooks", index=True)
+    theme_key: Mapped[str] = mapped_column(String(256), nullable=False, default="")
+    label: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    # Cache key for themes kind: invalidate when transcript or model changes.
+    model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    transcript_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    source: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

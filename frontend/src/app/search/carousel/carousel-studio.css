@@ -93,6 +93,16 @@
   resize: vertical;
 }
 
+/* Compact one-line rows in the inline transcript editor (avoid huge empty boxes). */
+.carousel-studio .studio-textarea.studio-textarea-compact {
+  min-height: 0;
+  height: auto;
+  padding: 8px 10px;
+  line-height: 1.35;
+  resize: vertical;
+  field-sizing: content;
+}
+
 .carousel-studio .studio-input:focus,
 .carousel-studio .studio-select:focus,
 .carousel-studio .studio-textarea:focus {
@@ -176,6 +186,31 @@
   height: 32px;
   padding: 0 12px;
   font-size: 0.8125rem;
+}
+
+.carousel-studio .studio-btn-continue {
+  min-width: 9.5rem;
+  box-shadow: 0 1px 0 color-mix(in oklch, var(--foreground) 6%, transparent);
+  animation: studio-continue-in 420ms var(--studio-ease) both;
+}
+
+.carousel-studio .studio-btn-continue:hover:not(:disabled) .studio-btn-continue-arrow {
+  transform: translateX(3px);
+}
+
+.carousel-studio .studio-btn-continue-arrow {
+  transition: transform 180ms var(--studio-ease);
+}
+
+@keyframes studio-continue-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 
 @keyframes studio-rise {
@@ -267,6 +302,40 @@
   .carousel-studio .studio-fade-in {
     animation: none;
   }
+}
+
+/* Hidden/transparent scrollbars (keep scroll) — phase 4 preview + studio lists */
+.carousel-studio .studio-scroll-fade,
+.carousel-studio .topics-hooks-tree,
+.carousel-studio .topics-hooks-history-panel,
+.carousel-studio .topics-hooks-frame-panel,
+.carousel-studio [role="tablist"][aria-label="Generated carousels"] {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+.carousel-studio .studio-scroll-fade::-webkit-scrollbar,
+.carousel-studio .topics-hooks-tree::-webkit-scrollbar,
+.carousel-studio .topics-hooks-history-panel::-webkit-scrollbar,
+.carousel-studio .topics-hooks-frame-panel::-webkit-scrollbar,
+.carousel-studio [role="tablist"][aria-label="Generated carousels"]::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  background: transparent;
+}
+.carousel-studio .studio-scroll-fade::-webkit-scrollbar-thumb,
+.carousel-studio .topics-hooks-tree::-webkit-scrollbar-thumb,
+.carousel-studio .topics-hooks-history-panel::-webkit-scrollbar-thumb,
+.carousel-studio .topics-hooks-frame-panel::-webkit-scrollbar-thumb,
+.carousel-studio [role="tablist"][aria-label="Generated carousels"]::-webkit-scrollbar-thumb {
+  background: transparent;
+  border: none;
+}
+.carousel-studio .studio-scroll-fade::-webkit-scrollbar-track,
+.carousel-studio .topics-hooks-tree::-webkit-scrollbar-track,
+.carousel-studio .topics-hooks-history-panel::-webkit-scrollbar-track,
+.carousel-studio .topics-hooks-frame-panel::-webkit-scrollbar-track,
+.carousel-studio [role="tablist"][aria-label="Generated carousels"]::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 /* —— Instagram-style carousel result (Phase 5) —— */
@@ -364,6 +433,68 @@
     linear-gradient(135deg, #1a1a1a 0%, #0d0d0d 50%, #1f1f1f 100%);
 }
 
+/* Dummy deferred background — looks like a slide without calling frame selection. */
+.carousel-studio .ig-slide-placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.55rem;
+  color: color-mix(in oklch, #fff 55%, transparent);
+  background:
+    radial-gradient(ellipse 80% 60% at 50% 35%, #2a3340 0%, transparent 55%),
+    linear-gradient(160deg, #1c2430 0%, #12161c 42%, #0b0e12 100%);
+  overflow: hidden;
+}
+
+.carousel-studio .ig-slide-placeholder::before {
+  content: "";
+  position: absolute;
+  inset: 12% 16%;
+  border: 1.5px dashed color-mix(in oklch, #fff 22%, transparent);
+  border-radius: 0.65rem;
+  background:
+    repeating-linear-gradient(
+      -18deg,
+      transparent,
+      transparent 10px,
+      color-mix(in oklch, #fff 4%, transparent) 10px,
+      color-mix(in oklch, #fff 4%, transparent) 11px
+    );
+  pointer-events: none;
+}
+
+.carousel-studio .ig-slide-placeholder-icon {
+  position: relative;
+  z-index: 1;
+  width: 3.25rem;
+  height: 3.25rem;
+  border-radius: 0.85rem;
+  border: 1px solid color-mix(in oklch, #fff 28%, transparent);
+  background: color-mix(in oklch, #fff 8%, transparent);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  display: grid;
+  place-items: center;
+}
+
+.carousel-studio .ig-slide-placeholder-icon svg {
+  width: 1.35rem;
+  height: 1.35rem;
+  opacity: 0.75;
+}
+
+.carousel-studio .ig-slide-placeholder-label {
+  position: relative;
+  z-index: 1;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: color-mix(in oklch, #fff 62%, transparent);
+}
+
 .carousel-studio .ig-slide-scrim {
   position: absolute;
   inset: 0;
@@ -390,12 +521,17 @@
 
 .carousel-studio .ig-slide-hook {
   margin: 0;
-  font-size: clamp(0.95rem, 2.6vw, 1.05rem);
+  font-size: clamp(0.95rem, 2.6vw, 1.1rem);
   font-weight: 600;
   letter-spacing: -0.02em;
-  line-height: 1.35;
-  text-wrap: pretty;
+  line-height: 1.3;
+  text-wrap: balance;
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
+  /* Instagram one-liner: keep overlay to ~1–2 short lines, never a paragraph. */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
 }
 
 .carousel-studio .ig-slide-meta {
@@ -545,5 +681,260 @@
 @media (prefers-reduced-motion: reduce) {
   .carousel-studio .ig-track {
     scroll-behavior: auto;
+  }
+}
+
+/* ── Topics → Subtopics → Hooks tree (phase 3 only) ── */
+.carousel-studio .topics-hooks-tree {
+  --th-sky: #39b6d8;
+  --th-yellow: #f7d344;
+  --th-ease: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.carousel-studio .topics-hooks-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+.carousel-studio .topics-hooks-history {
+  position: relative;
+}
+
+.carousel-studio .topics-hooks-history-panel {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 0.35rem);
+  left: 0;
+  min-width: 16rem;
+  max-width: 22rem;
+  max-height: 16rem;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) - 2px);
+  background: var(--card);
+  box-shadow: 0 8px 28px rgba(9, 9, 9, 0.08);
+  animation: topics-hooks-rise 280ms var(--th-ease) both;
+}
+
+.carousel-studio .topics-hooks-history-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  width: 100%;
+  padding: 0.55rem 0.75rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  transition: background 140ms ease;
+}
+.carousel-studio .topics-hooks-history-item:hover {
+  background: var(--muted);
+}
+.carousel-studio .topics-hooks-history-item:last-child {
+  border-bottom: 0;
+}
+
+.carousel-studio .topics-hooks-autosave {
+  margin-left: auto;
+  font-size: 0.625rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+
+.carousel-studio .topics-hooks-topic,
+.carousel-studio .topics-hooks-sub,
+.carousel-studio .topics-hooks-hook {
+  animation: topics-hooks-rise 360ms var(--th-ease) both;
+}
+
+.carousel-studio .topics-hooks-topic-row,
+.carousel-studio .topics-hooks-hook {
+  display: flex;
+  align-items: stretch;
+  gap: 0.25rem;
+}
+
+.carousel-studio .topics-hooks-chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  color: var(--muted-foreground);
+}
+
+.carousel-studio .topics-hooks-node {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) - 2px);
+  background: var(--background);
+  padding: 0.55rem 0.7rem;
+  text-align: left;
+  transition:
+    border-color 160ms ease,
+    background 160ms ease,
+    transform 200ms var(--th-ease);
+}
+.carousel-studio .topics-hooks-node:hover {
+  border-color: color-mix(in srgb, var(--th-sky) 55%, var(--border));
+}
+.carousel-studio .topics-hooks-node.is-selected {
+  border-color: var(--foreground);
+  background: color-mix(in srgb, var(--th-yellow) 22%, var(--background));
+}
+.carousel-studio .topics-hooks-node.is-sub {
+  background: var(--muted);
+}
+.carousel-studio .topics-hooks-node.is-hook {
+  border-style: dashed;
+}
+
+.carousel-studio .topics-hooks-kind {
+  display: block;
+  font-size: 0.5625rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+.carousel-studio .topics-hooks-title {
+  display: block;
+  margin-top: 0.15rem;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--foreground);
+  line-height: 1.35;
+}
+.carousel-studio .topics-hooks-meta {
+  display: block;
+  margin-top: 0.2rem;
+  font-size: 0.625rem;
+  color: var(--muted-foreground);
+}
+.carousel-studio .topics-hooks-explain {
+  display: block;
+  margin-top: 0.25rem;
+  font-size: 0.6875rem;
+  line-height: 1.35;
+  color: var(--muted-foreground);
+}
+
+.carousel-studio .topics-hooks-children {
+  margin: 0.4rem 0 0.2rem 1.1rem;
+  padding-left: 0.65rem;
+  border-left: 2px solid color-mix(in srgb, var(--th-sky) 35%, var(--border));
+}
+
+.carousel-studio .topics-hooks-hooks {
+  margin: 0.35rem 0 0.5rem 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.carousel-studio .topics-hooks-rail {
+  width: 0.55rem;
+  flex-shrink: 0;
+}
+
+.carousel-studio .topics-hooks-frame-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  background: rgba(9, 9, 9, 0.45);
+  animation: topics-hooks-fade 180ms ease both;
+}
+
+.carousel-studio .topics-hooks-frame-panel {
+  width: min(40rem, 100%);
+  max-height: min(80vh, 36rem);
+  overflow: auto;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--card);
+  padding: 1rem 1.1rem 1.25rem;
+  animation: topics-hooks-rise 320ms var(--th-ease) both;
+}
+
+.carousel-studio .topics-hooks-frame-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(8.5rem, 1fr));
+  gap: 0.55rem;
+}
+
+.carousel-studio .topics-hooks-frame-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  width: 100%;
+  text-align: left;
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) - 2px);
+  overflow: hidden;
+  background: var(--background);
+  transition: border-color 140ms ease, transform 180ms var(--th-ease);
+}
+.carousel-studio .topics-hooks-frame-card:hover {
+  border-color: var(--th-sky);
+  transform: translateY(-1px);
+}
+
+.carousel-studio .topics-hooks-frame-img {
+  aspect-ratio: 4 / 5;
+  width: 100%;
+  object-fit: cover;
+  background: var(--muted);
+}
+
+.carousel-studio .topics-hooks-frame-ts {
+  padding: 0 0.4rem;
+  font-size: 0.625rem;
+  font-weight: 700;
+  color: var(--muted-foreground);
+}
+
+.carousel-studio .topics-hooks-frame-cue {
+  padding: 0 0.4rem 0.45rem;
+  font-size: 0.625rem;
+  line-height: 1.3;
+  color: var(--foreground);
+}
+
+@keyframes topics-hooks-rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes topics-hooks-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .carousel-studio .topics-hooks-topic,
+  .carousel-studio .topics-hooks-sub,
+  .carousel-studio .topics-hooks-hook,
+  .carousel-studio .topics-hooks-history-panel,
+  .carousel-studio .topics-hooks-frame-overlay,
+  .carousel-studio .topics-hooks-frame-panel {
+    animation: none;
   }
 }
