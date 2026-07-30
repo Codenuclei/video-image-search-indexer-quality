@@ -8,6 +8,10 @@ from app.search.english_text import (
     prefer_english_cues,
 )
 from app.search.carousel_pipeline import extract_hooks_and_topics, _swap_hooks_with_english_cues
+from app.routers.carousel_script import (
+    _english_caption_track_usable,
+    _select_carousel_cue_corpus,
+)
 
 
 def test_devanagari_needs_english():
@@ -80,6 +84,27 @@ def test_extract_hooks_uses_english_cues_when_provided():
     for hook in result["hooks"]:
         assert is_english_text(hook["text"]), hook["text"]
         assert hook.get("english_source") == "caption_track"
+
+
+def test_sparse_english_track_rejected():
+    indexed = [(float(i), float(i) + 2, f"हिंदी लाइन नंबर {i} और बात") for i in range(40)]
+    sparse = [(126.0, 129.0, "bakbuke.com")]
+    assert not _english_caption_track_usable(sparse, indexed)
+    corpus, used_en = _select_carousel_cue_corpus(indexed, sparse)
+    assert used_en is False
+    assert len(corpus) == len(indexed)
+
+
+def test_usable_english_track_selected():
+    indexed = [(float(i), float(i) + 2, f"हिंदी लाइन नंबर {i} और बात") for i in range(40)]
+    english = [
+        (float(i), float(i) + 2, f"Here is a clear English caption line number {i}")
+        for i in range(20)
+    ]
+    assert _english_caption_track_usable(english, indexed)
+    corpus, used_en = _select_carousel_cue_corpus(indexed, english)
+    assert used_en is True
+    assert len(corpus) == 20
 
 
 def test_swap_hooks_with_english_cues():

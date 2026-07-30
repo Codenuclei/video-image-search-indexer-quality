@@ -8,10 +8,15 @@ __pycache__/
 # Env / secrets
 .env
 backend/.env
+# Backups/variants of the real env file also hold secrets.
+backend/.env.*
+!backend/.env.example
 .cohesivity
 
-# Data
+# Data (never push local volumes / imports / video clones)
 backend/data/
+data/
+*.sparsebundle/
 backend/tests/fixtures/faces/*.jpg
 !backend/tests/fixtures/faces/.gitkeep
 
@@ -19,6 +24,8 @@ backend/tests/fixtures/faces/*.jpg
 node_modules/
 .next/
 frontend/.env.local
+frontend/tsconfig.tsbuildinfo
+*.tsbuildinfo
 
 # OS
 .DS_Store

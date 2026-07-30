@@ -109,3 +109,54 @@ def test_pick_ready_fills_missing_indices_after_order():
     assert idx == 0
     assert source == "ai"
     assert ready is True
+
+
+def _jpeg_from_gray(gray, quality: int = 90) -> bytes:
+    import cv2
+
+    ok, buf = cv2.imencode(".jpg", gray, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
+    assert ok
+    return buf.tobytes()
+
+
+def test_filter_rejects_pixelated_keeps_clean():
+    """Integration: quality filter drops mosaics, keeps normal frames."""
+    import cv2
+    import numpy as np
+    from app.search.carousel_frame_select import (
+        filter_frame_candidates_by_quality,
+        score_frame_quality,
+    )
+
+    rng = np.random.default_rng(0)
+    # High-contrast sharp synthetic (passes Laplacian gate, fails only when mosaicked).
+    clean = np.zeros((240, 320), dtype=np.uint8)
+    clean[:] = 110
+    for y in range(0, 240, 20):
+        clean[y : y + 10, :] = 180
+    for x in range(0, 320, 24):
+        clean[:, x : x + 8] = np.clip(clean[:, x : x + 8].astype(np.int16) + 40, 0, 255).astype(
+            np.uint8
+        )
+    for _ in range(12):
+        cv2.circle(
+            clean,
+            (int(rng.integers(20, 300)), int(rng.integers(20, 220))),
+            int(rng.integers(8, 28)),
+            int(rng.integers(30, 230)),
+            thickness=2,
+        )
+    clean = cv2.GaussianBlur(clean, (3, 3), 0)
+    small = cv2.resize(clean, (40, 30), interpolation=cv2.INTER_AREA)
+    pix = cv2.resize(small, (320, 240), interpolation=cv2.INTER_NEAREST)
+
+    images = [_jpeg_from_gray(clean), _jpeg_from_gray(pix), _jpeg_from_gray(clean)]
+    q_clean = score_frame_quality(images[0])
+    q_pix = score_frame_quality(images[1])
+    assert q_clean.get("reject") is None, q_clean
+    assert q_pix.get("reject") == "pixelated", q_pix
+
+    kept, stats = filter_frame_candidates_by_quality(images, max_keep=3, min_keep=1)
+    assert 1 not in kept
+    assert stats.get("rejected", {}).get("pixelated", 0) >= 1
+    assert any(i in kept for i in (0, 2))

@@ -27,9 +27,8 @@ def _folder_point_id(folder_path: str) -> int:
 
 @lru_cache(maxsize=1)
 def _get_client():
-    from qdrant_client import QdrantClient
-    from app.config import get_settings
-    return QdrantClient(url=get_settings().qdrant_url)
+    from app.qdrant.client import make_qdrant_client
+    return make_qdrant_client()
 
 
 def _ensure_collection() -> None:

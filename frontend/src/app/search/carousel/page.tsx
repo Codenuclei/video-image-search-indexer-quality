@@ -10,7 +10,20 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Check, ChevronLeft, ChevronRight, Play, Search, X } from "lucide-react";
+import {
+  ArrowRight,
+  Check,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  History,
+  ImageIcon,
+  Play,
+  RefreshCw,
+  Search,
+  Sparkles,
+  X,
+} from "lucide-react";
 import {
   apiAssetUrl,
   apiClient,
@@ -18,11 +31,14 @@ import {
   driveVideoStreamUrl,
   formatApiError,
   type CarouselGeneratedItem,
+  type CarouselGenerationSaveListItem,
   type CarouselOutlineResponse,
   type CarouselOutlineSlide,
   type CarouselPipelineExtractResponse,
   type CarouselPipelineTheme,
   type CarouselRecentVideo,
+  type CarouselTimedPick,
+  type CarouselTopicTreeNode,
   type CarouselVerbatimItem,
   type Person,
 } from "@/lib/api";
@@ -30,6 +46,7 @@ import { DownloadButton, LoadingLabel, ServiceErrorCard } from "@/components/ui"
 import { ModalOverlay } from "@/components/modal";
 import { cn } from "@/lib/utils";
 import { formatTimestampRange } from "./utils";
+import { TopicsHooksTree, TranscriptFramePicker } from "./topics-hooks-tree";
 
 type Phase = 1 | 2 | 3 | 4 | 5;
 
@@ -87,10 +104,93 @@ function resolvePick(
 ): CarouselVerbatimItem | undefined {
   const exact = items.find((x) => x.text === text);
   if (exact) return exact;
-  const lower = text.toLowerCase();
-  return items.find(
-    (x) => x.text.toLowerCase() === lower || x.text.includes(text) || text.includes(x.text)
-  );
+  const lower = text.toLowerCase().trim();
+  return items.find((x) => x.text.toLowerCase().trim() === lower);
+}
+
+function flattenTopicTree(nodes: CarouselTopicTreeNode[] | undefined): CarouselTopicTreeNode[] {
+  if (!nodes?.length) return [];
+  const out: CarouselTopicTreeNode[] = [];
+  for (const n of nodes) {
+    out.push(n);
+    if (n.subtopics?.length) out.push(...flattenTopicTree(n.subtopics));
+  }
+  return out;
+}
+
+function resolveTopicNode(
+  text: string,
+  extract: CarouselPipelineExtractResponse
+): CarouselTopicTreeNode | CarouselVerbatimItem | undefined {
+  const treeNodes = flattenTopicTree(extract.topic_tree);
+  const exactTree = treeNodes.find((n) => n.text === text);
+  if (exactTree) return exactTree;
+  const lower = text.toLowerCase().trim();
+  const treeHit = treeNodes.find((n) => n.text.toLowerCase().trim() === lower);
+  if (treeHit) return treeHit;
+  return resolvePick(text, extract.topics ?? []);
+}
+
+function toTopicTimedPick(
+  text: string,
+  extract: CarouselPipelineExtractResponse
+): CarouselTimedPick {
+  const node = resolveTopicNode(text, extract);
+  const ranges =
+    node && "time_ranges" in node && Array.isArray(node.time_ranges)
+      ? node.time_ranges.map((r) => ({
+          start_sec: Number(r.start_sec) || 0,
+          end_sec: r.end_sec ?? null,
+        }))
+      : undefined;
+  return {
+    id: node?.id,
+    text,
+    start_sec: node?.start_sec ?? 0,
+    end_sec: node?.end_sec ?? null,
+    theme_id: node && "theme_id" in node ? node.theme_id ?? null : null,
+    time_ranges: ranges,
+  };
+}
+
+function toHookTimedPick(
+  text: string,
+  extract: CarouselPipelineExtractResponse
+): CarouselTimedPick {
+  const item = resolvePick(text, extract.hooks ?? []);
+  return {
+    id: item?.id,
+    text,
+    start_sec: item?.start_sec ?? 0,
+    end_sec: item?.end_sec ?? null,
+    theme_id: item?.theme_id ?? null,
+    topic_id: item?.topic_id ?? item?.parent_topic_id ?? null,
+    topic_text: item?.topic_text ?? null,
+  };
+}
+
+/** Ensure one seed topic per selected topic AND per parent of selected hooks. */
+function expandTopicSeeds(
+  selectedTopics: string[],
+  selectedHooks: string[],
+  extract: CarouselPipelineExtractResponse
+): CarouselTimedPick[] {
+  const seeds: CarouselTimedPick[] = [];
+  const seen = new Set<string>();
+  const add = (pick: CarouselTimedPick) => {
+    const key = pick.text.toLowerCase().trim();
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    seeds.push(pick);
+  };
+  for (const text of selectedTopics) add(toTopicTimedPick(text, extract));
+  for (const hookText of selectedHooks) {
+    const hook = resolvePick(hookText, extract.hooks ?? []);
+    const parent = (hook?.topic_text || "").trim();
+    if (!parent) continue;
+    add(toTopicTimedPick(parent, extract));
+  }
+  return seeds;
 }
 
 function toggleTheme(
@@ -126,11 +226,32 @@ export default function CarouselSearchPage() {
 
   const [themes, setThemes] = useState<CarouselPipelineTheme[]>([]);
   const [loadingThemes, setLoadingThemes] = useState(false);
-  /** True while waiting for selection to settle before calling themes API. */
-  const [themesWaiting, setThemesWaiting] = useState(false);
   const [selectedThemes, setSelectedThemes] = useState<CarouselPipelineTheme[]>([]);
+  const [themeSaves, setThemeSaves] = useState<CarouselGenerationSaveListItem[]>([]);
+  const [themeSaveId, setThemeSaveId] = useState<number | null>(null);
+  const [themesFromCache, setThemesFromCache] = useState(false);
+  const [themeHistoryOpen, setThemeHistoryOpen] = useState(false);
+  const [loadingThemeSaves, setLoadingThemeSaves] = useState(false);
+  /** Selection key that currently has loaded themes (null = need Continue). */
+  const [themesLoadedKey, setThemesLoadedKey] = useState<string | null>(null);
   const themesAbortRef = useRef<AbortController | null>(null);
   const themesRequestKeyRef = useRef<string>("");
+
+  const themesSelectionKey = useMemo(() => {
+    if (!selectedVideo) return "";
+    const personName = personPick.trim();
+    const fromObject = objectQuery.trim();
+    const entity =
+      personName && fromObject
+        ? `${personName} / ${fromObject}`
+        : personName || fromObject || "";
+    return `${selectedVideo.id}|${personName}|${entity}`;
+  }, [selectedVideo, personPick, objectQuery]);
+
+  /** True until themes are loaded for the current video/person selection. */
+  const themesNeedContinue =
+    Boolean(selectedVideo) &&
+    (themesLoadedKey !== themesSelectionKey || (themes.length === 0 && !loadingThemes));
 
   const [extract, setExtract] = useState<CarouselPipelineExtractResponse | null>(null);
   const [loadingExtract, setLoadingExtract] = useState(false);
@@ -146,6 +267,9 @@ export default function CarouselSearchPage() {
   const [generatedCarousels, setGeneratedCarousels] = useState<CarouselGeneratedItem[]>([]);
   const [activeCarouselId, setActiveCarouselId] = useState<string | null>(null);
   const [outlineError, setOutlineError] = useState<string | null>(null);
+  const [imagesReady, setImagesReady] = useState(false);
+  const [selectingImages, setSelectingImages] = useState(false);
+  const [imageQualityNote, setImageQualityNote] = useState<string | null>(null);
   const outlineRef = useRef<HTMLDivElement>(null);
 
   const entityLabel = useMemo(() => {
@@ -275,11 +399,91 @@ export default function CarouselSearchPage() {
     setPersonNotFound(null);
   }, []);
 
-  /** Debounced theme load: wait ~4s after video/person/object settle; cancel on change. */
+  const refreshThemeSaves = useCallback(async (driveFileId: string) => {
+    setLoadingThemeSaves(true);
+    try {
+      const res = await apiClient.carouselPipelineSaves(driveFileId, 12, "themes");
+      setThemeSaves(res.items ?? []);
+    } catch {
+      setThemeSaves([]);
+    } finally {
+      setLoadingThemeSaves(false);
+    }
+  }, []);
+
+  const loadThemesForVideo = useCallback(
+    async (opts: {
+      video: CarouselRecentVideo;
+      personName: string;
+      entity: string;
+      requestKey: string;
+      /** Stable selection key (without regen suffix) for Continue/cache state. */
+      selectionKey: string;
+      force?: boolean;
+      signal?: AbortSignal;
+    }) => {
+      const { video, personName, entity, requestKey, selectionKey, force, signal } = opts;
+      setLoadingThemes(true);
+      setPersonNotFound(null);
+      try {
+        const res = await apiClient.carouselPipelineThemes(video.id, {
+          personName: personName || undefined,
+          searchEntity: entity || undefined,
+          force: Boolean(force),
+          signal,
+        });
+        if (signal?.aborted || themesRequestKeyRef.current !== requestKey) return;
+
+        if (res.error === "person_not_found" || res.person_found === false) {
+          const msg =
+            res.message ||
+            res.warning ||
+            "Person not found in this video. Try without that person or change video.";
+          setPersonNotFound(msg);
+          setThemes([]);
+          setThemeSaveId(null);
+          setThemesFromCache(false);
+          setThemesLoadedKey(null);
+          setPhase(1);
+          return;
+        }
+        setThemes(res.themes ?? []);
+        setThemeSaveId(res.save_id ?? null);
+        setThemesFromCache(Boolean(res.cache_hit));
+        setThemesLoadedKey(selectionKey);
+        if (res.warning) setError(res.warning);
+        setPhase(2);
+        void refreshThemeSaves(video.id);
+      } catch (e) {
+        if (signal?.aborted || themesRequestKeyRef.current !== requestKey) return;
+        if (e instanceof Error && e.name === "AbortError") return;
+        setError(formatApiError(e, "Theme segmentation failed"));
+        setThemes([]);
+        setThemeSaveId(null);
+        setThemesFromCache(false);
+        setThemesLoadedKey(null);
+      } finally {
+        if (!signal?.aborted && themesRequestKeyRef.current === requestKey) {
+          setLoadingThemes(false);
+        }
+      }
+    },
+    [refreshThemeSaves]
+  );
+
+  /**
+   * Selection change: reset downstream. If saved/cached themes exist for this video,
+   * auto-load them (no Continue CTA). First-time videos still wait for Continue so we
+   * don't surprise-spend a Gemini call.
+   */
   useEffect(() => {
     if (!selectedVideo) {
-      setThemesWaiting(false);
       setLoadingThemes(false);
+      setThemeSaves([]);
+      setThemeSaveId(null);
+      setThemesFromCache(false);
+      setThemeHistoryOpen(false);
+      setThemesLoadedKey(null);
       themesAbortRef.current?.abort();
       themesAbortRef.current = null;
       return;
@@ -292,73 +496,154 @@ export default function CarouselSearchPage() {
       personName && fromObject
         ? `${personName} / ${fromObject}`
         : personName || fromObject || "";
-    const requestKey = `${video.id}|${personName}|${entity}`;
+    const selectionKey = `${video.id}|${personName}|${entity}`;
 
-    // Selection changed — drop stale themes immediately; keep Phase 1 usable.
     themesAbortRef.current?.abort();
-    themesAbortRef.current = null;
+    const ac = new AbortController();
+    themesAbortRef.current = ac;
     setThemes([]);
+    setThemeSaveId(null);
+    setThemesFromCache(false);
+    setThemesLoadedKey(null);
+    setThemeHistoryOpen(false);
     resetFromPhase2();
     setLoadingThemes(false);
-    setThemesWaiting(true);
     setError(null);
+    setPersonNotFound(null);
     setPhase(1);
     setSearchEntity(entity);
 
-    const timer = window.setTimeout(() => {
-      const ac = new AbortController();
-      themesAbortRef.current = ac;
+    let cancelled = false;
+    void (async () => {
+      setLoadingThemeSaves(true);
+      let saves: CarouselGenerationSaveListItem[] = [];
+      try {
+        const res = await apiClient.carouselPipelineSaves(video.id, 12, "themes");
+        if (cancelled || ac.signal.aborted) return;
+        saves = res.items ?? [];
+        setThemeSaves(saves);
+      } catch {
+        if (cancelled || ac.signal.aborted) return;
+        setThemeSaves([]);
+      } finally {
+        if (!cancelled && !ac.signal.aborted) setLoadingThemeSaves(false);
+      }
+
+      // Cached/saved themes → load immediately; primary CTA becomes select → Extract.
+      if (!saves.length || cancelled || ac.signal.aborted) return;
+      const requestKey = selectionKey;
       themesRequestKeyRef.current = requestKey;
-      setThemesWaiting(false);
-      setLoadingThemes(true);
-      setPersonNotFound(null);
-
-      void (async () => {
-        try {
-          const res = await apiClient.carouselPipelineThemes(video.id, {
-            personName: personName || undefined,
-            searchEntity: entity || undefined,
-            signal: ac.signal,
-          });
-          if (ac.signal.aborted || themesRequestKeyRef.current !== requestKey) return;
-
-          if (res.error === "person_not_found" || res.person_found === false) {
-            const msg =
-              res.message ||
-              res.warning ||
-              "Person not found in this video. Try without that person or change video.";
-            setPersonNotFound(msg);
-            setThemes([]);
-            setPhase(1);
-            return;
-          }
-          setThemes(res.themes ?? []);
-          if (res.warning) setError(res.warning);
-          setPhase(2);
-        } catch (e) {
-          if (ac.signal.aborted || themesRequestKeyRef.current !== requestKey) return;
-          if (e instanceof Error && e.name === "AbortError") return;
-          setError(formatApiError(e, "Theme segmentation failed"));
-          setThemes([]);
-        } finally {
-          if (!ac.signal.aborted && themesRequestKeyRef.current === requestKey) {
-            setLoadingThemes(false);
-          }
-        }
-      })();
-    }, 4000);
+      await loadThemesForVideo({
+        video,
+        personName,
+        entity,
+        requestKey,
+        selectionKey,
+        force: false,
+        signal: ac.signal,
+      });
+    })();
 
     return () => {
-      window.clearTimeout(timer);
+      cancelled = true;
       themesAbortRef.current?.abort();
       themesAbortRef.current = null;
     };
-  }, [selectedVideo, personPick, objectQuery, resetFromPhase2]);
+  }, [selectedVideo, personPick, objectQuery, resetFromPhase2, loadThemesForVideo]);
+
+  async function continueToThemes() {
+    if (!selectedVideo || loadingThemes) return;
+    const video = selectedVideo;
+    const personName = personPick.trim();
+    const fromObject = objectQuery.trim();
+    const entity =
+      personName && fromObject
+        ? `${personName} / ${fromObject}`
+        : personName || fromObject || "";
+    const requestKey = `${video.id}|${personName}|${entity}`;
+    themesAbortRef.current?.abort();
+    const ac = new AbortController();
+    themesAbortRef.current = ac;
+    themesRequestKeyRef.current = requestKey;
+    setThemeHistoryOpen(false);
+    setError(null);
+    await loadThemesForVideo({
+      video,
+      personName,
+      entity,
+      requestKey,
+      selectionKey: requestKey,
+      force: false,
+      signal: ac.signal,
+    });
+  }
+
+  async function regenerateThemes() {
+    if (!selectedVideo || loadingThemes) return;
+    const video = selectedVideo;
+    const personName = personPick.trim();
+    const fromObject = objectQuery.trim();
+    const entity =
+      personName && fromObject
+        ? `${personName} / ${fromObject}`
+        : personName || fromObject || "";
+    const selectionKey = `${video.id}|${personName}|${entity}`;
+    const requestKey = `${selectionKey}|regen|${Date.now()}`;
+    themesAbortRef.current?.abort();
+    const ac = new AbortController();
+    themesAbortRef.current = ac;
+    themesRequestKeyRef.current = requestKey;
+    setThemeHistoryOpen(false);
+    setSelectedThemes([]);
+    setExtract(null);
+    setSelectedHooks([]);
+    setSelectedTopics([]);
+    setError(null);
+    await loadThemesForVideo({
+      video,
+      personName,
+      entity,
+      requestKey,
+      selectionKey,
+      force: true,
+      signal: ac.signal,
+    });
+  }
+
+  async function restoreThemeSave(saveId: number) {
+    setError(null);
+    try {
+      const res = await apiClient.carouselPipelineSaveGet(saveId);
+      const themesPayload = (res.payload?.themes ?? []) as CarouselPipelineTheme[];
+      if (!themesPayload.length) {
+        setError("That save has no themes.");
+        return;
+      }
+      setThemes(themesPayload);
+      setThemeSaveId(res.id);
+      setThemesFromCache(true);
+      setThemesLoadedKey(themesSelectionKey || null);
+      setSelectedThemes([]);
+      setExtract(null);
+      setSelectedHooks([]);
+      setSelectedTopics([]);
+      setPhase(2);
+      setThemeHistoryOpen(false);
+    } catch (e) {
+      setError(formatApiError(e, "Could not restore saved themes"));
+    }
+  }
 
   function selectVideo(video: CarouselRecentVideo) {
-    // Always allow switching; debounce effect handles themes when selection settles.
+    // Switching video resets downstream; cached themes auto-load, else Continue in Themes.
     setSelectedVideo(video);
   }
+
+  const continueDisabledReason = !selectedVideo
+    ? "Select a captioned video first"
+    : loadingThemes
+      ? "Loading themes…"
+      : null;
 
   function onToggleTheme(theme: CarouselPipelineTheme) {
     setSelectedThemes((prev) => toggleTheme(prev, theme));
@@ -375,7 +660,7 @@ export default function CarouselSearchPage() {
   }
 
   async function extractFromSelectedThemes() {
-    if (!selectedVideo) return;
+    if (!selectedVideo || loadingExtract) return;
     if (!selectedThemes.length) {
       setError("Select at least one theme.");
       return;
@@ -440,32 +725,20 @@ export default function CarouselSearchPage() {
   }
 
   async function generateCarousel() {
-    if (!selectedVideo || !selectedThemes.length || !extract) return;
+    if (!selectedVideo || !selectedThemes.length || !extract || building) return;
     setBuilding(true);
     setOutlineError(null);
-    setGeneratedCarousels([]);
-    setActiveCarouselId(null);
+    setImageQualityNote(null);
     try {
-      const toTimed = (texts: string[], items: CarouselVerbatimItem[]) =>
-        texts.map((text) => {
-          const item = resolvePick(text, items);
-          return {
-            id: item?.id,
-            text,
-            start_sec: item?.start_sec ?? 0,
-            end_sec: item?.end_sec ?? null,
-            theme_id: item?.theme_id ?? null,
-          };
-        });
-
-      const topicPicks = toTimed(selectedTopics, extract.topics);
-      const hookPicks = toTimed(selectedHooks, extract.hooks);
-      // Prefer topics as carousel seeds; if only hooks selected, still generate.
+      const hookPicks = selectedHooks.map((text) => toHookTimedPick(text, extract));
+      // Explicit topics + parents implied by selected hooks → one carousel each.
+      const topicPicks = expandTopicSeeds(selectedTopics, selectedHooks, extract);
       if (!topicPicks.length && !hookPicks.length) {
         setOutlineError("Select at least one topic or hook.");
         return;
       }
 
+      // Transcript-first: never call Gemini frame selection here.
       const res = await apiClient.carouselPipelineGenerate({
         drive_file_id: selectedVideo.id,
         video_name: selectedVideo.name,
@@ -478,40 +751,101 @@ export default function CarouselSearchPage() {
           summary: t.summary,
         })),
         hooks: hookPicks,
-        topics: topicPicks.length ? topicPicks : hookPicks,
-        min_slides: 3,
-        max_slides: 6,
+        topics: topicPicks.length
+          ? topicPicks
+          : hookPicks.map((h) => ({
+              id: h.id,
+              text: h.text,
+              start_sec: h.start_sec,
+              end_sec: h.end_sec,
+              theme_id: h.theme_id,
+            })),
+        min_slides: 6,
+        max_slides: 10,
+        select_images: false,
       });
 
       const list =
         res.carousels && res.carousels.length
           ? res.carousels
-          : [
-              {
-                id: "carousel_1",
-                kind: "topic" as const,
-                title: res.title,
-                topic_labels: res.topics ?? selectedTopics,
-                slide_count: res.slide_count,
-                slides: res.slides,
-                hooks: res.hooks,
-                topics: res.topics,
-              },
-            ];
+          : res.slides?.length
+            ? [
+                {
+                  id: "carousel_1",
+                  kind: "hook" as const,
+                  title: res.title,
+                  topic_labels: res.topics ?? selectedTopics,
+                  slide_count: res.slide_count,
+                  slides: res.slides,
+                  hooks: res.hooks,
+                  topics: res.topics,
+                  images_ready: false,
+                },
+              ]
+            : [];
+      if (!list.length) {
+        setOutlineError("Generate returned no carousels. Try fewer hooks or another theme.");
+        return;
+      }
       setGeneratedCarousels(list);
       setActiveCarouselId(list[0]?.id ?? null);
+      setImagesReady(Boolean(res.images_ready));
       setOutline(res);
+      setOutlineError(null);
       setPhase(5);
       requestAnimationFrame(() => {
         outlineRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
       });
     } catch (e) {
+      // Stay on phase 4 with a visible error — never silently wipe success state
+      // without explaining why (error UI used to live only inside phase 5).
       setOutlineError(formatApiError(e, "Carousel generation failed"));
-      setOutline(null);
-      setGeneratedCarousels([]);
-      setActiveCarouselId(null);
     } finally {
       setBuilding(false);
+    }
+  }
+
+  async function selectCarouselImages() {
+    if (!selectedVideo || selectingImages || !generatedCarousels.length) return;
+    setSelectingImages(true);
+    setOutlineError(null);
+    setImageQualityNote(null);
+    try {
+      const res = await apiClient.carouselPipelineSelectImages({
+        drive_file_id: selectedVideo.id,
+        carousels: generatedCarousels,
+      });
+      const list = res.carousels ?? [];
+      setGeneratedCarousels(list);
+      if (list.length && !list.some((c) => c.id === activeCarouselId)) {
+        setActiveCarouselId(list[0]?.id ?? null);
+      }
+      setImagesReady(true);
+      setOutline((prev) =>
+        prev
+          ? {
+              ...prev,
+              carousels: list,
+              slides: res.slides ?? prev.slides,
+              images_ready: true,
+              quality: res.quality,
+            }
+          : prev
+      );
+      const q = res.quality;
+      if (q) {
+        const rej = Object.entries(q.rejected || {})
+          .map(([k, v]) => `${v} ${k}`)
+          .join(", ");
+        setImageQualityNote(
+          `Frames: ${q.candidates ?? 0} candidates → ${q.kept ?? 0} kept` +
+            (rej ? ` (filtered ${rej})` : "")
+        );
+      }
+    } catch (e) {
+      setOutlineError(formatApiError(e, "Image selection failed"));
+    } finally {
+      setSelectingImages(false);
     }
   }
 
@@ -659,38 +993,172 @@ export default function CarouselSearchPage() {
         </div>
 
         {selectedVideo && (
-          <p className="mt-2 truncate text-xs text-muted-foreground">
-            Selected:{" "}
-            <span className="font-medium text-foreground">{selectedVideo.name}</span>
-            {themesWaiting ? " · themes start in a few seconds…" : ""}
-          </p>
+          <div className="mt-3 flex flex-wrap items-center gap-3">
+            <p className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+              Selected:{" "}
+              <span className="font-medium text-foreground">{selectedVideo.name}</span>
+              {themesNeedContinue
+                ? themeSaves.length > 0 || loadingThemeSaves
+                  ? " · loading saved themes…"
+                  : " · continue in Themes below to generate (first time)"
+                : themes.length > 0
+                  ? ` · ${themes.length} themes loaded — select themes, then Extract`
+                  : ""}
+            </p>
+          </div>
         )}
       </section>
 
       {selectedVideo && !personNotFound && (
         <section className="studio-panel p-4 sm:p-6" data-testid="carousel-phase-2">
-          <div>
-            <p className="studio-section-label">2 · Themes</p>
-            <h2 className="mt-1 text-base font-semibold text-foreground">Narrative themes</h2>
-            <p className="mt-1 text-sm text-muted-foreground">
-              Non-overlapping segments from this video
-              {personPick.trim() ? ` · “${personPick.trim()}” appears here` : ""}. Select one or more
-              themes, then extract hooks & topics from the combined set.
-            </p>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0 flex-1">
+              <p className="studio-section-label">2 · Themes</p>
+              <h2 className="mt-1 text-base font-semibold text-foreground">Narrative themes</h2>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Non-overlapping segments from this video
+                {personPick.trim() ? ` · “${personPick.trim()}” appears here` : ""}. Select one or more
+                themes, then extract hooks & topics from the combined set.
+                {themesFromCache
+                  ? " Loaded from a saved set for this transcript."
+                  : themeSaveId
+                    ? " Saved for next time."
+                    : ""}
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="relative">
+                <button
+                  type="button"
+                  className="studio-btn studio-btn-ghost"
+                  onClick={() => setThemeHistoryOpen((v) => !v)}
+                  aria-expanded={themeHistoryOpen}
+                  disabled={loadingThemes}
+                >
+                  <History size={14} />
+                  Saved themes
+                  <ChevronDown size={14} className={cn(themeHistoryOpen && "rotate-180")} />
+                </button>
+                {themeHistoryOpen && (
+                  <div
+                    className="absolute right-0 z-20 mt-1 w-72 rounded-lg border border-border bg-card p-1 shadow-lg"
+                    role="listbox"
+                  >
+                    {loadingThemeSaves && (
+                      <p className="px-2 py-2 text-xs text-muted-foreground">Loading saves…</p>
+                    )}
+                    {!loadingThemeSaves && themeSaves.length === 0 && (
+                      <p className="px-2 py-2 text-xs text-muted-foreground">
+                        No saved themes yet — first generation is stored automatically.
+                      </p>
+                    )}
+                    {themeSaves.map((s) => (
+                      <button
+                        key={s.id}
+                        type="button"
+                        className={cn(
+                          "flex w-full flex-col gap-0.5 rounded-md px-2 py-2 text-left hover:bg-muted",
+                          themeSaveId === s.id && "bg-muted"
+                        )}
+                        onClick={() => void restoreThemeSave(s.id)}
+                      >
+                        <span className="line-clamp-1 text-sm font-medium text-foreground">
+                          {s.label || `Themes #${s.id}`}
+                        </span>
+                        <span className="text-[10px] text-muted-foreground">
+                          {s.created_at ? new Date(s.created_at).toLocaleString() : ""} ·{" "}
+                          {s.theme_count ?? 0} themes
+                          {themeSaveId === s.id ? " · current" : ""}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <button
+                type="button"
+                className="studio-btn studio-btn-ghost"
+                onClick={() => void regenerateThemes()}
+                disabled={
+                  loadingThemes ||
+                  !selectedVideo ||
+                  themesNeedContinue ||
+                  loadingExtract ||
+                  building ||
+                  phase >= 5
+                }
+                title={
+                  themesNeedContinue
+                    ? "Load themes first"
+                    : "Generate a fresh theme set and save it"
+                }
+              >
+                <RefreshCw size={14} className={cn(loadingThemes && "animate-spin")} />
+                Regenerate
+              </button>
+            </div>
           </div>
 
-          {themesWaiting ? (
-            <p className="mt-4 text-sm text-muted-foreground">
-              Waiting for your selection to settle — you can still change video or person.
-            </p>
-          ) : loadingThemes ? (
+          {loadingThemes ? (
             <p className="mt-4 text-sm text-muted-foreground">
               <LoadingLabel>
                 {personPick.trim()
-                  ? `Checking “${personPick.trim()}” in video, then segmenting themes…`
-                  : "Segmenting themes…"}
+                  ? `Checking “${personPick.trim()}” in video, then loading themes…`
+                  : themesFromCache || themeSaves.length > 0
+                    ? "Loading themes…"
+                    : "Generating themes…"}
               </LoadingLabel>
             </p>
+          ) : themesNeedContinue && phase < 3 ? (
+            <div className="mt-4 flex flex-wrap items-center gap-3">
+              <p className="text-sm text-muted-foreground">
+                {loadingThemes || loadingThemeSaves
+                  ? "Loading saved themes…"
+                  : themeSaves.length > 0
+                    ? "Saved themes are available — load them to select and Extract."
+                    : "Continue generates themes once for this video (then they’re cached)."}
+              </p>
+              {/* First-time: Continue. Cached: Load (never a second Continue after themes exist). */}
+              {!loadingThemeSaves && (
+                <button
+                  type="button"
+                  className={
+                    themeSaves.length > 0
+                      ? "studio-btn studio-btn-primary"
+                      : "studio-btn studio-btn-accent studio-btn-continue"
+                  }
+                  onClick={() => void continueToThemes()}
+                  disabled={
+                    Boolean(continueDisabledReason) ||
+                    phase >= 3 ||
+                    loadingExtract ||
+                    building ||
+                    loadingThemes
+                  }
+                  data-testid="carousel-continue-themes"
+                  title={
+                    continueDisabledReason ||
+                    (themeSaves.length > 0
+                      ? "Load saved themes"
+                      : "Generate themes for this video")
+                  }
+                >
+                  {loadingThemes ? (
+                    <LoadingLabel>Working…</LoadingLabel>
+                  ) : themeSaves.length > 0 ? (
+                    <>
+                      <Sparkles size={15} />
+                      Load saved themes
+                    </>
+                  ) : (
+                    <>
+                      Continue
+                      <ArrowRight size={14} className="studio-btn-continue-arrow" />
+                    </>
+                  )}
+                </button>
+              )}
+            </div>
           ) : themes.length === 0 ? (
             <p className="mt-4 text-sm text-muted-foreground">No themes for this video.</p>
           ) : (
@@ -710,7 +1178,7 @@ export default function CarouselSearchPage() {
                           : "border-border hover:border-muted-foreground/40"
                       )}
                       onClick={() => onToggleTheme(t)}
-                      disabled={loadingExtract}
+                      disabled={loadingExtract || building}
                     >
                       <span
                         className={cn(
@@ -741,32 +1209,54 @@ export default function CarouselSearchPage() {
             </ul>
           )}
 
-          <div className="mt-4 flex flex-wrap items-center gap-3">
-            <button
-              type="button"
-              className="studio-btn studio-btn-primary"
-              onClick={() => void extractFromSelectedThemes()}
-              disabled={
-                loadingExtract ||
-                loadingThemes ||
-                themesWaiting ||
-                selectedThemes.length === 0
-              }
-            >
-              {loadingExtract ? (
-                <LoadingLabel>Extracting hooks & generating topics…</LoadingLabel>
-              ) : selectedThemes.length > 1 ? (
-                `Extract from ${selectedThemes.length} themes`
+          {!themesNeedContinue && themes.length > 0 && (
+            <div className="mt-4 flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                className="studio-btn studio-btn-primary"
+                onClick={() => void extractFromSelectedThemes()}
+                disabled={
+                  loadingExtract ||
+                  loadingThemes ||
+                  building ||
+                  selectedThemes.length === 0 ||
+                  themesNeedContinue
+                }
+                title={
+                  selectedThemes.length === 0
+                    ? "Select at least one theme"
+                    : loadingExtract
+                      ? "Extracting…"
+                      : "Extract hooks & topics from selected themes"
+                }
+                data-testid="carousel-extract-themes"
+              >
+                {loadingExtract ? (
+                  <LoadingLabel>Extracting hooks & generating topics…</LoadingLabel>
+                ) : selectedThemes.length > 1 ? (
+                  `Extract from ${selectedThemes.length} themes`
+                ) : selectedThemes.length === 1 ? (
+                  "Extract hooks & topics"
+                ) : (
+                  "Select themes, then Extract"
+                )}
+              </button>
+              {selectedThemes.length > 0 ? (
+                <p className="text-xs text-muted-foreground">
+                  {selectedThemes.length} theme{selectedThemes.length === 1 ? "" : "s"} selected
+                </p>
               ) : (
-                "Extract hooks & topics"
+                <p className="text-xs text-muted-foreground">
+                  Select one or more themes above to enable Extract.
+                </p>
               )}
-            </button>
-            {selectedThemes.length > 0 && (
-              <p className="text-xs text-muted-foreground">
-                {selectedThemes.length} theme{selectedThemes.length === 1 ? "" : "s"} selected
-              </p>
-            )}
-          </div>
+              {themeSaveId ? (
+                <p className="text-xs text-muted-foreground">
+                  {themesFromCache ? "Restored" : "Autosaved"} themes #{themeSaveId}
+                </p>
+              ) : null}
+            </div>
+          )}
         </section>
       )}
 
@@ -774,49 +1264,62 @@ export default function CarouselSearchPage() {
         <section className="studio-panel p-4 sm:p-6" data-testid="carousel-phase-3">
           <p className="studio-section-label">3 · Hooks & topics</p>
           <h2 className="mt-1 text-base font-semibold text-foreground">
-            Analysed hooks · unique theme topics
+            Topics → subtopics → hooks
           </h2>
           <p className="mt-1 text-sm text-muted-foreground">
-            Merged from{" "}
-            {selectedThemes.length === 1
-              ? `“${selectedThemes[0].title}”`
-              : `${selectedThemes.length} selected themes`}{" "}
-            · each hook is a genuine Instagram-style rewrite from the spoken window (not a
-            transcript dump — expand a chip to see the source line) · topics are unique,
-            non-overlapping narrative angles. Toggle any combination to continue.
+            Cohesive topics from the transcript (where the speaker takes a direction), optional
+            subtopics, then hooks crafted one topic at a time. Autosaved for later · shuffle
+            reshuffles your picks. Carousel images stay deferred until after you generate slides
+            and press Select &amp; filter images.
             {extract.any_translated ? " Some lines were translated for display." : ""}
           </p>
-          <div className="mt-4 grid gap-6 sm:grid-cols-2">
-            <VerbatimList
-              label="Hooks (analysed from transcript)"
-              items={extract.hooks}
-              selected={selectedHooks}
-              onToggle={(text) => setSelectedHooks((prev) => toggleText(prev, text))}
-              onPreview={(item) => setPreviewCue({ start_sec: item.start_sec, text: item.text })}
+          {selectedVideo && (
+            <TopicsHooksTree
+              driveFileId={selectedVideo.id}
+              extract={extract}
+              selectedHooks={selectedHooks}
+              selectedTopics={selectedTopics}
+              onToggleHook={(text) => setSelectedHooks((prev) => toggleText(prev, text))}
+              onToggleTopic={(text) => setSelectedTopics((prev) => toggleText(prev, text))}
+              onPreview={(item) => setPreviewCue(item)}
+              onRestoreExtract={(next, hooks, topics) => {
+                setExtract(next);
+                setSelectedHooks(hooks);
+                setSelectedTopics(topics);
+                if (next.intent) setPhaseIntent(next.intent);
+                if (next.intent_score != null) setPhaseIntentScore(next.intent_score);
+              }}
             />
-            <VerbatimList
-              label="Topics (unique, cohesive)"
-              items={extract.topics}
-              selected={selectedTopics}
-              onToggle={(text) => setSelectedTopics((prev) => toggleText(prev, text))}
-              onPreview={(item) => setPreviewCue({ start_sec: item.start_sec, text: item.text })}
-              quote={false}
-            />
-          </div>
-          <div className="mt-4">
-            <button
-              type="button"
-              className="studio-btn studio-btn-primary"
-              onClick={() => void goToPreviewIntent()}
-              disabled={loadingIntent}
-            >
-              {loadingIntent ? (
-                <LoadingLabel>Updating intent…</LoadingLabel>
-              ) : (
-                "Continue to preview & intent"
-              )}
-            </button>
-          </div>
+          )}
+          {phase < 4 && (
+            <div className="mt-4">
+              <button
+                type="button"
+                className="studio-btn studio-btn-primary"
+                onClick={() => void goToPreviewIntent()}
+                disabled={
+                  loadingIntent ||
+                  loadingExtract ||
+                  building ||
+                  (!selectedHooks.length && !selectedTopics.length)
+                }
+                title={
+                  !selectedHooks.length && !selectedTopics.length
+                    ? "Select at least one hook or topic"
+                    : loadingIntent
+                      ? "Updating intent…"
+                      : undefined
+                }
+                data-testid="carousel-continue-preview"
+              >
+                {loadingIntent ? (
+                  <LoadingLabel>Updating intent…</LoadingLabel>
+                ) : (
+                  "Continue to preview & intent"
+                )}
+              </button>
+            </div>
+          )}
         </section>
       )}
 
@@ -847,7 +1350,10 @@ export default function CarouselSearchPage() {
             </div>
           )}
 
-          <ul className="mt-4 max-h-56 space-y-1 overflow-y-auto rounded-lg border border-border">
+          <ul
+            className="studio-scroll-fade mt-4 max-h-56 space-y-1 overflow-y-auto rounded-lg border border-border"
+            data-testid="carousel-preview-markers"
+          >
             {selectionPreviewMarkers.length === 0 ? (
               <li className="px-3 py-2 text-xs text-muted-foreground">
                 No selected hooks or topics yet.
@@ -878,19 +1384,37 @@ export default function CarouselSearchPage() {
             )}
           </ul>
 
-          <div className="mt-4 flex flex-wrap gap-2">
+          <div className="mt-4 flex flex-wrap items-center gap-3">
             <button
               type="button"
               className="studio-btn studio-btn-accent"
               onClick={() => void generateCarousel()}
-              disabled={building || (!selectedHooks.length && !selectedTopics.length)}
+              disabled={
+                building ||
+                selectingImages ||
+                loadingExtract ||
+                (!selectedHooks.length && !selectedTopics.length)
+              }
+              title={
+                building
+                  ? "Building carousels…"
+                  : !selectedHooks.length && !selectedTopics.length
+                    ? "Select at least one hook or topic"
+                    : undefined
+              }
+              data-testid="carousel-generate"
             >
               {building ? (
-                <LoadingLabel>Building carousels…</LoadingLabel>
+                <LoadingLabel>Building transcript carousels…</LoadingLabel>
               ) : (
                 "Generate carousels"
               )}
             </button>
+            {outlineError && phase < 5 && (
+              <p className="text-xs font-medium text-destructive" role="alert">
+                {outlineError}
+              </p>
+            )}
           </div>
         </section>
       )}
@@ -901,14 +1425,14 @@ export default function CarouselSearchPage() {
             <div>
               <p className="studio-section-label">5 · Carousels</p>
               <h2 className="mt-1 text-base font-semibold text-foreground">
-                {generatedCarousels.length > 1
-                  ? `${generatedCarousels.length} carousels`
+                {generatedCarousels.length > 0
+                  ? `${generatedCarousels.length} carousel${generatedCarousels.length === 1 ? "" : "s"}`
                   : activeGeneratedCarousel?.title || outline?.title || "Carousel cards"}
               </h2>
               <p className="mt-1 text-sm text-muted-foreground">
-                One multi-slide carousel per selected topic, plus mixed narratives that combine
-                topics. Browse below — each uses Instagram-style paging with analysed hook text and
-                span-aligned frames.
+                One carousel per selected hook — each with 6+ short exact-transcript lines (not
+                paragraphs). Edit lines if needed, then run{" "}
+                <strong>Select &amp; filter images</strong> for frames.
               </p>
             </div>
 
@@ -918,7 +1442,47 @@ export default function CarouselSearchPage() {
               </p>
             )}
 
-            {generatedCarousels.length > 1 && (
+            {generatedCarousels.length > 0 && (
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  className="studio-btn studio-btn-accent studio-btn-continue"
+                  onClick={() => void selectCarouselImages()}
+                  disabled={selectingImages || building || !generatedCarousels.length}
+                  title={
+                    selectingImages
+                      ? "Selecting images…"
+                      : "Rank and attach frames using your edited transcripts"
+                  }
+                  data-testid="carousel-select-images"
+                >
+                  {selectingImages ? (
+                    <LoadingLabel>Selecting & filtering images…</LoadingLabel>
+                  ) : imagesReady ? (
+                    <>
+                      <RefreshCw size={15} />
+                      Re-run image selection
+                    </>
+                  ) : (
+                    <>
+                      <ImageIcon size={15} />
+                      Select &amp; filter images
+                      <ArrowRight size={14} className="studio-btn-continue-arrow" />
+                    </>
+                  )}
+                </button>
+                {imageQualityNote && (
+                  <p className="text-xs text-muted-foreground">{imageQualityNote}</p>
+                )}
+                {!imagesReady && !selectingImages && (
+                  <p className="text-xs text-muted-foreground">
+                    Edit slide text below, then run image selection once.
+                  </p>
+                )}
+              </div>
+            )}
+
+            {generatedCarousels.length > 0 && (
               <div
                 className="flex flex-wrap gap-2"
                 role="tablist"
@@ -926,7 +1490,8 @@ export default function CarouselSearchPage() {
               >
                 {generatedCarousels.map((c) => {
                   const on = c.id === activeCarouselId;
-                  const kindLabel = c.kind === "mixed" ? "Mixed" : "Topic";
+                  const kindLabel =
+                    c.kind === "hook" ? "Hook" : c.kind === "mixed" ? "Mixed" : "Topic";
                   return (
                     <button
                       key={c.id}
@@ -945,7 +1510,7 @@ export default function CarouselSearchPage() {
                         {kindLabel} · {c.slide_count} slides
                       </span>
                       <span className="mt-0.5 line-clamp-2 max-w-[14rem]">
-                        {c.topic_labels?.join(" · ") || c.title}
+                        {c.hook_goal || c.topic_labels?.join(" · ") || c.title}
                       </span>
                     </button>
                   );
@@ -953,16 +1518,56 @@ export default function CarouselSearchPage() {
               </div>
             )}
 
-            {activeGeneratedCarousel && (
+            {generatedCarousels.length > 0 && (
+              <InlineTranscriptEditor
+                carousels={generatedCarousels}
+                activeCarouselId={activeCarouselId}
+                onActivateCarousel={setActiveCarouselId}
+                onChangeSlideText={(carouselId, slideIndex, text) => {
+                  setGeneratedCarousels((prev) =>
+                    prev.map((c) => {
+                      if (c.id !== carouselId) return c;
+                      const slides = c.slides.map((s, i) =>
+                        i === slideIndex
+                          ? {
+                              ...s,
+                              hook_line: text,
+                              transcript_text: text,
+                              snippet: text,
+                            }
+                          : s
+                      );
+                      return { ...c, slides, slide_count: slides.length };
+                    })
+                  );
+                }}
+              />
+            )}
+
+            {activeGeneratedCarousel && selectedVideo && (
               <InstagramCarouselPost
                 title={activeGeneratedCarousel.title}
                 slides={activeGeneratedCarousel.slides}
+                driveFileId={selectedVideo.id}
+                imagesReady={imagesReady}
                 onOpenSlide={(slide) =>
                   setPreviewCue({
                     start_sec: slide.timestamp_sec,
                     text: slide.hook_line,
                   })
                 }
+                onSlidesChange={(slides) => {
+                  setGeneratedCarousels((prev) =>
+                    prev.map((c) =>
+                      c.id === activeGeneratedCarousel.id ? { ...c, slides } : c
+                    )
+                  );
+                  setOutline((prev) =>
+                    prev && prev.title === activeGeneratedCarousel.title
+                      ? { ...prev, slides }
+                      : prev
+                  );
+                }}
               />
             )}
           </section>
@@ -984,17 +1589,119 @@ export default function CarouselSearchPage() {
   );
 }
 
+function InlineTranscriptEditor({
+  carousels,
+  activeCarouselId,
+  onActivateCarousel,
+  onChangeSlideText,
+}: {
+  carousels: CarouselGeneratedItem[];
+  activeCarouselId: string | null;
+  onActivateCarousel: (id: string) => void;
+  onChangeSlideText: (carouselId: string, slideIndex: number, text: string) => void;
+}) {
+  const anyTranslated = carousels.some((c) =>
+    c.slides.some((s) => Boolean(s.translated || s.original_text))
+  );
+  return (
+    <div
+      className="rounded-lg border border-border bg-muted/20 p-3 sm:p-4"
+      data-testid="carousel-inline-transcript-editor"
+    >
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+            Inline transcript editor
+          </p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Review and edit English one-liners per hook before selecting images.
+            {anyTranslated ? " Some lines were auto-translated from the source language." : ""}
+          </p>
+        </div>
+      </div>
+      <div className="mt-3 space-y-4">
+        {carousels.map((car) => {
+          const active = car.id === activeCarouselId;
+          return (
+            <div
+              key={car.id}
+              className={cn(
+                "rounded-lg border p-3 transition",
+                active ? "border-foreground/40 bg-background" : "border-border/70 bg-background/60"
+              )}
+            >
+              <button
+                type="button"
+                className="flex w-full items-center justify-between gap-2 text-left"
+                onClick={() => onActivateCarousel(car.id)}
+              >
+                <span>
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                    Hook group · {car.slide_count} lines
+                  </span>
+                  <span className="mt-0.5 block text-sm font-semibold text-foreground">
+                    {car.hook_goal || car.hooks?.[0] || car.title}
+                  </span>
+                </span>
+                <span className="text-[10px] text-muted-foreground">{active ? "Editing" : "Open"}</span>
+              </button>
+              <ul className="mt-3 space-y-2">
+                {car.slides.map((slide, i) => (
+                  <li key={`${car.id}-slide-${i}`}>
+                    <label className="block">
+                      <span className="mb-1 flex items-center justify-between text-[11px] text-muted-foreground">
+                        <span>
+                          Slide {i + 1} of {car.slides.length} · transcript
+                          {slide.translated ? " · EN" : ""}
+                        </span>
+                        <span className="tabular-nums">
+                          {formatTimestampRange(slide.timestamp_sec, slide.end_timestamp_sec)}
+                        </span>
+                      </span>
+                      <textarea
+                        className="studio-textarea studio-textarea-compact w-full text-sm leading-snug"
+                        rows={1}
+                        value={slide.transcript_text || slide.hook_line || ""}
+                        onFocus={() => onActivateCarousel(car.id)}
+                        onChange={(e) => onChangeSlideText(car.id, i, e.target.value)}
+                        spellCheck
+                        data-testid={`inline-transcript-${car.id}-${i}`}
+                      />
+                      {slide.original_text ? (
+                        <span className="mt-1 block text-[10px] text-muted-foreground">
+                          Source: {slide.original_text}
+                        </span>
+                      ) : null}
+                    </label>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function InstagramCarouselPost({
   title,
   slides,
+  driveFileId,
+  imagesReady,
   onOpenSlide,
+  onSlidesChange,
 }: {
   title: string;
   slides: CarouselOutlineSlide[];
+  driveFileId: string;
+  imagesReady: boolean;
   onOpenSlide: (slide: CarouselOutlineSlide) => void;
+  onSlidesChange?: (slides: CarouselOutlineSlide[]) => void;
 }) {
   const trackRef = useRef<HTMLDivElement>(null);
   const [active, setActive] = useState(0);
+  const [pickingFrame, setPickingFrame] = useState(false);
   const n = slides.length;
   const current = slides[Math.min(Math.max(active, 0), Math.max(n - 1, 0))];
 
@@ -1024,6 +1731,20 @@ function InstagramCarouselPost({
     setActive(clamped);
   }
 
+  function updateSlideText(index: number, text: string) {
+    const next = slides.map((s, i) =>
+      i === index
+        ? {
+            ...s,
+            hook_line: text,
+            transcript_text: text,
+            snippet: text,
+          }
+        : s
+    );
+    onSlidesChange?.(next);
+  }
+
   if (!n || !current) {
     return <p className="text-sm text-muted-foreground">No slides to show.</p>;
   }
@@ -1034,12 +1755,30 @@ function InstagramCarouselPost({
         <p className="ig-post-title" title={title}>
           {title}
         </p>
-        <span className="ig-post-count" aria-live="polite">
-          {active + 1}/{n}
-        </span>
+        <div className="flex items-center gap-2">
+          {imagesReady && (
+            <button
+              type="button"
+              className="studio-btn studio-btn-ghost px-2 py-1 text-[11px]"
+              title="Pick frame from transcript for this slide"
+              onClick={() => setPickingFrame(true)}
+            >
+              <ImageIcon size={14} />
+              Frame
+            </button>
+          )}
+          <span className="ig-post-count" aria-live="polite">
+            {active + 1}/{n}
+          </span>
+        </div>
       </div>
 
-      <div className="ig-stage">
+      <p className="mt-3 text-xs text-muted-foreground" data-testid="carousel-transcript-editor">
+        Slide lines are edited in the <span className="font-medium text-foreground">Inline transcript editor</span>{" "}
+        above. Overlay below mirrors the active carousel.
+      </p>
+
+      <div className="ig-stage mt-4">
         <div
           ref={trackRef}
           className="ig-track"
@@ -1047,31 +1786,44 @@ function InstagramCarouselPost({
           aria-roledescription="carousel"
           aria-label="Carousel slides"
         >
-          {slides.map((slide, i) => (
-            <article
-              key={`${slide.index}-${slide.drive_file_id}-${slide.timestamp_sec}`}
-              className="ig-slide"
-              aria-label={`Slide ${i + 1} of ${n}`}
-              aria-hidden={i !== active}
-            >
-              {slide.preview_url ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img src={apiAssetUrl(slide.preview_url)} alt="" draggable={false} />
-              ) : (
-                <div className="ig-slide-empty">No frame</div>
-              )}
-              <div className="ig-slide-scrim" aria-hidden />
-              <div className="ig-slide-body">
-                <p className="ig-slide-hook">{slide.hook_line}</p>
-                <p className="ig-slide-meta">
-                  {formatTimestampRange(slide.timestamp_sec, slide.end_timestamp_sec)}
-                  {slide.match_type ? ` · ${slide.match_type}` : ""}
-                  {slide.frame_source === "ai" ? " · AI frame" : ""}
-                  {slide.frame_source === "fallback" ? " · fallback" : ""}
-                </p>
-              </div>
-            </article>
-          ))}
+          {slides.map((slide, i) => {
+            const showReal = imagesReady && Boolean(slide.preview_url);
+            return (
+              <article
+                key={`${slide.index}-${slide.drive_file_id}-${slide.timestamp_sec}`}
+                className="ig-slide"
+                aria-label={`Slide ${i + 1} of ${n}`}
+                aria-hidden={i !== active}
+              >
+                {showReal ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={apiAssetUrl(slide.preview_url!)} alt="" draggable={false} />
+                ) : (
+                  <div className="ig-slide-placeholder" aria-hidden data-testid="carousel-dummy-bg">
+                    <span className="ig-slide-placeholder-icon">
+                      <ImageIcon aria-hidden />
+                    </span>
+                    <span className="ig-slide-placeholder-label">
+                      {imagesReady ? "No frame" : "Background pending"}
+                    </span>
+                  </div>
+                )}
+                <div className="ig-slide-scrim" aria-hidden />
+                <div className="ig-slide-body">
+                  <p className="ig-slide-hook">
+                    {slide.transcript_text || slide.hook_line || ""}
+                  </p>
+                  <p className="ig-slide-meta">
+                    {formatTimestampRange(slide.timestamp_sec, slide.end_timestamp_sec)}
+                    {" · transcript"}
+                    {slide.frame_source === "ai" ? " · AI frame" : ""}
+                    {slide.frame_source === "fallback" ? " · fallback" : ""}
+                    {!imagesReady ? " · placeholder" : ""}
+                  </p>
+                </div>
+              </article>
+            );
+          })}
         </div>
 
         {n > 1 && (
@@ -1119,11 +1871,18 @@ function InstagramCarouselPost({
         <p>
           <strong>{title.split("—")[0]?.trim() || "Carousel"}</strong>
           {" · "}
-          {current.hook_line}
+          {current.hook_line || current.transcript_text || ""}
         </p>
       </div>
 
-      {n > 1 && (
+      {!imagesReady && (
+        <p className="mt-3 text-center text-xs text-muted-foreground">
+          Dummy backgrounds shown — edit transcripts above, then{" "}
+          <span className="font-medium text-foreground">Select &amp; filter images</span>.
+        </p>
+      )}
+
+      {imagesReady && n > 1 && (
         <div className="ig-filmstrip" aria-label="Slide filmstrip">
           {slides.map((slide, i) => (
             <button
@@ -1138,7 +1897,9 @@ function InstagramCarouselPost({
               {slide.preview_url ? (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img src={apiAssetUrl(slide.preview_url)} alt="" draggable={false} />
-              ) : null}
+              ) : (
+                <span className="ig-slide-placeholder" style={{ position: "absolute", inset: 0 }} />
+              )}
               <span className="ig-thumb-num">{i + 1}</span>
             </button>
           ))}
@@ -1155,6 +1916,31 @@ function InstagramCarouselPost({
           Open clip at this moment
         </button>
       </div>
+
+      {pickingFrame && imagesReady && (
+        <TranscriptFramePicker
+          driveFileId={driveFileId}
+          startSec={current.timestamp_sec}
+          endSec={current.end_timestamp_sec}
+          hookText={current.hook_line}
+          onClose={() => setPickingFrame(false)}
+          onPick={(item) => {
+            const next = slides.map((s, i) =>
+              i === active
+                ? {
+                    ...s,
+                    timestamp_sec: item.frame_ts,
+                    preview_url: item.preview_url,
+                    frame_ts: item.frame_ts,
+                    frame_source: "manual" as const,
+                  }
+                : s
+            );
+            onSlidesChange?.(next);
+            setPickingFrame(false);
+          }}
+        />
+      )}
     </div>
   );
 }

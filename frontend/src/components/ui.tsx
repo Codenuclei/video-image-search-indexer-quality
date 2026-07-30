@@ -4,7 +4,7 @@ import { useState } from "react";
 import type { LucideIcon } from "lucide-react";
 import { Download, ExternalLink } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { driveFileDownloadUrl, driveFilePreviewUrl, driveGoogleViewUrl, isServiceUnavailableMessage } from "@/lib/api";
+import { API_BASE, driveFileDownloadUrl, driveFilePreviewUrl, driveGoogleViewUrl, isServiceUnavailableMessage } from "@/lib/api";
 import { downloadFromUrl } from "@/lib/download";
 import { BackendDisconnectedOverlay } from "@/components/backend-disconnected-overlay";
 import { LoadingLabel, Spinner } from "@/components/spinner";
@@ -363,7 +363,7 @@ export function FaceThumb({ faceId, className }: { faceId: number | null; classN
   return (
     // eslint-disable-next-line @next/next/no-img-element
     <img
-      src={`${process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000"}/faces/${faceId}/thumbnail`}
+      src={`${API_BASE}/faces/${faceId}/thumbnail`}
       alt="face"
       className={cn("rounded-md object-cover", className)}
     />

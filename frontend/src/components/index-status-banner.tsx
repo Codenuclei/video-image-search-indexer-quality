@@ -1,10 +1,20 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import { apiClient, type IndexStatus } from "@/lib/api";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { API_BASE, apiClient, type IndexStatus } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { BackendDisconnectedOverlay } from "@/components/backend-disconnected-overlay";
 import { LoadingLabel } from "@/components/spinner";
+
+function apiReachabilityHint(): string {
+  try {
+    const u = new URL(API_BASE);
+    const port = u.port || (u.protocol === "https:" ? "443" : "80");
+    return `Backend unreachable — is ${u.hostname}:${port} running?`;
+  } catch {
+    return `Backend unreachable — is ${API_BASE} running?`;
+  }
+}
 
 function formatLaneFiles(files: string[], limit = 2): string {
   if (!files.length) return "idle";
@@ -41,31 +51,40 @@ export function IndexStatusBanner() {
   const [error, setError] = useState(false);
   const [retrying, setRetrying] = useState(false);
   const [dismissed, setDismissed] = useState(false);
+  const failStreakRef = useRef(0);
 
   const poll = useCallback(async () => {
     try {
       setStatus(await apiClient.indexStatus());
+      failStreakRef.current = 0;
       setError(false);
       setDismissed(false);
       return true;
     } catch {
-      setError(true);
+      // Require consecutive failures so long carousel AI calls don't flash
+      // "Backend unreachable" on a single blip / contention.
+      failStreakRef.current += 1;
+      if (failStreakRef.current >= 3) {
+        setError(true);
+      }
       return false;
     }
   }, []);
 
   useEffect(() => {
     poll();
-    const t = setInterval(poll, 3000);
+    const t = setInterval(poll, 5000);
     return () => clearInterval(t);
   }, [poll]);
 
   // Browser offline also surfaces the same retry banner.
   useEffect(() => {
     function onOffline() {
+      failStreakRef.current = 3;
       setError(true);
     }
     function onOnline() {
+      failStreakRef.current = 0;
       void poll();
     }
     window.addEventListener("offline", onOffline);
@@ -89,7 +108,7 @@ export function IndexStatusBanner() {
     return (
       <>
         <div className="mb-4 rounded-md border border-destructive bg-destructive/10 px-3 py-2 text-xs text-destructive">
-          <LoadingLabel size={12}>Backend unreachable — is port 8002 running?</LoadingLabel>
+          <LoadingLabel size={12}>{apiReachabilityHint()}</LoadingLabel>
         </div>
         {!dismissed && (
           <BackendDisconnectedOverlay
