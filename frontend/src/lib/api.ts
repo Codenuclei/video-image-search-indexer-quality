@@ -800,6 +800,8 @@ export type CarouselTranscriptFrameItem = {
   text: string;
   frame_ts: number;
   preview_url: string;
+  /** False when the frame still has to be extracted from the video on first view. */
+  cached?: boolean;
 };
 
 export type FolderContext = {

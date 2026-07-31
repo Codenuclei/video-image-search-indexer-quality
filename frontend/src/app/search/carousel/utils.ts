@@ -1,4 +1,10 @@
-import type { CarouselSnapshotContext, SearchMoment } from "@/lib/api";
+import {
+  apiAssetUrl,
+  cacheOnlyAssetUrl,
+  type CarouselOutlineSlide,
+  type CarouselSnapshotContext,
+  type SearchMoment,
+} from "@/lib/api";
 
 export function formatTimestamp(sec: number): string {
   const m = Math.floor(sec / 60);
@@ -29,6 +35,79 @@ export function focalPointStyle(source: {
   const x = clamp(source.focal_x, 0.5);
   const y = clamp(source.focal_y, 0.4);
   return { objectPosition: `${(x * 100).toFixed(2)}% ${(y * 100).toFixed(2)}%` };
+}
+
+/**
+ * Pipeline frames must never trigger on-demand extraction, but a frame the user
+ * just picked from the transcript may not be on disk yet, so it is allowed to.
+ */
+export function slideFrameUrl(
+  url: string,
+  frameSource?: string | null
+): string {
+  return frameSource === "manual" ? apiAssetUrl(url) : cacheOnlyAssetUrl(url);
+}
+
+export type PickedFrame = { frame_ts: number; preview_url: string };
+
+/**
+ * Swap only the image shown on a slide. The spoken span is left alone so slide
+ * copy, clip playback and split panel timings survive the replacement, and the
+ * old focal point is dropped because it was measured on the previous frame.
+ */
+export function withReplacedFrame(
+  slide: CarouselOutlineSlide,
+  frame: PickedFrame
+): CarouselOutlineSlide {
+  const replaced: CarouselOutlineSlide = {
+    ...slide,
+    preview_url: frame.preview_url,
+    frame_ts: frame.frame_ts,
+    frame_source: "manual",
+    focal_x: null,
+    focal_y: null,
+    front_face_score: null,
+  };
+  if (slide.panels?.length) {
+    replaced.panels = slide.panels.map((panel, index) =>
+      index === 0
+        ? {
+            ...panel,
+            preview_url: frame.preview_url,
+            frame_ts: frame.frame_ts,
+            focal_x: null,
+            focal_y: null,
+            front_face_score: null,
+          }
+        : panel
+    );
+  }
+  return replaced;
+}
+
+/**
+ * Frames chosen against a hook (before slides existed) land on the opening
+ * slide of that hook's carousel once generation produces one.
+ */
+export function applyHookFrameOverrides<
+  T extends {
+    hooks?: string[] | null;
+    hook_goal?: string | null;
+    slides: CarouselOutlineSlide[];
+  },
+>(carousels: T[], overrides: Record<string, PickedFrame>): T[] {
+  if (!Object.keys(overrides).length) return carousels;
+  return carousels.map((carousel) => {
+    const hookText = carousel.hook_goal || carousel.hooks?.[0] || "";
+    const frame = overrides[hookText];
+    if (!frame || !carousel.slides?.length) return carousel;
+    return {
+      ...carousel,
+      slides: carousel.slides.map((slide, index) =>
+        index === 0 ? withReplacedFrame(slide, frame) : slide
+      ),
+    };
+  });
 }
 
 export function momentToSnapshot(moment: SearchMoment): CarouselSnapshotContext {

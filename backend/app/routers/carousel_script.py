@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import hashlib
 import logging
 import re
@@ -1616,6 +1617,7 @@ async def transcript_frame_candidates(
             "end_sec": float(e) if e is not None else None,
             "text": text[:400],
             "frame_ts": round(s, 2),
+            "cue": True,
         }
     for ts in dense_ts:
         key = round(ts, 2)
@@ -1628,6 +1630,7 @@ async def transcript_frame_candidates(
             "end_sec": nearest_cue[1] if nearest_cue else None,
             "text": (nearest_cue[2][:400] if nearest_cue else ""),
             "frame_ts": key,
+            "cue": False,
         }
 
     raw_items = sorted(by_ts.values(), key=lambda x: float(x["frame_ts"]))
@@ -1646,17 +1649,47 @@ async def transcript_frame_candidates(
         timestamps=[float(x["frame_ts"]) for x in raw_items],
         max_keep=max(1, min(limit, 64)),
     )
-    items = []
-    for i in kept_idx:
-        row = dict(raw_items[i])
-        row["preview_url"] = f"/media/video/{drive_file.id}/frame?ts={float(row['frame_ts']):.3f}"
-        items.append(row)
+
+    def _row(index: int, *, cached: bool) -> dict[str, Any]:
+        row = dict(raw_items[index])
+        row.pop("cue", None)
+        ts = float(row["frame_ts"])
+        # Cached frames render instantly; an uncached pick must be allowed to
+        # extract, otherwise the picker shows an empty grid on fresh videos.
+        suffix = "&cache_only=1" if cached else ""
+        row["preview_url"] = f"/media/video/{drive_file.id}/frame?ts={ts:.3f}{suffix}"
+        row["cached"] = cached
+        return row
+
+    target = max(1, min(limit, 24))
+    items = [_row(i, cached=True) for i in kept_idx]
+    # Frames are extracted lazily, so a video nobody has previewed yet has
+    # nothing on disk. Offer cue-aligned timestamps the browser can pull.
+    if len(items) < target:
+        claimed = {round(float(x["frame_ts"]), 2) for x in items}
+        fallback_order = sorted(
+            range(len(raw_items)),
+            key=lambda i: (0 if raw_items[i].get("cue") else 1, float(raw_items[i]["frame_ts"])),
+        )
+        for i in fallback_order:
+            if len(items) >= target:
+                break
+            if images[i] is not None:
+                continue
+            ts = round(float(raw_items[i]["frame_ts"]), 2)
+            if ts in claimed:
+                continue
+            claimed.add(ts)
+            items.append(_row(i, cached=False))
+    # Transcript order beats quality order in a picker tied to spoken cues.
+    items.sort(key=lambda x: float(x["frame_ts"]))
     return {
         "drive_file_id": drive_file.id,
         "items": items,
         "quality": {
             "candidates": len(raw_items),
             "kept": len(items),
+            "cached": sum(1 for x in items if x.get("cached")),
             **reject_stats,
         },
     }
@@ -1928,72 +1961,24 @@ async def carousel_pipeline_generate(
         await _release_carousel(session, drive_file_id, token)
 
 
-async def _carousel_pipeline_generate_impl(
-    body: CarouselGenerateRequest,
-    session: AsyncSession = Depends(get_db),
-) -> dict[str, Any]:
-    """Generate Instagram-style carousels: one group per selected hook.
+async def _build_hook_carousels(
+    *,
+    unique_hooks: list["TimedPick"],
+    cue_corpus: list[tuple[float, float | None, str]],
+    drive_file_id: str,
+    video_name: str,
+    min_slides: int,
+    max_slides: int,
+    select_images: bool,
+    api_key: str | None,
+    model: str | None,
+) -> list[dict[str, Any]]:
+    """One carousel per hook, built sequentially against a shared reserved pool.
 
-    Each hook gets ≥6 one-line slides of *exact* VTT text. Gemini (when available)
-    only proposes cut timestamps; the server never displays rewritten copy.
+    Hooks are built in order with a shared pool of claimed lines/timestamps so
+    two hooks never steal the same transcript line (root cause of cross-hook
+    duplicate slides in the UI).
     """
-    settings = get_settings()
-    drive_file_id = body.drive_file_id.strip()
-    if not drive_file_id:
-        raise HTTPException(status_code=400, detail="drive_file_id is required")
-
-    video_name = (body.video_name or "").strip()
-    if not video_name:
-        drive_file = await session.get(DriveFile, drive_file_id)
-        video_name = (drive_file.name if drive_file else "") or drive_file_id
-
-    topics = [t for t in (body.topics or []) if (t.text or "").strip()]
-    hooks = [h for h in (body.hooks or []) if (h.text or "").strip()]
-    if not topics and not hooks:
-        raise HTTPException(status_code=400, detail="Select at least one topic or hook")
-
-    # Product rule: ≥6 one-liners per hook group when cues allow.
-    min_slides = min(max(int(body.min_slides), 6), 12)
-    max_slides = min(max(int(body.max_slides), min_slides), 12)
-    select_images = bool(body.select_images)
-
-    drive_file, indexed_cues = await _load_video_cues(session, drive_file_id)
-    if not video_name or video_name == drive_file_id:
-        video_name = (drive_file.name if drive_file else "") or drive_file_id
-    english_cues = await _maybe_load_english_cues(drive_file, indexed_cues)
-    cue_corpus, used_english_track = _select_carousel_cue_corpus(indexed_cues, english_cues)
-    if len(cue_corpus) < 2:
-        raise HTTPException(
-            status_code=400,
-            detail="Not enough transcript cues to build carousels for this video",
-        )
-
-    # One carousel per selected hook. If only topics were picked, treat each as a goal.
-    hook_goals: list[TimedPick] = list(hooks) if hooks else list(topics)
-    # De-dupe by normalized text while preserving order.
-    seen_goals: set[str] = set()
-    unique_hooks: list[TimedPick] = []
-    for h in hook_goals:
-        key = " ".join((h.text or "").lower().split())
-        if not key or key in seen_goals:
-            continue
-        seen_goals.add(key)
-        unique_hooks.append(h)
-
-    logger.info(
-        "carousel generate drive=%s hooks=%d topics=%d min_slides=%d max_slides=%d select_images=%s cues=%d",
-        drive_file_id,
-        len(unique_hooks),
-        len(topics),
-        min_slides,
-        max_slides,
-        select_images,
-        len(cue_corpus),
-    )
-
-    # Build hooks SEQUENTIALLY with a shared reserved cue pool so two hooks
-    # never steal the same transcript line / timestamp (root cause of
-    # cross-hook duplicate slides in the UI).
     reserved_texts: set[str] = set()
     reserved_starts: set[float] = set()
     carousels: list[dict[str, Any]] = []
@@ -2006,8 +1991,8 @@ async def _carousel_pipeline_generate_impl(
             hook=anchored,
             min_slides=min_slides,
             max_slides=max_slides,
-            api_key=settings.gemini_api_key,
-            model=settings.gemini_model,
+            api_key=api_key,
+            model=model,
             reserved_texts=reserved_texts,
             reserved_starts=reserved_starts,
         )
@@ -2075,9 +2060,111 @@ async def _carousel_pipeline_generate_impl(
                 "hook_end_sec": he,
             }
         )
+    return carousels
+
+
+async def _carousel_pipeline_generate_impl(
+    body: CarouselGenerateRequest,
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Generate Instagram-style carousels: one group per selected hook.
+
+    Each hook gets ≥6 one-line slides of *exact* VTT text. Gemini (when available)
+    only proposes cut timestamps; the server never displays rewritten copy.
+    """
+    settings = get_settings()
+    drive_file_id = body.drive_file_id.strip()
+    if not drive_file_id:
+        raise HTTPException(status_code=400, detail="drive_file_id is required")
+
+    video_name = (body.video_name or "").strip()
+    if not video_name:
+        drive_file = await session.get(DriveFile, drive_file_id)
+        video_name = (drive_file.name if drive_file else "") or drive_file_id
+
+    topics = [t for t in (body.topics or []) if (t.text or "").strip()]
+    hooks = [h for h in (body.hooks or []) if (h.text or "").strip()]
+    if not topics and not hooks:
+        raise HTTPException(status_code=400, detail="Select at least one topic or hook")
+
+    # Product rule: ≥6 one-liners per hook group when cues allow.
+    min_slides = min(max(int(body.min_slides), 6), 12)
+    max_slides = min(max(int(body.max_slides), min_slides), 12)
+    select_images = bool(body.select_images)
+
+    drive_file, indexed_cues = await _load_video_cues(session, drive_file_id)
+    if not video_name or video_name == drive_file_id:
+        video_name = (drive_file.name if drive_file else "") or drive_file_id
+    english_cues = await _maybe_load_english_cues(drive_file, indexed_cues)
+    cue_corpus, used_english_track = _select_carousel_cue_corpus(indexed_cues, english_cues)
+    if len(cue_corpus) < 2:
+        raise HTTPException(
+            status_code=400,
+            detail="Not enough transcript cues to build carousels for this video",
+        )
+
+    # One carousel per selected hook. If only topics were picked, treat each as a goal.
+    hook_goals: list[TimedPick] = list(hooks) if hooks else list(topics)
+    # De-dupe by normalized text while preserving order.
+    seen_goals: set[str] = set()
+    unique_hooks: list[TimedPick] = []
+    for h in hook_goals:
+        key = " ".join((h.text or "").lower().split())
+        if not key or key in seen_goals:
+            continue
+        seen_goals.add(key)
+        unique_hooks.append(h)
+
+    logger.info(
+        "carousel generate drive=%s hooks=%d topics=%d min_slides=%d max_slides=%d select_images=%s cues=%d",
+        drive_file_id,
+        len(unique_hooks),
+        len(topics),
+        min_slides,
+        max_slides,
+        select_images,
+        len(cue_corpus),
+    )
+
+    _RELAXED_CUE_LINES.set(_cue_corpus_needs_relaxed_lines(cue_corpus))
+    carousels = await _build_hook_carousels(
+        unique_hooks=unique_hooks,
+        cue_corpus=cue_corpus,
+        drive_file_id=drive_file_id,
+        video_name=video_name,
+        min_slides=min_slides,
+        max_slides=max_slides,
+        select_images=select_images,
+        api_key=settings.gemini_api_key,
+        model=settings.gemini_model,
+    )
+    if not carousels and not _RELAXED_CUE_LINES.get():
+        # Punctuation/casing gates can starve every hook on transcripts that
+        # only look punctuated; retry once relaxed before failing the request.
+        logger.warning(
+            "carousel generate produced nothing; retrying relaxed drive=%s", drive_file_id
+        )
+        _RELAXED_CUE_LINES.set(True)
+        carousels = await _build_hook_carousels(
+            unique_hooks=unique_hooks,
+            cue_corpus=cue_corpus,
+            drive_file_id=drive_file_id,
+            video_name=video_name,
+            min_slides=min_slides,
+            max_slides=max_slides,
+            select_images=select_images,
+            api_key=settings.gemini_api_key,
+            model=settings.gemini_model,
+        )
 
     if not carousels:
-        raise HTTPException(status_code=400, detail="Could not build any carousels from selection")
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Could not build any carousels from selection — transcript lines around "
+                "these hooks were too short or fragmented. Try other hooks or topics."
+            ),
+        )
 
     # Hindi/non-English one-liners → faithful English for display/edit (cuts stay timed).
     carousels, translate_meta = await _ensure_english_carousel_slides(
@@ -3124,6 +3211,68 @@ _DANGLING_ENDS = {
     "petrol",
 }
 
+# YouTube ASR tracks arrive lowercase and without terminators, so the strict
+# sentence gates below reject every candidate line and starve the whole
+# carousel. Relaxation is decided per request from the cue corpus.
+_RELAXED_CUE_LINES: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "carousel_relaxed_cue_lines", default=False
+)
+
+# Words that only ever continue a clause, so they cannot open a readable line.
+_MIDCLAUSE_OPENERS = {
+    "of",
+    "to",
+    "and",
+    "or",
+    "for",
+    "with",
+    "in",
+    "on",
+    "at",
+    "by",
+    "from",
+    "into",
+    "than",
+    "then",
+    "but",
+    "as",
+    "so",
+    "that",
+    "which",
+    "who",
+    "whom",
+    "whose",
+    "because",
+    "while",
+    "is",
+    "are",
+    "was",
+    "were",
+    "be",
+    "been",
+    "being",
+    "has",
+    "have",
+    "had",
+    "its",
+    "it's",
+}
+
+_PRONOUN_OPENERS = {"i", "you", "we", "he", "she", "they", "it", "me", "us", "them", "him", "her"}
+
+
+def _cue_corpus_needs_relaxed_lines(
+    cues: list[tuple[float, float | None, str]],
+) -> bool:
+    """True when cues look like auto-captions (mostly unterminated lines)."""
+    sample = [" ".join((t or "").split()) for _s, _e, t in cues if (t or "").strip()][:400]
+    if len(sample) < 4:
+        return False
+    terminated = sum(
+        1 for t in sample if re.search(rf"{_SENTENCE_END}[\"')\]]*$", t)
+    )
+    return (terminated / len(sample)) < 0.25
+
 
 def _is_indic_or_non_latin_heavy(text: str) -> bool:
     """True for Devanagari / other non-Latin-heavy cue lines (often lack .!? punctuation)."""
@@ -3154,6 +3303,18 @@ def _line_starts_clean(text: str) -> bool:
     # Hinglish cues sometimes start with a Latin brand in lowercase ("youtube's …").
     if c.islower() and _is_indic_or_non_latin_heavy(cleaned):
         return True
+    # Auto-caption tracks are entirely lowercase, so casing carries no signal;
+    # only reject openers that are bare clause continuations.
+    if _RELAXED_CUE_LINES.get():
+        words = [re.sub(r"[^\w']", "", w.lower()) for w in cleaned.split()]
+        first = words[0] if words else ""
+        if not first or first in _MIDCLAUSE_OPENERS:
+            return False
+        # "you for the true business World…" — a pronoun followed by a
+        # preposition is always a fragment of the previous clause.
+        if first in _PRONOUN_OPENERS and len(words) > 1 and words[1] in _MIDCLAUSE_OPENERS:
+            return False
+        return True
     return False
 
 
@@ -3171,8 +3332,9 @@ def _line_complete_enough(text: str) -> bool:
             return False
         last = t.split()[-1].lower().rstrip(".,;:…।॥\"')")
         return last not in _DANGLING_ENDS
-    # Many Hindi/Hinglish VTTs omit terminators — accept a short clean cue line.
-    if _is_indic_or_non_latin_heavy(t) and _line_starts_clean(t):
+    # Many Hindi/Hinglish VTTs and all ASR tracks omit terminators — accept a
+    # short clean cue line instead of dropping the transcript wholesale.
+    if (_is_indic_or_non_latin_heavy(t) or _RELAXED_CUE_LINES.get()) and _line_starts_clean(t):
         last = t.split()[-1].lower().rstrip(".,;:…।॥\"')")
         if last in _DANGLING_ENDS:
             return False
