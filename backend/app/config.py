@@ -29,6 +29,10 @@ class Settings(BaseSettings):
 
     gemini_api_key: str = ""
     gemini_model: str = "gemini-2.5-flash"
+    # Optional Claude copy/theme writer; Gemini remains the image-ranking provider.
+    anthropic_api_key: str = ""
+    claude_api_key: str = ""
+    claude_model: str = "claude-sonnet-4-20250514"
     gemini_embedding_model: str = "models/gemini-embedding-2"
     gemini_file_search_store_display_name: str = "drive-connector-shared"
     gemini_upload_poll_seconds: float = 3.0
@@ -122,6 +126,9 @@ class Settings(BaseSettings):
     # Max videos at once. InsightFace/CPU lock → diminishing returns above ~3–4;
     # raise via VIDEO_INDEX_MAX_PARALLEL only if ffmpeg/Gemini headroom shows idle.
     video_index_max_parallel: int = 4
+    # Local ASR fallback when YouTube/Drive captions are missing (carousel needs text).
+    whisper_model_size: str = "base"
+    whisper_fallback_enabled: bool = True
 
     # Gemini API client-side concurrency (tune to your tier; see ai.google.dev rate limits).
     # Embedding 2: high RPM (~40k) — safe default 24 concurrent frame embeds.

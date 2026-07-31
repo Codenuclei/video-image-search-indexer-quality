@@ -74,6 +74,7 @@ async def get_video_frame(
     drive_file_id: str,
     ts: float = Query(..., ge=0),
     download: bool = Query(False),
+    cache_only: bool = Query(False),
     filename: str | None = Query(None),
     session: AsyncSession = Depends(get_db),
 ) -> FileResponse:
@@ -112,6 +113,11 @@ async def get_video_frame(
         )
         if candidates and abs(float(candidates[0].stem) - ts) <= 5.0:
             return _respond(candidates[0])
+
+    # Ready carousel artifacts use this mode deliberately: a cache miss must
+    # fail immediately rather than turning an image GET into ffmpeg/Drive I/O.
+    if cache_only:
+        raise HTTPException(status_code=404, detail="Cached frame not available")
 
     # 3. Check VideoSegment.frame_path in DB (pre-indexed frames, any timestamp)
     seg = (

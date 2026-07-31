@@ -28,10 +28,20 @@ async def ensure_youtube_video_local(
     Returns (drive_file, downloaded_now). File is kept on disk for team search/playback.
     """
     settings = get_settings()
-    meta = await fetch_youtube_metadata(video_id)
     drive_id = youtube_drive_id(video_id)
 
     drive_file = await session.get(DriveFile, drive_id)
+    if drive_file is not None:
+        dest = video_cache_path(settings, drive_file)
+        if dest.is_file() and dest.stat().st_size > 0:
+            drive_file.size = dest.stat().st_size
+            drive_file.status = DriveFileStatus.PENDING
+            drive_file.error_message = None
+            await session.flush()
+            logger.info("YouTube local cache hit: %s", dest)
+            return drive_file, False
+
+    meta = await fetch_youtube_metadata(video_id)
     if drive_file is None:
         drive_file = DriveFile(
             id=drive_id,

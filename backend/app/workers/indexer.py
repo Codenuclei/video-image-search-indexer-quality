@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+import uuid
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
-from sqlalchemy import or_, select
+from sqlalchemy import and_, case, exists, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
 from app.config import Settings, get_settings
-from app.db.models import DriveFile, DriveFileStatus
+from app.db.models import CarouselGenerationSave, DriveFile, DriveFileStatus, Media, VideoSegment
 from app.drive.client import DriveConnectorClient, DriveConnectorError
 from app.drive.google_client import DriveDirectError
 from app.drive.cleanup import remove_drive_file
@@ -45,6 +47,17 @@ from app.workers.claim_order import claim_window, pending_order_by
 logger = logging.getLogger(__name__)
 
 
+def _database_safe_payload(value):
+    """Strip characters unsupported by legacy SQL_ASCII local databases."""
+    if isinstance(value, str):
+        return value.encode("ascii", "ignore").decode("ascii")
+    if isinstance(value, list):
+        return [_database_safe_payload(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _database_safe_payload(item) for key, item in value.items()}
+    return value
+
+
 def _log_skip(drive_file: DriveFile, reason: str) -> None:
     logger.info(
         "index_skip reason=%s file_id=%s mime=%s size=%s name=%s",
@@ -54,6 +67,51 @@ def _log_skip(drive_file: DriveFile, reason: str) -> None:
         drive_file.size,
         drive_file.name,
     )
+
+
+def _cached_video_recovery_eligible(cue_count: int, frames_dir: Path) -> bool:
+    """Return whether surviving transcript/frame assets can support recovery."""
+    return cue_count >= 2 and any(frames_dir.glob("*.jpg"))
+
+
+# Background carousel generation drains the captioned backlog a couple of
+# videos at a time; these bound how hard a repeatedly failing video is retried.
+CAROUSEL_MAX_ATTEMPTS = 3
+CAROUSEL_DRAIN_DELAY_SEC = 5.0
+CAROUSEL_LOCK_STALE_SEC = 900.0
+# A job that never returns would hold its concurrency slot forever and stall the
+# whole backlog, so generation is bounded and a hang lands on `error` instead.
+CAROUSEL_JOB_TIMEOUT_SEC = 1800.0
+
+
+def _captioned_predicate():
+    """Correlated EXISTS for "captioned": at least one non-empty transcript cue.
+
+    Same definition the carousel video pickers use, so what the UI lists and
+    what the background worker builds can never drift apart.
+    """
+    return exists(
+        select(1)
+        .select_from(Media)
+        .join(
+            VideoSegment,
+            and_(VideoSegment.media_id == Media.id, VideoSegment.text != ""),
+        )
+        .where(Media.drive_file_id == DriveFile.id)
+    )
+
+
+async def _video_is_captioned(session: AsyncSession, file_id: str) -> bool:
+    cue_count = await session.scalar(
+        select(func.count(VideoSegment.id))
+        .select_from(Media)
+        .join(
+            VideoSegment,
+            and_(VideoSegment.media_id == Media.id, VideoSegment.text != ""),
+        )
+        .where(Media.drive_file_id == file_id)
+    )
+    return int(cue_count or 0) >= 2
 
 
 def _record_index_failure(drive_file: DriveFile, exc: Exception) -> None:
@@ -104,6 +162,10 @@ class IndexingWorker:
         self._image_started_at: dict[str, float] = {}
         self._image_refill_lock = asyncio.Lock()
         self._video_refill_lock = asyncio.Lock()
+        self._carousel_tasks: dict[str, asyncio.Task] = {}
+        self._carousel_started_at: dict[str, float] = {}
+        self._carousel_semaphore = asyncio.Semaphore(2)
+        self._carousel_drain_lock = asyncio.Lock()
 
     @property
     def active_video_count(self) -> int:
@@ -399,7 +461,7 @@ class IndexingWorker:
             return 0
 
         max_parallel = max(1, self._settings.video_index_max_parallel)
-        started = 0
+        started = await self.recover_cached_video_indexes()
 
         async with self._session_factory() as session:
             paused_paths = await load_paused_folder_paths(session)
@@ -486,6 +548,54 @@ class IndexingWorker:
 
         return started + len(claimed_ids)
 
+    async def recover_cached_video_indexes(self) -> int:
+        """Recover YouTube rows whose DB transcript and local frames survive.
+
+        This conservative path handles a stalled download without discarding
+        usable indexed data. It requires at least two non-empty transcript
+        segments and at least one cached JPEG, then enqueues the normal
+        post-index carousel worker after committing the status transition.
+        """
+        recovered: list[str] = []
+        async with self._session_factory() as session:
+            rows = list(
+                (
+                    await session.execute(
+                        select(DriveFile).where(
+                            DriveFile.status == DriveFileStatus.ERROR,
+                            DriveFile.source == "youtube",
+                            DriveFile.mime_type.like("video/%"),
+                        )
+                    )
+                ).scalars().all()
+            )
+            for drive_file in rows:
+                media = await session.scalar(
+                    select(Media).where(Media.drive_file_id == drive_file.id)
+                )
+                if media is None:
+                    continue
+                cue_count = await session.scalar(
+                    select(func.count(VideoSegment.id)).where(
+                        VideoSegment.media_id == media.id,
+                        VideoSegment.text != "",
+                    )
+                )
+                frames_dir = Path(self._settings.thumbnail_dir) / "video" / drive_file.id
+                if not _cached_video_recovery_eligible(int(cue_count or 0), frames_dir):
+                    continue
+                drive_file.status = DriveFileStatus.PROCESSED
+                drive_file.error_message = None
+                drive_file.last_synced_at = datetime.now(timezone.utc)
+                recovered.append(drive_file.id)
+            if recovered:
+                await session.commit()
+
+        for file_id in recovered:
+            self._start_carousel_task(file_id)
+            logger.info("Recovered cached YouTube index from transcript+frames: %s", file_id)
+        return len(recovered)
+
     async def _run_video_index_job(self, file_id: str) -> None:
         """Same video pipeline as sequential indexing, isolated session per file."""
         gemini = get_gemini_service()
@@ -520,6 +630,10 @@ class IndexingWorker:
                 drive_file.gemini_document_name = result.gemini_document_name
                 drive_file.last_synced_at = datetime.now(timezone.utc)
                 await session.commit()
+                # Carousel generation is deliberately after the index commit and
+                # uses its own session so a slow/failed artifact can never hold
+                # the indexing transaction open.
+                self._start_carousel_task(file_id)
                 logger.info("Video index complete: %s (%s)", file_name, file_id)
         except Exception as exc:  # noqa: BLE001
             logger.exception("Parallel video index failed for %s (%s)", file_id, file_name)
@@ -547,6 +661,373 @@ class IndexingWorker:
             self._video_tasks.pop(file_id, None)
             self._video_started_at.pop(file_id, None)
             self._schedule_video_refill()
+
+    def _start_carousel_task(self, file_id: str) -> None:
+        existing = self._carousel_tasks.get(file_id)
+        if existing and not existing.done():
+            return
+        self._carousel_started_at[file_id] = asyncio.get_event_loop().time()
+        self._carousel_tasks[file_id] = asyncio.create_task(
+            self._run_carousel_generation(file_id),
+            name=f"carousel:{file_id}",
+        )
+
+    def _schedule_carousel_drain(self) -> None:
+        """Keep the captioned backlog moving without a wide startup fan-out."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        loop.create_task(self._drain_carousel_backlog(), name="carousel-drain")
+
+    async def _drain_carousel_backlog(self) -> None:
+        async with self._carousel_drain_lock:
+            await asyncio.sleep(CAROUSEL_DRAIN_DELAY_SEC)
+            try:
+                await self.reclaim_stale_carousel_locks()
+                await self.resume_carousel_generation()
+            except Exception:  # noqa: BLE001
+                logger.exception("Carousel backlog drain failed")
+
+    def _cancel_overdue_carousel_tasks(self, live: set[str]) -> set[str]:
+        """Cancel jobs that outlived the stale window so their slot comes back.
+
+        A task blocked on an unresponsive upstream call still counts as live, so
+        without this the row would be skipped by every reclaim pass and the two
+        concurrency slots would stay pinned indefinitely.
+        """
+        now = asyncio.get_event_loop().time()
+        cancelled: set[str] = set()
+        for file_id in live:
+            started = self._carousel_started_at.get(file_id)
+            if started is None or now - started < CAROUSEL_LOCK_STALE_SEC:
+                continue
+            task = self._carousel_tasks.get(file_id)
+            if task is not None and not task.done():
+                task.cancel()
+            cancelled.add(file_id)
+        if cancelled:
+            logger.warning(
+                "Cancelled %d carousel job(s) stuck past %.0fs", len(cancelled), CAROUSEL_LOCK_STALE_SEC
+            )
+        return cancelled
+
+    async def reclaim_stale_carousel_locks(self, *, orphaned: bool = False) -> int:
+        """Release `processing` locks no live task owns.
+
+        A process killed mid-generation leaves the row locked forever, and the
+        claim refuses rows already marked processing — so the backlog would
+        stall. Being killed is not a failure, so the attempt counter is rolled
+        back too; genuine failures land on `error` and keep their count.
+
+        With ``orphaned`` set, every processing row is stale by definition (a
+        freshly started process owns no carousel tasks). Otherwise only rows
+        locked longer than the stale window are released.
+        """
+        live = {fid for fid, task in self._carousel_tasks.items() if not task.done()}
+        if live and not orphaned:
+            live -= self._cancel_overdue_carousel_tasks(live)
+        conditions = [DriveFile.carousel_status == "processing"]
+        if live:
+            conditions.append(DriveFile.id.notin_(live))
+        if not orphaned:
+            cutoff = datetime.now(timezone.utc) - timedelta(seconds=CAROUSEL_LOCK_STALE_SEC)
+            conditions.append(
+                or_(DriveFile.carousel_locked_at.is_(None), DriveFile.carousel_locked_at < cutoff)
+            )
+        async with self._session_factory() as session:
+            result = await session.execute(
+                update(DriveFile)
+                .where(*conditions)
+                .values(
+                    carousel_status="idle",
+                    carousel_lock_token=None,
+                    carousel_lock_input_hash=None,
+                    carousel_locked_at=None,
+                    carousel_attempts=0,
+                )
+            )
+            await session.commit()
+        released = int(result.rowcount or 0)
+        if released:
+            logger.info("Released %d stale carousel lock(s)", released)
+        return released
+
+    async def resume_carousel_generation(self, *, limit: int = 2) -> int:
+        """Resume a small batch of missing carousel artifacts.
+
+        Only captioned videos qualify (same definition as the carousel video
+        pickers: at least one non-empty transcript cue) — an uncaptioned video
+        has nothing to build slides from. Starting every PROCESSED video at
+        once saturated the event loop and DB pool, so concurrency is capped.
+        """
+        active = sum(1 for t in self._carousel_tasks.values() if not t.done())
+        slots = max(0, int(limit) - active)
+        if slots <= 0:
+            return 0
+        has_cues = _captioned_predicate()
+        async with self._session_factory() as session:
+            ready_ids = (
+                await session.execute(
+                    select(CarouselGenerationSave.drive_file_id).where(
+                        CarouselGenerationSave.kind == "carousel",
+                        CarouselGenerationSave.status == "ready",
+                    )
+                )
+            ).scalars().all()
+            ready_set = {str(x) for x in ready_ids}
+            ids = list(
+                (
+                    await session.execute(
+                        select(DriveFile.id).where(
+                            DriveFile.status == DriveFileStatus.PROCESSED,
+                            DriveFile.mime_type.like("video/%"),
+                            has_cues,
+                            # A video that has already failed repeatedly must not
+                            # be retried forever by the drain loop.
+                            DriveFile.carousel_attempts < CAROUSEL_MAX_ATTEMPTS,
+                        )
+                        .order_by(
+                            case((DriveFile.source == "youtube", 0), else_=1),
+                            DriveFile.last_synced_at.desc().nulls_last(),
+                        )
+                        .limit(max(slots * 8, slots))
+                    )
+                ).scalars().all()
+            )
+        started = 0
+        for file_id in ids:
+            if started >= slots:
+                break
+            if str(file_id) in ready_set:
+                continue
+            before = self._carousel_tasks.get(file_id)
+            self._start_carousel_task(file_id)
+            after = self._carousel_tasks.get(file_id)
+            if after is not None and after is not before:
+                started += 1
+        if started:
+            logger.info(
+                "Resumed carousel generation for %d video(s) (cap=%d)",
+                started,
+                limit,
+            )
+        return started
+
+    async def _run_carousel_generation(self, file_id: str) -> None:
+        """Claim the carousel pipeline before doing background work."""
+        token = uuid.uuid4().hex
+        async with self._session_factory() as claim_session:
+            # Uncaptioned videos have no transcript to build slides from, so
+            # running the pipeline could only ever fail. Skip before claiming
+            # and leave the row idle rather than recording a bogus error.
+            if not await _video_is_captioned(claim_session, file_id):
+                self._carousel_tasks.pop(file_id, None)
+                return
+            # A ready artifact may be a user edit. Never replace it with a
+            # later default generated by an indexing completion callback.
+            ready = await claim_session.scalar(
+                select(CarouselGenerationSave).where(
+                    CarouselGenerationSave.drive_file_id == file_id,
+                    CarouselGenerationSave.kind == "carousel",
+                    CarouselGenerationSave.status == "ready",
+                ).limit(1)
+            )
+            if ready is not None:
+                payload = ready.payload or {}
+                incomplete_auto_save = (
+                    ready.source in {"background", "generate"}
+                    and (not payload.get("themes") or not payload.get("layouts"))
+                )
+                if not incomplete_auto_save:
+                    await claim_session.execute(
+                        update(DriveFile)
+                        .where(DriveFile.id == file_id)
+                        .values(carousel_status="ready", carousel_error=None)
+                    )
+                    await claim_session.commit()
+                    self._carousel_tasks.pop(file_id, None)
+                    self._schedule_carousel_drain()
+                    return
+            claimed = await claim_session.execute(
+                update(DriveFile)
+                .where(
+                    DriveFile.id == file_id,
+                    DriveFile.status == DriveFileStatus.PROCESSED,
+                    DriveFile.carousel_status != "processing",
+                )
+                .values(
+                    carousel_status="processing",
+                    carousel_lock_token=token,
+                    carousel_locked_at=datetime.now(timezone.utc),
+                    carousel_error=None,
+                    carousel_attempts=DriveFile.carousel_attempts + 1,
+                )
+            )
+            if not claimed.rowcount:
+                self._carousel_tasks.pop(file_id, None)
+                return
+            await claim_session.commit()
+        try:
+            await self._run_carousel_generation_impl(file_id)
+        except Exception as exc:  # noqa: BLE001
+            # Keep the failure visible and retryable; the indexing job is
+            # already committed and must not be rolled back or blocked.
+            async with self._session_factory() as error_session:
+                await error_session.execute(
+                    update(DriveFile)
+                    .where(DriveFile.id == file_id, DriveFile.carousel_lock_token == token)
+                    .values(carousel_status="error", carousel_error=str(exc)[:2000])
+                )
+                await error_session.commit()
+            logger.exception("Background carousel generation failed for %s", file_id)
+        finally:
+            async with self._session_factory() as release_session:
+                await release_session.execute(
+                    update(DriveFile)
+                    .where(
+                        DriveFile.id == file_id,
+                        DriveFile.carousel_lock_token == token,
+                    )
+                    .values(
+                        carousel_lock_token=None,
+                        carousel_lock_input_hash=None,
+                        carousel_locked_at=None,
+                    )
+                )
+                await release_session.commit()
+            self._carousel_tasks.pop(file_id, None)
+            self._carousel_started_at.pop(file_id, None)
+            self._schedule_carousel_drain()
+
+    async def _run_carousel_generation_impl(self, file_id: str) -> None:
+        """Run the generation job under the concurrency cap, bounded in time."""
+        async with self._carousel_semaphore:
+            try:
+                await asyncio.wait_for(
+                    self._run_carousel_generation_job(file_id),
+                    timeout=CAROUSEL_JOB_TIMEOUT_SEC,
+                )
+            except asyncio.TimeoutError as exc:
+                raise RuntimeError(
+                    f"carousel generation exceeded {CAROUSEL_JOB_TIMEOUT_SEC:.0f}s"
+                ) from exc
+        self._carousel_tasks.pop(file_id, None)
+
+    async def _run_carousel_generation_job(self, file_id: str) -> None:
+        """Run themes -> hooks/topics -> exact copy -> images -> ready artifact."""
+        async with self._session_factory() as session:
+            from app.routers.carousel_script import (
+                CarouselGenerateRequest,
+                PipelineThemeSlice,
+                TimedPick,
+                _carousel_pipeline_generate_impl,
+                _load_video_cues,
+            )
+            from app.search.carousel_pipeline import (
+                build_harmonized_themes,
+                extract_hooks_and_topics_async,
+            )
+
+            row, cues = await _load_video_cues(session, file_id)
+            if row.status != DriveFileStatus.PROCESSED or len(cues) < 2:
+                raise RuntimeError("processed video has no usable transcript cues")
+            settings = self._settings
+            themes, _source, _warning = await build_harmonized_themes(
+                cues=cues,
+                video_name=row.name,
+                search_entity=None,
+                api_key=settings.gemini_api_key,
+                model=settings.gemini_model,
+                claude_api_key=settings.anthropic_api_key or settings.claude_api_key,
+                claude_model=settings.claude_model,
+            )
+            if not themes:
+                raise RuntimeError("could not derive default carousel themes")
+            theme_slices = [
+                PipelineThemeSlice(
+                    theme_id=str(t.get("theme_id") or f"theme_{i}"),
+                    title=str(t.get("title") or "Theme"),
+                    start_sec=float(t.get("start_timestamp") or 0),
+                    end_sec=t.get("end_timestamp"),
+                    summary=str(t.get("summary") or ""),
+                )
+                for i, t in enumerate(themes[:8])
+            ]
+            extracted = await extract_hooks_and_topics_async(
+                cues,
+                start_sec=theme_slices[0].start_sec,
+                end_sec=None,
+                theme_title=" -> ".join(t.title for t in theme_slices[:4]),
+                theme_summary=" ".join(t.summary for t in theme_slices[:4]),
+                search_entity=None,
+                api_key=settings.gemini_api_key,
+                model=settings.gemini_model,
+                english_cues=None,
+            )
+            hooks_raw = list(extracted.get("hooks") or [])
+            topics_raw = list(extracted.get("topics") or [])
+            if not hooks_raw or not topics_raw:
+                raise RuntimeError("could not derive default carousel hooks and topics")
+
+            def timed(item: dict, prefix: str, index: int) -> TimedPick:
+                return TimedPick(
+                    id=str(item.get("id") or f"{prefix}_{index}"),
+                    text=str(item.get("text") or ""),
+                    start_sec=float(item.get("start_sec") or 0),
+                    end_sec=item.get("end_sec"),
+                    theme_id=item.get("theme_id"),
+                    topic_id=item.get("topic_id"),
+                    topic_text=item.get("topic_text"),
+                    original_text=item.get("original_text"),
+                )
+
+            hooks = [timed(h, "hook", i) for i, h in enumerate(hooks_raw[:8]) if h.get("text")]
+            topics = [timed(t, "topic", i) for i, t in enumerate(topics_raw[:8]) if t.get("text")]
+            request = CarouselGenerateRequest(
+                drive_file_id=file_id,
+                video_name=row.name,
+                themes=theme_slices,
+                hooks=hooks,
+                topics=topics,
+                min_slides=6,
+                max_slides=8,
+                select_images=True,
+            )
+            result = await _carousel_pipeline_generate_impl(request, session)
+            save = await session.get(CarouselGenerationSave, result.get("save_id"))
+            if save is None or save.status != "ready":
+                raise RuntimeError("full carousel generator did not persist READY output")
+            payload = dict(save.payload or {})
+            payload.update({
+                "themes": themes,
+                "topics": topics_raw,
+                "hooks": hooks_raw,
+                "topic_tree": extracted.get("topic_tree") or [],
+                "layouts": payload.get("layouts") or {
+                    "single_1": {
+                        "layout_mode": "single_1",
+                        "carousels": payload.get("carousels") or [],
+                    },
+                    "split_2": {
+                        "layout_mode": "split_2",
+                        "carousels": payload.get("carousels") or [],
+                    },
+                },
+                "layout_modes": ["single_1", "split_2"],
+                "images_ready": True,
+                "frames_prewarmed": True,
+            })
+            save.payload = _database_safe_payload(payload)
+            save.layout_mode = "single_1"
+            save.source = "background"
+            await session.commit()
+            await session.execute(
+                update(DriveFile)
+                .where(DriveFile.id == file_id)
+                .values(carousel_status="ready", carousel_error=None)
+            )
+            await session.commit()
 
     async def release_stalled_processing(self) -> int:
         """Mark long-stuck PROCESSING videos as ERROR so slots free up."""

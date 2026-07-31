@@ -42,6 +42,10 @@ _MAX_MERGED_TOPICS = 24
 # Per-chunk transcript budget for Gemini (full timed cues; chunk+merge for long talks).
 _TOPIC_CHUNK_CHARS = 12_000
 _TOPIC_CHUNK_OVERLAP_CUES = 6
+# Gemini requests run in worker threads and the SDK does not time out by default,
+# so a stalled connection would pin its thread — and the background carousel slot
+# holding it — forever. Bound every request instead.
+_LLM_REQUEST_TIMEOUT_MS = 180_000
 
 
 def snap_themes_to_cues(
@@ -87,6 +91,8 @@ async def build_harmonized_themes(
     search_entity: str | None = None,
     api_key: str | None,
     model: str,
+    claude_api_key: str | None = None,
+    claude_model: str = "",
 ) -> tuple[list[dict[str, Any]], str, str | None]:
     """Return normal narrative themes (search_entity is ignored — no reframing)."""
     del search_entity  # presence checks live in the router; themes stay video-native
@@ -95,25 +101,35 @@ async def build_harmonized_themes(
         return [], "empty", "No transcript cues for this video"
 
     warning: str | None = None
-    if api_key:
+    if claude_api_key or api_key:
         try:
-            themes = await _llm_themes(
-                transcript=transcript,
-                video_name=video_name,
-                api_key=api_key,
-                model=model,
-            )
+            if claude_api_key:
+                themes = await _claude_themes(
+                    transcript=transcript,
+                    video_name=video_name,
+                    api_key=claude_api_key,
+                    model=claude_model or "claude-sonnet-4-20250514",
+                )
+                llm_source = "claude"
+            else:
+                themes = await _llm_themes(
+                    transcript=transcript,
+                    video_name=video_name,
+                    api_key=api_key or "",
+                    model=model,
+                )
+                llm_source = "llm"
             if themes:
                 themes = snap_themes_to_cues(themes, cues)
                 for t in themes:
                     t["harmonized"] = False
                     t["search_entity"] = None
-                return themes, "llm", None
+                return themes, llm_source, None
         except Exception as exc:  # noqa: BLE001
             logger.warning("carousel theme LLM failed: %s", exc)
             warning = str(exc)[:160]
     else:
-        warning = "Gemini unavailable — using transcript buckets"
+        warning = "Claude/Gemini unavailable — using transcript buckets"
 
     fallback = fallback_topics_from_cues(cues, max_topics=6)
     themes = []
@@ -165,7 +181,10 @@ async def _llm_themes(
         f"Transcript:\n{transcript}"
     )
 
-    client = genai.Client(api_key=api_key)
+    client = genai.Client(
+        api_key=api_key,
+        http_options=types.HttpOptions(timeout=_LLM_REQUEST_TIMEOUT_MS),
+    )
     resp = await asyncio.to_thread(
         client.models.generate_content,
         model=model,
@@ -176,6 +195,46 @@ async def _llm_themes(
         ),
     )
     return _parse_themes_json((resp.text or "").strip())
+
+
+async def _claude_themes(
+    *,
+    transcript: str,
+    video_name: str,
+    api_key: str,
+    model: str,
+) -> list[dict[str, Any]]:
+    """Use Claude for higher-quality narrative titles and summaries."""
+    import asyncio
+
+    from anthropic import Anthropic
+
+    prompt = (
+        "You segment a video transcript into distinct narrative themes for a social carousel studio.\n"
+        f"Video: {video_name or '(untitled)'}\n"
+        "Hard rules:\n"
+        "- Start each theme at a logical context boundary, never mid-sentence.\n"
+        "- Titles must be concise, specific, complete English phrases.\n"
+        "- Summaries should explain the viewer-relevant idea, not merely repeat words.\n"
+        "- Use 3–8 chronological, non-overlapping themes with no duplicate angles.\n"
+        "Return ONLY a JSON array. Each object must contain theme_id, title, start_sec, end_sec, summary.\n\n"
+        f"Transcript:\n{transcript}"
+    )
+
+    def generate() -> str:
+        client = Anthropic(api_key=api_key)
+        response = client.messages.create(
+            model=model,
+            max_tokens=1800,
+            temperature=0.3,
+            system="You are an expert short-form video editor and narrative copywriter.",
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return "".join(
+            block.text for block in response.content if getattr(block, "type", "") == "text"
+        )
+
+    return _parse_themes_json(await asyncio.to_thread(generate))
 
 
 def _parse_themes_json(text: str) -> list[dict[str, Any]]:
@@ -460,7 +519,15 @@ async def extract_hooks_and_topics_async(
             fallback_end=end_sec,
         ) or window
         topic_stitched = _stitch_complete_utterances(topic_window)
-        candidates = _pick_contextual_hooks(topic_stitched)[:4]
+        topic_title = str(topic.get("text") or "")
+        candidates = _pick_contextual_hooks(topic_stitched)
+        if candidates and topic_title:
+            # Prefer spoken windows that actually mention the topic (additive ranking).
+            candidates = sorted(
+                candidates,
+                key=lambda h: -_topic_text_overlap(topic_title, str(h.get("text") or "")),
+            )
+        candidates = candidates[:4]
         if not candidates:
             # Emergency: longest cues in the topic window so we never emit empty topics.
             candidates = _emergency_hook_candidates(topic_stitched or topic_window, limit=3)
@@ -475,7 +542,7 @@ async def extract_hooks_and_topics_async(
             try:
                 crafted = await _llm_hooks_for_singular_topic(
                     hooks=candidates,
-                    topic_title=str(topic.get("text") or ""),
+                    topic_title=topic_title,
                     topic_explanation=str(topic.get("explanation") or ""),
                     theme_title=theme_title,
                     theme_summary=theme_summary,
@@ -503,8 +570,9 @@ async def extract_hooks_and_topics_async(
         )
         for k, v in vstats.items():
             verbatim_stats_total[k] = verbatim_stats_total.get(k, 0) + v
-        # Keep 1–2 hooks per topic to avoid batch overlap.
-        topic_hooks = topic_hooks[:2]
+        # Keep a useful local set; the global cap and final tree dedupe still
+        # bound the shipped payload.
+        topic_hooks = topic_hooks[:5]
         for h in topic_hooks:
             used_angles.append(str(h.get("text") or ""))
             all_hooks.append(h)
@@ -518,6 +586,13 @@ async def extract_hooks_and_topics_async(
                     h["subtopic_id"] = best.get("id")
                     h["subtopic_text"] = best.get("text")
                     best.setdefault("hooks", []).append(h)
+                    # A mapped hook belongs to the most relevant subtopic,
+                    # never to both the parent and child.
+                    topic["hooks"] = [
+                        existing
+                        for existing in topic_hooks
+                        if existing is not h
+                    ]
             for sub in subs:
                 sub.setdefault("hooks", [])
 
@@ -561,6 +636,8 @@ async def extract_hooks_and_topics_async(
                 verbatim_stats_total[k] = verbatim_stats_total.get(k, 0) + v
         all_hooks = list(base.get("hooks") or [])
 
+    all_hooks = _dedupe_hook_list(all_hooks)
+
     # Final verbatim sweep across the full cue corpus.
     all_hooks, final_vstats = enforce_non_verbatim_hooks(
         all_hooks,
@@ -570,6 +647,9 @@ async def extract_hooks_and_topics_async(
     for k, v in final_vstats.items():
         verbatim_stats_total[k] = verbatim_stats_total.get(k, 0) + v
 
+    # The tree is authoritative: a hook must have exactly one placement.
+    topic_tree = _dedupe_topic_tree_hooks(topic_tree)
+    all_hooks = _hooks_from_topic_tree(topic_tree)
     # Re-id chronologically and flatten topics for legacy consumers.
     all_hooks.sort(key=lambda r: float(r.get("start_sec") or 0))
     for i, h in enumerate(all_hooks[:_MAX_HOOKS]):
@@ -578,27 +658,15 @@ async def extract_hooks_and_topics_async(
     base["hooks"] = all_hooks[:_MAX_HOOKS]
     base["topics"] = _flatten_topic_tree(topic_tree)[:_MAX_TOPICS]
     base["topic_tree"] = _reindex_topic_tree(topic_tree)[:_MAX_TOPICS]
-    # Final structural proof: zero empty hook sections in the payload we ship.
+    # Final structural proof: zero genuinely empty sections in the payload we
+    # ship. A parent with populated children is intentionally allowed no own
+    # hooks; copying a child hook here would violate tree uniqueness.
     empty_sections = _count_empty_hook_sections(base["topic_tree"])
     if empty_sections:
         logger.warning("pruning %d empty-hook sections after reindex", empty_sections)
         base["topic_tree"] = _drop_empty_hook_sections(base["topic_tree"])
         base["topics"] = _flatten_topic_tree(base["topic_tree"])[:_MAX_TOPICS]
-        # Rebuild flat hooks from tree so they stay in sync.
-        rebuilt: list[dict[str, Any]] = []
-        for t in base["topic_tree"]:
-            rebuilt.extend(list(t.get("hooks") or []))
-            for sub in t.get("subtopics") or []:
-                rebuilt.extend(list(sub.get("hooks") or []))
-        # Prefer chronologically unique by text
-        seen_txt: set[str] = set()
-        uniq: list[dict[str, Any]] = []
-        for h in sorted(rebuilt, key=lambda r: float(r.get("start_sec") or 0)):
-            key = str(h.get("text") or "").strip().lower()
-            if not key or key in seen_txt:
-                continue
-            seen_txt.add(key)
-            uniq.append(h)
+        uniq = _hooks_from_topic_tree(base["topic_tree"])
         for i, h in enumerate(uniq[:_MAX_HOOKS]):
             h["id"] = f"hook_{i + 1}"
         base["hooks"] = uniq[:_MAX_HOOKS]
@@ -679,7 +747,10 @@ async def _llm_craft_hooks(
         '{"i": number, "hook": "crafted English hook"}.\n\n'
         f"Spoken windows:\n{json.dumps(payload, ensure_ascii=False)}"
     )
-    client = genai.Client(api_key=api_key)
+    client = genai.Client(
+        api_key=api_key,
+        http_options=types.HttpOptions(timeout=_LLM_REQUEST_TIMEOUT_MS),
+    )
     resp = await asyncio.to_thread(
         client.models.generate_content,
         model=model,
@@ -1041,7 +1112,10 @@ async def _llm_translate_lines(
         "- Return ONLY a JSON array of objects: {\"i\": number, \"text\": \"English\"}.\n\n"
         f"Lines:\n{json.dumps(numbered, ensure_ascii=False)}"
     )
-    client = genai.Client(api_key=api_key)
+    client = genai.Client(
+        api_key=api_key,
+        http_options=types.HttpOptions(timeout=_LLM_REQUEST_TIMEOUT_MS),
+    )
     resp = await asyncio.to_thread(
         client.models.generate_content,
         model=model,
@@ -1177,6 +1251,34 @@ def _pick_contextual_hooks(stitched: list[dict[str, Any]]) -> list[dict[str, Any
             if len(hooks) >= _MAX_HOOKS:
                 break
     return hooks
+
+
+_TOPIC_OVERLAP_STOP = frozenset(
+    {
+        "the", "a", "an", "and", "or", "to", "of", "in", "on", "for", "with", "is", "are",
+        "that", "this", "it", "as", "at", "by", "from", "be", "you", "your", "have", "about",
+    }
+)
+
+
+def _topic_text_overlap(topic_title: str, spoken: str) -> float:
+    """How well a spoken candidate matches its topic label (content-token overlap)."""
+    label_toks = {
+        t
+        for t in re.findall(r"[a-z0-9\u0900-\u097f]+", (topic_title or "").lower())
+        if t not in _TOPIC_OVERLAP_STOP and len(t) > 2
+    }
+    snip_toks = {
+        t
+        for t in re.findall(r"[a-z0-9\u0900-\u097f]+", (spoken or "").lower())
+        if t not in _TOPIC_OVERLAP_STOP and len(t) > 2
+    }
+    if not label_toks:
+        return 0.0
+    if not snip_toks:
+        return 0.05
+    hit = len(label_toks & snip_toks)
+    return hit / len(label_toks) + (0.15 if hit else 0.0)
 
 
 def _spread_topic_spans(
@@ -1577,7 +1679,10 @@ async def _llm_synthesize_global_topics(
         f"Candidate local topics:\n{json.dumps(cand_payload, ensure_ascii=False)}\n\n"
         f"Condensed full-talk outline (READ FOR GLOBAL ARC):\n{outline}"
     )
-    client = genai.Client(api_key=api_key)
+    client = genai.Client(
+        api_key=api_key,
+        http_options=types.HttpOptions(timeout=_LLM_REQUEST_TIMEOUT_MS),
+    )
     resp = await asyncio.to_thread(
         client.models.generate_content,
         model=model,
@@ -1625,18 +1730,25 @@ async def _llm_topic_tree_from_cues(
             c_start,
             c_end,
         )
-        part = await _llm_topic_tree_from_theme(
-            theme_title=theme_title,
-            theme_summary=theme_summary,
-            transcript=transcript,
-            search_entity=search_entity,
-            api_key=api_key,
-            model=model,
-            theme_start=c_start,
-            theme_end=c_end,
-            chunk_index=idx,
-            chunk_count=len(chunks),
-        )
+        try:
+            part = await _llm_topic_tree_from_theme(
+                theme_title=theme_title,
+                theme_summary=theme_summary,
+                transcript=transcript,
+                search_entity=search_entity,
+                api_key=api_key,
+                model=model,
+                theme_start=c_start,
+                theme_end=c_end,
+                chunk_index=idx,
+                chunk_count=len(chunks),
+            )
+        except Exception as exc:  # noqa: BLE001
+            # A long talk must not lose every chunk because one request failed.
+            logger.warning(
+                "carousel topic chunk %d/%d failed: %s", idx + 1, len(chunks), exc
+            )
+            continue
         if part:
             parts.append(part)
     if not parts:
@@ -1726,7 +1838,10 @@ async def _llm_topic_tree_from_theme(
         '"subtopics":[{"title":"...","start_sec":0,"end_sec":5,"explanation":"..."}]}\n\n'
         f"Timed transcript (READ ALL OF IT):\n{transcript}"
     )
-    client = genai.Client(api_key=api_key)
+    client = genai.Client(
+        api_key=api_key,
+        http_options=types.HttpOptions(timeout=_LLM_REQUEST_TIMEOUT_MS),
+    )
     resp = await asyncio.to_thread(
         client.models.generate_content,
         model=model,
@@ -1904,7 +2019,9 @@ def _emergency_hook_candidates(
 def _count_empty_hook_sections(tree: list[dict[str, Any]]) -> int:
     n = 0
     for t in tree or []:
-        if not list(t.get("hooks") or []):
+        if not list(t.get("hooks") or []) and not any(
+            list(s.get("hooks") or []) for s in (t.get("subtopics") or [])
+        ):
             n += 1
         for sub in t.get("subtopics") or []:
             if not list(sub.get("hooks") or []):
@@ -1913,7 +2030,7 @@ def _count_empty_hook_sections(tree: list[dict[str, Any]]) -> int:
 
 
 def _drop_empty_hook_sections(tree: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Remove topics/subtopics that still have zero hooks (never ship empty sections)."""
+    """Remove sections with no hooks anywhere, preserving child-only parents."""
     out: list[dict[str, Any]] = []
     for t in tree or []:
         row = dict(t)
@@ -1925,11 +2042,8 @@ def _drop_empty_hook_sections(tree: list[dict[str, Any]]) -> list[dict[str, Any]
         parent_hooks = list(row.get("hooks") or [])
         if not parent_hooks and not subs:
             continue
-        if not parent_hooks and subs:
-            # Promote first subtopic hook up so the parent section isn't empty.
-            first = list(subs[0].get("hooks") or [])[:1]
-            row["hooks"] = [dict(h) for h in first]
-        out.append(row)
+        if parent_hooks or subs:
+            out.append(row)
     return out
 
 
@@ -1941,7 +2055,7 @@ def _ensure_hooks_on_every_section(
     theme_title: str,
     cue_corpus: list[str],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, int]]:
-    """Backfill or drop so every kept topic/subtopic has ≥1 hook."""
+    """Backfill or drop sections with no content without copying hooks."""
     stats = {"pruned": 0, "backfilled": 0}
     kept: list[dict[str, Any]] = []
     hooks_out = list(all_hooks)
@@ -1957,7 +2071,7 @@ def _ensure_hooks_on_every_section(
                 fallback_end=row.get("end_sec"),
             )
             stitched = _stitch_complete_utterances(window) if window else []
-            emerg = _emergency_hook_candidates(stitched or window, limit=2)
+            emerg = _emergency_hook_candidates(stitched or window, limit=4)
             if emerg:
                 crafted = heuristic_craft_hooks(
                     emerg, theme_title=str(row.get("text") or theme_title)
@@ -1973,7 +2087,7 @@ def _ensure_hooks_on_every_section(
                     topic_hooks.append(h)
                     hooks_out.append(h)
                     stats["backfilled"] += 1
-        row["hooks"] = topic_hooks[:2]
+        row["hooks"] = topic_hooks[:5]
 
         # Subtopics: keep only those with hooks; backfill from their window when possible.
         kept_subs: list[dict[str, Any]] = []
@@ -1981,74 +2095,131 @@ def _ensure_hooks_on_every_section(
             s = dict(sub)
             sub_hooks = list(s.get("hooks") or [])
             if not sub_hooks:
-                # Prefer parent hooks that already point at this subtopic.
-                linked = [
-                    h
-                    for h in topic_hooks
-                    if (h.get("subtopic_id") and h.get("subtopic_id") == s.get("id"))
-                    or (
-                        str(h.get("subtopic_text") or "").strip().lower()
-                        == str(s.get("text") or "").strip().lower()
+                sw = _cues_for_topic_ranges(
+                    cues,
+                    {
+                        "start_sec": s.get("start_sec"),
+                        "end_sec": s.get("end_sec"),
+                        "time_ranges": [
+                            {
+                                "start_sec": float(s.get("start_sec") or 0),
+                                "end_sec": s.get("end_sec"),
+                            }
+                        ],
+                    },
+                    fallback_start=float(s.get("start_sec") or 0),
+                    fallback_end=s.get("end_sec"),
+                )
+                emerg = _emergency_hook_candidates(
+                    _stitch_complete_utterances(sw) if sw else sw, limit=3
+                )
+                if emerg:
+                    crafted = heuristic_craft_hooks(
+                        emerg, theme_title=str(s.get("text") or theme_title)
                     )
-                ]
-                if linked:
-                    sub_hooks = [dict(linked[0])]
-                    stats["backfilled"] += 1
-                else:
-                    sw = _cues_for_topic_ranges(
-                        cues,
-                        {
-                            "start_sec": s.get("start_sec"),
-                            "end_sec": s.get("end_sec"),
-                            "time_ranges": [
-                                {
-                                    "start_sec": float(s.get("start_sec") or 0),
-                                    "end_sec": s.get("end_sec"),
-                                }
-                            ],
-                        },
-                        fallback_start=float(s.get("start_sec") or 0),
-                        fallback_end=s.get("end_sec"),
+                    crafted, _ = enforce_non_verbatim_hooks(
+                        crafted,
+                        cue_corpus + [str(c.get("text") or "") for c in emerg],
+                        theme_title=str(s.get("text") or theme_title),
                     )
-                    emerg = _emergency_hook_candidates(
-                        _stitch_complete_utterances(sw) if sw else sw, limit=1
-                    )
-                    if emerg:
-                        crafted = heuristic_craft_hooks(
-                            emerg, theme_title=str(s.get("text") or theme_title)
-                        )
-                        crafted, _ = enforce_non_verbatim_hooks(
-                            crafted,
-                            cue_corpus + [str(c.get("text") or "") for c in emerg],
-                            theme_title=str(s.get("text") or theme_title),
-                        )
-                        if crafted:
-                            h = crafted[0]
-                            h["topic_id"] = row.get("id")
-                            h["topic_text"] = row.get("text")
-                            h["subtopic_id"] = s.get("id")
-                            h["subtopic_text"] = s.get("text")
-                            sub_hooks = [h]
-                            hooks_out.append(h)
-                            stats["backfilled"] += 1
+                    if crafted:
+                        h = crafted[0]
+                        h["topic_id"] = row.get("id")
+                        h["topic_text"] = row.get("text")
+                        h["subtopic_id"] = s.get("id")
+                        h["subtopic_text"] = s.get("text")
+                        sub_hooks = [h]
+                        hooks_out.append(h)
+                        stats["backfilled"] += 1
             if not sub_hooks:
                 stats["pruned"] += 1
                 continue
-            s["hooks"] = sub_hooks[:2]
+            s["hooks"] = sub_hooks[:3]
             kept_subs.append(s)
         row["subtopics"] = kept_subs
 
         if not row["hooks"] and not kept_subs:
             stats["pruned"] += 1
             continue
-        if not row["hooks"] and kept_subs:
-            # Parent must show ≥1 hook — borrow from first subtopic.
-            borrow = list(kept_subs[0].get("hooks") or [])[:1]
-            row["hooks"] = [dict(h) for h in borrow]
-            stats["backfilled"] += 1
         kept.append(row)
 
     return kept, hooks_out, stats
+
+
+def _dedupe_topic_tree_hooks(tree: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep the first unique hook placement across the complete topic tree."""
+    seen_text: set[str] = set()
+    seen_ids: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for topic in tree or []:
+        row = dict(topic)
+        clean_subs: list[dict[str, Any]] = []
+        # A hook explicitly mapped to a child gets first placement there.
+        sections = list(row.get("subtopics") or []) + [row]
+        for section in sections:
+            kept: list[dict[str, Any]] = []
+            for hook in list(section.get("hooks") or []):
+                if not isinstance(hook, dict):
+                    continue
+                text_key = _normalize_hook_cmp(str(hook.get("text") or ""))
+                id_key = str(hook.get("id") or "").strip()
+                if (text_key and text_key in seen_text) or (id_key and id_key in seen_ids):
+                    continue
+                if text_key:
+                    seen_text.add(text_key)
+                if id_key:
+                    seen_ids.add(id_key)
+                kept.append(hook)
+            if section is row:
+                row["hooks"] = kept
+            else:
+                child = dict(section)
+                child["hooks"] = kept
+                if kept:
+                    clean_subs.append(child)
+        row["subtopics"] = clean_subs
+        if row.get("hooks") or clean_subs:
+            out.append(row)
+    return out
+
+
+def _hooks_from_topic_tree(tree: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    hooks: list[dict[str, Any]] = []
+    seen_text: set[str] = set()
+    seen_ids: set[str] = set()
+    for topic in tree or []:
+        for section in [topic, *(topic.get("subtopics") or [])]:
+            for hook in section.get("hooks") or []:
+                text_key = _normalize_hook_cmp(str(hook.get("text") or ""))
+                id_key = str(hook.get("id") or "").strip()
+                if (text_key and text_key in seen_text) or (id_key and id_key in seen_ids):
+                    continue
+                if text_key:
+                    seen_text.add(text_key)
+                if id_key:
+                    seen_ids.add(id_key)
+                hooks.append(hook)
+    return hooks
+
+
+def _dedupe_hook_list(hooks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Deduplicate a flat hook list with the same shipped-tree keys."""
+    out: list[dict[str, Any]] = []
+    seen_text: set[str] = set()
+    seen_ids: set[str] = set()
+    for hook in hooks or []:
+        if not isinstance(hook, dict):
+            continue
+        text_key = _normalize_hook_cmp(str(hook.get("text") or ""))
+        id_key = str(hook.get("id") or "").strip()
+        if (text_key and text_key in seen_text) or (id_key and id_key in seen_ids):
+            continue
+        if text_key:
+            seen_text.add(text_key)
+        if id_key:
+            seen_ids.add(id_key)
+        out.append(hook)
+    return out
 
 
 def _flatten_topic_tree(tree: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -2179,7 +2350,10 @@ async def _llm_hooks_for_singular_topic(
         'Return ONLY JSON array: {"i": number, "hook": "crafted English hook"}.\n\n'
         f"Spoken windows:\n{json.dumps(payload, ensure_ascii=False)}"
     )
-    client = genai.Client(api_key=api_key)
+    client = genai.Client(
+        api_key=api_key,
+        http_options=types.HttpOptions(timeout=_LLM_REQUEST_TIMEOUT_MS),
+    )
     resp = await asyncio.to_thread(
         client.models.generate_content,
         model=model,
@@ -2269,7 +2443,10 @@ async def _llm_topics_from_theme(
         "Return ONLY a JSON array of strings.\n\n"
         f"Theme transcript (READ IT):\n{transcript[:_TOPIC_CHUNK_CHARS]}"
     )
-    client = genai.Client(api_key=api_key)
+    client = genai.Client(
+        api_key=api_key,
+        http_options=types.HttpOptions(timeout=_LLM_REQUEST_TIMEOUT_MS),
+    )
     resp = await asyncio.to_thread(
         client.models.generate_content,
         model=model,
@@ -2392,7 +2569,10 @@ async def deduce_directional_intent(
             f"Entity: {entity or '(none)'}\n"
             f"Hooks (verbatim): {hooks}\nTopics (verbatim): {topics}\n"
         )
-        client = genai.Client(api_key=api_key)
+        client = genai.Client(
+            api_key=api_key,
+            http_options=types.HttpOptions(timeout=_LLM_REQUEST_TIMEOUT_MS),
+        )
         resp = await asyncio.to_thread(
             client.models.generate_content,
             model=model,
@@ -2551,7 +2731,10 @@ async def dedupe_topics_semantic(
         f"Topics:\n{json.dumps(payload, ensure_ascii=False)}"
     )
     try:
-        client = genai.Client(api_key=api_key)
+        client = genai.Client(
+            api_key=api_key,
+            http_options=types.HttpOptions(timeout=_LLM_REQUEST_TIMEOUT_MS),
+        )
         resp = await asyncio.to_thread(
             client.models.generate_content,
             model=model,

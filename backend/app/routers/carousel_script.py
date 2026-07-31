@@ -5,11 +5,13 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+import uuid
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -145,6 +147,122 @@ class PipelineThemesRequest(BaseModel):
 
 SAVE_KIND_TOPICS = "topics_hooks"
 SAVE_KIND_THEMES = "themes"
+SAVE_KIND_CAROUSEL = "carousel"
+CAROUSEL_ALGORITHM_VERSION = "p0-fast-grouped-v1"
+CAROUSEL_STATUS_PROCESSING = "processing"
+CAROUSEL_STATUS_IDLE = "idle"
+
+
+async def _assert_carousel_unlocked(session: AsyncSession, drive_file_id: str) -> DriveFile:
+    """Reject mutations while another carousel generation owns this video."""
+    drive_file = await session.get(DriveFile, drive_file_id.strip())
+    if drive_file is None:
+        raise HTTPException(status_code=404, detail="Video not found")
+    if getattr(drive_file, "carousel_status", CAROUSEL_STATUS_IDLE) == CAROUSEL_STATUS_PROCESSING:
+        raise HTTPException(
+            status_code=409,
+            detail="Carousel generation is locked for this video; wait for it to finish.",
+            headers={"Retry-After": "1"},
+        )
+    return drive_file
+
+
+async def _claim_carousel(
+    session: AsyncSession, drive_file_id: str, input_hash: str | None = None
+) -> str:
+    """Atomically claim one video's carousel pipeline; prevents duplicate jobs."""
+    drive_file_id = drive_file_id.strip()
+    token = uuid.uuid4().hex
+    result = await session.execute(
+        update(DriveFile)
+        .where(
+            DriveFile.id == drive_file_id,
+            DriveFile.carousel_status != CAROUSEL_STATUS_PROCESSING,
+        )
+        .values(
+            carousel_status=CAROUSEL_STATUS_PROCESSING,
+            carousel_lock_token=token,
+            carousel_lock_input_hash=input_hash,
+            carousel_locked_at=datetime.now(timezone.utc),
+        )
+    )
+    if not result.rowcount:
+        if await session.get(DriveFile, drive_file_id) is None:
+            raise HTTPException(status_code=404, detail="Video not found")
+        raise HTTPException(
+            status_code=409,
+            detail="Carousel generation is locked for this video; wait for it to finish.",
+            headers={"Retry-After": "1"},
+        )
+    await session.commit()
+    return token
+
+
+async def _release_carousel(session: AsyncSession, drive_file_id: str, token: str) -> None:
+    await session.execute(
+        update(DriveFile)
+        .where(DriveFile.id == drive_file_id, DriveFile.carousel_lock_token == token)
+        .values(
+            carousel_status=CAROUSEL_STATUS_IDLE,
+            carousel_lock_token=None,
+            carousel_lock_input_hash=None,
+            carousel_locked_at=None,
+        )
+    )
+    await session.commit()
+
+
+def carousel_input_hash(drive_file_id: str, payload: dict[str, Any]) -> str:
+    """Stable cache key for a complete artifact, independent of dict ordering."""
+    import json
+
+    raw = json.dumps(
+        {"drive_file_id": drive_file_id.strip(), "payload": payload},
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return hashlib.sha256(raw.encode("utf-8", errors="ignore")).hexdigest()
+
+
+async def _persist_carousel_artifact(
+    session: AsyncSession,
+    *,
+    drive_file_id: str,
+    payload: dict[str, Any],
+    source: str,
+    layout_mode: str = "single_1",
+) -> CarouselGenerationSave | None:
+    """Persist a ready, deterministic artifact for the cache-first endpoint."""
+    safe_payload = _jsonb_safe(payload)
+    input_hash = carousel_input_hash(drive_file_id, safe_payload)
+    existing = await session.scalar(
+        select(CarouselGenerationSave)
+        .where(
+            CarouselGenerationSave.drive_file_id == drive_file_id,
+            CarouselGenerationSave.kind == SAVE_KIND_CAROUSEL,
+            CarouselGenerationSave.input_hash == input_hash,
+        )
+        .order_by(CarouselGenerationSave.created_at.desc())
+    )
+    if existing is not None:
+        return existing
+    save = CarouselGenerationSave(
+        drive_file_id=drive_file_id,
+        kind=SAVE_KIND_CAROUSEL,
+        label=str(payload.get("title") or "Carousel")[:240],
+        status="ready",
+        input_hash=input_hash,
+        layout_mode=layout_mode if layout_mode in {"single_1", "split_2"} else "single_1",
+        copy_version=1,
+        algorithm_version=CAROUSEL_ALGORITHM_VERSION,
+        source=source,
+        payload=safe_payload,
+    )
+    session.add(save)
+    await session.commit()
+    await session.refresh(save)
+    return save
 
 
 def _themes_transcript_hash(cues: list[Any]) -> str:
@@ -201,6 +319,8 @@ class TimedPick(BaseModel):
     # Parent topic association (hooks) — used to expand one-carousel-per-topic seeds.
     topic_id: str | None = Field(default=None, max_length=64)
     topic_text: str | None = Field(default=None, max_length=400)
+    # Spoken seed window that produced the crafted hook (for slide relevance).
+    original_text: str | None = Field(default=None, max_length=800)
     # Non-contiguous topic threads (from topic_tree time_ranges).
     time_ranges: list[TimedRange] = Field(default_factory=list, max_length=12)
 
@@ -240,6 +360,23 @@ class CarouselSaveBody(BaseModel):
     intent: str | None = None
     intent_score: float | None = None
     themes: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class CarouselArtifactCopyBody(BaseModel):
+    drive_file_id: str = Field(..., min_length=1, max_length=128)
+    save_id: int | None = None
+    layout_mode: str = Field(default="single_1", pattern="^(single_1|split_2)$")
+    slides: list[dict[str, Any]] = Field(default_factory=list, max_length=24)
+    theme: dict[str, Any] = Field(default_factory=dict)
+    references: list[dict[str, Any]] = Field(default_factory=list, max_length=32)
+
+
+class CarouselSlideRegenerateBody(BaseModel):
+    drive_file_id: str = Field(..., min_length=1, max_length=128)
+    save_id: int | None = None
+    carousel_id: str = Field(default="", max_length=128)
+    slide_index: int = Field(..., ge=0, le=24)
+    slide: dict[str, Any] = Field(default_factory=dict)
 
 
 class CarouselShuffleBody(BaseModel):
@@ -376,11 +513,32 @@ async def generate_script(body: ScriptRequest) -> dict[str, Any]:
         "Write the next script draft only (no preamble)."
     )
 
-    if not settings.gemini_api_key:
+    claude_key = settings.anthropic_api_key or settings.claude_api_key
+    if not settings.gemini_api_key and not claude_key:
         draft = _fallback_script(body.prompt, hook_labels, topic_labels, body.snapshot)
         return {"source": "fallback", "script": draft, "hooks": hook_labels, "topics": topic_labels}
 
     try:
+        if claude_key:
+            from anthropic import Anthropic
+
+            def generate_claude() -> str:
+                client = Anthropic(api_key=claude_key)
+                resp = client.messages.create(
+                    model=settings.claude_model,
+                    max_tokens=1200,
+                    temperature=0.75,
+                    system=system,
+                    messages=[{"role": "user", "content": user_prompt}],
+                )
+                return "".join(
+                    block.text for block in resp.content if getattr(block, "type", "") == "text"
+                ).strip()
+
+            text = await __import__("asyncio").to_thread(generate_claude)
+            if text:
+                return {"source": "claude", "script": text, "hooks": hook_labels, "topics": topic_labels}
+
         from google import genai
         from google.genai import types
 
@@ -618,6 +776,10 @@ async def carousel_pipeline_themes(
     # matches a known Person row used for presence check below.
     explicit_person = (body.person_name or "").strip()
     drive_file, cues = await _load_video_cues(session, body.drive_file_id.strip())
+    # A forced theme regeneration is a mutation and must not race generation.
+    # Cache reads remain available through GET /pipeline/carousel.
+    if body.force:
+        await _assert_carousel_unlocked(session, drive_file.id)
 
     check_name = explicit_person
     if not check_name and (body.search_entity or "").strip():
@@ -718,6 +880,8 @@ async def carousel_pipeline_themes(
         search_entity=None,
         api_key=settings.gemini_api_key,
         model=settings.gemini_model,
+        claude_api_key=settings.anthropic_api_key or settings.claude_api_key,
+        claude_model=settings.claude_model,
     )
     result: dict[str, Any] = {
         "source": source,
@@ -985,15 +1149,15 @@ async def carousel_pipeline_extract(
             {
                 **save_body,
                 "themes": [s.model_dump() for s in slices],
-                "selected_hooks": [h["text"] for h in hooks[:3]],
-                "selected_topics": [
-                    t["text"] for t in topics if not t.get("is_subtopic")
-                ][:3],
+                # Selection is user-driven only; never pre-pick on the client's behalf.
+                "selected_hooks": [],
+                "selected_topics": [],
             }
         )
         save = CarouselGenerationSave(
             drive_file_id=drive_file.id,
             kind=SAVE_KIND_TOPICS,
+            source="extract_autosave",
             theme_key=theme_key,
             label=_jsonb_safe(combined_title or "Topics & hooks")[:240],
             payload=save_payload,
@@ -1061,7 +1225,7 @@ def _jsonb_safe(value: Any) -> Any:
 async def list_carousel_saves(
     drive_file_id: str,
     limit: int = 20,
-    kind: str = Query(default=SAVE_KIND_TOPICS, pattern="^(topics_hooks|themes)$"),
+    kind: str = Query(default=SAVE_KIND_TOPICS, pattern="^(topics_hooks|themes|carousel)$"),
     session: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     """Previous autosaved generations for a video (filter by kind)."""
@@ -1087,6 +1251,10 @@ async def list_carousel_saves(
                 "source": r.source,
                 "model": r.model,
                 "transcript_hash": r.transcript_hash,
+                "status": getattr(r, "status", "ready"),
+                "input_hash": getattr(r, "input_hash", None),
+                "layout_mode": getattr(r, "layout_mode", "single_1"),
+                "copy_version": getattr(r, "copy_version", 1),
                 "hook_count": len((r.payload or {}).get("hooks") or []),
                 "topic_count": len(
                     (r.payload or {}).get("topic_tree")
@@ -1118,8 +1286,212 @@ async def get_carousel_save(
         "source": row.source,
         "model": row.model,
         "transcript_hash": row.transcript_hash,
+        "status": getattr(row, "status", "ready"),
+        "input_hash": getattr(row, "input_hash", None),
+        "layout_mode": getattr(row, "layout_mode", "single_1"),
+        "copy_version": getattr(row, "copy_version", 1),
+        "algorithm_version": getattr(row, "algorithm_version", "p0"),
         "payload": row.payload or {},
     }
+
+
+@router.get("/pipeline/carousel")
+async def get_cached_carousel(
+    drive_file_id: str,
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Cache-first artifact endpoint; never runs frame selection."""
+    row = await session.scalar(
+        select(CarouselGenerationSave)
+        .where(
+            CarouselGenerationSave.drive_file_id == drive_file_id.strip(),
+            CarouselGenerationSave.kind == SAVE_KIND_CAROUSEL,
+            CarouselGenerationSave.status == "ready",
+        )
+        .order_by(CarouselGenerationSave.created_at.desc())
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Carousel artifact not ready")
+    return {
+        "id": row.id,
+        "status": row.status,
+        "layout_mode": row.layout_mode,
+        "copy_version": row.copy_version,
+        "algorithm_version": row.algorithm_version,
+        "input_hash": row.input_hash,
+        **(row.payload or {}),
+    }
+
+
+@router.get("/pipeline/status")
+async def get_carousel_pipeline_status(
+    drive_file_id: str,
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Cheap lock/cache status read used while the UI polls generation."""
+    row = await session.get(DriveFile, drive_file_id.strip())
+    if row is None:
+        raise HTTPException(status_code=404, detail="Video not found")
+    artifact = await session.scalar(
+        select(CarouselGenerationSave.id)
+        .where(
+            CarouselGenerationSave.drive_file_id == row.id,
+            CarouselGenerationSave.kind == SAVE_KIND_CAROUSEL,
+            CarouselGenerationSave.status == "ready",
+        )
+        .order_by(CarouselGenerationSave.created_at.desc())
+    )
+    return {
+        "drive_file_id": row.id,
+        "status": getattr(row, "carousel_status", CAROUSEL_STATUS_IDLE),
+        "locked": getattr(row, "carousel_status", CAROUSEL_STATUS_IDLE)
+        == CAROUSEL_STATUS_PROCESSING,
+        "ready_artifact_id": artifact,
+    }
+
+
+@router.post("/pipeline/carousel/copy")
+async def save_carousel_copy(
+    body: CarouselArtifactCopyBody,
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    token = await _claim_carousel(session, body.drive_file_id)
+    try:
+        return await _save_carousel_copy_impl(body, session)
+    finally:
+        await _release_carousel(session, body.drive_file_id.strip(), token)
+
+
+async def _save_carousel_copy_impl(
+    body: CarouselArtifactCopyBody,
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Save theme/copy edits by reusing ranked slides from the current artifact."""
+    current = await session.scalar(
+        select(CarouselGenerationSave)
+        .where(
+            CarouselGenerationSave.drive_file_id == body.drive_file_id.strip(),
+            CarouselGenerationSave.kind == SAVE_KIND_CAROUSEL,
+            CarouselGenerationSave.status == "ready",
+        )
+        .order_by(CarouselGenerationSave.created_at.desc())
+    )
+    if current is None:
+        raise HTTPException(status_code=404, detail="Carousel artifact not ready")
+    payload = dict(current.payload or {})
+    payload["slides"] = _jsonb_safe(body.slides or payload.get("slides") or [])
+    payload["theme"] = _jsonb_safe(body.theme)
+    payload["references"] = _jsonb_safe(body.references)
+    # Keep the prior ready artifact immutable. Layout/copy edits are a cheap
+    # new version and reuse all existing frame URLs.
+    payload["layout_mode"] = body.layout_mode
+    next_version = int(current.copy_version or 1) + 1
+    next_hash = carousel_input_hash(body.drive_file_id, payload)
+    existing = await session.scalar(
+        select(CarouselGenerationSave)
+        .where(
+            CarouselGenerationSave.drive_file_id == body.drive_file_id.strip(),
+            CarouselGenerationSave.kind == SAVE_KIND_CAROUSEL,
+            CarouselGenerationSave.input_hash == next_hash,
+        )
+        .order_by(CarouselGenerationSave.created_at.desc())
+    )
+    if existing is not None:
+        return {
+            "id": existing.id,
+            "copy_version": existing.copy_version,
+            "layout_mode": existing.layout_mode,
+            "cache_hit": True,
+        }
+    replacement = CarouselGenerationSave(
+        drive_file_id=body.drive_file_id.strip(),
+        kind=SAVE_KIND_CAROUSEL,
+        label=current.label,
+        status="ready",
+        input_hash=next_hash,
+        layout_mode=body.layout_mode,
+        copy_version=next_version,
+        algorithm_version=current.algorithm_version,
+        source="copy_edit",
+        payload=payload,
+    )
+    session.add(replacement)
+    await session.commit()
+    await session.refresh(replacement)
+    return {
+        "id": replacement.id,
+        "copy_version": replacement.copy_version,
+        "layout_mode": replacement.layout_mode,
+        "cache_hit": False,
+    }
+
+
+@router.post("/pipeline/carousel/slide/regenerate")
+async def regenerate_carousel_slide(
+    body: CarouselSlideRegenerateBody,
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Re-select one frame and publish a new immutable artifact version."""
+    token = await _claim_carousel(session, body.drive_file_id)
+    try:
+        current = await session.scalar(
+            select(CarouselGenerationSave)
+            .where(
+                CarouselGenerationSave.id == body.save_id
+                if body.save_id
+                else CarouselGenerationSave.drive_file_id == body.drive_file_id.strip(),
+                CarouselGenerationSave.kind == SAVE_KIND_CAROUSEL,
+                CarouselGenerationSave.status == "ready",
+            )
+            .order_by(CarouselGenerationSave.created_at.desc())
+        )
+        if current is None:
+            raise HTTPException(status_code=404, detail="Carousel artifact not ready")
+        payload = dict(current.payload or {})
+        carousels = [dict(c) for c in (payload.get("carousels") or [])]
+        target_car = next(
+            (c for c in carousels if not body.carousel_id or c.get("id") == body.carousel_id),
+            None,
+        )
+        if target_car is None:
+            target_car = {"id": body.carousel_id or "carousel_1", "slides": payload.get("slides") or []}
+            carousels = [target_car]
+        slides = list(target_car.get("slides") or [])
+        if body.slide_index >= len(slides):
+            raise HTTPException(status_code=400, detail="slide_index is outside the artifact")
+        candidate = dict(slides[body.slide_index])
+        candidate.update(_jsonb_safe(body.slide))
+        polished = await _polish_outline_frames([candidate], session)
+        await _prewarm_carousel_frames([{"slides": polished}], session, get_settings())
+        slides[body.slide_index] = polished[0]
+        target_car["slides"] = slides
+        target_car["slide_count"] = len(slides)
+        payload["carousels"] = carousels
+        if carousels and carousels[0] is target_car:
+            payload["slides"] = slides
+        payload["images_ready"] = True
+        replacement = CarouselGenerationSave(
+            drive_file_id=body.drive_file_id.strip(),
+            kind=SAVE_KIND_CAROUSEL,
+            label=current.label,
+            status="ready",
+            input_hash=carousel_input_hash(body.drive_file_id, payload),
+            layout_mode=current.layout_mode,
+            copy_version=int(current.copy_version or 1) + 1,
+            algorithm_version=current.algorithm_version,
+            source="slide_regenerate",
+            payload=_jsonb_safe(payload),
+        )
+        session.add(replacement)
+        await session.commit()
+        await session.refresh(replacement)
+        return {
+            "id": replacement.id,
+            "copy_version": replacement.copy_version,
+            "slide": slides[body.slide_index],
+        }
+    finally:
+        await _release_carousel(session, body.drive_file_id.strip(), token)
 
 
 @router.post("/pipeline/saves")
@@ -1131,6 +1503,7 @@ async def create_carousel_save(
     save = CarouselGenerationSave(
         drive_file_id=body.drive_file_id.strip(),
         kind=SAVE_KIND_TOPICS,
+        source="user_save",
         theme_key=(body.theme_key or "")[:256],
         label=_jsonb_safe(body.label or "Topics & hooks")[:240],
         payload=_jsonb_safe(
@@ -1408,14 +1781,21 @@ async def _load_video_cues(
         return drive_file, []
     seg_result = await session.execute(
         select(VideoSegment)
-        .where(VideoSegment.media_id == media.id, VideoSegment.text != "")
+        .where(
+            VideoSegment.media_id == media.id,
+            or_(VideoSegment.text != "", VideoSegment.vlm_description != ""),
+        )
         .order_by(VideoSegment.start_sec)
     )
     segments = list(seg_result.scalars().all())
     cues = [
-        (float(s.start_sec), float(s.end_sec) if s.end_sec is not None else None, s.text or "")
+        (
+            float(s.start_sec),
+            float(s.end_sec) if s.end_sec is not None else None,
+            (s.text or "").strip() or (s.vlm_description or "").strip(),
+        )
         for s in segments
-        if (s.text or "").strip()
+        if (s.text or "").strip() or (s.vlm_description or "").strip()
     ]
     return drive_file, cues
 
@@ -1537,6 +1917,18 @@ async def match_carousel_cues(body: CueMatchRequest) -> dict[str, Any]:
 
 @router.post("/pipeline/generate")
 async def carousel_pipeline_generate(
+    body: CarouselGenerateRequest,
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    drive_file_id = body.drive_file_id.strip()
+    token = await _claim_carousel(session, drive_file_id)
+    try:
+        return await _carousel_pipeline_generate_impl(body, session)
+    finally:
+        await _release_carousel(session, drive_file_id, token)
+
+
+async def _carousel_pipeline_generate_impl(
     body: CarouselGenerateRequest,
     session: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
@@ -1663,8 +2055,6 @@ async def carousel_pipeline_generate(
                 reserved_starts.add(round(float(s.get("timestamp_sec") or 0), 1))
             except (TypeError, ValueError):
                 pass
-        if select_images:
-            slides = await _polish_outline_frames(slides, session)
         base = video_name.rsplit(".", 1)[0] if "." in video_name else video_name
         hook_label = _complete_line((hook.text or "Hook").strip(), max_len=72)
         title = _complete_line(f"{base} — {hook_label}", max_len=160)
@@ -1697,9 +2087,26 @@ async def carousel_pipeline_generate(
         model=settings.gemini_model,
         used_english_track=used_english_track,
     )
+    if select_images:
+        # One grouped frame pass for all carousel slides; the selector itself
+        # enforces the hard three-request Gemini cap.
+        flat_slides = [
+            slide
+            for carousel in carousels
+            for slide in (carousel.get("slides") or [])
+        ]
+        polished = await _polish_outline_frames(flat_slides, session)
+        cursor = 0
+        for carousel in carousels:
+            count = len(carousel.get("slides") or [])
+            carousel["slides"] = polished[cursor : cursor + count]
+            carousel["slide_count"] = count
+            cursor += count
+    _attach_layout_panels(carousels)
+    frames_prewarmed = await _prewarm_carousel_frames(carousels, session, settings)
 
     primary = carousels[0]
-    return {
+    result = {
         "source": "hook_oneline_carousels",
         "title": primary["title"],
         "slide_count": primary["slide_count"],
@@ -1709,13 +2116,48 @@ async def carousel_pipeline_generate(
         "carousels": carousels,
         "carousel_count": len(carousels),
         "images_ready": select_images,
+        "frames_prewarmed": frames_prewarmed,
         "intent": (body.intent or "").strip() or None,
         "transcript_language": translate_meta,
+        "layouts": {
+            "single_1": {
+                "layout_mode": "single_1",
+                "carousels": _layout_carousels(carousels, split=False),
+            },
+            "split_2": {
+                "layout_mode": "split_2",
+                "carousels": _layout_carousels(carousels, split=True),
+            },
+        },
     }
+    try:
+        save = await _persist_carousel_artifact(
+            session,
+            drive_file_id=drive_file_id,
+            payload=result,
+            source="generate",
+        )
+        result["save_id"] = save.id if save else None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("carousel artifact save failed: %s", exc)
+        await session.rollback()
+    return result
 
 
 @router.post("/pipeline/select-images")
 async def carousel_pipeline_select_images(
+    body: CarouselSelectImagesBody,
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    drive_file_id = body.drive_file_id.strip()
+    token = await _claim_carousel(session, drive_file_id)
+    try:
+        return await _carousel_pipeline_select_images_impl(body, session)
+    finally:
+        await _release_carousel(session, drive_file_id, token)
+
+
+async def _carousel_pipeline_select_images_impl(
     body: CarouselSelectImagesBody,
     session: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
@@ -1727,10 +2169,11 @@ async def carousel_pipeline_select_images(
     if not raw:
         raise HTTPException(status_code=400, detail="No carousels to polish")
 
-    polished: list[dict[str, Any]] = []
+    polished: list[dict[str, Any]] = [dict(car) for car in raw]
     quality_rollup: list[dict[str, Any]] = []
-    for car in raw:
-        item = dict(car)
+    all_slides: list[dict[str, Any]] = []
+    slide_locations: list[tuple[int, int]] = []
+    for car_index, item in enumerate(polished):
         slides = list(item.get("slides") or [])
         # Align frame search windows to (possibly edited) transcript timing/text.
         for s in slides:
@@ -1740,14 +2183,28 @@ async def carousel_pipeline_select_images(
                 s["transcript_text"] = edited
                 s["hook_line"] = edited
                 s["snippet"] = edited
-        slides = await _polish_outline_frames(slides, session)
-        for s in slides:
-            if isinstance(s.get("frame_quality"), dict):
-                quality_rollup.append(s["frame_quality"])
+            slide_locations.append((car_index, len(all_slides)))
+            all_slides.append(s)
+
+    # Harvest all slides locally and rank in grouped requests. This keeps the
+    # default image pass at the hard three-call Gemini cap even with several
+    # carousel tabs.
+    selected_slides = await _polish_outline_frames(all_slides, session)
+    for s in selected_slides:
+        if isinstance(s.get("frame_quality"), dict):
+            quality_rollup.append(s["frame_quality"])
+    for (car_index, flat_index), slide in zip(slide_locations, selected_slides):
+        car_slides = polished[car_index].setdefault("slides", [])
+        local_index = sum(1 for c, _ in slide_locations[:flat_index] if c == car_index)
+        if local_index < len(car_slides):
+            car_slides[local_index] = slide
+    for item in polished:
+        slides = list(item.get("slides") or [])
+        _attach_layout_panels([{"slides": slides}])
+        await _prewarm_carousel_frames([{"slides": slides}], session, get_settings())
         item["slides"] = slides
         item["slide_count"] = len(slides)
         item["images_ready"] = True
-        polished.append(item)
 
     rejected: dict[str, int] = {}
     candidates = kept = 0
@@ -1758,15 +2215,26 @@ async def carousel_pipeline_select_images(
             rejected[str(k)] = rejected.get(str(k), 0) + int(v or 0)
 
     primary = polished[0]
-    return {
+    result = {
         "source": "select_images",
         "drive_file_id": drive_file_id,
         "carousels": polished,
         "carousel_count": len(polished),
         "images_ready": True,
+        "frames_prewarmed": True,
         "title": primary.get("title"),
         "slides": primary.get("slides") or [],
         "slide_count": primary.get("slide_count") or 0,
+        "layouts": {
+            "single_1": {
+                "layout_mode": "single_1",
+                "carousels": _layout_carousels(polished, split=False),
+            },
+            "split_2": {
+                "layout_mode": "split_2",
+                "carousels": _layout_carousels(polished, split=True),
+            },
+        },
         "quality": {
             "candidates": candidates,
             "kept": kept,
@@ -1774,6 +2242,18 @@ async def carousel_pipeline_select_images(
             "slides_polished": sum(len(c.get("slides") or []) for c in polished),
         },
     }
+    try:
+        save = await _persist_carousel_artifact(
+            session,
+            drive_file_id=drive_file_id,
+            payload=result,
+            source="select_images",
+        )
+        result["save_id"] = save.id if save else None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("selected carousel artifact save failed: %s", exc)
+        await session.rollback()
+    return result
 
 
 def _expand_carousel_seeds(
@@ -1908,9 +2388,6 @@ def _beats_for_topic(
         line = (text or "").strip()
         if not line:
             return False
-        # Never ship topic/subtopic labels as editable slide copy.
-        if kind == "topic":
-            kind = "hook"
         s = float(start)
         # Avoid near-duplicate frames; keep a tighter stride than before so we can fit more slides.
         if any(abs(s - prev) < 1.0 for prev in used_ts):
@@ -1986,6 +2463,17 @@ def _beats_for_topic(
                 if add_moment(line, s, end if end is not None else e, "transcript"):
                     filled += 1
 
+    # A topic can be selected without any crafted hooks. Keep the carousel
+    # useful by creating distinct, time-spread transcript-context beats.
+    if len(moments) < min_slides and not hook_pool:
+        needed = min(max_slides, min_slides) - len(moments)
+        span = max(win_end - win_start, max(6.0, (needed + 1) * 1.75))
+        stride = span / max(needed + 1, 2)
+        for i in range(needed):
+            s = round(win_start + stride * (i + 1), 2)
+            line = f"Transcript context at {s:.1f}s"
+            add_moment(line, s, round(s + min(3.0, stride), 2), "transcript")
+
     # Last resort: cycle selected hooks if still short (same text, distinct times).
     if len(moments) < min_slides and hook_pool:
         i = 0
@@ -2056,8 +2544,6 @@ def _beats_for_mixed_topics(
         line = (text or "").strip()
         if not line:
             return
-        if kind == "topic":
-            kind = "hook"
         s = float(start)
         if any(abs(s - float(m.timestamp_sec or 0)) < 1.5 for m in moments):
             return
@@ -2078,6 +2564,10 @@ def _beats_for_mixed_topics(
         for h in hooks
         if g_start - 1.0 <= float(h.start_sec or 0) <= g_end + 1.0
     ]
+    # Preserve topic provenance for mixed carousels; hooks remain the
+    # preferred editable copy when available.
+    for topic in group:
+        add(topic.text, float(topic.start_sec or 0), topic.end_sec, "topic")
     # Prefer hooks whose parent topic is in this mixed group.
     group_keys = {" ".join((t.text or "").lower().split()) for t in group}
     group_ids = {t.id for t in group if t.id}
@@ -2183,6 +2673,7 @@ async def _polish_outline_frames(
 
     settings = get_settings()
     if not settings.gemini_api_key or not slides:
+        from app.search.carousel_frame_select import focal_point_for_slide
         for s in slides:
             s.setdefault("frame_source", "heuristic")
             s.setdefault("instagram_ready", False)
@@ -2191,12 +2682,55 @@ async def _polish_outline_frames(
                     float(s.get("timestamp_sec") or 0),
                     s.get("end_timestamp_sec"),
                 )
+            ts = float(s.get("frame_ts") or 0)
+            fx, fy, fs = focal_point_for_slide(s, ts)
+            s.setdefault("focal_x", fx)
+            s.setdefault("focal_y", fy)
+            s.setdefault("front_face_score", fs)
         return slides
 
     async def ensure_frame(drive_file_id: str, ts: float) -> bytes | None:
         return await _ensure_outline_frame_bytes(drive_file_id, ts, session, settings)
 
     try:
+        # Feed indexed InsightFace detections into the local candidate scorer.
+        # Older rows have no yaw; confidence and normalized box area still
+        # provide a useful front-facing/portrait prior.
+        face_rows: dict[str, list[dict[str, Any]]] = {}
+        for fid in {str(s.get("drive_file_id") or "") for s in slides}:
+            if not fid:
+                continue
+            media = await session.scalar(select(Media).where(Media.drive_file_id == fid))
+            if media is None:
+                continue
+            faces = list(
+                (
+                    await session.execute(
+                        select(Face).where(
+                            Face.media_id == media.id,
+                            Face.frame_timestamp.is_not(None),
+                        )
+                    )
+                ).scalars().all()
+            )
+            face_rows[fid] = [
+                {
+                    "timestamp_sec": f.frame_timestamp,
+                    "bbox_x": f.bbox_x,
+                    "bbox_y": f.bbox_y,
+                    "bbox_width": f.bbox_width,
+                    "bbox_height": f.bbox_height,
+                    "detection_confidence": f.detection_confidence,
+                    "yaw": getattr(f, "yaw", None),
+                    "pitch": getattr(f, "pitch", None),
+                    "roll": getattr(f, "roll", None),
+                }
+                for f in faces
+            ]
+        for slide in slides:
+            fid = str(slide.get("drive_file_id") or "")
+            if face_rows.get(fid):
+                slide["faces"] = face_rows[fid]
         return await polish_slides_instagram_frames(
             slides,
             thumbnail_dir=str(settings.thumbnail_dir),
@@ -2212,6 +2746,132 @@ async def _polish_outline_frames(
             s.setdefault("frame_source", "heuristic")
             s.setdefault("instagram_ready", False)
         return slides
+
+
+async def _prewarm_carousel_frames(
+    carousels: list[dict[str, Any]],
+    session: AsyncSession,
+    settings,
+) -> bool:
+    """Materialize every selected carousel JPEG before publishing a ready artifact."""
+    from app.search.carousel_frame_select import cached_frame_path
+
+    missing: list[str] = []
+    for carousel in carousels:
+        carousel_missing = False
+        frame_items = list(carousel.get("slides") or [])
+        for slide in frame_items:
+            frame_items.extend(slide.get("panels") or [])
+            frame_items.extend(slide.get("_split_panels") or [])
+        for slide in frame_items:
+            fid = str(slide.get("drive_file_id") or "").strip()
+            if not fid:
+                missing.append("missing drive_file_id")
+                carousel_missing = True
+                continue
+            ts = slide.get("frame_ts")
+            if ts is None:
+                ts = _frame_ts(float(slide.get("timestamp_sec") or 0), slide.get("end_timestamp_sec"))
+                slide["frame_ts"] = ts
+            data = await _ensure_outline_frame_bytes(fid, float(ts), session, settings)
+            if not data:
+                missing.append(f"{fid}@{float(ts):.3f}")
+                carousel_missing = True
+                continue
+            path = cached_frame_path(str(settings.thumbnail_dir), fid, float(ts))
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if not path.is_file():
+                path.write_bytes(data)
+            slide["preview_url"] = f"/media/video/{fid}/frame?ts={float(ts):.3f}&cache_only=1"
+        carousel["frames_prewarmed"] = not carousel_missing
+    if missing:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Could not prewarm carousel frames ({len(missing)} missing)",
+        )
+    return True
+
+
+def _split_exact_caption_lines(text: str) -> tuple[str, str]:
+    """Split existing transcript/copy only; never synthesize panel wording."""
+    import re
+
+    cleaned = " ".join((text or "").split()).strip()
+    if not cleaned:
+        return "", ""
+    parts = [p.strip() for p in re.split(r"(?<=[.!?])\s+", cleaned) if p.strip()]
+    if len(parts) >= 2:
+        return parts[0], " ".join(parts[1:])
+    return cleaned, cleaned
+
+
+def _attach_layout_panels(carousels: list[dict[str, Any]]) -> None:
+    """Attach cache-backed single and two-panel layout metadata to slides."""
+    from app.search.carousel_frame_select import focal_point_for_slide
+
+    for carousel in carousels:
+        for slide in carousel.get("slides") or []:
+            fid = str(slide.get("drive_file_id") or "")
+            start = float(slide.get("timestamp_sec") or 0)
+            end = slide.get("end_timestamp_sec")
+            try:
+                end_f = float(end) if end is not None else start
+            except (TypeError, ValueError):
+                end_f = start
+            selected_ts = float(slide.get("frame_ts") or _frame_ts(start, end_f))
+            alternate = round(end_f if abs(end_f - selected_ts) >= 0.45 else start, 3)
+            if abs(alternate - selected_ts) < 0.01:
+                alternate = round(selected_ts + 0.5, 3)
+            text = str(
+                slide.get("transcript_text")
+                or slide.get("hook_line")
+                or slide.get("snippet")
+                or ""
+            )
+            top, bottom = _split_exact_caption_lines(text)
+            fx, fy, fs = focal_point_for_slide(slide, selected_ts)
+            ax, ay, afs = focal_point_for_slide(slide, alternate)
+            def panel(ts: float, caption: str, px: float, py: float, score: float) -> dict[str, Any]:
+                return {
+                    "drive_file_id": fid,
+                    "frame_ts": ts,
+                    "preview_url": (
+                        f"/media/video/{fid}/frame?ts={ts:.3f}&cache_only=1"
+                        if fid else None
+                    ),
+                    "caption": caption[:400] or None,
+                    "focal_x": px,
+                    "focal_y": py,
+                    "front_face_score": score,
+                }
+            # single_1 is represented by one panel and the existing bottom
+            # caption; split_2 is materialized in the artifact layouts below.
+            slide["panels"] = [panel(selected_ts, bottom, fx, fy, fs)]
+            slide["_split_panels"] = [
+                panel(selected_ts, top, fx, fy, fs),
+                panel(alternate, bottom, ax, ay, afs),
+            ]
+
+
+def _layout_carousels(
+    carousels: list[dict[str, Any]], *, split: bool
+) -> list[dict[str, Any]]:
+    """Make a JSON-safe layout view without mutating the single layout."""
+    out: list[dict[str, Any]] = []
+    for carousel in carousels:
+        item = dict(carousel)
+        slides: list[dict[str, Any]] = []
+        for raw in carousel.get("slides") or []:
+            slide = {k: v for k, v in raw.items() if k != "_split_panels"}
+            if split:
+                slide["panels"] = list(raw.get("_split_panels") or raw.get("panels") or [])[:2]
+            else:
+                slide["panels"] = list(raw.get("panels") or [])[:1]
+            slides.append(slide)
+        item["slides"] = slides
+        item["slide_count"] = len(slides)
+        out.append(item)
+    return out
 
 
 async def _ensure_outline_frame_bytes(
@@ -2261,7 +2921,7 @@ def _frame_preview_url(drive_file_id: str, start: float, end: float | None) -> s
     fid = (drive_file_id or "").strip()
     if not fid:
         return None
-    return f"/media/video/{fid}/frame?ts={_frame_ts(start, end)}"
+    return f"/media/video/{fid}/frame?ts={_frame_ts(start, end)}&cache_only=1"
 
 
 def _translate_cache_path() -> str:
@@ -2662,18 +3322,65 @@ def _is_reserved_line(
     return False
 
 
+# Content stopwords for hook↔cue relevance (Latin). Keep small; Devanagari tokens pass through.
+_HOOK_RELEVANCE_STOP = frozenset(
+    {
+        "the", "a", "an", "and", "or", "to", "of", "in", "on", "for", "with", "is", "are",
+        "that", "this", "it", "as", "at", "by", "from", "be", "you", "your", "have", "has",
+        "had", "was", "were", "will", "would", "can", "could", "should", "about", "into",
+        "they", "their", "them", "what", "when", "where", "which", "who", "how", "why",
+        "not", "but", "our", "out", "all", "any", "more", "most", "some", "than", "then",
+        "there", "these", "those", "been", "being", "just", "also", "very", "really",
+    }
+)
+
+
+def _content_tokens(blob: str, *, min_len: int = 3) -> set[str]:
+    """Tokenize for relevance; drop stopwords and very short tokens."""
+    out: set[str] = set()
+    for t in re.findall(r"[a-z0-9\u0900-\u097f]+", (blob or "").lower()):
+        if t in _HOOK_RELEVANCE_STOP:
+            continue
+        if len(t) < min_len:
+            continue
+        # Prefer content words (≥4 Latin chars); keep shorter only if not stopword.
+        if re.fullmatch(r"[a-z0-9]+", t) and len(t) < 4:
+            continue
+        out.add(t)
+    return out
+
+
 def _hook_token_set(hook: "TimedPick") -> set[str]:
-    blob = f"{hook.text or ''} {getattr(hook, 'topic_text', None) or ''}"
-    return set(re.findall(r"[a-z0-9\u0900-\u097f]{3,}", blob.lower()))
+    """Union crafted hook + topic + spoken seed so rewrites still match transcript cues."""
+    # Weight spoken seed by including it twice conceptually via union with crafted text;
+    # original_text carries the vocabulary that exact slides share.
+    blob = " ".join(
+        filter(
+            None,
+            [
+                hook.text or "",
+                getattr(hook, "topic_text", None) or "",
+                getattr(hook, "original_text", None) or "",
+            ],
+        )
+    )
+    return _content_tokens(blob, min_len=3)
 
 
 def _cue_relevance(text: str, hook_toks: set[str]) -> float:
+    """Stopword-aware overlap; soft boost when at least one content token hits."""
     if not hook_toks:
         return 0.0
-    toks = set(re.findall(r"[a-z0-9\u0900-\u097f]{3,}", (text or "").lower()))
+    toks = _content_tokens(text or "", min_len=3)
     if not toks:
         return 0.0
-    return len(hook_toks & toks) / float(max(1, len(hook_toks)))
+    hit = len(hook_toks & toks)
+    if not hit:
+        return 0.0
+    return hit / float(max(1, len(hook_toks))) + 0.15
+
+
+_MIN_CUE_RELEVANCE = 0.12
 
 
 def _anchor_hook_span(
@@ -2824,14 +3531,27 @@ def _plan_hook_oneline_spans_heuristic(
         if _ONELINE_MIN_WORDS <= len(merged.split()) <= _ONELINE_MAX_WORDS:
             add_candidate(merged, float(a["s"]), float(b["e"]))
 
-    # Prefer: relevant to hook, then near hook time; keep chronological uniqueness.
-    candidates.sort(
-        key=lambda c: (
+    # Seed first from cues overlapping the spoken hook span (±1 cue window).
+    span_lo, span_hi = hs, he
+    if catalog:
+        # Expand to neighboring cue boundaries when present.
+        near = [c for c in catalog if float(c["e"]) >= hs - 2.0 and float(c["s"]) <= he + 2.0]
+        if near:
+            span_lo = min(float(c["s"]) for c in near)
+            span_hi = max(float(c["e"]) for c in near)
+
+    def _cand_key(c: dict[str, float | str]) -> tuple:
+        start = float(c["start_sec"])
+        in_span = 0 if span_lo <= start <= span_hi else 1
+        return (
+            in_span,
             -_cue_relevance(str(c["text"]), hook_toks),
-            abs(float(c["start_sec"]) - hs),
-            float(c["start_sec"]),
+            abs(start - hs),
+            start,
         )
-    )
+
+    # Prefer: in hook span, then relevant to hook, then near hook time.
+    candidates.sort(key=_cand_key)
     picked: list[dict[str, float]] = []
     seen_txt: set[str] = set()
     min_gap = 2.0  # Instagram-style: one idea per slide, no overlapping clips
@@ -2841,12 +3561,12 @@ def _plan_hook_oneline_spans_heuristic(
             continue
         if any(abs(float(c["start_sec"]) - p["start_sec"]) < min_gap for p in picked):
             continue
-        # Prefer at least mild relevance when we have hook tokens — but never
-        # starve the carousel: only skip weak lines after we already have half.
+        # Prefer mild relevance once we have a couple of slides — never starve.
+        score = _cue_relevance(str(c["text"]), hook_toks)
         if (
             hook_toks
-            and _cue_relevance(str(c["text"]), hook_toks) <= 0.0
-            and len(picked) >= max(3, min_slides // 2)
+            and score < _MIN_CUE_RELEVANCE
+            and len(picked) >= max(2, min_slides // 2)
         ):
             continue
         seen_txt.add(key)
@@ -3304,11 +4024,12 @@ def _top_up_oneline_slides(
         ):
             return False
         # Keep each carousel on-topic for its hook (Instagram: one idea sequence).
+        score = _cue_relevance(text, hook_toks)
         if (
             hook_toks
             and not allow_weak
-            and _cue_relevance(text, hook_toks) <= 0.0
-            and len(slides) >= 3
+            and score < _MIN_CUE_RELEVANCE
+            and len(slides) >= 2
         ):
             return False
         seen.add(key)
@@ -3335,12 +4056,18 @@ def _top_up_oneline_slides(
         reserved_texts=reserved_texts,
         reserved_starts=reserved_starts,
     )
-    sentence_cands.sort(
-        key=lambda c: (
-            -_cue_relevance(str(c["text"]), hook_toks),
-            abs(float(c["start_sec"]) - hs),
-            float(c["start_sec"]),
+
+    def _near_hook_key(start: float, text: str) -> tuple:
+        in_span = 0 if hs - 2.0 <= start <= he + 2.0 else 1
+        return (
+            in_span,
+            -_cue_relevance(text, hook_toks),
+            abs(start - hs),
+            start,
         )
+
+    sentence_cands.sort(
+        key=lambda c: _near_hook_key(float(c["start_sec"]), str(c["text"]))
     )
     for cand in sentence_cands:
         if len(slides) >= min_slides:
@@ -3356,14 +4083,10 @@ def _top_up_oneline_slides(
         reserved_texts=reserved_texts,
         reserved_starts=reserved_starts,
     )
-    # Prefer relevant cues near the hook; then chronological fill.
+    # Prefer in-span + relevant cues near the hook; then chronological fill.
     catalog_sorted = sorted(
         catalog,
-        key=lambda row: (
-            -_cue_relevance(str(row["t"]), hook_toks),
-            abs(float(row["s"]) - hs),
-            float(row["s"]),
-        ),
+        key=lambda row: _near_hook_key(float(row["s"]), str(row["t"])),
     )
     for row in catalog_sorted:
         if len(slides) >= min_slides:
@@ -3424,12 +4147,12 @@ def _top_up_oneline_slides(
             if len(slides) >= min_slides:
                 break
 
-    # Drop trailing zero-relevance fillers if we still meet min_slides without them.
+    # Drop trailing weak-relevance fillers if we still meet min_slides without them.
     if hook_toks and len(slides) > min_slides:
         kept = [
             s
             for s in slides
-            if _cue_relevance(s.get("transcript_text") or "", hook_toks) > 0.0
+            if _cue_relevance(s.get("transcript_text") or "", hook_toks) >= _MIN_CUE_RELEVANCE
         ]
         if len(kept) >= min_slides:
             slides = kept
@@ -4089,7 +4812,9 @@ def _best_cue_for_label(kind: str, label: str, moments: list[SnapshotContext]) -
     if best is not None:
         snap = best.model_dump()
         if not snap.get("preview_url") and best.drive_file_id:
-            snap["preview_url"] = f"/media/video/{best.drive_file_id}/frame?ts={best.timestamp_sec}"
+            snap["preview_url"] = (
+                f"/media/video/{best.drive_file_id}/frame?ts={best.timestamp_sec}&cache_only=1"
+            )
         cue_text = (best.snippet or "").strip() or None
     return {
         "kind": kind,
@@ -4189,7 +4914,7 @@ async def _transcript_moments_for_file(drive_file_id: str) -> list[SnapshotConte
                 end_timestamp_sec=float(seg.end_sec) if seg.end_sec is not None else None,
                 snippet=(seg.text or "")[:400] or None,
                 match_type="transcript",
-                preview_url=f"/media/video/{drive_file_id}/frame?ts={ts}",
+            preview_url=f"/media/video/{drive_file_id}/frame?ts={ts}&cache_only=1",
             )
         )
     return out

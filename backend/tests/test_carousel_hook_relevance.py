@@ -1,0 +1,94 @@
+"""Crafted hooks should still rank exact transcript lines via original_text."""
+
+from __future__ import annotations
+
+from app.routers.carousel_script import (
+    TimedPick,
+    _cue_relevance,
+    _hook_token_set,
+    _plan_hook_oneline_spans_heuristic,
+)
+from app.search.carousel_pipeline import (
+    _dedupe_topic_tree_hooks,
+    _hooks_from_topic_tree,
+)
+
+
+def test_topic_tree_hooks_are_unique_by_text_and_parent_can_be_empty():
+    tree = [
+        {
+            "id": "topic_1",
+            "hooks": [{"id": "h1", "text": "Want customer trust? Guarantee quality."}],
+            "subtopics": [
+                {
+                    "id": "sub_1",
+                    "hooks": [
+                        {"id": "h1", "text": "Want customer trust? Guarantee quality."},
+                        {"id": "h2", "text": "Big brands earn trust."},
+                    ],
+                }
+            ],
+        }
+    ]
+    normalized = _dedupe_topic_tree_hooks(tree)
+    hooks = _hooks_from_topic_tree(normalized)
+    assert len(hooks) == 2
+    assert not normalized[0]["hooks"]
+    assert len(normalized[0]["subtopics"][0]["hooks"]) == 2
+
+
+def test_original_text_boosts_on_topic_cue_relevance():
+    crafted = TimedPick(
+        id="1",
+        text="The hidden pattern behind Snapdeal growth",
+        start_sec=20,
+        end_sec=40,
+        topic_text="e-commerce growth",
+        original_text="India's e-commerce boom is being driven by tier-two cities",
+    )
+    without_seed = TimedPick(
+        id="2",
+        text="The hidden pattern behind Snapdeal growth",
+        start_sec=20,
+        end_sec=40,
+        topic_text="e-commerce growth",
+    )
+    on_topic = "India's e-commerce boom is being driven by tier-two cities today"
+    filler = "Please like and subscribe to our channel for more interviews"
+
+    toks_with = _hook_token_set(crafted)
+    toks_without = _hook_token_set(without_seed)
+    assert _cue_relevance(on_topic, toks_with) > _cue_relevance(filler, toks_with)
+    assert _cue_relevance(on_topic, toks_with) > _cue_relevance(on_topic, toks_without)
+
+
+def test_heuristic_prefers_hook_span_and_relevant_lines():
+    cues = [
+        (10.0, 14.0, "Welcome back to another founder conversation tonight."),
+        (20.0, 24.0, "India's e-commerce boom is being driven by tier-two cities."),
+        (25.0, 29.0, "Tier-two shoppers now trust online marketplaces more."),
+        (30.0, 34.0, "Value commerce is winning over discount-only models."),
+        (35.0, 39.0, "Snapdeal focused on everyday essentials for these buyers."),
+        (80.0, 84.0, "Please like and subscribe to our channel for more."),
+        (90.0, 94.0, "Thanks for watching this interview until the end."),
+    ]
+    hook = TimedPick(
+        id="1",
+        text="Why tier-two shoppers changed e-commerce",
+        start_sec=20,
+        end_sec=40,
+        topic_text="tier-two e-commerce",
+        original_text="India's e-commerce boom is being driven by tier-two cities",
+    )
+    spans = _plan_hook_oneline_spans_heuristic(
+        cues,
+        hook_start=20.0,
+        hook_end=40.0,
+        min_slides=3,
+        max_slides=6,
+        hook=hook,
+    )
+    assert len(spans) >= 3
+    # Picks should sit near the spoken hook window, not the CTA filler.
+    starts = [float(s["start_sec"]) for s in spans]
+    assert all(s < 70 for s in starts)

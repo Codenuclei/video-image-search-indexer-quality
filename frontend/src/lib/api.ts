@@ -493,8 +493,25 @@ export type CarouselOutlineSlide = {
   frame_source?: "ai" | "heuristic" | "fallback" | "deferred" | "manual" | string | null;
   instagram_ready?: boolean | null;
   images_ready?: boolean | null;
+  frames_prewarmed?: boolean | null;
   frame_candidates?: number[] | null;
   frame_quality?: Record<string, unknown> | null;
+  /** Dominant-face center as 0..1 fractions, used to keep the speaker centred when cropping. */
+  focal_x?: number | null;
+  focal_y?: number | null;
+  front_face_score?: number | null;
+  /** Rendered panels for the active layout: 1 entry for single_1, 2 for split_2. */
+  panels?: CarouselSlidePanel[] | null;
+};
+
+export type CarouselSlidePanel = {
+  role?: string | null;
+  frame_ts?: number | null;
+  preview_url?: string | null;
+  caption?: string | null;
+  focal_x?: number | null;
+  focal_y?: number | null;
+  front_face_score?: number | null;
 };
 
 export type CarouselOutlineRequest = {
@@ -504,6 +521,16 @@ export type CarouselOutlineRequest = {
   topics?: string[];
   slide_count?: number;
   title?: string;
+};
+
+export type CarouselLayoutBundle = {
+  layout_mode: "single_1" | "split_2" | string;
+  carousels: CarouselGeneratedItem[];
+};
+
+export type CarouselLayouts = {
+  single_1?: CarouselLayoutBundle;
+  split_2?: CarouselLayoutBundle;
 };
 
 export type CarouselOutlineResponse = {
@@ -520,6 +547,8 @@ export type CarouselOutlineResponse = {
   carousel_count?: number;
   images_ready?: boolean;
   intent?: string | null;
+  /** Cached dual layouts so toggling single/split never regenerates. */
+  layouts?: CarouselLayouts | null;
   quality?: {
     candidates?: number;
     kept?: number;
@@ -550,6 +579,8 @@ export type CarouselTimedPick = {
   theme_id?: string | null;
   topic_id?: string | null;
   topic_text?: string | null;
+  /** Spoken seed that produced a crafted hook — used for slide relevance. */
+  original_text?: string | null;
   time_ranges?: { start_sec: number; end_sec?: number | null }[];
 };
 
@@ -747,7 +778,7 @@ export type CarouselPipelineExtractResponse = {
 export type CarouselGenerationSaveListItem = {
   id: number;
   drive_file_id: string;
-  kind?: "topics_hooks" | "themes" | string;
+  kind?: "topics_hooks" | "themes" | "carousel" | string;
   theme_key: string;
   label?: string | null;
   created_at?: string | null;
@@ -757,6 +788,10 @@ export type CarouselGenerationSaveListItem = {
   hook_count?: number;
   topic_count?: number;
   theme_count?: number;
+  status?: string;
+  input_hash?: string | null;
+  layout_mode?: "single_1" | "split_2" | string;
+  copy_version?: number;
 };
 
 export type CarouselTranscriptFrameItem = {
@@ -908,6 +943,13 @@ export const driveVideoStreamUrl = (driveFileId: string) =>
 
 export const apiAssetUrl = (path: string) =>
   path.startsWith("http") ? path : `${API_BASE}${path}`;
+
+/** Ready carousel previews must never fall back to on-demand video extraction. */
+export const cacheOnlyAssetUrl = (path: string) => {
+  const asset = apiAssetUrl(path);
+  if (!asset.includes("/media/video/") || !asset.includes("/frame?")) return asset;
+  return asset.includes("cache_only=") ? asset : `${asset}&cache_only=1`;
+};
 
 export type ReidStatus = {
   body_signatures: { total: number; labeled: number; unlabeled: number; full_body: number };
@@ -1241,10 +1283,55 @@ export const apiClient = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  carouselCached: (driveFileId: string) =>
+    api<{
+      id: number;
+      status: string;
+      layout_mode: "single_1" | "split_2" | string;
+      copy_version: number;
+      slides: CarouselOutlineSlide[];
+      carousels?: CarouselGeneratedItem[];
+      layouts?: CarouselLayouts | null;
+      title?: string;
+      theme?: Record<string, unknown>;
+      references?: Record<string, unknown>[];
+    }>(`/search/carousel/pipeline/carousel?drive_file_id=${encodeURIComponent(driveFileId)}`),
+  carouselPipelineStatus: (driveFileId: string) =>
+    api<{
+      drive_file_id: string;
+      status: string;
+      locked: boolean;
+      ready_artifact_id?: number | null;
+    }>(
+      `/search/carousel/pipeline/status?drive_file_id=${encodeURIComponent(driveFileId)}`
+    ),
+  carouselCopySave: (body: {
+    drive_file_id: string;
+    save_id?: number;
+    layout_mode?: "single_1" | "split_2";
+    slides?: CarouselOutlineSlide[];
+    theme?: Record<string, unknown>;
+    references?: Record<string, unknown>[];
+  }) =>
+    api<{ id: number; copy_version: number; layout_mode: string }>(
+      "/search/carousel/pipeline/carousel/copy",
+      { method: "POST", body: JSON.stringify(body) }
+    ),
+  carouselRegenerateSlide: (body: {
+    drive_file_id: string;
+    save_id?: number;
+    carousel_id?: string;
+    slide_index: number;
+    slide?: CarouselOutlineSlide;
+  }) =>
+    api<{ id: number; copy_version: number; slide: CarouselOutlineSlide }>(
+      "/search/carousel/pipeline/carousel/slide/regenerate",
+      { method: "POST", body: JSON.stringify(body) }
+    ),
   carouselPipelineSaves: (
     driveFileId: string,
     limit = 20,
-    kind: "topics_hooks" | "themes" = "topics_hooks"
+    kind: "topics_hooks" | "themes" | "carousel" = "topics_hooks"
   ) =>
     api<{ items: CarouselGenerationSaveListItem[] }>(
       `/search/carousel/pipeline/saves?drive_file_id=${encodeURIComponent(driveFileId)}&limit=${limit}&kind=${encodeURIComponent(kind)}`
@@ -1261,6 +1348,9 @@ export const apiClient = {
       model?: string | null;
       transcript_hash?: string | null;
       payload: CarouselPipelineExtractResponse & {
+        carousels?: CarouselGeneratedItem[];
+        slides?: CarouselOutlineSlide[];
+        title?: string;
         selected_hooks?: string[];
         selected_topics?: string[];
         themes?: CarouselPipelineTheme[];

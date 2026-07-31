@@ -24,6 +24,38 @@ async def ensure_schema(engine: AsyncEngine) -> None:
             text("ALTER TABLE drive_files ADD COLUMN IF NOT EXISTS source VARCHAR NOT NULL DEFAULT 'drive'")
         )
         await conn.execute(
+            text(
+                "ALTER TABLE drive_files ADD COLUMN IF NOT EXISTS carousel_status "
+                "VARCHAR(24) NOT NULL DEFAULT 'idle'"
+            )
+        )
+        await conn.execute(
+            text("ALTER TABLE drive_files ADD COLUMN IF NOT EXISTS carousel_lock_token VARCHAR(64)")
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE drive_files ADD COLUMN IF NOT EXISTS carousel_lock_input_hash VARCHAR(64)"
+            )
+        )
+        await conn.execute(
+            text("ALTER TABLE drive_files ADD COLUMN IF NOT EXISTS carousel_locked_at TIMESTAMPTZ")
+        )
+        await conn.execute(
+            text("ALTER TABLE drive_files ADD COLUMN IF NOT EXISTS carousel_error TEXT")
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE drive_files ADD COLUMN IF NOT EXISTS carousel_attempts "
+                "INTEGER NOT NULL DEFAULT 0"
+            )
+        )
+        await conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_drive_files_carousel_status "
+                "ON drive_files (carousel_status)"
+            )
+        )
+        await conn.execute(
             text("ALTER TABLE persons ADD COLUMN IF NOT EXISTS role VARCHAR(32)")
         )
         await conn.execute(
@@ -87,6 +119,26 @@ async def ensure_schema(engine: AsyncEngine) -> None:
                 "VARCHAR(32)"
             )
         )
+        await conn.execute(text(
+            "ALTER TABLE carousel_generation_saves ADD COLUMN IF NOT EXISTS status "
+            "VARCHAR(24) NOT NULL DEFAULT 'ready'"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE carousel_generation_saves ADD COLUMN IF NOT EXISTS input_hash "
+            "VARCHAR(64)"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE carousel_generation_saves ADD COLUMN IF NOT EXISTS layout_mode "
+            "VARCHAR(32) NOT NULL DEFAULT 'single_1'"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE carousel_generation_saves ADD COLUMN IF NOT EXISTS copy_version "
+            "INTEGER NOT NULL DEFAULT 1"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE carousel_generation_saves ADD COLUMN IF NOT EXISTS algorithm_version "
+            "VARCHAR(32) NOT NULL DEFAULT 'p0'"
+        ))
         await conn.execute(
             text(
                 "CREATE INDEX IF NOT EXISTS ix_carousel_generation_saves_kind "
@@ -99,6 +151,10 @@ async def ensure_schema(engine: AsyncEngine) -> None:
                 "ON carousel_generation_saves (transcript_hash)"
             )
         )
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_carousel_generation_saves_input_hash "
+            "ON carousel_generation_saves (input_hash)"
+        ))
         await conn.execute(
             text(
                 "CREATE INDEX IF NOT EXISTS ix_carousel_gen_saves_drive_kind_created "

@@ -44,4 +44,16 @@ def video_cache_path(settings: Settings, drive_file: "DriveFile") -> Path:
     """Persistent on-disk path for a video (Drive or YouTube local library)."""
     cache_dir = Path(settings.video_cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
-    return cache_dir / f"{drive_file.id}{_suffix_for_drive_file(drive_file)}"
+    filename = f"{drive_file.id}{_suffix_for_drive_file(drive_file)}"
+    primary = cache_dir / filename
+    if primary.is_file() and primary.stat().st_size > 0:
+        return primary
+
+    # Keep older local YouTube libraries usable after VIDEO_CACHE_DIR changes.
+    # The fallback is read-only: newly downloaded media still lands in the
+    # configured cache directory, while indexing can reuse an existing file.
+    if getattr(drive_file, "source", None) == "youtube" or str(drive_file.id).startswith("yt:"):
+        legacy = cache_dir.parent / "videos" / filename
+        if legacy.is_file() and legacy.stat().st_size > 0:
+            return legacy
+    return primary

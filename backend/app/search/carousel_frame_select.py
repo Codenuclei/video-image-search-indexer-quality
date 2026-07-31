@@ -35,6 +35,7 @@ class FrameCandidate:
     label: str  # "heuristic" | "sample"
     preview_url: str | None = None
     quality_score: float = 0.0
+    front_face: float = 0.0
 
 
 @dataclass
@@ -46,6 +47,9 @@ class FramePickResult:
     ranked_timestamps: list[float] = field(default_factory=list)
     warning: str | None = None
     quality_stats: dict[str, Any] | None = None
+    focal_x: float = 0.5
+    focal_y: float = 0.4
+    front_face_score: float = 0.0
 
 
 def heuristic_frame_ts(start_sec: float, end_sec: float | None) -> float:
@@ -407,7 +411,7 @@ def build_frame_candidates(
     out: list[FrameCandidate] = []
     for i, ts in enumerate(stamps):
         label = "heuristic" if abs(ts - heuristic) < 0.011 else "sample"
-        url = f"/media/video/{fid}/frame?ts={ts}" if fid else None
+        url = f"/media/video/{fid}/frame?ts={ts}&cache_only=1" if fid else None
         out.append(FrameCandidate(index=i, timestamp_sec=ts, label=label, preview_url=url))
     # Ensure exactly one heuristic label when possible
     if out and not any(c.label == "heuristic" for c in out):
@@ -518,6 +522,238 @@ def _parse_rank_response(text: str, n: int) -> tuple[list[int] | None, list[bool
         ready = [bool(v) for v in ready_raw]
 
     return order, ready
+
+
+def front_face_score(face: Any) -> float:
+    """Score an indexed face for portrait selection without a model call.
+
+    InsightFace metadata is not uniform across older indexes, so accept either
+    objects or dictionaries and treat missing pose as neutral. Lower yaw,
+    pitch, roll and larger, confident faces are preferred.
+    """
+    def value(name: str, default: float = 0.0) -> float:
+        if isinstance(face, dict):
+            raw = face.get(name, default)
+        else:
+            raw = getattr(face, name, default)
+        try:
+            return float(raw if raw is not None else default)
+        except (TypeError, ValueError):
+            return default
+
+    yaw = abs(value("yaw", value("pose_yaw", value("head_pose_yaw", 0.0))))
+    pitch = abs(value("pitch", value("pose_pitch", value("head_pose_pitch", 0.0))))
+    roll = abs(value("roll", value("pose_roll", value("head_pose_roll", 0.0))))
+    confidence = max(0.0, min(1.0, value("detection_confidence", value("confidence", 0.5))))
+    x = value("bbox_x", value("x", 0.0))
+    y = value("bbox_y", value("y", 0.0))
+    # Normalized boxes are what the index stores. A border-touching face is
+    # unusable for a portrait crop even when its detector confidence is high.
+    edge_penalty = 1.0
+    if x <= 0.015 or y <= 0.015 or x + value("bbox_width", value("width", 0.0)) >= 0.985:
+        edge_penalty *= 0.35
+    if y + value("bbox_height", value("height", 0.0)) >= 0.985:
+        edge_penalty *= 0.5
+    area = max(
+        0.0,
+        value("bbox_width", value("width", 0.0))
+        * value("bbox_height", value("height", 0.0)),
+    )
+    pose = (
+        max(0.0, 1.0 - min(yaw, 90.0) / 90.0) * 0.55
+        + max(0.0, 1.0 - min(pitch, 90.0) / 90.0) * 0.25
+        + max(0.0, 1.0 - min(roll, 90.0) / 90.0) * 0.20
+    )
+    # Extreme profiles/back-of-heads should lose decisively to a usable face.
+    if yaw >= 60.0 or pitch >= 55.0:
+        pose *= 0.08
+    elif yaw >= 42.0:
+        pose *= 0.3
+    return round((pose * 0.65 + confidence * 0.2 + min(area, 0.5) * 0.3) * edge_penalty, 6)
+
+
+def _face_for_slide(slide: dict[str, Any], timestamp_sec: float) -> dict[str, Any] | None:
+    raw = slide.get("faces") or slide.get("face_detections") or slide.get("frame_faces")
+    if isinstance(raw, dict):
+        raw = raw.get(str(round(timestamp_sec, 2))) or raw.get(round(timestamp_sec, 2))
+    if not isinstance(raw, list):
+        raw = [raw] if raw else []
+    choices: list[dict[str, Any]] = []
+    for face in raw:
+        if not isinstance(face, dict):
+            continue
+        face_ts = face.get("timestamp_sec", face.get("frame_timestamp", face.get("ts")))
+        if face_ts is not None:
+            try:
+                if abs(float(face_ts) - timestamp_sec) > 0.8:
+                    continue
+            except (TypeError, ValueError):
+                pass
+        choices.append(face)
+    return max(choices, key=front_face_score, default=None)
+
+
+def focal_point_for_slide(slide: dict[str, Any], timestamp_sec: float) -> tuple[float, float, float]:
+    face = _face_for_slide(slide, timestamp_sec)
+    if not face:
+        return 0.5, 0.4, 0.0
+    try:
+        x = float(face.get("bbox_x") or face.get("x") or 0.0)
+        y = float(face.get("bbox_y") or face.get("y") or 0.0)
+        w = float(face.get("bbox_width") or face.get("width") or 0.0)
+        h = float(face.get("bbox_height") or face.get("height") or 0.0)
+    except (TypeError, ValueError):
+        return 0.5, 0.4, front_face_score(face)
+    return (
+        max(0.0, min(1.0, x + w / 2.0)),
+        max(0.0, min(1.0, y + h * 0.42)),
+        front_face_score(face),
+    )
+
+
+def _front_face_for_slide(slide: dict[str, Any], timestamp_sec: float) -> float:
+    """Return the best indexed/heuristic face score for a candidate timestamp."""
+    raw = slide.get("faces") or slide.get("face_detections") or slide.get("frame_faces")
+    if isinstance(raw, dict):
+        # Indexed payloads commonly use either timestamp keys or a faces list.
+        raw = raw.get(str(round(timestamp_sec, 2))) or raw.get(round(timestamp_sec, 2))
+    if not isinstance(raw, list):
+        raw = [raw] if raw else []
+    scored: list[float] = []
+    for face in raw:
+        if not isinstance(face, dict):
+            scored.append(front_face_score(face))
+            continue
+        face_ts = face.get(
+            "timestamp_sec", face.get("frame_timestamp", face.get("ts"))
+        )
+        if face_ts is not None:
+            try:
+                if abs(float(face_ts) - timestamp_sec) > 0.8:
+                    continue
+            except (TypeError, ValueError):
+                pass
+        # InsightFace landmarks can expose yaw as pose_yaw or head_pose_yaw.
+        scored.append(front_face_score(face))
+    return max(scored, default=0.0)
+
+
+def _parse_grouped_rank_response(
+    text: str, groups: list[list[FrameCandidate]]
+) -> dict[int, tuple[list[int] | None, list[bool] | None]]:
+    """Parse one Gemini response containing rankings for multiple slides."""
+    try:
+        match = re.search(r"\{[\s\S]*\}", text or "")
+        data = json.loads(match.group()) if match else {}
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    raw_groups = data.get("slides") if isinstance(data, dict) else None
+    if raw_groups is None and isinstance(data, dict):
+        raw_groups = data.get("groups") or data.get("rankings")
+    if isinstance(raw_groups, dict):
+        raw_groups = [
+            {"slide": key, **(value if isinstance(value, dict) else {})}
+            for key, value in raw_groups.items()
+        ]
+    if not isinstance(raw_groups, list):
+        return {}
+    result: dict[int, tuple[list[int] | None, list[bool] | None]] = {}
+    for pos, item in enumerate(raw_groups):
+        if not isinstance(item, dict):
+            continue
+        try:
+            group_idx = int(
+                item.get("slide", item.get("slide_index", item.get("group", pos)))
+            )
+        except (TypeError, ValueError):
+            group_idx = pos
+        if not 0 <= group_idx < len(groups):
+            continue
+        order, ready = _parse_rank_response(json.dumps(item), len(groups[group_idx]))
+        if order:
+            result[group_idx] = (order, ready)
+    return result
+
+
+def _group_rank_prompt(
+    groups: list[tuple[int, str, list[FrameCandidate]]],
+) -> str:
+    parts = [
+        "Rank candidates for multiple Instagram carousel slides. "
+        "Return ONLY JSON with a slides array. Each item must contain "
+        "slide (group index), order (best to worst), and ready flags.",
+    ]
+    for group_idx, hook, candidates in groups:
+        parts.append(
+            f'\nSlide {group_idx}, spoken text: "{(hook or "").strip()[:240]}"\n'
+            + ", ".join(
+                f"{c.index}: {c.label} @{c.timestamp_sec:.2f}s"
+                for c in candidates
+            )
+        )
+    parts.append(
+        '\nSchema: {"slides":[{"slide":0,"order":[0,1],'
+        '"ready":[true,false]}]}'
+    )
+    return "".join(parts)
+
+
+def rank_grouped_candidates_with_gemini_sync(
+    *,
+    groups: list[tuple[int, str, list[FrameCandidate], list[bytes | None]]],
+    api_key: str,
+    model: str,
+) -> dict[int, tuple[list[int] | None, list[bool] | None]]:
+    """Rank several slides in one multimodal Gemini request."""
+    if not api_key or not groups:
+        return {}
+    from google import genai
+    from google.genai import types
+
+    # Gemini receives batch-local slide ids; callers can use stable global ids.
+    prompt_groups = [
+        (local_i, hook, candidates)
+        for local_i, (_, hook, candidates, _) in enumerate(groups)
+    ]
+    parts: list = [types.Part(text=_group_rank_prompt(prompt_groups))]
+    for local_i, (_, _, candidates, images) in enumerate(groups):
+        parts.append(types.Part(text=f"SLIDE {local_i} CANDIDATES"))
+        for candidate, image in zip(candidates, images):
+            parts.append(
+                types.Part(
+                    text=(
+                        f"Slide {local_i} candidate {candidate.index} "
+                        f"({candidate.label} @{candidate.timestamp_sec:.2f}s):"
+                    )
+                )
+            )
+            parts.append(
+                types.Part.from_bytes(
+                    data=_downscale_jpeg(image), mime_type="image/jpeg"
+                )
+                if image
+                else types.Part(text="[image unavailable]")
+            )
+    client = genai.Client(api_key=api_key)
+    try:
+        response = client.models.generate_content(
+            model=model,
+            contents=[types.Content(role="user", parts=parts)],
+            config=types.GenerateContentConfig(
+                temperature=0.1, response_mime_type="application/json"
+            ),
+        )
+        local_result = _parse_grouped_rank_response(
+            response.text or "", [candidates for _, _, candidates, _ in groups]
+        )
+        return {
+            groups[local_i][0]: value
+            for local_i, value in local_result.items()
+            if 0 <= local_i < len(groups)
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("grouped carousel frame rank failed: %s", str(exc)[:180])
+        return {}
 
 
 def _rank_prompt(hook_line: str, candidates: list[FrameCandidate]) -> str:
@@ -853,10 +1089,12 @@ async def polish_slides_instagram_frames(
     ensure_frame: Callable[[str, float], Awaitable[bytes | None]] | None = None,
     concurrency: int = 2,
 ) -> list[dict[str, Any]]:
-    """Apply Instagram frame polish to outline slides (mutates copies).
+    """Apply frame polish with concurrent harvest and grouped Gemini ranking.
 
-    Frames are chosen inside each slide's transcript span. Previously used
-    timestamps are avoided so adjacent slides don't share the same still.
+    Candidate collection is local/concurrent. Gemini sees 4-6 slides per
+    request (capped at three calls), and timestamp collisions are resolved
+    after all rankings are available so an early slide cannot starve later
+    slides.
     """
     if not slides:
         return slides
@@ -864,12 +1102,19 @@ async def polish_slides_instagram_frames(
         for s in slides:
             s.setdefault("frame_source", "heuristic")
             s.setdefault("instagram_ready", False)
+            ts = float(s.get("frame_ts") or heuristic_frame_ts(
+                float(s.get("timestamp_sec") or 0), s.get("end_timestamp_sec")
+            ))
+            s.setdefault("frame_ts", ts)
+            fx, fy, fs = focal_point_for_slide(s, ts)
+            s.setdefault("focal_x", fx)
+            s.setdefault("focal_y", fy)
+            s.setdefault("front_face_score", fs)
         return slides
 
-    # Sequential: each slide's pick can reserve a timestamp for later slides.
-    used_frame_ts: list[float] = []
-    out_slides: list[dict[str, Any]] = []
-    for slide in slides:
+    candidate_cap = max(3, min(int(max_candidates), 5))
+
+    async def _harvest(slide: dict[str, Any]) -> dict[str, Any]:
         out = dict(slide)
         start = float(out.get("timestamp_sec") or 0)
         end = out.get("end_timestamp_sec")
@@ -878,32 +1123,196 @@ async def polish_slides_instagram_frames(
         except (TypeError, ValueError):
             end_f = None
         fid = str(out.get("drive_file_id") or "")
-        hook = str(
-            out.get("transcript_text") or out.get("hook_line") or out.get("snippet") or ""
+        heuristic = heuristic_frame_ts(start, end_f)
+        raw = build_frame_candidates(
+            fid,
+            start,
+            end_f,
+            max_candidates=min(_HARD_CAP_CANDIDATES, candidate_cap * 2),
         )
-        pick = await select_frame_for_span(
-            drive_file_id=fid,
-            start_sec=start,
-            end_sec=end_f,
-            hook_line=hook,
-            thumbnail_dir=thumbnail_dir,
-            api_key=api_key,
-            model=model,
-            max_candidates=max_candidates,
-            timeout_sec=timeout_sec,
-            ensure_frame=ensure_frame,
-            avoid_timestamps=used_frame_ts,
+
+        async def _load(candidate: FrameCandidate) -> bytes | None:
+            data = load_cached_frame_bytes(thumbnail_dir, fid, candidate.timestamp_sec)
+            if data is None and ensure_frame is not None:
+                try:
+                    data = await ensure_frame(fid, candidate.timestamp_sec)
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug(
+                        "ensure_frame failed %s@%.2f: %s",
+                        fid,
+                        candidate.timestamp_sec,
+                        exc,
+                    )
+            return data
+
+        images = list(await asyncio.gather(*[_load(c) for c in raw]))
+        kept, qstats = await asyncio.to_thread(
+            filter_frame_candidates_by_quality,
+            images,
+            timestamps=[c.timestamp_sec for c in raw],
+            max_keep=candidate_cap,
+            min_keep=min(3, candidate_cap),
         )
-        out["preview_url"] = pick.preview_url
-        out["frame_ts"] = pick.timestamp_sec
-        out["frame_source"] = pick.frame_source
-        out["instagram_ready"] = pick.instagram_ready
-        if pick.ranked_timestamps:
-            out["frame_candidates"] = pick.ranked_timestamps[:16]
-        if pick.warning:
-            out["frame_warning"] = pick.warning
-        if pick.quality_stats:
-            out["frame_quality"] = pick.quality_stats
-        used_frame_ts.append(float(pick.timestamp_sec))
+        candidates: list[FrameCandidate] = []
+        kept_images: list[bytes | None] = []
+        for old_i in kept:
+            c = raw[old_i]
+            candidates.append(
+                FrameCandidate(
+                    index=len(candidates),
+                    timestamp_sec=c.timestamp_sec,
+                    label=c.label,
+                    preview_url=c.preview_url,
+                    front_face=_front_face_for_slide(out, c.timestamp_sec),
+                )
+            )
+            kept_images.append(images[old_i])
+        # Face metadata is a local signal: promote front-facing portraits
+        # without excluding otherwise usable candidates.
+        order = sorted(
+            range(len(candidates)),
+            key=lambda i: (candidates[i].front_face, candidates[i].quality_score),
+            reverse=True,
+        )
+        if order:
+            candidates = [
+                FrameCandidate(
+                    index=i,
+                    timestamp_sec=candidates[j].timestamp_sec,
+                    label=candidates[j].label,
+                    preview_url=candidates[j].preview_url,
+                    quality_score=candidates[j].quality_score,
+                    front_face=candidates[j].front_face,
+                )
+                for i, j in enumerate(order)
+            ]
+            kept_images = [kept_images[j] for j in order]
+        return {
+            "slide": out,
+            "candidates": candidates,
+            "images": kept_images,
+            "heuristic": heuristic,
+            "quality": {"candidates": len(raw), "kept": len(candidates), **qstats},
+        }
+
+    harvested = await asyncio.wait_for(
+        asyncio.gather(*[_harvest(slide) for slide in slides]),
+        timeout=timeout_sec,
+    )
+
+    groups: list[tuple[int, str, list[FrameCandidate], list[bytes | None]]] = []
+    for idx, item in enumerate(harvested):
+        if item["candidates"]:
+            slide = item["slide"]
+            hook = str(
+                slide.get("transcript_text")
+                or slide.get("hook_line")
+                or slide.get("snippet")
+                or ""
+            )
+            groups.append((idx, hook, item["candidates"], item["images"]))
+
+    ranked: dict[int, tuple[list[int] | None, list[bool] | None]] = {}
+    # Four-to-six slides per request, with an explicit hard cap of three.
+    batch_size = max(4, min(6, int(concurrency or 5)))
+    batches = [groups[i : i + batch_size] for i in range(0, len(groups), batch_size)]
+    batches = batches[:3]
+    if batches:
+        results = await asyncio.gather(
+            *[
+                asyncio.to_thread(
+                    rank_grouped_candidates_with_gemini_sync,
+                    groups=batch,
+                    api_key=api_key,
+                    model=model,
+                )
+                for batch in batches
+            ]
+        )
+        for result in results:
+            ranked.update(result)
+
+    # Two-phase assignment: reserve top choices only after every slide is ranked.
+    assignments: dict[int, tuple[int, str, bool]] = {}
+    used: list[float] = []
+    for idx, item in enumerate(harvested):
+        candidates = item["candidates"]
+        if not candidates:
+            assignments[idx] = (0, "heuristic", False)
+            continue
+        order, ready = ranked.get(idx, (None, None))
+        heuristic_i = min(
+            range(len(candidates)),
+            key=lambda i: abs(candidates[i].timestamp_sec - item["heuristic"]),
+        )
+        ranked_order = list(order or range(len(candidates)))
+        if ready and len(ready) == len(candidates):
+            ranked_order = [i for i in ranked_order if ready[i]] + [
+                i for i in range(len(candidates)) if i not in ranked_order
+            ]
+        # Local indexed-face evidence overrides a visually plausible but
+        # profile/back-of-head Gemini choice when a clearly better portrait
+        # exists in this same spoken span.
+        best_face_i = max(
+            range(len(candidates)),
+            key=lambda i: candidates[i].front_face,
+        )
+        if (
+            candidates[best_face_i].front_face >= 0.35
+            and candidates[best_face_i].front_face
+            > candidates[ranked_order[0]].front_face + 0.15
+        ):
+            ranked_order = [best_face_i] + [
+                i for i in ranked_order if i != best_face_i
+            ]
+        choice = next(
+            (
+                i
+                for i in ranked_order
+                if 0 <= i < len(candidates)
+                and not any(
+                    abs(candidates[i].timestamp_sec - used_ts) < 0.45
+                    for used_ts in used
+                )
+            ),
+            None,
+        )
+        if choice is None:
+            choice = heuristic_i
+        source = "ai" if order and choice in order else "heuristic"
+        ready_flag = bool(ready and choice < len(ready) and ready[choice])
+        assignments[idx] = (choice, source, ready_flag)
+        used.append(candidates[choice].timestamp_sec)
+
+    out_slides: list[dict[str, Any]] = []
+    for idx, item in enumerate(harvested):
+        out = dict(item["slide"])
+        candidates = item["candidates"]
+        if candidates:
+            choice, source, ready_flag = assignments[idx]
+            chosen = candidates[choice]
+            out["preview_url"] = chosen.preview_url
+            out["frame_ts"] = chosen.timestamp_sec
+            out["frame_source"] = source
+            out["instagram_ready"] = ready_flag
+            out["frame_candidates"] = [
+                candidates[i].timestamp_sec
+                for i in (ranked.get(idx, (None, None))[0] or range(len(candidates)))
+            ][:16]
+        else:
+            ts = item["heuristic"]
+            fid = str(out.get("drive_file_id") or "")
+            out["frame_ts"] = ts
+            out["preview_url"] = (
+                f"/media/video/{fid}/frame?ts={ts}&cache_only=1" if fid else None
+            )
+            out["frame_source"] = "heuristic"
+            out["instagram_ready"] = False
+            out["frame_warning"] = "no frame images available"
+        focal_x, focal_y, face_score = focal_point_for_slide(out, float(out["frame_ts"]))
+        out["focal_x"] = focal_x
+        out["focal_y"] = focal_y
+        out["front_face_score"] = face_score
+        out["frame_quality"] = item["quality"]
         out_slides.append(out)
     return out_slides

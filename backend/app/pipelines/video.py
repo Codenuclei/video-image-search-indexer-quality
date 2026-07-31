@@ -27,7 +27,7 @@ from app.pipelines.common import clear_existing_media, download_to_memory, downl
 from app.pipelines.dedup import LocalIdentityTracker, passes_quality_filter
 from app.pipelines.image import detect_faces_async
 from app.qdrant.client import upsert_frame_sync
-from app.video.ffmpeg_utils import extract_frame_at, probe_video, sample_timestamps
+from app.video.ffmpeg_utils import extract_audio_wav, extract_frame_at, probe_video, sample_timestamps
 from app.video.vtt import VttCue, parse_vtt
 from app.video.youtube_cache import video_cache_path
 from app.video.youtube_registry import is_youtube_source
@@ -107,6 +107,27 @@ async def _load_vtt_cues(
         except Exception as exc:  # noqa: BLE001
             logger.warning("Could not load VTT for %s: %s", drive_file.name, exc)
 
+    # Local sidecar (e.g. Whisper offline): yt:ID.en.vtt next to the cached video.
+    video = Path(video_path)
+    for candidate in (
+        video.with_suffix(".en.vtt"),
+        video.with_name(f"{video.stem}.en.vtt"),
+        video.with_suffix(".vtt"),
+    ):
+        if candidate.is_file() and candidate.stat().st_size > 0:
+            try:
+                cues = parse_vtt(candidate.read_text(encoding="utf-8", errors="replace"))
+                if cues:
+                    logger.info(
+                        "Loaded %d VTT cues from local sidecar %s for %s",
+                        len(cues),
+                        candidate.name,
+                        drive_file.name,
+                    )
+                    return cues
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Could not parse local VTT %s: %s", candidate, exc)
+
     with tempfile.TemporaryDirectory() as tmp:
         out_vtt = os.path.join(tmp, "subs.vtt")
         cmd = ["ffmpeg", "-y", "-i", video_path, "-map", "0:s:0", out_vtt]
@@ -117,6 +138,23 @@ async def _load_vtt_cues(
                 logger.info("Extracted %d embedded VTT cues for %s", len(cues), drive_file.name)
                 return cues
     return []
+
+
+async def _whisper_cues_for_video(video_path: str, settings: Settings) -> list[VttCue]:
+    """Local ASR when captions are missing — required for carousel captioned listing."""
+    from app.video.whisper_engine import transcribe_audio_async
+
+    with tempfile.TemporaryDirectory() as tmp:
+        wav_path = os.path.join(tmp, "audio.wav")
+        await run_cpu_bound(extract_audio_wav, video_path, wav_path)
+        if not os.path.isfile(wav_path) or os.path.getsize(wav_path) <= 0:
+            return []
+        segments = await transcribe_audio_async(wav_path, settings)
+    return [
+        VttCue(start_sec=float(s.start_sec), end_sec=float(s.end_sec), text=s.text)
+        for s in segments
+        if (s.text or "").strip()
+    ]
 
 
 def _merge_sample_times(
@@ -269,6 +307,18 @@ async def process_video_file(
                     )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("YouTube caption fetch failed for %s: %s", drive_file.name, exc)
+
+    if not cues and settings.whisper_fallback_enabled:
+        try:
+            cues = await _whisper_cues_for_video(dest, settings)
+            if cues:
+                logger.info(
+                    "Whisper fallback produced %d cue(s) for %s",
+                    len(cues),
+                    drive_file.name,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Whisper fallback failed for %s: %s", drive_file.name, exc)
 
     duration = probe.duration_seconds or 0.0
     sample_times = _merge_sample_times(

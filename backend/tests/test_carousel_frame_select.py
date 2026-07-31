@@ -1,11 +1,73 @@
 """Unit tests for Instagram carousel frame candidate sampling + fallback."""
 
+import pytest
+
 from app.search.carousel_frame_select import (
+    FrameCandidate,
+    _parse_grouped_rank_response,
     build_frame_candidates,
+    front_face_score,
+    focal_point_for_slide,
     heuristic_frame_ts,
     pick_ready_from_ranked,
     sample_candidate_timestamps,
 )
+
+
+def test_grouped_rank_response_maps_slide_orders_and_ready_flags():
+    groups = [
+        [FrameCandidate(0, 1.0, "sample"), FrameCandidate(1, 2.0, "heuristic")],
+        [FrameCandidate(0, 4.0, "sample"), FrameCandidate(1, 5.0, "sample")],
+    ]
+    parsed = _parse_grouped_rank_response(
+        '{"slides":[{"slide":1,"order":[1,0],"ready":[false,true]},'
+        '{"slide":0,"order":[0,1],"ready":[true,false]}]}',
+        groups,
+    )
+    assert parsed[0] == ([0, 1], [True, False])
+    assert parsed[1] == ([1, 0], [False, True])
+
+
+def test_front_face_score_prefers_low_yaw_confident_face():
+    front = {
+        "yaw": 4,
+        "detection_confidence": 0.95,
+        "bbox_width": 0.3,
+        "bbox_height": 0.4,
+    }
+    profile = {
+        "yaw": 70,
+        "detection_confidence": 0.95,
+        "bbox_width": 0.3,
+        "bbox_height": 0.4,
+    }
+    assert front_face_score(front) > front_face_score(profile)
+
+
+def test_front_face_score_rejects_edge_profile_and_focal_point_is_normalized():
+    edge_profile = {
+        "yaw": 75,
+        "bbox_x": 0.0,
+        "bbox_y": 0.1,
+        "bbox_width": 0.4,
+        "bbox_height": 0.5,
+        "detection_confidence": 0.99,
+        "frame_timestamp": 2.0,
+    }
+    centered_front = {
+        "yaw": 2,
+        "bbox_x": 0.3,
+        "bbox_y": 0.2,
+        "bbox_width": 0.3,
+        "bbox_height": 0.4,
+        "detection_confidence": 0.9,
+        "frame_timestamp": 2.0,
+    }
+    slide = {"faces": [edge_profile, centered_front]}
+    focal_x, focal_y, score = focal_point_for_slide(slide, 2.0)
+    assert focal_x == pytest.approx(0.45)
+    assert focal_y == pytest.approx(0.368)
+    assert score == front_face_score(centered_front)
 
 
 def test_heuristic_frame_ts_mid_span():
