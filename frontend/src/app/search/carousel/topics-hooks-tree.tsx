@@ -559,12 +559,22 @@ export function TranscriptFramePicker({
             {err}
           </p>
         )}
+        {!loading && !err && !items.length && (
+          <p className="mt-4 text-sm text-muted-foreground">
+            No transcript frames in this span yet.
+          </p>
+        )}
         <ul className="topics-hooks-frame-grid mt-4">
           {items.map((item) => (
             <li key={`${item.frame_ts}-${item.text.slice(0, 12)}`}>
               <button
                 type="button"
                 className="topics-hooks-frame-card"
+                title={
+                  item.cached === false
+                    ? "Frame is extracted from the video on first view"
+                    : undefined
+                }
                 onClick={() => onPick(item)}
               >
                 {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -572,6 +582,7 @@ export function TranscriptFramePicker({
                   src={apiAssetUrl(item.preview_url)}
                   alt=""
                   className="topics-hooks-frame-img"
+                  loading="lazy"
                 />
                 <span className="topics-hooks-frame-ts tabular-nums">{fmtTs(item.start_sec)}</span>
                 <span className="topics-hooks-frame-cue line-clamp-2">{item.text}</span>

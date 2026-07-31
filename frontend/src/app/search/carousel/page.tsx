@@ -46,7 +46,14 @@ import {
 import { DownloadButton, LoadingLabel, ServiceErrorCard } from "@/components/ui";
 import { ModalOverlay } from "@/components/modal";
 import { cn } from "@/lib/utils";
-import { focalPointStyle, formatTimestampRange } from "./utils";
+import {
+  applyHookFrameOverrides,
+  focalPointStyle,
+  formatTimestampRange,
+  slideFrameUrl,
+  withReplacedFrame,
+  type PickedFrame,
+} from "./utils";
 import { TopicsHooksTree, TranscriptFramePicker } from "./topics-hooks-tree";
 
 type Phase = 1 | 2 | 3 | 4 | 5;
@@ -288,6 +295,8 @@ export default function CarouselSearchPage() {
   const [pipelineLocked, setPipelineLocked] = useState(false);
   const [pipelineStatus, setPipelineStatus] = useState("idle");
   const [carouselSaves, setCarouselSaves] = useState<CarouselGenerationSaveListItem[]>([]);
+  // Frames picked against a hook before slides exist, keyed by hook text.
+  const [hookFrames, setHookFrames] = useState<Record<string, PickedFrame>>({});
   const outlineRef = useRef<HTMLDivElement>(null);
 
   // Cache-first P0 path: indexed videos can open a complete artifact while
@@ -885,8 +894,9 @@ export default function CarouselSearchPage() {
         setOutlineError("Generate returned no carousels. Try fewer hooks or another theme.");
         return;
       }
-      setGeneratedCarousels(list);
-      setActiveCarouselId(list[0]?.id ?? null);
+      const withPicks = applyHookFrameOverrides(list, hookFrames);
+      setGeneratedCarousels(withPicks);
+      setActiveCarouselId(withPicks[0]?.id ?? null);
       setImagesReady(Boolean(res.images_ready));
       setCarouselLayouts(res.layouts ?? null);
       setOutline(res);
@@ -916,8 +926,12 @@ export default function CarouselSearchPage() {
       });
       const list = res.carousels ?? [];
       setCarouselLayouts(res.layouts ?? null);
+      // Image selection returns pipeline frames, so re-apply the user's picks.
       setGeneratedCarousels(
-        carouselsForLayout(res.layouts, carouselLayout, list)
+        applyHookFrameOverrides(
+          carouselsForLayout(res.layouts, carouselLayout, list),
+          hookFrames
+        )
       );
       if (list.length && !list.some((c) => c.id === activeCarouselId)) {
         setActiveCarouselId(list[0]?.id ?? null);
@@ -1399,6 +1413,12 @@ export default function CarouselSearchPage() {
                 if (next.intent) setPhaseIntent(next.intent);
                 if (next.intent_score != null) setPhaseIntentScore(next.intent_score);
               }}
+              onFramePicked={(hookText, frameTs, previewUrl) =>
+                setHookFrames((prev) => ({
+                  ...prev,
+                  [hookText]: { frame_ts: frameTs, preview_url: previewUrl },
+                }))
+              }
             />
           )}
           {phase < 4 && (
@@ -1997,18 +2017,16 @@ function InstagramCarouselPost({
             <option value="single_1">Single image</option>
             <option value="split_2">Split panels</option>
           </select>
-          {imagesReady && (
-            <button
-              type="button"
-              className="studio-btn studio-btn-ghost px-2 py-1 text-[11px]"
-              title="Pick frame from transcript for this slide"
-              onClick={() => setPickingFrame(true)}
-              disabled={locked}
-            >
-              <ImageIcon size={14} />
-              Frame
-            </button>
-          )}
+          <button
+            type="button"
+            className="studio-btn studio-btn-ghost px-2 py-1 text-[11px]"
+            title="Replace this slide's image with a frame from the transcript"
+            onClick={() => setPickingFrame(true)}
+            disabled={locked}
+          >
+            <ImageIcon size={14} />
+            Frame
+          </button>
           {imagesReady && onRegenerateSlide && (
             <button
               type="button"
@@ -2044,7 +2062,11 @@ function InstagramCarouselPost({
           aria-label="Carousel slides"
         >
           {slides.map((slide, i) => {
-            const showReal = imagesReady && Boolean(slide.preview_url);
+            // A frame the user picked themselves shows immediately; pipeline
+            // frames still wait for the explicit Select & filter images step.
+            const manualFrame = slide.frame_source === "manual";
+            const framesVisible = imagesReady || manualFrame;
+            const showReal = framesVisible && Boolean(slide.preview_url);
             // Split needs two distinct frames from this slide's own span; without
             // them a split render would repeat a neighbour's still, so fall back
             // to the single-image layout instead.
@@ -2062,10 +2084,10 @@ function InstagramCarouselPost({
                 {splitPanels ? (
                   splitPanels.map((panel, p) => (
                     <div className="ig-panel" key={`${slide.index}-panel-${p}`}>
-                      {imagesReady && panel.preview_url ? (
+                      {framesVisible && panel.preview_url ? (
                         // eslint-disable-next-line @next/next/no-img-element
                         <img
-                          src={cacheOnlyAssetUrl(panel.preview_url)}
+                          src={slideFrameUrl(panel.preview_url, slide.frame_source)}
                           alt=""
                           draggable={false}
                           style={focalPointStyle(panel)}
@@ -2098,7 +2120,7 @@ function InstagramCarouselPost({
                     {showReal ? (
                       // eslint-disable-next-line @next/next/no-img-element
                       <img
-                        src={cacheOnlyAssetUrl(slide.preview_url!)}
+                        src={slideFrameUrl(slide.preview_url!, slide.frame_source)}
                         alt=""
                         draggable={false}
                         style={focalPointStyle(slide)}
@@ -2127,7 +2149,8 @@ function InstagramCarouselPost({
                         {" · transcript"}
                         {slide.frame_source === "ai" ? " · AI frame" : ""}
                         {slide.frame_source === "fallback" ? " · fallback" : ""}
-                        {!imagesReady ? " · placeholder" : ""}
+                        {manualFrame ? " · your frame" : ""}
+                        {!framesVisible ? " · placeholder" : ""}
                       </p>
                     </div>
                   </>
@@ -2228,7 +2251,7 @@ function InstagramCarouselPost({
               {slide.preview_url ? (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img
-                  src={cacheOnlyAssetUrl(slide.preview_url)}
+                  src={slideFrameUrl(slide.preview_url, slide.frame_source)}
                   alt=""
                   draggable={false}
                   style={focalPointStyle(slide)}
@@ -2253,7 +2276,7 @@ function InstagramCarouselPost({
         </button>
       </div>
 
-      {pickingFrame && imagesReady && (
+      {pickingFrame && (
         <TranscriptFramePicker
           driveFileId={driveFileId}
           startSec={current.timestamp_sec}
@@ -2261,16 +2284,8 @@ function InstagramCarouselPost({
           hookText={current.hook_line}
           onClose={() => setPickingFrame(false)}
           onPick={(item) => {
-            const next = slides.map((s, i) =>
-              i === active
-                ? {
-                    ...s,
-                    timestamp_sec: item.frame_ts,
-                    preview_url: item.preview_url,
-                    frame_ts: item.frame_ts,
-                    frame_source: "manual" as const,
-                  }
-                : s
+            const next = slides.map((slide, i) =>
+              i === active ? withReplacedFrame(slide, item) : slide
             );
             onSlidesChange?.(next);
             setPickingFrame(false);
