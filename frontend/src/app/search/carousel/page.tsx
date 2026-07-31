@@ -25,13 +25,14 @@ import {
   X,
 } from "lucide-react";
 import {
-  apiAssetUrl,
+  cacheOnlyAssetUrl,
   apiClient,
   driveFileDownloadUrl,
   driveVideoStreamUrl,
   formatApiError,
   type CarouselGeneratedItem,
   type CarouselGenerationSaveListItem,
+  type CarouselLayouts,
   type CarouselOutlineResponse,
   type CarouselOutlineSlide,
   type CarouselPipelineExtractResponse,
@@ -45,10 +46,21 @@ import {
 import { DownloadButton, LoadingLabel, ServiceErrorCard } from "@/components/ui";
 import { ModalOverlay } from "@/components/modal";
 import { cn } from "@/lib/utils";
-import { formatTimestampRange } from "./utils";
+import { focalPointStyle, formatTimestampRange } from "./utils";
 import { TopicsHooksTree, TranscriptFramePicker } from "./topics-hooks-tree";
 
 type Phase = 1 | 2 | 3 | 4 | 5;
+
+/** Prefer the dual-layout cache bundle when present so single/split toggles are instant. */
+function carouselsForLayout(
+  layouts: CarouselLayouts | null | undefined,
+  mode: "single_1" | "split_2",
+  fallback: CarouselGeneratedItem[]
+): CarouselGeneratedItem[] {
+  const bundle = layouts?.[mode]?.carousels;
+  if (bundle && bundle.length) return bundle;
+  return fallback;
+}
 
 function seekVideoTo(video: HTMLVideoElement, timestampSec: number) {
   const seek = () => {
@@ -166,6 +178,7 @@ function toHookTimedPick(
     theme_id: item?.theme_id ?? null,
     topic_id: item?.topic_id ?? item?.parent_topic_id ?? null,
     topic_text: item?.topic_text ?? null,
+    original_text: item?.original_text ?? null,
   };
 }
 
@@ -270,7 +283,90 @@ export default function CarouselSearchPage() {
   const [imagesReady, setImagesReady] = useState(false);
   const [selectingImages, setSelectingImages] = useState(false);
   const [imageQualityNote, setImageQualityNote] = useState<string | null>(null);
+  const [carouselLayout, setCarouselLayout] = useState<"single_1" | "split_2">("single_1");
+  const [carouselLayouts, setCarouselLayouts] = useState<CarouselLayouts | null>(null);
+  const [pipelineLocked, setPipelineLocked] = useState(false);
+  const [pipelineStatus, setPipelineStatus] = useState("idle");
+  const [carouselSaves, setCarouselSaves] = useState<CarouselGenerationSaveListItem[]>([]);
   const outlineRef = useRef<HTMLDivElement>(null);
+
+  // Cache-first P0 path: indexed videos can open a complete artifact while
+  // transcript/theme controls continue loading independently.
+  useEffect(() => {
+    if (!selectedVideo) return;
+    let cancelled = false;
+    apiClient.carouselCached(selectedVideo.id).then((artifact) => {
+      if (cancelled || !artifact?.slides?.length) return;
+      const layouts = artifact.layouts ?? null;
+      const fromLayout = carouselsForLayout(layouts, "single_1", []);
+      const item: CarouselGeneratedItem = fromLayout[0] ?? {
+        id: `cached-${artifact.id}`,
+        kind: "mixed",
+        title: artifact.title || selectedVideo.name,
+        topic_labels: [],
+        slide_count: artifact.slides.length,
+        slides: artifact.slides,
+        images_ready: true,
+        plan_source: "background_cache",
+      };
+      const list =
+        fromLayout.length > 0
+          ? fromLayout
+          : artifact.carousels?.length
+            ? artifact.carousels
+            : [item];
+      setCarouselLayouts(layouts);
+      setCarouselLayout("single_1");
+      setOutline({
+        source: "background_cache",
+        title: item.title,
+        slide_count: item.slide_count,
+        hooks: [],
+        topics: [],
+        slides: item.slides,
+        carousels: list,
+        carousel_count: list.length,
+        images_ready: true,
+        layouts,
+      });
+      setGeneratedCarousels(list);
+      setActiveCarouselId(list[0]?.id ?? item.id);
+      setImagesReady(true);
+    }).catch(() => {
+      // A cache miss is expected for newly indexed videos.
+    });
+    void apiClient.carouselPipelineSaves(selectedVideo.id, 12, "carousel")
+      .then((res) => setCarouselSaves(res.items ?? []))
+      .catch(() => setCarouselSaves([]));
+    return () => { cancelled = true; };
+  }, [selectedVideo]);
+
+  // Cheap lock polling; this path never invokes Gemini, ffmpeg, or Drive.
+  useEffect(() => {
+    if (!selectedVideo) {
+      setPipelineLocked(false);
+      setPipelineStatus("idle");
+      return;
+    }
+    let cancelled = false;
+    let timer: number | undefined;
+    const poll = async () => {
+      try {
+        const status = await apiClient.carouselPipelineStatus(selectedVideo.id);
+        if (cancelled) return;
+        setPipelineLocked(Boolean(status.locked));
+        setPipelineStatus(status.status || "idle");
+        if (status.locked) timer = window.setTimeout(() => void poll(), 1000);
+      } catch {
+        if (!cancelled) setPipelineLocked(false);
+      }
+    };
+    void poll();
+    return () => {
+      cancelled = true;
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [selectedVideo]);
 
   const entityLabel = useMemo(() => {
     const fromPerson = personPick.trim();
@@ -394,6 +490,7 @@ export default function CarouselSearchPage() {
     setPreviewCue(null);
     setOutline(null);
     setGeneratedCarousels([]);
+    setCarouselLayouts(null);
     setActiveCarouselId(null);
     setOutlineError(null);
     setPersonNotFound(null);
@@ -654,6 +751,7 @@ export default function CarouselSearchPage() {
     setPhaseIntentScore(null);
     setOutline(null);
     setGeneratedCarousels([]);
+    setCarouselLayouts(null);
     setActiveCarouselId(null);
     setOutlineError(null);
     if (phase > 2) setPhase(2);
@@ -684,8 +782,8 @@ export default function CarouselSearchPage() {
         })),
       });
       setExtract(res);
-      setSelectedHooks((res.hooks ?? []).slice(0, 3).map((h) => h.text));
-      setSelectedTopics((res.topics ?? []).slice(0, 3).map((t) => t.text));
+      setSelectedHooks([]);
+      setSelectedTopics([]);
       setPhaseIntent(res.intent ?? null);
       setPhaseIntentScore(res.intent_score ?? null);
       setPhase(3);
@@ -790,6 +888,7 @@ export default function CarouselSearchPage() {
       setGeneratedCarousels(list);
       setActiveCarouselId(list[0]?.id ?? null);
       setImagesReady(Boolean(res.images_ready));
+      setCarouselLayouts(res.layouts ?? null);
       setOutline(res);
       setOutlineError(null);
       setPhase(5);
@@ -816,7 +915,10 @@ export default function CarouselSearchPage() {
         carousels: generatedCarousels,
       });
       const list = res.carousels ?? [];
-      setGeneratedCarousels(list);
+      setCarouselLayouts(res.layouts ?? null);
+      setGeneratedCarousels(
+        carouselsForLayout(res.layouts, carouselLayout, list)
+      );
       if (list.length && !list.some((c) => c.id === activeCarouselId)) {
         setActiveCarouselId(list[0]?.id ?? null);
       }
@@ -829,6 +931,7 @@ export default function CarouselSearchPage() {
               slides: res.slides ?? prev.slides,
               images_ready: true,
               quality: res.quality,
+              layouts: res.layouts ?? prev.layouts,
             }
           : prev
       );
@@ -862,6 +965,11 @@ export default function CarouselSearchPage() {
       </header>
 
       {error && <ServiceErrorCard message={error} onDismiss={() => setError(null)} />}
+      {pipelineLocked && (
+        <p className="text-xs font-medium text-muted-foreground" role="status">
+          Carousel generation is in progress. Editing and regeneration are temporarily locked.
+        </p>
+      )}
 
       <section className="studio-panel p-4 sm:p-6" data-testid="carousel-phase-1">
         <p className="studio-section-label">1 · Select video</p>
@@ -1085,7 +1193,8 @@ export default function CarouselSearchPage() {
                   themesNeedContinue ||
                   loadingExtract ||
                   building ||
-                  phase >= 5
+                  phase >= 5 ||
+                  pipelineLocked
                 }
                 title={
                   themesNeedContinue
@@ -1133,6 +1242,7 @@ export default function CarouselSearchPage() {
                     phase >= 3 ||
                     loadingExtract ||
                     building ||
+                    pipelineLocked ||
                     loadingThemes
                   }
                   data-testid="carousel-continue-themes"
@@ -1178,7 +1288,6 @@ export default function CarouselSearchPage() {
                           : "border-border hover:border-muted-foreground/40"
                       )}
                       onClick={() => onToggleTheme(t)}
-                      disabled={loadingExtract || building}
                     >
                       <span
                         className={cn(
@@ -1219,6 +1328,7 @@ export default function CarouselSearchPage() {
                   loadingExtract ||
                   loadingThemes ||
                   building ||
+                  pipelineLocked ||
                   selectedThemes.length === 0 ||
                   themesNeedContinue
                 }
@@ -1301,6 +1411,7 @@ export default function CarouselSearchPage() {
                   loadingIntent ||
                   loadingExtract ||
                   building ||
+                  pipelineLocked ||
                   (!selectedHooks.length && !selectedTopics.length)
                 }
                 title={
@@ -1393,6 +1504,7 @@ export default function CarouselSearchPage() {
                 building ||
                 selectingImages ||
                 loadingExtract ||
+                pipelineLocked ||
                 (!selectedHooks.length && !selectedTopics.length)
               }
               title={
@@ -1442,13 +1554,61 @@ export default function CarouselSearchPage() {
               </p>
             )}
 
+            {carouselSaves.length > 0 && (
+              <details className="rounded-lg border border-border px-3 py-2">
+                <summary className="cursor-pointer text-xs font-semibold text-foreground">
+                  Generation history ({carouselSaves.length})
+                </summary>
+                <div className="mt-2 space-y-1">
+                  {carouselSaves.map((save) => (
+                    <div key={save.id} className="flex items-center justify-between gap-2 text-xs">
+                      <span className="text-muted-foreground">
+                        v{save.copy_version ?? 1} · {save.source || "generation"} ·{" "}
+                        {save.created_at ? new Date(save.created_at).toLocaleString() : ""}
+                      </span>
+                      <button
+                        type="button"
+                        className="studio-btn studio-btn-ghost px-2 py-1 text-[11px]"
+                        onClick={() => {
+                          void apiClient.carouselPipelineSaveGet(save.id).then((restored) => {
+                            const payload = restored.payload;
+                            const list = payload.carousels ?? (payload.slides?.length
+                              ? [{
+                                  id: "restored",
+                                  kind: "mixed",
+                                  title: restored.label || "Carousel",
+                                  topic_labels: [],
+                                  slide_count: payload.slides.length,
+                                  slides: payload.slides,
+                                  images_ready: true,
+                                }]
+                              : []);
+                            setGeneratedCarousels(list as CarouselGeneratedItem[]);
+                            setActiveCarouselId(list[0]?.id ?? null);
+                            setImagesReady(true);
+                            setPhase(5);
+                          }).catch((e) =>
+                            setOutlineError(formatApiError(e, "Could not restore generation"))
+                          );
+                        }}
+                      >
+                        Restore
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </details>
+            )}
+
             {generatedCarousels.length > 0 && (
               <div className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
                   className="studio-btn studio-btn-accent studio-btn-continue"
                   onClick={() => void selectCarouselImages()}
-                  disabled={selectingImages || building || !generatedCarousels.length}
+                  disabled={
+                    selectingImages || building || pipelineLocked || !generatedCarousels.length
+                  }
                   title={
                     selectingImages
                       ? "Selecting images…"
@@ -1550,6 +1710,54 @@ export default function CarouselSearchPage() {
                 slides={activeGeneratedCarousel.slides}
                 driveFileId={selectedVideo.id}
                 imagesReady={imagesReady}
+                locked={pipelineLocked}
+                layoutMode={carouselLayout}
+                onLayoutModeChange={(mode) => {
+                  if (pipelineLocked) return;
+                  setCarouselLayout(mode);
+                  const next = carouselsForLayout(
+                    carouselLayouts ?? outline?.layouts,
+                    mode,
+                    generatedCarousels
+                  );
+                  if (next.length) {
+                    setGeneratedCarousels(next);
+                    if (!next.some((c) => c.id === activeCarouselId)) {
+                      setActiveCarouselId(next[0]?.id ?? null);
+                    }
+                  }
+                }}
+                onSaveCopy={async (slides, references) => {
+                  if (pipelineLocked) return;
+                  await apiClient.carouselCopySave({
+                    drive_file_id: selectedVideo.id,
+                    layout_mode: carouselLayout,
+                    slides,
+                    theme: { title: activeGeneratedCarousel.title },
+                    references,
+                  });
+                  const saves = await apiClient.carouselPipelineSaves(selectedVideo.id, 12, "carousel");
+                  setCarouselSaves(saves.items ?? []);
+                }}
+                onRegenerateSlide={async (slide, index) => {
+                  if (pipelineLocked) return;
+                  const res = await apiClient.carouselRegenerateSlide({
+                    drive_file_id: selectedVideo.id,
+                    carousel_id: activeGeneratedCarousel.id,
+                    slide_index: index,
+                    slide,
+                  });
+                  setGeneratedCarousels((prev) =>
+                    prev.map((c) =>
+                      c.id === activeGeneratedCarousel.id
+                        ? {
+                            ...c,
+                            slides: c.slides.map((s, i) => (i === index ? res.slide : s)),
+                          }
+                        : c
+                    )
+                  );
+                }}
                 onOpenSlide={(slide) =>
                   setPreviewCue({
                     start_sec: slide.timestamp_sec,
@@ -1689,21 +1897,45 @@ function InstagramCarouselPost({
   slides,
   driveFileId,
   imagesReady,
+  locked,
   onOpenSlide,
   onSlidesChange,
+  onRegenerateSlide,
+  layoutMode,
+  onLayoutModeChange,
+  onSaveCopy,
 }: {
   title: string;
   slides: CarouselOutlineSlide[];
   driveFileId: string;
   imagesReady: boolean;
+  locked: boolean;
   onOpenSlide: (slide: CarouselOutlineSlide) => void;
   onSlidesChange?: (slides: CarouselOutlineSlide[]) => void;
+  onRegenerateSlide?: (slide: CarouselOutlineSlide, index: number) => Promise<void>;
+  layoutMode: "single_1" | "split_2";
+  onLayoutModeChange: (mode: "single_1" | "split_2") => void;
+  onSaveCopy?: (
+    slides: CarouselOutlineSlide[],
+    references: Record<string, unknown>[]
+  ) => Promise<void>;
 }) {
   const trackRef = useRef<HTMLDivElement>(null);
   const [active, setActive] = useState(0);
   const [pickingFrame, setPickingFrame] = useState(false);
+  const [regenerating, setRegenerating] = useState(false);
   const n = slides.length;
   const current = slides[Math.min(Math.max(active, 0), Math.max(n - 1, 0))];
+  const references = slides.map((slide, index) => ({
+    type: "copy+image",
+    slide_index: index,
+    copy: slide.transcript_text || slide.hook_line || "",
+    image: {
+      drive_file_id: slide.drive_file_id,
+      timestamp_sec: slide.frame_ts ?? slide.timestamp_sec,
+      preview_url: slide.preview_url ?? null,
+    },
+  }));
 
   useEffect(() => {
     setActive(0);
@@ -1756,15 +1988,40 @@ function InstagramCarouselPost({
           {title}
         </p>
         <div className="flex items-center gap-2">
+          <select
+            className="studio-select px-2 py-1 text-[11px]"
+            value={layoutMode}
+            onChange={(e) => onLayoutModeChange(e.target.value as "single_1" | "split_2")}
+            aria-label="Carousel layout"
+          >
+            <option value="single_1">Single image</option>
+            <option value="split_2">Split panels</option>
+          </select>
           {imagesReady && (
             <button
               type="button"
               className="studio-btn studio-btn-ghost px-2 py-1 text-[11px]"
               title="Pick frame from transcript for this slide"
               onClick={() => setPickingFrame(true)}
+              disabled={locked}
             >
               <ImageIcon size={14} />
               Frame
+            </button>
+          )}
+          {imagesReady && onRegenerateSlide && (
+            <button
+              type="button"
+              className="studio-btn studio-btn-ghost px-2 py-1 text-[11px]"
+              disabled={regenerating || locked}
+              title="Regenerate this slide frame"
+              onClick={() => {
+                setRegenerating(true);
+                void onRegenerateSlide(current, active).finally(() => setRegenerating(false));
+              }}
+            >
+              <RefreshCw size={14} className={cn(regenerating && "animate-spin")} />
+              {regenerating ? "Working…" : "Regenerate"}
             </button>
           )}
           <span className="ig-post-count" aria-live="polite">
@@ -1788,39 +2045,93 @@ function InstagramCarouselPost({
         >
           {slides.map((slide, i) => {
             const showReal = imagesReady && Boolean(slide.preview_url);
+            // Split needs two distinct frames from this slide's own span; without
+            // them a split render would repeat a neighbour's still, so fall back
+            // to the single-image layout instead.
+            const splitPanels =
+              layoutMode === "split_2" && (slide.panels?.length ?? 0) >= 2
+                ? slide.panels!.slice(0, 2)
+                : null;
             return (
               <article
                 key={`${slide.index}-${slide.drive_file_id}-${slide.timestamp_sec}`}
-                className="ig-slide"
+                className={cn("ig-slide", splitPanels && "ig-slide-split")}
                 aria-label={`Slide ${i + 1} of ${n}`}
                 aria-hidden={i !== active}
               >
-                {showReal ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img src={apiAssetUrl(slide.preview_url!)} alt="" draggable={false} />
+                {splitPanels ? (
+                  splitPanels.map((panel, p) => (
+                    <div className="ig-panel" key={`${slide.index}-panel-${p}`}>
+                      {imagesReady && panel.preview_url ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={cacheOnlyAssetUrl(panel.preview_url)}
+                          alt=""
+                          draggable={false}
+                          style={focalPointStyle(panel)}
+                        />
+                      ) : (
+                        <div
+                          className="ig-slide-placeholder"
+                          aria-hidden
+                          data-testid="carousel-dummy-bg"
+                        >
+                          <span className="ig-slide-placeholder-icon">
+                            <ImageIcon aria-hidden />
+                          </span>
+                          <span className="ig-slide-placeholder-label">
+                            {imagesReady ? "No frame" : "Background pending"}
+                          </span>
+                        </div>
+                      )}
+                      <div className="ig-panel-scrim" aria-hidden />
+                      <p className="ig-panel-caption">
+                        {panel.caption ||
+                          (p === 0
+                            ? slide.transcript_text || slide.hook_line || ""
+                            : "")}
+                      </p>
+                    </div>
+                  ))
                 ) : (
-                  <div className="ig-slide-placeholder" aria-hidden data-testid="carousel-dummy-bg">
-                    <span className="ig-slide-placeholder-icon">
-                      <ImageIcon aria-hidden />
-                    </span>
-                    <span className="ig-slide-placeholder-label">
-                      {imagesReady ? "No frame" : "Background pending"}
-                    </span>
-                  </div>
+                  <>
+                    {showReal ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={cacheOnlyAssetUrl(slide.preview_url!)}
+                        alt=""
+                        draggable={false}
+                        style={focalPointStyle(slide)}
+                      />
+                    ) : (
+                      <div
+                        className="ig-slide-placeholder"
+                        aria-hidden
+                        data-testid="carousel-dummy-bg"
+                      >
+                        <span className="ig-slide-placeholder-icon">
+                          <ImageIcon aria-hidden />
+                        </span>
+                        <span className="ig-slide-placeholder-label">
+                          {imagesReady ? "No frame" : "Background pending"}
+                        </span>
+                      </div>
+                    )}
+                    <div className="ig-slide-scrim" aria-hidden />
+                    <div className="ig-slide-body">
+                      <p className="ig-slide-hook">
+                        {slide.transcript_text || slide.hook_line || ""}
+                      </p>
+                      <p className="ig-slide-meta">
+                        {formatTimestampRange(slide.timestamp_sec, slide.end_timestamp_sec)}
+                        {" · transcript"}
+                        {slide.frame_source === "ai" ? " · AI frame" : ""}
+                        {slide.frame_source === "fallback" ? " · fallback" : ""}
+                        {!imagesReady ? " · placeholder" : ""}
+                      </p>
+                    </div>
+                  </>
                 )}
-                <div className="ig-slide-scrim" aria-hidden />
-                <div className="ig-slide-body">
-                  <p className="ig-slide-hook">
-                    {slide.transcript_text || slide.hook_line || ""}
-                  </p>
-                  <p className="ig-slide-meta">
-                    {formatTimestampRange(slide.timestamp_sec, slide.end_timestamp_sec)}
-                    {" · transcript"}
-                    {slide.frame_source === "ai" ? " · AI frame" : ""}
-                    {slide.frame_source === "fallback" ? " · fallback" : ""}
-                    {!imagesReady ? " · placeholder" : ""}
-                  </p>
-                </div>
               </article>
             );
           })}
@@ -1874,6 +2185,26 @@ function InstagramCarouselPost({
           {current.hook_line || current.transcript_text || ""}
         </p>
       </div>
+      <div className="mt-3 rounded-lg border border-border bg-muted/20 px-3 py-2">
+        <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+          Reference for active slide
+        </p>
+        <p className="mt-1 text-xs text-foreground">
+          Copy + indexed frame at {formatTimestampRange(
+            current.frame_ts ?? current.timestamp_sec,
+            current.end_timestamp_sec
+          )} are included when saving this generation.
+        </p>
+      </div>
+      {onSaveCopy && (
+        <button
+          type="button"
+          className="studio-btn studio-btn-ghost mt-3 w-full"
+          onClick={() => void onSaveCopy(slides, references)}
+        >
+          Save copy for this generation
+        </button>
+      )}
 
       {!imagesReady && (
         <p className="mt-3 text-center text-xs text-muted-foreground">
@@ -1896,7 +2227,12 @@ function InstagramCarouselPost({
             >
               {slide.preview_url ? (
                 // eslint-disable-next-line @next/next/no-img-element
-                <img src={apiAssetUrl(slide.preview_url)} alt="" draggable={false} />
+                <img
+                  src={cacheOnlyAssetUrl(slide.preview_url)}
+                  alt=""
+                  draggable={false}
+                  style={focalPointStyle(slide)}
+                />
               ) : (
                 <span className="ig-slide-placeholder" style={{ position: "absolute", inset: 0 }} />
               )}

@@ -69,6 +69,16 @@ class DriveFile(Base):
     gemini_document_name: Mapped[str | None] = mapped_column(String, nullable=True)
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     source: Mapped[str] = mapped_column(String, nullable=False, default="drive", server_default="drive")
+    # Carousel pipeline lock is deliberately separate from indexing status.
+    # It guards generation/edit mutations without making cache reads wait on Drive indexing.
+    carousel_status: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="idle", server_default="idle", index=True
+    )
+    carousel_lock_token: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    carousel_lock_input_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    carousel_locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    carousel_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    carousel_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     media: Mapped["Media | None"] = relationship(back_populates="drive_file", uselist=False)
@@ -330,7 +340,7 @@ class CarouselGenerationSave(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     drive_file_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
-    # 'topics_hooks' (default) | 'themes'
+    # 'topics_hooks' (default) | 'themes' | 'carousel'
     kind: Mapped[str] = mapped_column(String(32), nullable=False, default="topics_hooks", index=True)
     theme_key: Mapped[str] = mapped_column(String(256), nullable=False, default="")
     label: Mapped[str | None] = mapped_column(String(240), nullable=True)
@@ -338,5 +348,10 @@ class CarouselGenerationSave(Base):
     model: Mapped[str | None] = mapped_column(String(128), nullable=True)
     transcript_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     source: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="ready")
+    input_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    layout_mode: Mapped[str] = mapped_column(String(32), nullable=False, default="single_1")
+    copy_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    algorithm_version: Mapped[str] = mapped_column(String(32), nullable=False, default="p0")
     payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

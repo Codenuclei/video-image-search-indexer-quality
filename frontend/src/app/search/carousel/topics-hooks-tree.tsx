@@ -164,14 +164,12 @@ export function TopicsHooksTree({
         intent_score: payload.intent_score ?? extract.intent_score,
         save_id: res.id,
       };
+      // Only a save the user explicitly made carries their picks; autosaves restore unselected.
+      const userSave = res.source === "user_save";
       onRestoreExtract(
         next,
-        payload.selected_hooks ?? (payload.hooks ?? []).slice(0, 3).map((h) => h.text),
-        payload.selected_topics ??
-          (payload.topics ?? [])
-            .filter((t) => !t.is_subtopic)
-            .slice(0, 3)
-            .map((t) => t.text)
+        userSave ? (payload.selected_hooks ?? []) : [],
+        userSave ? (payload.selected_topics ?? []) : []
       );
       setHistoryOpen(false);
     } catch (e) {
@@ -344,7 +342,15 @@ export function TopicsHooksTree({
                     );
                   })}
                   <HookLeaves
-                    hooks={topic.hooks ?? []}
+                    hooks={(topic.hooks ?? []).filter((h) => {
+                      const key = (h.text || "").trim().toLowerCase();
+                      if (!key) return false;
+                      return !(topic.subtopics ?? []).some((sub) =>
+                        (sub.hooks ?? []).some(
+                          (sh) => (sh.text || "").trim().toLowerCase() === key
+                        )
+                      );
+                    })}
                     selectedHooks={selectedHooks}
                     onToggleHook={onToggleHook}
                     onPreview={onPreview}
@@ -427,9 +433,21 @@ function HookLeaves({
   onPickFrame: (hook: CarouselVerbatimItem) => void;
 }) {
   if (!hooks.length) return null;
+  // Never show the same hook line twice in one section (old payloads
+  // used to copy parent hooks into every subtopic).
+  const seen = new Set<string>();
+  const unique = hooks.filter((h) => {
+    const key = (h.text || "").trim().toLowerCase();
+    // Drop filler / near-empty lines that aren't carousel-worthy.
+    const cleaned = key.replace(/^>+|\s+/g, " ").trim();
+    if (!cleaned || cleaned.length < 12 || cleaned.split(/\s+/).length < 3) return false;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
   return (
     <ul className="topics-hooks-hooks">
-      {hooks.map((h, i) => {
+      {unique.map((h, i) => {
         const on = selectedHooks.includes(h.text);
         return (
           <li

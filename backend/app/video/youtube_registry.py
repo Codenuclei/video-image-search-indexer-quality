@@ -129,7 +129,13 @@ async def register_youtube_video(
             f"Already in company Drive folder — full index queued ({linked.name})",
         )
 
-    meta = await fetch_youtube_metadata(video_id)
+    try:
+        meta = await fetch_youtube_metadata(video_id)
+    except Exception as exc:  # noqa: BLE001
+        # A local library file is sufficient to register and index a video.
+        # Metadata lookup must not turn a cache hit into a network requirement.
+        logger.warning("YouTube metadata unavailable for %s: %s", video_id, exc)
+        meta = YoutubeMetadata(video_id=video_id, title=f"YouTube {video_id}")
     drive_id = youtube_drive_id(video_id)
     existing = await session.get(DriveFile, drive_id)
 

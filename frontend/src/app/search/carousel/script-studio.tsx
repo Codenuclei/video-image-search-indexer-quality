@@ -74,7 +74,7 @@ export type ScriptStudioProps = {
   generating?: boolean;
   onGeneratingChange?: (v: boolean) => void;
   generateRef?: MutableRefObject<((iterate?: boolean) => Promise<ScriptDraft | null>) | null>;
-  /** Outline-returned hook/topic labels to merge + auto-select */
+  /** Outline-returned hook/topic labels to merge into the pickable list */
   outlineHooks?: string[];
   outlineTopics?: string[];
   /** External theme titles from transcript (merged into topics) */
@@ -160,7 +160,7 @@ export function ScriptStudio({
     wasActive.current = active;
   }, [active]);
 
-  /* Merge outline-returned hooks/topics and auto-select them */
+  /* Merge outline-returned hooks/topics; selection stays manual */
   const outlineHookKey = outlineHooks.join("\0");
   const outlineTopicKey = outlineTopics.join("\0");
   useEffect(() => {
@@ -179,14 +179,10 @@ export function ScriptStudio({
 
     if (hookItems.length) {
       setHooks((prev) => mergePresets(prev, hookItems));
-      const ids = hookItems.map((h) => h.id);
-      onSelectedHooksChange((prev) => Array.from(new Set([...prev, ...ids])));
       setRevealKey((k) => k + 1);
     }
     if (topicItems.length) {
       setTopics((prev) => mergePresets(prev, topicItems));
-      const ids = topicItems.map((t) => t.id);
-      onSelectedTopicsChange((prev) => Array.from(new Set([...prev, ...ids])));
     }
     // Only react when outline payload identity changes
     // eslint-disable-next-line react-hooks/exhaustive-deps

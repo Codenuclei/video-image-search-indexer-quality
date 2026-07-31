@@ -27,7 +27,13 @@ async def ingest_youtube_transcript_for_drive_file(
     if not yt_id:
         return 0
 
-    cues = await fetch_youtube_captions(yt_id)
+    try:
+        cues = await fetch_youtube_captions(yt_id)
+    except Exception as exc:  # noqa: BLE001
+        # Local video indexing can fall back to Whisper when YouTube captions
+        # are unavailable, so a transcript fetch outage must not abort the job.
+        logger.warning("YouTube transcript fetch failed for %s: %s", yt_id, exc)
+        return 0
     if not cues:
         return 0
 

@@ -78,6 +78,11 @@ async def lifespan(app: FastAPI):
 
     stop_event = asyncio.Event()
     worker = get_indexing_worker()
+    # A fresh process owns no carousel tasks, so any row still marked
+    # processing was orphaned by a previous shutdown and must be released
+    # before the backlog can drain.
+    await worker.reclaim_stale_carousel_locks(orphaned=True)
+    await worker.resume_carousel_generation()
     auto_task = asyncio.create_task(auto_index_loop(worker, stop_event))
     maintenance_task = asyncio.create_task(startup_maintenance(worker))
     runtime = get_runtime_settings()

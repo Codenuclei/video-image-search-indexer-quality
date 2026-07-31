@@ -14,6 +14,23 @@ export function formatTimestampRange(start: number, end?: number | null): string
   return startLabel;
 }
 
+/**
+ * Crop a frame around the detected speaker instead of the geometric centre, so a
+ * guest sitting off-centre stays in view inside the 4:5 portrait canvas.
+ */
+export function focalPointStyle(source: {
+  focal_x?: number | null;
+  focal_y?: number | null;
+}): { objectPosition: string } {
+  const clamp = (value: number | null | undefined, fallback: number) =>
+    typeof value === "number" && Number.isFinite(value)
+      ? Math.min(Math.max(value, 0), 1)
+      : fallback;
+  const x = clamp(source.focal_x, 0.5);
+  const y = clamp(source.focal_y, 0.4);
+  return { objectPosition: `${(x * 100).toFixed(2)}% ${(y * 100).toFixed(2)}%` };
+}
+
 export function momentToSnapshot(moment: SearchMoment): CarouselSnapshotContext {
   return {
     drive_file_id: moment.drive_file_id,
