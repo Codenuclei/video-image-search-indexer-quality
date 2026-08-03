@@ -1,29 +1,18 @@
 import type { NextConfig } from "next";
 
 /**
- * Browser talks same-origin (`NEXT_PUBLIC_API_URL=/backend`);
- * Next proxies `/backend/*` → FastAPI (avoids CORS).
+ * Browser talks same-origin (`NEXT_PUBLIC_API_URL=/backend`).
+ * Long requests are proxied by `app/backend/[...path]/route.ts` (not rewrites) —
+ * Next rewrites time out at ~30s and drop extract/generate responses.
  *
- * Local default: http://127.0.0.1:8000
- * Production (Railway): https://dfi-backend-production.up.railway.app
- *   — set via Dockerfile / railway.json buildArg API_PROXY_TARGET
+ * Upstream target:
+ *   Local default: http://127.0.0.1:8000
+ *   Production: set API_PROXY_TARGET (Dockerfile / Railway buildArg)
  */
-const API_PROXY_TARGET = (
-  process.env.API_PROXY_TARGET ?? "http://127.0.0.1:8000"
-).replace(/\/+$/, "");
-
 const nextConfig: NextConfig = {
   output: "standalone",
   // Allow HMR when the page is opened via 127.0.0.1 instead of localhost
   allowedDevOrigins: ["127.0.0.1"],
-  async rewrites() {
-    return [
-      {
-        source: "/backend/:path*",
-        destination: `${API_PROXY_TARGET}/:path*`,
-      },
-    ];
-  },
 };
 
 export default nextConfig;

@@ -27,7 +27,8 @@ function fmtTs(sec: number): string {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
-function buildTreeFromFlat(
+/** Build topic → subtopic → hook tree from flat extract arrays (current generation). */
+export function buildTreeFromFlat(
   topics: CarouselVerbatimItem[],
   hooks: CarouselVerbatimItem[]
 ): CarouselTopicTreeNode[] {
@@ -62,6 +63,14 @@ function buildTreeFromFlat(
   });
 }
 
+/** Prefer live `topic_tree` from the current extract response; else rebuild from flats. */
+export function topicTreeFromExtract(
+  extract: Pick<CarouselPipelineExtractResponse, "topic_tree" | "topics" | "hooks">
+): CarouselTopicTreeNode[] {
+  if (extract.topic_tree?.length) return extract.topic_tree;
+  return buildTreeFromFlat(extract.topics ?? [], extract.hooks ?? []);
+}
+
 export function TopicsHooksTree({
   driveFileId,
   extract,
@@ -87,10 +96,7 @@ export function TopicsHooksTree({
   ) => void;
   onFramePicked?: (hookText: string, frameTs: number, previewUrl: string) => void;
 }) {
-  const tree = useMemo(() => {
-    if (extract.topic_tree?.length) return extract.topic_tree;
-    return buildTreeFromFlat(extract.topics ?? [], extract.hooks ?? []);
-  }, [extract]);
+  const tree = useMemo(() => topicTreeFromExtract(extract), [extract]);
 
   const [openTopics, setOpenTopics] = useState<Record<string, boolean>>({});
   const [saves, setSaves] = useState<CarouselGenerationSaveListItem[]>([]);

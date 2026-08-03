@@ -7,14 +7,14 @@ DriveFaceIndexer frontend (`frontend/`) against the **same FastAPI backend**.
 
 | Environment | How the browser reaches the API |
 |---|---|
-| **Local** | `NEXT_PUBLIC_API_URL=/backend` (default). Next rewrites `/backend/*` → `http://127.0.0.1:8000` via `API_PROXY_TARGET`. |
-| **Railway (production)** | Same same-origin `/backend` path. Build sets `API_PROXY_TARGET=https://dfi-backend-production.up.railway.app` so the Node server proxies to the Railway backend — no backend CORS change needed. |
+| **Local** | `NEXT_PUBLIC_API_URL=/api/proxy` or `/backend` (both are App Router proxies to `API_PROXY_TARGET`, default `http://127.0.0.1:8000`). Durable for long extract/generate — not Next config rewrites (those die at ~30s). |
+| **Railway (production)** | Same same-origin `/api/proxy` (or `/backend`) path. Build sets `API_PROXY_TARGET=https://dfi-backend-production.up.railway.app`. |
 
 Do **not** point the browser at a different backend than the one serving indexed videos/captions. Production must use the Railway backend above.
 
 ```bash
 # Local (backend on :8000)
-cp .env.local.example .env.local   # NEXT_PUBLIC_API_URL=/backend
+cp .env.local.example .env.local   # NEXT_PUBLIC_API_URL=/api/proxy
 npm run dev                        # http://localhost:3002
 ```
 

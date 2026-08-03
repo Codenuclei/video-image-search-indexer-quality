@@ -7,10 +7,10 @@ FROM node:20-alpine AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-# Browser stays same-origin via /backend; Next rewrites proxy to Railway backend.
+# Browser stays same-origin via /api/proxy; App Router route proxies to Railway backend.
 ARG API_PROXY_TARGET=https://dfi-backend-production.up.railway.app
 ENV API_PROXY_TARGET=$API_PROXY_TARGET
-ARG NEXT_PUBLIC_API_URL=/backend
+ARG NEXT_PUBLIC_API_URL=/api/proxy
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 RUN mkdir -p public
 RUN npm run build

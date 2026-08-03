@@ -1,11 +1,19 @@
 /**
  * Carousel Studio API client — talks to the same backend as the main app.
  * Base URL: NEXT_PUBLIC_API_URL.
- * Prefer `/backend` (Next rewrite → :8000) so the browser stays same-origin
- * and avoids CORS when the studio runs on :3002.
+ * Prefer `/api/proxy` (App Router proxy → :8000) so the browser stays same-origin
+ * and long extract/generate calls are not killed by Next rewrite timeouts.
  */
 
-const API_BASE = (process.env.NEXT_PUBLIC_API_URL ?? "/backend").replace(/\/+$/, "");
+const RAW_API_BASE = (process.env.NEXT_PUBLIC_API_URL ?? "/api/proxy").replace(/\/+$/, "");
+/**
+ * Prefer the durable App Router proxy. Legacy `/backend` Next rewrites die at ~30s;
+ * both `/api/proxy` and `/backend` are now Route Handlers — keep whichever env sets.
+ */
+const API_BASE =
+  RAW_API_BASE === "/backend" || RAW_API_BASE === "/api/proxy"
+    ? RAW_API_BASE
+    : RAW_API_BASE || "/api/proxy";
 
 export { API_BASE };
 
@@ -374,6 +382,14 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
     if (!res.ok) {
       const text = await res.text();
       if (res.status >= 500) {
+        const textBody = text.trim();
+        // Next rewrite proxy used to return a bare "Internal Server Error" at ~30s;
+        // surface that distinctly so extract failures aren't a silent theme-list stay.
+        if (/^internal server error$/i.test(textBody)) {
+          throw new Error(
+            "The API proxy timed out before extract finished. Soft-refresh the studio and try again — long extract calls now go through a durable proxy."
+          );
+        }
         throw new Error(SERVICE_UNAVAILABLE_MESSAGE);
       }
       throw new Error(formatApiError(new Error(text || res.statusText)));

@@ -5,7 +5,7 @@
     "dockerfilePath": "Dockerfile",
     "buildArgs": {
       "API_PROXY_TARGET": "https://dfi-backend-production.up.railway.app",
-      "NEXT_PUBLIC_API_URL": "/backend"
+      "NEXT_PUBLIC_API_URL": "/api/proxy"
     }
   },
   "deploy": {
