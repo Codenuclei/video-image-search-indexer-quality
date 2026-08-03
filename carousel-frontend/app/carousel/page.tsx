@@ -1451,7 +1451,7 @@ export default function CarouselSearchPage() {
             />
           )}
           {phase < 4 && (
-            <div className="mt-4">
+            <div className="mt-4 flex flex-wrap items-center gap-3">
               <button
                 type="button"
                 className="studio-btn studio-btn-primary studio-btn-continue"
@@ -1481,6 +1481,23 @@ export default function CarouselSearchPage() {
                   "Continue to preview & intent"
                 )}
               </button>
+              <span
+                className="text-xs text-muted-foreground"
+                data-testid="topics-hooks-selection-count"
+              >
+                {selectedHooks.length + selectedTopics.length === 0
+                  ? "Select a hook or topic to continue"
+                  : [
+                      selectedHooks.length
+                        ? `${selectedHooks.length} hook${selectedHooks.length === 1 ? "" : "s"}`
+                        : null,
+                      selectedTopics.length
+                        ? `${selectedTopics.length} topic${selectedTopics.length === 1 ? "" : "s"}`
+                        : null,
+                    ]
+                      .filter(Boolean)
+                      .join(" · ") + " selected"}
+              </span>
             </div>
           )}
         </section>

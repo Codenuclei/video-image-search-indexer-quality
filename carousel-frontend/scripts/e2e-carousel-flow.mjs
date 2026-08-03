@@ -198,15 +198,28 @@ async function main() {
     log("hooks/topics OK", { hookKindCount: st.hookKindCount });
     report.steps.push({ step: 3, hooksTree: true, nodes: st.hookKindCount });
 
-    // --- Step 3: select a hook/topic → continue to direction ---
+    // --- Step 3: select a hook with real pointer click → continue to direction ---
     log("STEP3 select hook/topic → preview");
-    await page.evaluate(() => {
-      // Prefer a hook node; else any selectable topic node
-      const hook = document.querySelector(".topics-hooks-node.is-hook");
-      const topic = document.querySelector(".topics-hooks-node:not(.is-hook)");
-      (hook || topic)?.click();
-    });
+    const hookLoc = page.locator('[data-testid="topics-hooks-hook"], .topics-hooks-node.is-hook').first();
+    const topicLoc = page.locator('[data-testid="topics-hooks-topic"], .topics-hooks-node:not(.is-hook)').first();
+    if ((await hookLoc.count()) > 0) {
+      await hookLoc.scrollIntoViewIfNeeded();
+      await hookLoc.click();
+    } else {
+      await topicLoc.scrollIntoViewIfNeeded();
+      await topicLoc.click();
+    }
     await page.waitForTimeout(500);
+    const selectedAfter = await page.evaluate(() => ({
+      hooks: document.querySelectorAll(".topics-hooks-node.is-hook.is-selected").length,
+      topics: document.querySelectorAll(".topics-hooks-node.is-selected:not(.is-hook)").length,
+      previewDisabled: document.querySelector('[data-testid="carousel-continue-preview"]')?.disabled ?? true,
+      countText: document.querySelector('[data-testid="topics-hooks-selection-count"]')?.textContent || "",
+    }));
+    assert.ok(selectedAfter.hooks + selectedAfter.topics >= 1, "hook/topic must show selected");
+    assert.equal(selectedAfter.previewDisabled, false, "Continue must enable after selection");
+    assert.ok(/selected/i.test(selectedAfter.countText), "selection count must update");
+    await shot(page, "04b-hook-selected");
     await page.click('[data-testid="carousel-continue-preview"]');
     st = await waitFor(
       page,
