@@ -60,29 +60,39 @@ async def lifespan(app: FastAPI):
 
     prepare_youtube_cookies_at_startup()
 
+    # Keep pre-yield boot minimal so Railway/liveness can reach /health quickly.
+    # Heavy recover/reclaim/resume work runs after the server accepts traffic.
     await ensure_schema(get_engine())
     await load_runtime_settings_from_db(get_session_factory())
-    await recover_stuck_processing_files(get_session_factory())
-    await recover_aborted_transaction_errors(get_session_factory())
-    quarantined = await quarantine_stuck_decode_errors(get_session_factory())
-    if quarantined:
-        logger.info("Startup: quarantined %d stuck decode-error file(s)", quarantined)
-
-    from app.drive.indexing_pause import skip_corrupt_files
-
-    async with get_session_factory()() as session:
-        corrupt_skipped = await skip_corrupt_files(session)
-        await session.commit()
-    if corrupt_skipped:
-        logger.info("Startup: skipped %d corrupt/unreadable file(s)", corrupt_skipped)
 
     stop_event = asyncio.Event()
     worker = get_indexing_worker()
-    # A fresh process owns no carousel tasks, so any row still marked
-    # processing was orphaned by a previous shutdown and must be released
-    # before the backlog can drain.
-    await worker.reclaim_stale_carousel_locks(orphaned=True)
-    await worker.resume_carousel_generation()
+
+    async def _deferred_boot() -> None:
+        try:
+            await recover_stuck_processing_files(get_session_factory())
+            await recover_aborted_transaction_errors(get_session_factory())
+            quarantined = await quarantine_stuck_decode_errors(get_session_factory())
+            if quarantined:
+                logger.info("Startup: quarantined %d stuck decode-error file(s)", quarantined)
+
+            from app.drive.indexing_pause import skip_corrupt_files
+
+            async with get_session_factory()() as session:
+                corrupt_skipped = await skip_corrupt_files(session)
+                await session.commit()
+            if corrupt_skipped:
+                logger.info("Startup: skipped %d corrupt/unreadable file(s)", corrupt_skipped)
+
+            # A fresh process owns no carousel tasks, so any row still marked
+            # processing was orphaned by a previous shutdown and must be released
+            # before the backlog can drain.
+            await worker.reclaim_stale_carousel_locks(orphaned=True)
+            await worker.resume_carousel_generation()
+        except Exception:  # noqa: BLE001
+            logger.exception("Deferred startup recovery failed")
+
+    boot_task = asyncio.create_task(_deferred_boot())
     auto_task = asyncio.create_task(auto_index_loop(worker, stop_event))
     maintenance_task = asyncio.create_task(startup_maintenance(worker))
     runtime = get_runtime_settings()
@@ -92,16 +102,14 @@ async def lifespan(app: FastAPI):
     yield
 
     stop_event.set()
+    boot_task.cancel()
     auto_task.cancel()
     maintenance_task.cancel()
-    try:
-        await auto_task
-    except asyncio.CancelledError:
-        pass
-    try:
-        await maintenance_task
-    except asyncio.CancelledError:
-        pass
+    for task in (boot_task, auto_task, maintenance_task):
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
     await dispose_engine()
 
 
@@ -147,30 +155,29 @@ app.include_router(help_router.router)
 
 @app.get("/health")
 async def health():
-    """
-    Aggregated health check for the whole stack.
+    """Liveness probe: always 200 while the process is accepting requests.
 
-    Checks every service in parallel and returns a single JSON payload
-    showing what is up, what is down, and key runtime metrics (qdrant
-    point count, number of tracked Drive files, etc.).
+    Railway and load balancers use this path. Keep it free of DB/Qdrant/Drive
+    I/O so a busy Drive sync or slow dependency cannot fail the deploy check.
+    Use ``/health/detail`` for dependency diagnostics.
+    """
+    return {"status": "ok"}
+
+
+@app.get("/health/detail")
+async def health_detail():
+    """
+    Aggregated dependency check for the whole stack.
+
+    Checks DB/Qdrant/Drive metadata in parallel. Not used as the Railway
+    healthcheck — slow or degraded deps must not take the service offline.
     """
     import time
-    import httpx
     from sqlalchemy import text as sa_text
     from app.db.session import get_session_factory
 
     settings_obj = get_settings()
     t0 = time.monotonic()
-
-    # ── helpers ──────────────────────────────────────────────────────────────
-    async def _ping_http(url: str, timeout: float = 4.0) -> dict:
-        try:
-            async with httpx.AsyncClient(timeout=timeout) as c:
-                r = await c.get(url, headers={"Connection": "close"})
-                r.raise_for_status()
-                return {"status": "ok", **r.json()}
-        except Exception as exc:
-            return {"status": "unreachable", "error": str(exc)[:120]}
 
     async def _ping_db() -> dict:
         try:
@@ -180,7 +187,6 @@ async def health():
         except Exception as exc:
             return {"status": "unreachable", "error": str(exc)[:120]}
 
-    # ── fire all checks in parallel ───────────────────────────────────────────
     async def _ping_qdrant() -> dict:
         try:
             from app.qdrant.client import collection_info_sync
@@ -195,10 +201,12 @@ async def health():
 
     async def _ping_drive() -> dict:
         try:
-            from app.db.models import DriveUser
-            from app.db.session import get_session_factory
             async with get_session_factory()() as s:
-                user = (await s.execute(sa_text("SELECT id, email, selected_folder_name FROM drive_users LIMIT 1"))).fetchone()
+                user = (
+                    await s.execute(
+                        sa_text("SELECT id, email, selected_folder_name FROM drive_users LIMIT 1")
+                    )
+                ).fetchone()
             if user:
                 return {"status": "ok", "email": user[1], "folder": user[2]}
             return {"status": "not_connected"}
@@ -213,7 +221,6 @@ async def health():
     )
 
     elapsed_ms = round((time.monotonic() - t0) * 1000)
-
     all_ok = db_result.get("status") == "ok" and qdrant_result.get("status") == "ok"
 
     return {
