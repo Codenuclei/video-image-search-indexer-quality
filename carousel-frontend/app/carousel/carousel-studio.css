@@ -1,4 +1,4 @@
-﻿/* Carousel studio — zinc / slate palette over light base (scoped; landing untouched) */
+/* Carousel studio — zinc / slate palette over light base (scoped; landing untouched) */
 .carousel-studio {
   /* Primary / secondary / muted */
   --studio-primary: #0f172a; /* slate-900 */
@@ -1085,11 +1085,16 @@
 .carousel-studio .topics-hooks-node {
   flex: 1;
   min-width: 0;
-  border: 1px solid #e2e8f0 !important;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+  /* No !important on border shorthand — selected/hover must be able to win. */
+  border: 1px solid #e2e8f0;
   border-radius: calc(var(--radius) - 2px);
   background: var(--studio-surface);
   padding: 0.55rem 0.7rem;
   text-align: left;
+  cursor: pointer;
   transition:
     border-color 160ms ease,
     background 160ms ease,
@@ -1097,27 +1102,49 @@
     transform 200ms var(--th-ease);
 }
 .carousel-studio .topics-hooks-node:hover {
-  border-color: #e2e8f0 !important;
+  border-color: #cbd5e1;
   background: var(--studio-surface-slate);
 }
 .carousel-studio .topics-hooks-node.is-selected {
-  border-color: var(--studio-primary);
-  background: var(--studio-selected-zinc);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--studio-primary) 14%, transparent);
+  border-color: #0f172a !important; /* slate-900 — hardcoded; tokens may fail if CSS BOM returns */
+  background: #f1f5f9 !important; /* slate-100 */
+  box-shadow: 0 0 0 2px rgba(15, 23, 42, 0.14);
 }
 .carousel-studio .topics-hooks-node.is-sub {
-  background: var(--studio-surface-zinc);
+  background: var(--studio-surface-zinc, #fafafa);
 }
 .carousel-studio .topics-hooks-node.is-sub.is-selected {
-  background: var(--studio-selected);
+  background: #f1f5f9 !important;
 }
 .carousel-studio .topics-hooks-node.is-hook {
   border-style: dashed;
-  background: var(--studio-surface-slate);
+  background: var(--studio-surface-slate, #f8fafc);
 }
 .carousel-studio .topics-hooks-node.is-hook.is-selected {
-  border-style: solid;
-  background: var(--studio-selected-zinc);
+  border-style: solid !important;
+  background: #f1f5f9 !important;
+}
+
+.carousel-studio .topics-hooks-check {
+  margin-top: 0.1rem;
+  display: flex;
+  height: 1.15rem;
+  width: 1.15rem;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.25rem;
+  border: 1px solid #e2e8f0;
+  background: #ffffff;
+  color: #ffffff;
+}
+.carousel-studio .topics-hooks-node.is-selected .topics-hooks-check {
+  border-color: #0f172a;
+  background: #0f172a;
+}
+.carousel-studio .topics-hooks-node-body {
+  min-width: 0;
+  flex: 1;
 }
 
 .carousel-studio .topics-hooks-kind {

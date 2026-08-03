@@ -6,7 +6,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, History, ImageIcon, Play, Shuffle, Sparkles } from "lucide-react";
+import { Check, ChevronDown, History, ImageIcon, Play, Shuffle, Sparkles } from "lucide-react";
 import {
   apiAssetUrl,
   apiClient,
@@ -281,18 +281,26 @@ export function TopicsHooksTree({
                 </button>
                 <button
                   type="button"
+                  role="checkbox"
+                  aria-checked={topicOn}
+                  data-testid="topics-hooks-topic"
                   className={cn("topics-hooks-node", topicOn && "is-selected")}
                   onClick={() => onToggleTopic(topic.text)}
                 >
-                  <span className="topics-hooks-kind">Topic</span>
-                  <span className="topics-hooks-title">{topic.text}</span>
-                  <span className="topics-hooks-meta tabular-nums">
-                    {fmtTs(topic.start_sec)}
-                    {topic.end_sec != null ? `–${fmtTs(topic.end_sec)}` : ""}
+                  <span className="topics-hooks-check" aria-hidden>
+                    {topicOn ? <Check size={12} strokeWidth={2.5} /> : null}
                   </span>
-                  {topic.explanation ? (
-                    <span className="topics-hooks-explain">{topic.explanation}</span>
-                  ) : null}
+                  <span className="topics-hooks-node-body">
+                    <span className="topics-hooks-kind">Topic</span>
+                    <span className="topics-hooks-title">{topic.text}</span>
+                    <span className="topics-hooks-meta tabular-nums">
+                      {fmtTs(topic.start_sec)}
+                      {topic.end_sec != null ? `–${fmtTs(topic.end_sec)}` : ""}
+                    </span>
+                    {topic.explanation ? (
+                      <span className="topics-hooks-explain">{topic.explanation}</span>
+                    ) : null}
+                  </span>
                 </button>
                 <button
                   type="button"
@@ -318,13 +326,21 @@ export function TopicsHooksTree({
                           <span className="topics-hooks-rail" aria-hidden />
                           <button
                             type="button"
+                            role="checkbox"
+                            aria-checked={subOn}
+                            data-testid="topics-hooks-subtopic"
                             className={cn("topics-hooks-node is-sub", subOn && "is-selected")}
                             onClick={() => onToggleTopic(sub.text)}
                           >
-                            <span className="topics-hooks-kind">Subtopic</span>
-                            <span className="topics-hooks-title">{sub.text}</span>
-                            <span className="topics-hooks-meta tabular-nums">
-                              {fmtTs(sub.start_sec)}
+                            <span className="topics-hooks-check" aria-hidden>
+                              {subOn ? <Check size={12} strokeWidth={2.5} /> : null}
+                            </span>
+                            <span className="topics-hooks-node-body">
+                              <span className="topics-hooks-kind">Subtopic</span>
+                              <span className="topics-hooks-title">{sub.text}</span>
+                              <span className="topics-hooks-meta tabular-nums">
+                                {fmtTs(sub.start_sec)}
+                              </span>
                             </span>
                           </button>
                           <button
@@ -470,18 +486,26 @@ function HookLeaves({
             <span className="topics-hooks-rail is-hook" aria-hidden />
             <button
               type="button"
+              role="checkbox"
+              aria-checked={on}
+              data-testid="topics-hooks-hook"
               className={cn("topics-hooks-node is-hook", on && "is-selected")}
               onClick={() => onToggleHook(h.text)}
             >
-              <span className="topics-hooks-kind">
-                <Sparkles size={10} className="inline -mt-0.5 mr-1 opacity-60" />
-                Hook
+              <span className="topics-hooks-check" aria-hidden>
+                {on ? <Check size={12} strokeWidth={2.5} /> : null}
               </span>
-              <span className="topics-hooks-title">“{h.text}”</span>
-              <span className="topics-hooks-meta tabular-nums">{fmtTs(h.start_sec)}</span>
-              {h.original_text && h.original_text !== h.text ? (
-                <span className="topics-hooks-explain italic">From: {h.original_text}</span>
-              ) : null}
+              <span className="topics-hooks-node-body">
+                <span className="topics-hooks-kind">
+                  <Sparkles size={10} className="inline -mt-0.5 mr-1 opacity-60" />
+                  Hook
+                </span>
+                <span className="topics-hooks-title">“{h.text}”</span>
+                <span className="topics-hooks-meta tabular-nums">{fmtTs(h.start_sec)}</span>
+                {h.original_text && h.original_text !== h.text ? (
+                  <span className="topics-hooks-explain italic">From: {h.original_text}</span>
+                ) : null}
+              </span>
             </button>
             <button
               type="button"
