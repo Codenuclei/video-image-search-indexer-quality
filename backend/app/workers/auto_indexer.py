@@ -14,8 +14,9 @@ logger = logging.getLogger(__name__)
 
 async def auto_index_loop(worker: IndexingWorker, stop_event: asyncio.Event) -> None:
     """
-    Periodically syncs the Drive folder file list.
-    Processes pending files only when auto-indexing is enabled.
+    Periodically processes pending files and syncs Drive when auto-index is on.
+    When auto-index is off, the loop only sleeps — full Drive tree walks are skipped
+    so local carousel studio work is not starved by sync traffic.
     """
     logger.info(
         "Drive sync background loop started (interval=%ss)",
@@ -43,25 +44,28 @@ async def auto_index_loop(worker: IndexingWorker, stop_event: asyncio.Event) -> 
                 except Exception:  # noqa: BLE001
                     logger.exception("Auto-index processing failed")
 
-            try:
-                seen = await worker.sync_file_list()
-                logger.debug("Auto file-list sync: %d file(s)", seen)
-            except DriveDirectError as exc:
-                logger.warning("Auto file-list sync skipped: %s", exc)
-            except Exception:  # noqa: BLE001 — keep the loop alive
-                logger.exception("Auto file-list sync failed")
-
+            # Full Drive tree walks can take many minutes and saturate the single
+            # uvicorn worker's sockets/threads. When auto-index is off (typical
+            # local carousel studio), skip sync so extract/generate stay responsive.
             if runtime.auto_index_enabled:
+                try:
+                    seen = await worker.sync_file_list()
+                    logger.debug("Auto file-list sync: %d file(s)", seen)
+                except DriveDirectError as exc:
+                    logger.warning("Auto file-list sync skipped: %s", exc)
+                except Exception:  # noqa: BLE001 — keep the loop alive
+                    logger.exception("Auto file-list sync failed")
+
                 try:
                     await worker.ensure_parallel_video_indexing()
                     await worker.ensure_parallel_image_indexing()
                 except Exception:  # noqa: BLE001
                     logger.exception("Post-sync parallel slot fill failed")
 
-            try:
-                await maintenance_tick(worker)
-            except Exception:  # noqa: BLE001
-                logger.exception("Auto maintenance tick failed")
+                try:
+                    await maintenance_tick(worker)
+                except Exception:  # noqa: BLE001
+                    logger.exception("Auto maintenance tick failed")
         else:
             try:
                 await worker.ensure_parallel_video_indexing()
