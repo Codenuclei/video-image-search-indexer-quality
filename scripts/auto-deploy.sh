@@ -65,8 +65,10 @@ if [[ "$deploy_frontend" -eq 1 ]]; then
   (cd "$REPO/frontend" && railway up --service dfi-frontend --detach -y) | tee -a "$LOG"
 fi
 if [[ "$deploy_carousel" -eq 1 ]]; then
+  # Service Root Directory = carousel-frontend; upload from repo (not --path-as-root)
+  # so /carousel-frontend/railway.json resolves. GitHub source is also connected.
   log "Deploying carousel (railway up dfi-carousel)..."
-  (cd "$REPO/carousel-frontend" && railway up --service dfi-carousel --detach -y) | tee -a "$LOG"
+  (cd "$REPO" && railway up --service dfi-carousel --detach -y) | tee -a "$LOG"
 fi
 if [[ "$deploy_backend" -eq 0 && "$deploy_frontend" -eq 0 && "$deploy_carousel" -eq 0 ]]; then
   log "Changes were outside backend/, frontend/, and carousel-frontend/ - nothing to deploy."
