@@ -400,18 +400,23 @@ export default function CarouselSearchPage() {
     (async () => {
       setLoadingRecent(true);
       try {
-        const [vids, people] = await Promise.all([
-          apiClient.carouselRecentVideos(5, true),
-          apiClient.persons().catch(() => [] as Person[]),
-        ]);
+        // Don't await persons — a hung /persons used to stall the video list.
+        const vids = await apiClient.carouselRecentVideos(5, true);
         if (cancelled) return;
         setRecent(vids.items ?? []);
-        setPersons(people);
       } catch (e) {
         if (!cancelled) setError(formatApiError(e, "Could not load recent videos"));
       } finally {
         if (!cancelled) setLoadingRecent(false);
       }
+      void apiClient
+        .persons()
+        .then((people) => {
+          if (!cancelled) setPersons(people);
+        })
+        .catch(() => {
+          if (!cancelled) setPersons([]);
+        });
     })();
     return () => {
       cancelled = true;
