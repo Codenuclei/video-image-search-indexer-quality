@@ -60,16 +60,18 @@ async def lifespan(app: FastAPI):
 
     prepare_youtube_cookies_at_startup()
 
-    # Keep pre-yield boot minimal so Railway/liveness can reach /health quickly.
-    # Heavy recover/reclaim/resume work runs after the server accepts traffic.
-    await ensure_schema(get_engine())
-    await load_runtime_settings_from_db(get_session_factory())
-
+    # Yield ASAP so Railway /health can pass. Prior deploys hung forever on the
+    # first DB call (ensure_schema) after cookies — ASGI never accepted traffic,
+    # healthcheck timed out, and the proxy returned 502.
     stop_event = asyncio.Event()
     worker = get_indexing_worker()
 
     async def _deferred_boot() -> None:
         try:
+            logger.info("Startup: ensuring DB schema…")
+            await ensure_schema(get_engine())
+            logger.info("Startup: loading runtime settings…")
+            await load_runtime_settings_from_db(get_session_factory())
             await recover_stuck_processing_files(get_session_factory())
             await recover_aborted_transaction_errors(get_session_factory())
             quarantined = await quarantine_stuck_decode_errors(get_session_factory())
@@ -89,15 +91,20 @@ async def lifespan(app: FastAPI):
             # before the backlog can drain.
             await worker.reclaim_stale_carousel_locks(orphaned=True)
             await worker.resume_carousel_generation()
+            runtime = get_runtime_settings()
+            if runtime.auto_index_enabled:
+                logger.info(
+                    "Auto-index enabled (interval=%ss)",
+                    runtime.auto_index_interval_seconds,
+                )
+            logger.info("Startup: deferred boot complete")
         except Exception:  # noqa: BLE001
             logger.exception("Deferred startup recovery failed")
 
     boot_task = asyncio.create_task(_deferred_boot())
     auto_task = asyncio.create_task(auto_index_loop(worker, stop_event))
     maintenance_task = asyncio.create_task(startup_maintenance(worker))
-    runtime = get_runtime_settings()
-    if runtime.auto_index_enabled:
-        logger.info("Auto-index enabled (interval=%ss)", runtime.auto_index_interval_seconds)
+    logger.info("Startup: accepting traffic (deferred boot running)")
 
     yield
 
