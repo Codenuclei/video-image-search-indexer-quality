@@ -22,11 +22,17 @@ npm run dev                        # http://localhost:3002
 
 Service name: `dfi-carousel` (new service in the `drivefaceindexer` project — does not replace `dfi-frontend`).
 
-Deploy from repo root (or via `scripts/auto-deploy.sh` when `carousel-frontend/` changes):
+**Root Directory must be `carousel-frontend`** (same pattern as `dfi-frontend` → `frontend`), with
+`railwayConfigFile=/carousel-frontend/railway.json`. Building from the monorepo root makes Railpack fail.
 
 ```bash
-cd carousel-frontend && railway up --service dfi-carousel --detach -y
+# from repo root (Root Directory is already set on the service)
+railway up --service dfi-carousel --detach -y
+# or after pushing to main (GitHub source connected):
+railway redeploy --service dfi-carousel --from-source -y
 ```
+
+Or via `scripts/auto-deploy.sh` when `carousel-frontend/` changes.
 
 ## Scripts
 

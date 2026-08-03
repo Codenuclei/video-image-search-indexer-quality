@@ -55,10 +55,10 @@ try {
         Set-Location $repo
     }
     if ($deployCarousel) {
-        Set-Location (Join-Path $repo 'carousel-frontend')
+        # Service Root Directory = carousel-frontend; do not use --path-as-root
+        # (that breaks /carousel-frontend/railway.json resolution).
         Log "Deploying carousel (railway up dfi-carousel)..."
         railway up --service dfi-carousel --detach 2>&1 | Tee-Object -FilePath $log -Append
-        Set-Location $repo
     }
     if (-not $deployBackend -and -not $deployFrontend -and -not $deployCarousel) {
         Log "Changes were outside backend/, frontend/, and carousel-frontend/ - nothing to deploy."
