@@ -1502,7 +1502,16 @@ async def regenerate_carousel_slide(
             raise HTTPException(status_code=400, detail="slide_index is outside the artifact")
         candidate = dict(slides[body.slide_index])
         candidate.update(_jsonb_safe(body.slide))
-        polished = await _polish_outline_frames([candidate], session)
+        # Avoid re-picking the same JPEG; rank locally from cache when possible.
+        prev_ts = candidate.get("frame_ts")
+        if prev_ts is not None:
+            try:
+                candidate["_avoid_timestamps"] = [float(prev_ts)]
+            except (TypeError, ValueError):
+                pass
+        polished = await _polish_outline_frames(
+            [candidate], session, prefer_local=True, max_candidates=4
+        )
         await _prewarm_carousel_frames([{"slides": polished}], session, get_settings())
         slides[body.slide_index] = polished[0]
         target_car["slides"] = slides
@@ -1616,8 +1625,10 @@ async def transcript_frame_candidates(
     """Dense transcript+frame candidates in a span, quality-filtered for image picking."""
     from app.search.carousel_frame_select import (
         filter_frame_candidates_by_quality,
+        list_cached_timestamps_in_span,
         load_cached_frame_bytes,
         sample_candidate_timestamps,
+        HARVEST_NEAREST_TOLERANCE_SEC,
     )
 
     settings = get_settings()
@@ -1626,6 +1637,16 @@ async def transcript_frame_candidates(
     span_end = float(end_sec) if end_sec is not None else span_start + 40.0
     if span_end < span_start:
         span_end = span_start + 40.0
+
+    thumb = str(settings.thumbnail_dir)
+    fid = drive_file.id
+    target = max(1, min(int(limit or 24), 24))
+
+    # Fast path: prefer precomputed on-disk frames so the picker grid fills
+    # without waiting on ffmpeg/Drive extracts.
+    cached_ts = list_cached_timestamps_in_span(
+        thumb, fid, span_start, span_end, pad_sec=1.0, limit=max(target * 2, 32)
+    )
 
     # Cue-aligned candidates across the (possibly padded) window.
     window: list[tuple[float, float | None, str]] = []
@@ -1643,45 +1664,72 @@ async def transcript_frame_candidates(
         ]
         window = [(float(s), e, (t or "").strip()) for s, e, t in nearest if (t or "").strip()]
 
-    # Dense temporal samples between cues so the picker has more than cue starts.
-    dense_ts = sample_candidate_timestamps(
-        span_start,
-        span_end,
-        max_candidates=min(36, max(12, limit)),
-        step_sec=0.45,
-    )
+    def _cue_for(ts: float) -> tuple[float, float | None, str] | None:
+        if not window:
+            return None
+        return min(window, key=lambda c: abs(c[0] - ts))
+
     by_ts: dict[float, dict[str, Any]] = {}
-    for s, e, text in window:
-        by_ts[round(s, 2)] = {
-            "start_sec": s,
-            "end_sec": float(e) if e is not None else None,
-            "text": text[:400],
-            "frame_ts": round(s, 2),
-            "cue": True,
-        }
-    for ts in dense_ts:
-        key = round(ts, 2)
-        if key in by_ts:
-            continue
-        # Attach nearest cue text for context.
-        nearest_cue = min(window, key=lambda c: abs(c[0] - ts)) if window else None
+    # Seed with real cached frames first (snappy img loads via cache_only).
+    for ts in cached_ts:
+        key = round(float(ts), 2)
+        nearest_cue = _cue_for(key)
         by_ts[key] = {
             "start_sec": key,
             "end_sec": nearest_cue[1] if nearest_cue else None,
             "text": (nearest_cue[2][:400] if nearest_cue else ""),
             "frame_ts": key,
-            "cue": False,
+            "cue": bool(nearest_cue and abs(nearest_cue[0] - key) < 0.55),
+            "cached_seed": True,
+        }
+    for s, e, text in window:
+        key = round(s, 2)
+        if key in by_ts:
+            by_ts[key]["text"] = text[:400]
+            by_ts[key]["cue"] = True
+            by_ts[key]["start_sec"] = s
+            by_ts[key]["end_sec"] = float(e) if e is not None else None
+            continue
+        by_ts[key] = {
+            "start_sec": s,
+            "end_sec": float(e) if e is not None else None,
+            "text": text[:400],
+            "frame_ts": key,
+            "cue": True,
+            "cached_seed": False,
         }
 
+    # Light dense fill only when cache is thin — avoid 36 extract storms.
+    if len(cached_ts) < target:
+        dense_ts = sample_candidate_timestamps(
+            span_start,
+            span_end,
+            max_candidates=min(16, max(8, target)),
+            step_sec=0.75,
+        )
+        for ts in dense_ts:
+            key = round(ts, 2)
+            if key in by_ts:
+                continue
+            nearest_cue = _cue_for(key)
+            by_ts[key] = {
+                "start_sec": key,
+                "end_sec": nearest_cue[1] if nearest_cue else None,
+                "text": (nearest_cue[2][:400] if nearest_cue else ""),
+                "frame_ts": key,
+                "cue": False,
+                "cached_seed": False,
+            }
+
     raw_items = sorted(by_ts.values(), key=lambda x: float(x["frame_ts"]))
-    # Load bytes for quality filter when cached; skip extract to keep picker snappy.
     images: list[bytes | None] = []
     for item in raw_items:
         images.append(
             load_cached_frame_bytes(
-                str(settings.thumbnail_dir),
-                drive_file.id,
+                thumb,
+                fid,
                 float(item["frame_ts"]),
+                nearest_tolerance_sec=HARVEST_NEAREST_TOLERANCE_SEC,
             )
         )
     kept_idx, reject_stats = filter_frame_candidates_by_quality(
@@ -1693,26 +1741,29 @@ async def transcript_frame_candidates(
     def _row(index: int, *, cached: bool) -> dict[str, Any]:
         row = dict(raw_items[index])
         row.pop("cue", None)
+        row.pop("cached_seed", None)
         ts = float(row["frame_ts"])
-        # Cached frames render instantly; an uncached pick must be allowed to
-        # extract, otherwise the picker shows an empty grid on fresh videos.
+        # Prefer cache_only so the grid never triggers N ffmpeg extracts.
         suffix = "&cache_only=1" if cached else ""
-        row["preview_url"] = f"/media/video/{drive_file.id}/frame?ts={ts:.3f}{suffix}"
+        row["preview_url"] = f"/media/video/{fid}/frame?ts={ts:.3f}{suffix}"
         row["cached"] = cached
         return row
 
-    target = max(1, min(limit, 24))
-    items = [_row(i, cached=True) for i in kept_idx]
-    # Frames are extracted lazily, so a video nobody has previewed yet has
-    # nothing on disk. Offer cue-aligned timestamps the browser can pull.
+    items = [_row(i, cached=True) for i in kept_idx if images[i] is not None]
+    # Cap cold fallbacks tightly — browser extract-on-view is what felt eternal.
+    cold_budget = 4 if items else min(8, target)
     if len(items) < target:
         claimed = {round(float(x["frame_ts"]), 2) for x in items}
         fallback_order = sorted(
             range(len(raw_items)),
-            key=lambda i: (0 if raw_items[i].get("cue") else 1, float(raw_items[i]["frame_ts"])),
+            key=lambda i: (
+                0 if raw_items[i].get("cached_seed") or raw_items[i].get("cue") else 1,
+                float(raw_items[i]["frame_ts"]),
+            ),
         )
+        cold_added = 0
         for i in fallback_order:
-            if len(items) >= target:
+            if len(items) >= target or cold_added >= cold_budget:
                 break
             if images[i] is not None:
                 continue
@@ -1721,10 +1772,10 @@ async def transcript_frame_candidates(
                 continue
             claimed.add(ts)
             items.append(_row(i, cached=False))
-    # Transcript order beats quality order in a picker tied to spoken cues.
+            cold_added += 1
     items.sort(key=lambda x: float(x["frame_ts"]))
     return {
-        "drive_file_id": drive_file.id,
+        "drive_file_id": fid,
         "items": items,
         "quality": {
             "candidates": len(raw_items),
@@ -2794,6 +2845,9 @@ async def generate_carousel_outline(
 async def _polish_outline_frames(
     slides: list[dict[str, Any]],
     session: AsyncSession,
+    *,
+    prefer_local: bool = False,
+    max_candidates: int = 4,
 ) -> list[dict[str, Any]]:
     """Gemini rank + Instagram-ready check for each slide's display frame (span text unchanged)."""
     from app.search.carousel_frame_select import polish_slides_instagram_frames
@@ -2863,9 +2917,10 @@ async def _polish_outline_frames(
             thumbnail_dir=str(settings.thumbnail_dir),
             api_key=settings.gemini_api_key,
             model=settings.gemini_model,
-            max_candidates=12,
+            max_candidates=max_candidates,
             ensure_frame=ensure_frame,
             concurrency=3,
+            prefer_local=prefer_local,
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("Instagram frame polish skipped: %s", exc)
@@ -2884,32 +2939,38 @@ async def _prewarm_carousel_frames(
     from app.search.carousel_frame_select import cached_frame_path
 
     missing: list[str] = []
+    sem = asyncio.Semaphore(4)
+
+    async def _warm_one(slide: dict[str, Any]) -> str | None:
+        fid = str(slide.get("drive_file_id") or "").strip()
+        if not fid:
+            return "missing drive_file_id"
+        ts = slide.get("frame_ts")
+        if ts is None:
+            ts = _frame_ts(float(slide.get("timestamp_sec") or 0), slide.get("end_timestamp_sec"))
+            slide["frame_ts"] = ts
+        async with sem:
+            data = await _ensure_outline_frame_bytes(fid, float(ts), session, settings)
+        if not data:
+            return f"{fid}@{float(ts):.3f}"
+        path = cached_frame_path(str(settings.thumbnail_dir), fid, float(ts))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if not path.is_file():
+            path.write_bytes(data)
+        slide["preview_url"] = f"/media/video/{fid}/frame?ts={float(ts):.3f}&cache_only=1"
+        return None
+
     for carousel in carousels:
-        carousel_missing = False
         frame_items = list(carousel.get("slides") or [])
-        for slide in frame_items:
+        for slide in list(frame_items):
             frame_items.extend(slide.get("panels") or [])
             frame_items.extend(slide.get("_split_panels") or [])
-        for slide in frame_items:
-            fid = str(slide.get("drive_file_id") or "").strip()
-            if not fid:
-                missing.append("missing drive_file_id")
+        results = await asyncio.gather(*[_warm_one(s) for s in frame_items])
+        carousel_missing = False
+        for err in results:
+            if err:
+                missing.append(err)
                 carousel_missing = True
-                continue
-            ts = slide.get("frame_ts")
-            if ts is None:
-                ts = _frame_ts(float(slide.get("timestamp_sec") or 0), slide.get("end_timestamp_sec"))
-                slide["frame_ts"] = ts
-            data = await _ensure_outline_frame_bytes(fid, float(ts), session, settings)
-            if not data:
-                missing.append(f"{fid}@{float(ts):.3f}")
-                carousel_missing = True
-                continue
-            path = cached_frame_path(str(settings.thumbnail_dir), fid, float(ts))
-            path.parent.mkdir(parents=True, exist_ok=True)
-            if not path.is_file():
-                path.write_bytes(data)
-            slide["preview_url"] = f"/media/video/{fid}/frame?ts={float(ts):.3f}&cache_only=1"
         carousel["frames_prewarmed"] = not carousel_missing
     if missing:
         raise HTTPException(

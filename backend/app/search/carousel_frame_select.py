@@ -25,7 +25,15 @@ DEFAULT_TIMEOUT_SEC = 32.0
 _MAX_JPEG_BYTES = 512 * 1024
 _DOWNSCALE_MAX_DIM = 640
 _NEAREST_TOLERANCE_SEC = 1.25
+# Indexer samples ~1s; widen harvest nearest-match so precomputed JPEGs count
+# as hits instead of triggering ffmpeg/Drive extracts.
+HARVEST_NEAREST_TOLERANCE_SEC = 2.5
+_HARVEST_NEAREST_TOLERANCE_SEC = HARVEST_NEAREST_TOLERANCE_SEC
 _HARD_CAP_CANDIDATES = 16
+# Cold-path budget: never ffmpeg more than this many misses per slide.
+_MAX_EXTRACTS_PER_SLIDE = 2
+# Skip Gemini when local face+quality already has a clear winner.
+_LOCAL_RANK_FACE_THRESHOLD = 0.35
 
 
 @dataclass(frozen=True)
@@ -839,6 +847,53 @@ def cached_frame_path(thumbnail_dir: str, drive_file_id: str, ts: float) -> Path
     return Path(thumbnail_dir) / "video" / drive_file_id / f"{ts:.3f}.jpg"
 
 
+def list_cached_timestamps_in_span(
+    thumbnail_dir: str,
+    drive_file_id: str,
+    start_sec: float,
+    end_sec: float | None,
+    *,
+    pad_sec: float = 0.75,
+    limit: int = 24,
+) -> list[float]:
+    """Return on-disk frame timestamps inside a spoken span (fast path)."""
+    fid = (drive_file_id or "").strip()
+    if not fid:
+        return []
+    frames_dir = Path(thumbnail_dir) / "video" / fid
+    if not frames_dir.is_dir():
+        return []
+    s = float(start_sec or 0.0)
+    try:
+        e = float(end_sec) if end_sec is not None else s
+    except (TypeError, ValueError):
+        e = s
+    if e < s:
+        e = s
+    lo, hi = s - pad_sec, e + pad_sec
+    found: list[float] = []
+    for p in frames_dir.glob("*.jpg"):
+        try:
+            ts = float(p.stem)
+        except ValueError:
+            continue
+        if lo - 1e-6 <= ts <= hi + 1e-6 and p.stat().st_size > 0:
+            found.append(round(ts, 3))
+    found.sort()
+    if len(found) <= limit:
+        return found
+    # Evenly thin while keeping endpoints.
+    step = (len(found) - 1) / max(limit - 1, 1)
+    thinned = [found[min(len(found) - 1, int(round(i * step)))] for i in range(limit)]
+    out: list[float] = []
+    seen: set[float] = set()
+    for ts in thinned:
+        if ts not in seen:
+            seen.add(ts)
+            out.append(ts)
+    return out[:limit]
+
+
 def load_cached_frame_bytes(
     thumbnail_dir: str,
     drive_file_id: str,
@@ -870,6 +925,61 @@ def load_cached_frame_bytes(
         if data and len(data) <= _MAX_JPEG_BYTES:
             return data
     return None
+
+
+def build_cache_first_candidates(
+    drive_file_id: str,
+    start_sec: float,
+    end_sec: float | None,
+    *,
+    thumbnail_dir: str,
+    max_candidates: int = DEFAULT_MAX_CANDIDATES,
+) -> list[FrameCandidate]:
+    """Prefer precomputed on-disk frames in-span; fill gaps with span samples."""
+    fid = (drive_file_id or "").strip()
+    heuristic = heuristic_frame_ts(start_sec, end_sec)
+    cap = max(1, min(int(max_candidates), _HARD_CAP_CANDIDATES))
+    cached = list_cached_timestamps_in_span(
+        thumbnail_dir, fid, start_sec, end_sec, limit=cap
+    )
+    samples = sample_candidate_timestamps(start_sec, end_sec, max_candidates=cap)
+    stamps: list[float] = []
+    seen: set[float] = set()
+
+    def _add(ts: float) -> None:
+        key = round(float(ts), 2)
+        if key in seen:
+            return
+        seen.add(key)
+        stamps.append(round(float(ts), 2))
+
+    _add(heuristic)
+    for ts in cached:
+        _add(ts)
+        if len(stamps) >= cap:
+            break
+    if len(stamps) < cap:
+        for ts in samples:
+            _add(ts)
+            if len(stamps) >= cap:
+                break
+    stamps = stamps[:cap]
+    out: list[FrameCandidate] = []
+    for i, ts in enumerate(stamps):
+        label = "heuristic" if abs(ts - heuristic) < 0.011 else "sample"
+        url = f"/media/video/{fid}/frame?ts={ts}&cache_only=1" if fid else None
+        out.append(FrameCandidate(index=i, timestamp_sec=ts, label=label, preview_url=url))
+    if out and not any(c.label == "heuristic" for c in out):
+        mid_i = min(range(len(out)), key=lambda i: abs(out[i].timestamp_sec - heuristic))
+        c = out[mid_i]
+        out[mid_i] = FrameCandidate(
+            index=c.index,
+            timestamp_sec=c.timestamp_sec,
+            label="heuristic",
+            preview_url=c.preview_url,
+            quality_score=c.quality_score,
+        )
+    return out
 
 
 async def select_frame_for_span(
@@ -1088,13 +1198,15 @@ async def polish_slides_instagram_frames(
     timeout_sec: float = DEFAULT_TIMEOUT_SEC,
     ensure_frame: Callable[[str, float], Awaitable[bytes | None]] | None = None,
     concurrency: int = 2,
+    prefer_local: bool = False,
 ) -> list[dict[str, Any]]:
     """Apply frame polish with concurrent harvest and grouped Gemini ranking.
 
-    Candidate collection is local/concurrent. Gemini sees 4-6 slides per
-    request (capped at three calls), and timestamp collisions are resolved
-    after all rankings are available so an early slide cannot starve later
-    slides.
+    Candidate collection is local/concurrent and cache-first. Gemini sees
+    4-6 slides per request (capped at three calls) unless every slide already
+    has a strong local face+quality ranking from precomputed frames.
+    Timestamp collisions are resolved after rankings so early slides cannot
+    starve later ones.
     """
     if not slides:
         return slides
@@ -1112,7 +1224,9 @@ async def polish_slides_instagram_frames(
             s.setdefault("front_face_score", fs)
         return slides
 
-    candidate_cap = max(3, min(int(max_candidates), 5))
+    # Keep harvest small: indexer frames + a few samples beat 10 ffmpeg extracts.
+    candidate_cap = max(3, min(int(max_candidates), 4))
+    extract_sem = asyncio.Semaphore(max(1, min(3, int(concurrency or 2))))
 
     async def _harvest(slide: dict[str, Any]) -> dict[str, Any]:
         out = dict(slide)
@@ -1124,34 +1238,78 @@ async def polish_slides_instagram_frames(
             end_f = None
         fid = str(out.get("drive_file_id") or "")
         heuristic = heuristic_frame_ts(start, end_f)
-        raw = build_frame_candidates(
+        avoid = [
+            float(x)
+            for x in (out.get("_avoid_timestamps") or out.get("avoid_timestamps") or [])
+            if x is not None
+        ]
+        raw = build_cache_first_candidates(
             fid,
             start,
             end_f,
-            max_candidates=min(_HARD_CAP_CANDIDATES, candidate_cap * 2),
+            thumbnail_dir=thumbnail_dir,
+            max_candidates=candidate_cap,
         )
-
-        async def _load(candidate: FrameCandidate) -> bytes | None:
-            data = load_cached_frame_bytes(thumbnail_dir, fid, candidate.timestamp_sec)
-            if data is None and ensure_frame is not None:
-                try:
-                    data = await ensure_frame(fid, candidate.timestamp_sec)
-                except Exception as exc:  # noqa: BLE001
-                    logger.debug(
-                        "ensure_frame failed %s@%.2f: %s",
-                        fid,
-                        candidate.timestamp_sec,
-                        exc,
+        if avoid:
+            filtered = [
+                c
+                for c in raw
+                if not any(abs(c.timestamp_sec - a) < 0.45 for a in avoid)
+            ]
+            if filtered:
+                raw = [
+                    FrameCandidate(
+                        index=i,
+                        timestamp_sec=c.timestamp_sec,
+                        label=c.label,
+                        preview_url=c.preview_url,
                     )
-            return data
+                    for i, c in enumerate(filtered)
+                ]
 
-        images = list(await asyncio.gather(*[_load(c) for c in raw]))
+        # Cache-first pass (wide nearest so 1s indexer samples hit).
+        images: list[bytes | None] = [
+            load_cached_frame_bytes(
+                thumbnail_dir,
+                fid,
+                c.timestamp_sec,
+                nearest_tolerance_sec=_HARVEST_NEAREST_TOLERANCE_SEC,
+            )
+            for c in raw
+        ]
+        cache_hits = sum(1 for data in images if data is not None)
+        miss_order = sorted(
+            (i for i, data in enumerate(images) if data is None),
+            key=lambda i: (
+                0 if raw[i].label == "heuristic" else 1,
+                abs(raw[i].timestamp_sec - heuristic),
+            ),
+        )
+        extracts_used = 0
+        if ensure_frame is not None and miss_order:
+            # Only extract a tiny budget — regenerate/select must not Drive-storm.
+            for i in miss_order[:_MAX_EXTRACTS_PER_SLIDE]:
+                async with extract_sem:
+                    try:
+                        data = await ensure_frame(fid, raw[i].timestamp_sec)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug(
+                            "ensure_frame failed %s@%.2f: %s",
+                            fid,
+                            raw[i].timestamp_sec,
+                            exc,
+                        )
+                        data = None
+                images[i] = data
+                if data is not None:
+                    extracts_used += 1
+
         kept, qstats = await asyncio.to_thread(
             filter_frame_candidates_by_quality,
             images,
             timestamps=[c.timestamp_sec for c in raw],
             max_keep=candidate_cap,
-            min_keep=min(3, candidate_cap),
+            min_keep=min(2, candidate_cap),
         )
         candidates: list[FrameCandidate] = []
         kept_images: list[bytes | None] = []
@@ -1187,12 +1345,32 @@ async def polish_slides_instagram_frames(
                 for i, j in enumerate(order)
             ]
             kept_images = [kept_images[j] for j in order]
+        best_face = max((c.front_face for c in candidates), default=0.0)
+        # Prefer local ranking when cache is warm (or caller asked for fast regen).
+        local_ok = bool(candidates) and (
+            prefer_local
+            or (
+                extracts_used == 0
+                and cache_hits >= 2
+                and (
+                    best_face >= _LOCAL_RANK_FACE_THRESHOLD
+                    or cache_hits >= min(3, candidate_cap)
+                )
+            )
+        )
         return {
             "slide": out,
             "candidates": candidates,
             "images": kept_images,
             "heuristic": heuristic,
-            "quality": {"candidates": len(raw), "kept": len(candidates), **qstats},
+            "local_ok": local_ok,
+            "quality": {
+                "candidates": len(raw),
+                "kept": len(candidates),
+                "cache_hits": cache_hits,
+                "extracts": extracts_used,
+                **qstats,
+            },
         }
 
     harvested = await asyncio.wait_for(
@@ -1202,7 +1380,7 @@ async def polish_slides_instagram_frames(
 
     groups: list[tuple[int, str, list[FrameCandidate], list[bytes | None]]] = []
     for idx, item in enumerate(harvested):
-        if item["candidates"]:
+        if item["candidates"] and not item.get("local_ok"):
             slide = item["slide"]
             hook = str(
                 slide.get("transcript_text")
@@ -1213,6 +1391,7 @@ async def polish_slides_instagram_frames(
             groups.append((idx, hook, item["candidates"], item["images"]))
 
     ranked: dict[int, tuple[list[int] | None, list[bool] | None]] = {}
+    # Skip Gemini entirely when every slide ranked locally from cache/faces.
     # Four-to-six slides per request, with an explicit hard cap of three.
     batch_size = max(4, min(6, int(concurrency or 5)))
     batches = [groups[i : i + batch_size] for i in range(0, len(groups), batch_size)]
@@ -1231,6 +1410,11 @@ async def polish_slides_instagram_frames(
         )
         for result in results:
             ranked.update(result)
+    # Local-ok slides: identity order (already sorted by face+quality).
+    for idx, item in enumerate(harvested):
+        if item.get("local_ok") and item["candidates"] and idx not in ranked:
+            n = len(item["candidates"])
+            ranked[idx] = (list(range(n)), [True] * n)
 
     # Two-phase assignment: reserve top choices only after every slide is ranked.
     assignments: dict[int, tuple[int, str, bool]] = {}
@@ -1279,14 +1463,22 @@ async def polish_slides_instagram_frames(
         )
         if choice is None:
             choice = heuristic_i
-        source = "ai" if order and choice in order else "heuristic"
-        ready_flag = bool(ready and choice < len(ready) and ready[choice])
+        if item.get("local_ok"):
+            source = "heuristic"
+        else:
+            source = "ai" if order and choice in order else "heuristic"
+        ready_flag = bool(
+            item.get("local_ok")
+            or (ready and choice < len(ready) and ready[choice])
+        )
         assignments[idx] = (choice, source, ready_flag)
         used.append(candidates[choice].timestamp_sec)
 
     out_slides: list[dict[str, Any]] = []
     for idx, item in enumerate(harvested):
         out = dict(item["slide"])
+        out.pop("_avoid_timestamps", None)
+        out.pop("avoid_timestamps", None)
         candidates = item["candidates"]
         if candidates:
             choice, source, ready_flag = assignments[idx]

@@ -159,18 +159,39 @@ def test_pick_ready_from_ranked_empty_order_uses_heuristic():
     assert ready is False
 
 
-def test_pick_ready_fills_missing_indices_after_order():
-    # Partial order still walks remaining indices for readiness.
-    idx, source, ready = pick_ready_from_ranked(
-        order=[1],
-        ready=[True, False, True],
-        n=3,
-        heuristic_index=0,
+def test_build_cache_first_candidates_prefers_disk_frames(tmp_path):
+    from app.search.carousel_frame_select import build_cache_first_candidates
+
+    fid = "vid123"
+    frames = tmp_path / "video" / fid
+    frames.mkdir(parents=True)
+    for ts in (10.0, 11.0, 12.0, 13.0):
+        (frames / f"{ts:.3f}.jpg").write_bytes(b"x" * 64)
+
+    cands = build_cache_first_candidates(
+        fid, 10.0, 14.0, thumbnail_dir=str(tmp_path), max_candidates=4
     )
-    # 1 not ready → next in filled order is 0 (ready)
-    assert idx == 0
-    assert source == "ai"
-    assert ready is True
+    assert cands
+    assert any(c.label == "heuristic" for c in cands)
+    # Mid-span heuristic is 12.0; disk frames in span should dominate.
+    stamps = {c.timestamp_sec for c in cands}
+    assert stamps & {10.0, 11.0, 12.0, 13.0}
+
+
+def test_list_cached_timestamps_in_span(tmp_path):
+    from app.search.carousel_frame_select import list_cached_timestamps_in_span
+
+    fid = "vid456"
+    frames = tmp_path / "video" / fid
+    frames.mkdir(parents=True)
+    (frames / "5.000.jpg").write_bytes(b"a")
+    (frames / "6.500.jpg").write_bytes(b"b")
+    (frames / "20.000.jpg").write_bytes(b"c")
+    found = list_cached_timestamps_in_span(str(tmp_path), fid, 5.0, 7.0)
+    assert 5.0 in found
+    assert 6.5 in found
+    assert 20.0 not in found
+
 
 
 def _jpeg_from_gray(gray, quality: int = 90) -> bytes:

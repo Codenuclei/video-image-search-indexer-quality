@@ -556,12 +556,24 @@ export function TranscriptFramePicker({
     apiClient
       .carouselTranscriptFrames({
         driveFileId,
-        startSec: Math.max(0, startSec - 12),
-        endSec: endSec != null ? endSec + 12 : startSec + 48,
-        limit: 48,
+        // Tight window: backend prefers cached frames; wide pads only force cold extracts.
+        startSec: Math.max(0, startSec - 4),
+        endSec: endSec != null ? endSec + 4 : startSec + 28,
+        limit: 24,
       })
       .then((res) => {
-        if (!cancelled) setItems(res.items ?? []);
+        if (!cancelled) {
+          const list = res.items ?? [];
+          // Cached first so the grid paints immediately.
+          setItems(
+            [...list].sort((a, b) => {
+              const ac = a.cached === false ? 1 : 0;
+              const bc = b.cached === false ? 1 : 0;
+              if (ac !== bc) return ac - bc;
+              return a.frame_ts - b.frame_ts;
+            })
+          );
+        }
       })
       .catch((e) => {
         if (!cancelled) setErr(formatApiError(e, "Could not load transcript frames"));
