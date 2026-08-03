@@ -174,6 +174,11 @@ class DriveDirectClient:
                     continue
                 visited_folders.add(folder_id)
 
+                # Yield so /health and carousel list APIs stay responsive during
+                # multi-thousand-folder walks on the single uvicorn worker.
+                if len(visited_folders) % 8 == 0:
+                    await asyncio.sleep(0)
+
                 children = await _list_children(client, folder_id, access_token)
 
                 for child in children:

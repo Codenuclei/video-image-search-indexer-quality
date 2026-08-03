@@ -372,11 +372,27 @@ export type CarouselTranscriptFrameItem = {
   cached?: boolean;
 };
 
-async function api<T>(path: string, init?: RequestInit): Promise<T> {
+async function api<T>(path: string, init?: RequestInit & { timeoutMs?: number }): Promise<T> {
+  const { timeoutMs, ...rest } = init ?? {};
+  const timeout =
+    typeof timeoutMs === "number" && timeoutMs > 0
+      ? timeoutMs
+      : // Default short timeout for list/cache reads so a wedged backend cannot
+        // leave the studio spinner forever. Long extract/generate pass their own.
+        45_000;
+  const controller = new AbortController();
+  const external = rest.signal;
+  const onAbort = () => controller.abort();
+  if (external) {
+    if (external.aborted) controller.abort();
+    else external.addEventListener("abort", onAbort, { once: true });
+  }
+  const timer = setTimeout(() => controller.abort(), timeout);
   try {
     const res = await fetch(`${API_BASE}${path}`, {
-      ...init,
-      headers: { "Content-Type": "application/json", ...init?.headers },
+      ...rest,
+      signal: controller.signal,
+      headers: { "Content-Type": "application/json", ...rest?.headers },
       cache: "no-store",
     });
     if (!res.ok) {
@@ -401,9 +417,15 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
       (error instanceof DOMException || error instanceof Error) &&
       error.name === "AbortError"
     ) {
-      throw error;
+      if (external?.aborted) throw error;
+      throw new Error(
+        `Request timed out after ${Math.round(timeout / 1000)}s. The API may be busy — retry in a moment.`
+      );
     }
     throw new Error(formatApiError(error));
+  } finally {
+    clearTimeout(timer);
+    if (external) external.removeEventListener("abort", onAbort);
   }
 }
 
@@ -466,6 +488,7 @@ export const apiClient = {
         force: Boolean(opts?.force),
       }),
       signal: opts?.signal,
+      timeoutMs: opts?.force ? 300_000 : 90_000,
     }),
   carouselPipelineExtract: (body: {
     drive_file_id: string;
@@ -486,6 +509,7 @@ export const apiClient = {
     api<CarouselPipelineExtractResponse>("/search/carousel/pipeline/extract", {
       method: "POST",
       body: JSON.stringify(body),
+      timeoutMs: 900_000,
     }),
   carouselPipelineIntent: (body: {
     theme_title?: string;
@@ -501,12 +525,14 @@ export const apiClient = {
       {
         method: "POST",
         body: JSON.stringify(body),
+        timeoutMs: 120_000,
       }
     ),
   carouselPipelineGenerate: (body: CarouselGenerateRequest) =>
     api<CarouselOutlineResponse>("/search/carousel/pipeline/generate", {
       method: "POST",
       body: JSON.stringify({ ...body, select_images: Boolean(body.select_images) }),
+      timeoutMs: 900_000,
     }),
   carouselPipelineSelectImages: (body: {
     drive_file_id: string;
@@ -515,6 +541,7 @@ export const apiClient = {
     api<CarouselOutlineResponse>("/search/carousel/pipeline/select-images", {
       method: "POST",
       body: JSON.stringify(body),
+      timeoutMs: 900_000,
     }),
   carouselCached: (driveFileId: string) =>
     api<{

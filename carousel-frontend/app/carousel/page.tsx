@@ -411,19 +411,24 @@ export default function CarouselSearchPage() {
     setLoadingRecent(true);
     setError(null);
     try {
-      const [vids, people] = await Promise.all([
-        apiClient.carouselRecentVideos(5, true),
-        apiClient.persons().catch(() => [] as Person[]),
-      ]);
+      // Don't await persons here — a hung /persons used to stall the whole video list.
+      const vids = await apiClient.carouselRecentVideos(5, true);
       if (signal?.aborted) return;
       setRecent(vids.items ?? []);
-      setPersons(people);
     } catch (e) {
       if (signal?.aborted) return;
       setError(formatApiError(e, "Could not load recent videos"));
     } finally {
       if (!signal?.aborted) setLoadingRecent(false);
     }
+    void apiClient
+      .persons()
+      .then((people) => {
+        if (!signal?.aborted) setPersons(people);
+      })
+      .catch(() => {
+        if (!signal?.aborted) setPersons([]);
+      });
   }, []);
 
   useEffect(() => {
@@ -625,6 +630,15 @@ export default function CarouselSearchPage() {
       personName && fromObject
         ? `${personName} / ${fromObject}`
         : personName || fromObject || "";
+    // Prefer restoring a saved themes row when present and no person filter
+    // (person path still needs presence check via the themes API).
+    if (!personName && themeSaves.length > 0) {
+      const latest = themeSaves[0];
+      if (latest?.id) {
+        await restoreThemeSave(latest.id);
+        return;
+      }
+    }
     const requestKey = `${video.id}|${personName}|${entity}`;
     themesAbortRef.current?.abort();
     const ac = new AbortController();
