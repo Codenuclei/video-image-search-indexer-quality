@@ -1,0 +1,11 @@
+node_modules
+.next
+.git
+.env*
+.border-verify
+*.md
+AGENTS.md
+CLAUDE.md
+tsconfig.tsbuildinfo
+npm-debug.log*
+.gitignore

@@ -1,7 +1,7 @@
 # DFI auto-deploy watcher
 # Runs on a schedule (every ~22 min). Checks GitHub main for new commits; if the
 # local deploy mirror is behind AND clean, fast-forwards and runs `railway up` for
-# whichever service(s) actually changed (backend/ and/or frontend/).
+# whichever service(s) actually changed (backend/, frontend/, and/or carousel-frontend/).
 # Safe by design: never clobbers uncommitted local edits (skips if working tree dirty).
 
 $ErrorActionPreference = 'Stop'
@@ -37,9 +37,10 @@ try {
     $changed = git diff --name-only $local $remote
     $deployBackend  = [bool]($changed | Where-Object { $_ -like 'backend/*' })
     $deployFrontend = [bool]($changed | Where-Object { $_ -like 'frontend/*' })
+    $deployCarousel = [bool]($changed | Where-Object { $_ -like 'carousel-frontend/*' })
 
     git merge --ff-only "origin/$branch" | Out-Null
-    Log "Updated $($local.Substring(0,7)) -> $($remote.Substring(0,7)) | backend=$deployBackend frontend=$deployFrontend"
+    Log "Updated $($local.Substring(0,7)) -> $($remote.Substring(0,7)) | backend=$deployBackend frontend=$deployFrontend carousel=$deployCarousel"
 
     if ($deployBackend) {
         Set-Location (Join-Path $repo 'backend')
@@ -53,8 +54,14 @@ try {
         railway up --service dfi-frontend --detach 2>&1 | Tee-Object -FilePath $log -Append
         Set-Location $repo
     }
-    if (-not $deployBackend -and -not $deployFrontend) {
-        Log "Changes were outside backend/ and frontend/ - nothing to deploy."
+    if ($deployCarousel) {
+        Set-Location (Join-Path $repo 'carousel-frontend')
+        Log "Deploying carousel (railway up dfi-carousel)..."
+        railway up --service dfi-carousel --detach 2>&1 | Tee-Object -FilePath $log -Append
+        Set-Location $repo
+    }
+    if (-not $deployBackend -and -not $deployFrontend -and -not $deployCarousel) {
+        Log "Changes were outside backend/, frontend/, and carousel-frontend/ - nothing to deploy."
     }
     Log "Done."
 }
