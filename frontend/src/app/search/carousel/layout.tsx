@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
-import "./carousel-studio.css";
 
+/** Soft-disabled route — no studio chrome; page redirects to /search. */
 export default function CarouselStudioLayout({ children }: { children: ReactNode }) {
-  return <div className="carousel-studio">{children}</div>;
+  return <>{children}</>;
 }
