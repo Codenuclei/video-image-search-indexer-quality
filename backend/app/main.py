@@ -44,8 +44,15 @@ from app.workers.maintenance import startup_maintenance
 logging.basicConfig(level=logging.INFO)
 
 
+# Set after ensure_schema + runtime settings load. /health stays open; other
+# routes return 503 until ready so requests never hang on a blocked first connect.
+_boot_ready = asyncio.Event()
+_boot_error: str | None = None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global _boot_error
     settings_obj = get_settings()
     logger = logging.getLogger(__name__)
     logger.info(
@@ -63,15 +70,22 @@ async def lifespan(app: FastAPI):
     # Yield ASAP so Railway /health can pass. Prior deploys hung forever on the
     # first DB call (ensure_schema) after cookies — ASGI never accepted traffic,
     # healthcheck timed out, and the proxy returned 502.
+    # DB init still runs — just after yield, in _deferred_boot (not skipped).
     stop_event = asyncio.Event()
     worker = get_indexing_worker()
+    _boot_ready.clear()
+    _boot_error = None
 
     async def _deferred_boot() -> None:
+        global _boot_error
         try:
             logger.info("Startup: ensuring DB schema…")
             await ensure_schema(get_engine())
             logger.info("Startup: loading runtime settings…")
             await load_runtime_settings_from_db(get_session_factory())
+            _boot_ready.set()
+            logger.info("Startup: DB ready (schema + settings)")
+
             await recover_stuck_processing_files(get_session_factory())
             await recover_aborted_transaction_errors(get_session_factory())
             quarantined = await quarantine_stuck_decode_errors(get_session_factory())
@@ -98,21 +112,35 @@ async def lifespan(app: FastAPI):
                     runtime.auto_index_interval_seconds,
                 )
             logger.info("Startup: deferred boot complete")
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            _boot_error = str(exc)[:240]
             logger.exception("Deferred startup recovery failed")
+            # Unblock waiters so they can 503 with the error instead of hanging.
+            _boot_ready.set()
 
     boot_task = asyncio.create_task(_deferred_boot())
-    auto_task = asyncio.create_task(auto_index_loop(worker, stop_event))
-    maintenance_task = asyncio.create_task(startup_maintenance(worker))
+
+    async def _start_workers_after_db() -> None:
+        await _boot_ready.wait()
+        if _boot_error:
+            logger.error("Skipping background workers — boot failed: %s", _boot_error)
+            return
+        auto_task = asyncio.create_task(auto_index_loop(worker, stop_event))
+        maintenance_task = asyncio.create_task(startup_maintenance(worker))
+        app.state.worker_tasks = (auto_task, maintenance_task)
+
+    workers_starter = asyncio.create_task(_start_workers_after_db())
+    app.state.boot_task = boot_task
+    app.state.workers_starter = workers_starter
     logger.info("Startup: accepting traffic (deferred boot running)")
 
     yield
 
     stop_event.set()
+    workers_starter.cancel()
     boot_task.cancel()
-    auto_task.cancel()
-    maintenance_task.cancel()
-    for task in (boot_task, auto_task, maintenance_task):
+    worker_tasks = getattr(app.state, "worker_tasks", ())
+    for task in (workers_starter, boot_task, *worker_tasks):
         try:
             await task
         except asyncio.CancelledError:
@@ -140,6 +168,36 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def _require_boot_ready(request, call_next):
+    """Liveness (/health) always works; other routes wait briefly then 503."""
+    from fastapi.responses import JSONResponse
+
+    path = request.url.path
+    # Railway healthcheck must never block on DB.
+    if path == "/health":
+        return await call_next(request)
+    if not _boot_ready.is_set():
+        try:
+            await asyncio.wait_for(_boot_ready.wait(), timeout=20.0)
+        except asyncio.TimeoutError:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "detail": "starting",
+                    "message": "Database boot still in progress; retry shortly",
+                },
+                headers={"Retry-After": "5"},
+            )
+    if _boot_error:
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "boot_failed", "message": _boot_error},
+            headers={"Retry-After": "15"},
+        )
+    return await call_next(request)
 
 app.include_router(drive_oauth.router)
 app.include_router(drive.router)
