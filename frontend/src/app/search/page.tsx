@@ -124,7 +124,7 @@ export default function SearchPage() {
       if (mime === "video") setMime("all");
       const params = new URLSearchParams({ q: q.trim() });
       if (person) params.set("person", person);
-      // Video search is disabled on main Search — use /search/carousel instead.
+      // Video mime filter is disabled on main Search.
       if (safeMime !== "all") params.set("mime", safeMime);
       if (folderPath) params.set("folder_path", folderPath);
       if (!rerank) params.set("rerank", "false");

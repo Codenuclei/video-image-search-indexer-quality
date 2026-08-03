@@ -34,7 +34,7 @@ export const FAQ_CATEGORIES: FaqCategory[] = [
         id: "first-run",
         question: "What should I do on first use?",
         answer:
-          "1) Open Folders and connect Google Drive. 2) Pick the folder to index. 3) Click Start Index (or enable auto-index in Settings). 4) Open Review Queue and name unknown faces. 5) Use Search, Video Carousel, or People once indexing has processed files.",
+          "1) Open Folders and connect Google Drive. 2) Pick the folder to index. 3) Click Start Index (or enable auto-index in Settings). 4) Open Review Queue and name unknown faces. 5) Use Search or People once indexing has processed files.",
         href: "/folders",
       },
     ],
@@ -130,20 +130,7 @@ export const FAQ_CATEGORIES: FaqCategory[] = [
       },
     ],
   },
-  {
-    id: "carousel",
-    title: "Video Carousel",
-    blurb: "Browse search hits one moment at a time.",
-    items: [
-      {
-        id: "carousel-use",
-        question: "How do I use Video Carousel?",
-        answer:
-          "Open Video Carousel under Find. Search for moments, multi-select frames (or Select all from this video), draft a script in Script studio, then click Generate carousel from this video. Review the ordered slides (hook + timestamp + caption). You can still Use snapshot to attach one frame to a script draft.",
-        href: "/search/carousel",
-      },
-    ],
-  },
+  // Video Carousel FAQ removed — studio disabled on main app (dfi-carousel).
   {
     id: "reverse-face",
     title: "Reverse Face",
@@ -271,7 +258,7 @@ export const FAQ_CATEGORIES: FaqCategory[] = [
         id: "empty-search",
         question: "Search returns nothing",
         answer:
-          "Confirm Dashboard/Folders show processed files. Narrow filters (person, mime, folder) may hide hits — try All types and clear person/folder. Disable overly strict toggles or try Video Carousel with a simpler query. New files need to finish indexing first.",
+          "Confirm Dashboard/Folders show processed files. Narrow filters (person, mime, folder) may hide hits — try All types and clear person/folder. Disable overly strict toggles or try a simpler query. New files need to finish indexing first.",
         href: "/search",
       },
       {

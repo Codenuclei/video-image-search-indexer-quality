@@ -551,10 +551,6 @@ export default function FoldersPage() {
               <Link href="/search" className="text-sky-600 underline-offset-2 hover:underline dark:text-sky-400">
                 Search
               </Link>
-              <span className="text-muted-foreground">·</span>
-              <Link href="/search/carousel" className="text-sky-600 underline-offset-2 hover:underline dark:text-sky-400">
-                Video Carousel
-              </Link>
             </div>
           </div>
         </div>
