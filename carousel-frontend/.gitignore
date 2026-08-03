@@ -44,3 +44,5 @@ next-env.d.ts
 
 # local verification artifacts (Chrome profiles break Turbopack file reads)
 .border-verify/
+.cdp-verify/
+scripts/.e2e-out/

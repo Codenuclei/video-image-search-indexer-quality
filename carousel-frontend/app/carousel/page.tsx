@@ -309,56 +309,18 @@ export default function CarouselSearchPage() {
   // Frames picked against a hook before slides exist, keyed by hook text.
   const [hookFrames, setHookFrames] = useState<Record<string, PickedFrame>>({});
   const outlineRef = useRef<HTMLDivElement>(null);
+  const phase3Ref = useRef<HTMLElement | null>(null);
 
-  // Cache-first P0 path: indexed videos can open a complete artifact while
-  // transcript/theme controls continue loading independently.
+  // User-driven only: do not auto-open a cached complete carousel (that jumped
+  // straight to phase 5). History loads for the Saved list; restore is a click.
   useEffect(() => {
-    if (!selectedVideo) return;
-    let cancelled = false;
-    apiClient.carouselCached(selectedVideo.id).then((artifact) => {
-      if (cancelled || !artifact?.slides?.length) return;
-      const layouts = artifact.layouts ?? null;
-      const fromLayout = carouselsForLayout(layouts, "single_1", []);
-      const item: CarouselGeneratedItem = fromLayout[0] ?? {
-        id: `cached-${artifact.id}`,
-        kind: "mixed",
-        title: artifact.title || selectedVideo.name,
-        topic_labels: [],
-        slide_count: artifact.slides.length,
-        slides: artifact.slides,
-        images_ready: true,
-        plan_source: "background_cache",
-      };
-      const list =
-        fromLayout.length > 0
-          ? fromLayout
-          : artifact.carousels?.length
-            ? artifact.carousels
-            : [item];
-      setCarouselLayouts(layouts);
-      setCarouselLayout("single_1");
-      setOutline({
-        source: "background_cache",
-        title: item.title,
-        slide_count: item.slide_count,
-        hooks: [],
-        topics: [],
-        slides: item.slides,
-        carousels: list,
-        carousel_count: list.length,
-        images_ready: true,
-        layouts,
-      });
-      setGeneratedCarousels(list);
-      setActiveCarouselId(list[0]?.id ?? item.id);
-      setImagesReady(true);
-    }).catch(() => {
-      // A cache miss is expected for newly indexed videos.
-    });
+    if (!selectedVideo) {
+      setCarouselSaves([]);
+      return;
+    }
     void apiClient.carouselPipelineSaves(selectedVideo.id, 12, "carousel")
       .then((res) => setCarouselSaves(res.items ?? []))
       .catch(() => setCarouselSaves([]));
-    return () => { cancelled = true; };
   }, [selectedVideo]);
 
   // Cheap lock polling; this path never invokes Gemini, ffmpeg, or Drive.
@@ -571,7 +533,8 @@ export default function CarouselSearchPage() {
         setThemesFromCache(Boolean(res.cache_hit));
         setThemesLoadedKey(selectionKey);
         if (res.warning) setError(res.warning);
-        setPhase(2);
+        // Never clobber an in-progress extract / hooks step back to themes.
+        setPhase((p) => (p >= 3 ? p : 2));
         void refreshThemeSaves(video.id);
       } catch (e) {
         if (signal?.aborted || themesRequestKeyRef.current !== requestKey) return;
@@ -591,9 +554,8 @@ export default function CarouselSearchPage() {
   );
 
   /**
-   * Selection change: reset downstream. If saved/cached themes exist for this video,
-   * auto-load them (no Continue CTA). First-time videos still wait for Continue so we
-   * don't surprise-spend a Gemini call.
+   * Selection change: reset downstream and stay on phase 1.
+   * Never auto-load themes or advance — user must click Continue / Load saved themes.
    */
   useEffect(() => {
     if (!selectedVideo) {
@@ -615,7 +577,6 @@ export default function CarouselSearchPage() {
       personName && fromObject
         ? `${personName} / ${fromObject}`
         : personName || fromObject || "";
-    const selectionKey = `${video.id}|${personName}|${entity}`;
 
     themesAbortRef.current?.abort();
     const ac = new AbortController();
@@ -635,32 +596,17 @@ export default function CarouselSearchPage() {
     let cancelled = false;
     void (async () => {
       setLoadingThemeSaves(true);
-      let saves: CarouselGenerationSaveListItem[] = [];
       try {
         const res = await apiClient.carouselPipelineSaves(video.id, 12, "themes");
         if (cancelled || ac.signal.aborted) return;
-        saves = res.items ?? [];
-        setThemeSaves(saves);
+        setThemeSaves(res.items ?? []);
       } catch {
         if (cancelled || ac.signal.aborted) return;
         setThemeSaves([]);
       } finally {
         if (!cancelled && !ac.signal.aborted) setLoadingThemeSaves(false);
       }
-
-      // Cached/saved themes → load immediately; primary CTA becomes select → Extract.
-      if (!saves.length || cancelled || ac.signal.aborted) return;
-      const requestKey = selectionKey;
-      themesRequestKeyRef.current = requestKey;
-      await loadThemesForVideo({
-        video,
-        personName,
-        entity,
-        requestKey,
-        selectionKey,
-        force: false,
-        signal: ac.signal,
-      });
+      // Do not call loadThemesForVideo here — wait for Continue / Load saved themes.
     })();
 
     return () => {
@@ -668,7 +614,7 @@ export default function CarouselSearchPage() {
       themesAbortRef.current?.abort();
       themesAbortRef.current = null;
     };
-  }, [selectedVideo, personPick, objectQuery, resetFromPhase2, loadThemesForVideo]);
+  }, [selectedVideo, personPick, objectQuery, resetFromPhase2]);
 
   async function continueToThemes() {
     if (!selectedVideo || loadingThemes) return;
@@ -754,7 +700,7 @@ export default function CarouselSearchPage() {
   }
 
   function selectVideo(video: CarouselRecentVideo) {
-    // Switching video resets downstream; cached themes auto-load, else Continue in Themes.
+    // Switching video resets downstream; user must click Continue to load themes.
     setSelectedVideo(video);
   }
 
@@ -809,6 +755,10 @@ export default function CarouselSearchPage() {
       setPhaseIntent(res.intent ?? null);
       setPhaseIntentScore(res.intent_score ?? null);
       setPhase(3);
+      // Reveal the current-generation tree (topics/hooks) under the themes step.
+      requestAnimationFrame(() => {
+        phase3Ref.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
     } catch (e) {
       setError(formatApiError(e, "Hook & topic extract failed"));
       setExtract(null);
@@ -1153,13 +1103,44 @@ export default function CarouselSearchPage() {
               Selected:{" "}
               <span className="font-medium text-foreground">{selectedVideo.name}</span>
               {themesNeedContinue
-                ? themeSaves.length > 0 || loadingThemeSaves
-                  ? " · loading saved themes…"
-                  : " · continue in Themes below to generate (first time)"
+                ? " · click Continue in Step 2 to load themes"
                 : themes.length > 0
                   ? ` · ${themes.length} themes loaded — select themes, then Extract`
                   : ""}
             </p>
+            {themesNeedContinue && (
+              <button
+                type="button"
+                className="studio-btn studio-btn-primary studio-btn-continue"
+                onClick={(e) => {
+                  e.preventDefault();
+                  void continueToThemes();
+                }}
+                disabled={
+                  Boolean(continueDisabledReason) ||
+                  loadingThemes ||
+                  loadingExtract ||
+                  building ||
+                  pipelineLocked
+                }
+                data-testid="carousel-continue-from-video"
+                title={continueDisabledReason || "Load themes for this video"}
+              >
+                {loadingThemes ? (
+                  <LoadingLabel>Loading themes…</LoadingLabel>
+                ) : themeSaves.length > 0 ? (
+                  <>
+                    <Sparkles size={15} />
+                    Load themes
+                  </>
+                ) : (
+                  <>
+                    Continue
+                    <ArrowRight size={14} className="studio-btn-continue-arrow" />
+                  </>
+                )}
+              </button>
+            )}
           </div>
         )}
       </section>
@@ -1400,7 +1381,7 @@ export default function CarouselSearchPage() {
                 data-testid="carousel-extract-themes"
               >
                 {loadingExtract ? (
-                  <LoadingLabel>Extracting hooks and topics…</LoadingLabel>
+                  <LoadingLabel>Extracting hooks and topics… (can take 1–3 min)</LoadingLabel>
                 ) : selectedThemes.length > 1 ? (
                   `Extract from ${selectedThemes.length} themes`
                 ) : selectedThemes.length === 1 ? (
@@ -1429,7 +1410,11 @@ export default function CarouselSearchPage() {
       )}
 
       {extract && selectedThemes.length > 0 && phase >= 3 && (
-        <section className="studio-panel p-5 sm:p-7" data-testid="carousel-phase-3">
+        <section
+          ref={phase3Ref}
+          className="studio-panel p-5 sm:p-7"
+          data-testid="carousel-phase-3"
+        >
           <p className="studio-section-label">Step 3</p>
           <h2 className="studio-section-heading">
             <Sparkles size={20} />
@@ -1590,7 +1575,7 @@ export default function CarouselSearchPage() {
               data-testid="carousel-generate"
             >
               {building ? (
-                <LoadingLabel>Building carousels…</LoadingLabel>
+                <LoadingLabel>Building carousels… (can take a few minutes)</LoadingLabel>
               ) : (
                 "Generate carousels"
               )}
@@ -1605,7 +1590,7 @@ export default function CarouselSearchPage() {
       )}
 
       <div ref={outlineRef}>
-        {(phase >= 5 || outline || generatedCarousels.length > 0) && (
+        {phase >= 5 && (
           <section className="studio-panel space-y-4 p-5 sm:p-7" data-testid="carousel-phase-5">
             <div>
               <p className="studio-section-label">Step 5</p>
@@ -1616,14 +1601,20 @@ export default function CarouselSearchPage() {
                   : activeGeneratedCarousel?.title || outline?.title || "Your carousels"}
               </h2>
               <p className="mt-2 text-sm text-slate-500">
-                One carousel per selected hook, built from short transcript lines. Edit copy if
-                needed, then run <strong>Select &amp; filter images</strong> to attach frames.
+                Carousel text from your selection. Edit copy if needed, then click{" "}
+                <strong>Select &amp; filter images</strong> — frames are not fetched until that click.
               </p>
             </div>
 
             {outlineError && (
               <p className="text-xs font-medium text-destructive" role="alert">
                 {outlineError}
+              </p>
+            )}
+
+            {generatedCarousels.length === 0 && !outlineError && (
+              <p className="text-sm text-muted-foreground" role="status">
+                No carousel text yet. Go back to Step 4 and click Generate carousels.
               </p>
             )}
 
@@ -1635,7 +1626,7 @@ export default function CarouselSearchPage() {
                 onToggle={(e) => setGenHistoryOpen(e.currentTarget.open)}
               >
                 <summary className="cursor-pointer text-xs font-semibold text-foreground">
-                  Generation history ({carouselSaves.length})
+                  Generation history ({carouselSaves.length}) — restore is a click, never auto
                 </summary>
                 <div className="studio-scroll-fade mt-2 max-h-[min(16rem,40vh)] space-y-1 overflow-x-hidden overflow-y-auto">
                   {carouselSaves.map((save) => (
@@ -1661,9 +1652,24 @@ export default function CarouselSearchPage() {
                                   images_ready: true,
                                 }]
                               : []);
+                            if (!list.length) {
+                              setOutlineError("That save has no carousel slides.");
+                              return;
+                            }
                             setGeneratedCarousels(list as CarouselGeneratedItem[]);
                             setActiveCarouselId(list[0]?.id ?? null);
-                            setImagesReady(true);
+                            setImagesReady(Boolean((list[0] as CarouselGeneratedItem)?.images_ready));
+                            setOutline({
+                              source: "user_restore",
+                              title: (list[0] as CarouselGeneratedItem)?.title || "Carousel",
+                              slide_count: (list[0] as CarouselGeneratedItem)?.slide_count ?? 0,
+                              hooks: [],
+                              topics: [],
+                              slides: (list[0] as CarouselGeneratedItem)?.slides ?? [],
+                              carousels: list as CarouselGeneratedItem[],
+                              carousel_count: list.length,
+                              images_ready: Boolean((list[0] as CarouselGeneratedItem)?.images_ready),
+                            });
                             setPhase(5);
                           }).catch((e) =>
                             setOutlineError(formatApiError(e, "Could not restore generation"))
