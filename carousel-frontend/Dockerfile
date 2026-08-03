@@ -18,6 +18,9 @@ RUN npm run build
 FROM node:20-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
+# Runtime proxy target (builder ENV is not inherited across stages).
+ARG API_PROXY_TARGET=https://dfi-backend-production.up.railway.app
+ENV API_PROXY_TARGET=$API_PROXY_TARGET
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
 COPY --from=builder /app/public ./public
