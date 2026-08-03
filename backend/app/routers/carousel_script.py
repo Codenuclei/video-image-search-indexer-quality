@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import hashlib
 import logging
@@ -10,7 +11,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -48,6 +49,12 @@ from app.search.english_text import (
 from app.pipelines.common import is_video_mime
 
 logger = logging.getLogger(__name__)
+
+# Single-worker uvicorn cannot usefully run multiple Gemini extract storms at
+# once — studio remounts / e2e retries used to pile up overlapping extracts and
+# starve health + other carousel routes. Serialize extracts process-wide.
+_EXTRACT_LOCK = asyncio.Lock()
+_EXTRACT_TIMEOUT_SEC = 900.0
 router = APIRouter(prefix="/search/carousel", tags=["carousel-script"])
 
 # 7 hooks + 7 topics — cohesive for short-form video scripts from indexed moments.
@@ -944,6 +951,7 @@ async def carousel_pipeline_themes(
 @router.post("/pipeline/extract")
 async def carousel_pipeline_extract(
     body: PipelineExtractRequest,
+    request: Request,
     session: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     """Phase 3–4: contextual hooks + theme-generated topics + preview markers + intent.
@@ -951,6 +959,26 @@ async def carousel_pipeline_extract(
     Hooks prefer English: parallel English caption track when available, else Gemini translate.
     Accepts one theme (legacy fields) or multiple `themes` merged in time order.
     """
+    # Serialize extracts so remount/retry storms cannot pin every default
+    # thread-pool slot with concurrent Gemini jobs on workers=1.
+    if _EXTRACT_LOCK.locked():
+        raise HTTPException(
+            status_code=409,
+            detail="Hook/topic extract already running; wait for it to finish.",
+            headers={"Retry-After": "5"},
+        )
+
+    async with _EXTRACT_LOCK:
+        if await request.is_disconnected():
+            raise HTTPException(status_code=400, detail="Client disconnected before extract started")
+        return await _carousel_pipeline_extract_impl(body, session, request)
+
+
+async def _carousel_pipeline_extract_impl(
+    body: PipelineExtractRequest,
+    session: AsyncSession,
+    request: Request,
+) -> dict[str, Any]:
     settings = get_settings()
     drive_file, cues = await _load_video_cues(session, body.drive_file_id.strip())
     english_cues = await _maybe_load_english_cues(drive_file, cues)
@@ -983,17 +1011,29 @@ async def carousel_pipeline_extract(
         (s.summary or "").strip() for s in slices_sorted if (s.summary or "").strip()
     )[:800]
 
-    extracted = await extract_hooks_and_topics_async(
-        cues,
-        start_sec=span_start,
-        end_sec=span_end,
-        theme_title=combined_title,
-        theme_summary=combined_summary,
-        search_entity=(body.search_entity or "").strip() or None,
-        api_key=settings.gemini_api_key,
-        model=settings.gemini_model,
-        english_cues=english_cues,
-    )
+    if await request.is_disconnected():
+        raise HTTPException(status_code=400, detail="Client disconnected during extract")
+
+    try:
+        extracted = await asyncio.wait_for(
+            extract_hooks_and_topics_async(
+                cues,
+                start_sec=span_start,
+                end_sec=span_end,
+                theme_title=combined_title,
+                theme_summary=combined_summary,
+                search_entity=(body.search_entity or "").strip() or None,
+                api_key=settings.gemini_api_key,
+                model=settings.gemini_model,
+                english_cues=english_cues,
+            ),
+            timeout=_EXTRACT_TIMEOUT_SEC,
+        )
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(
+            status_code=504,
+            detail=f"Hook/topic extract exceeded {_EXTRACT_TIMEOUT_SEC:.0f}s",
+        ) from exc
     any_translated = bool(extracted.get("any_translated"))
     english_source = extracted.get("english_source")
     hooks_english = bool(extracted.get("hooks_english", True))
