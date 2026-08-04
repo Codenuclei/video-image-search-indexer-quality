@@ -4,7 +4,15 @@ import asyncio
 import logging
 import time
 
+from app.config import get_settings
+from app.dependencies import get_drive_client
+from app.drive.cache_refresh import refresh_drive_file_list_cache
 from app.drive.google_client import DriveDirectError
+from app.drive.push_channels import (
+    get_push_channel_state,
+    register_or_renew_channel,
+    resolve_webhook_address,
+)
 from app.runtime_settings import get_runtime_settings
 from app.workers.indexer import IndexingWorker
 from app.workers.maintenance import maintenance_tick
@@ -12,33 +20,35 @@ from app.workers.requeue_failed import requeue_failed_files
 
 logger = logging.getLogger(__name__)
 
-# Full Drive tree walks are expensive (thousands of sequential folder GETs) and
-# used to run every auto-index tick (often 30s), starving carousel /health and
-# list APIs on the single uvicorn worker. Keep pending-file processing on the
-# short interval; run full sync much less often.
-_FULL_DRIVE_SYNC_MIN_SEC = 900.0
+# Without push notifications, keep a 15m safety-net sync (previous behaviour).
+# With an active push channel, only fall back on the long DRIVE_CACHE_FALLBACK interval.
+_FALLBACK_SYNC_MIN_SEC_NO_PUSH = 900.0
 _drive_sync_lock = asyncio.Lock()
 _last_full_drive_sync_mono = 0.0
 
 
+def _fallback_interval_sec() -> float:
+    settings = get_settings()
+    if get_push_channel_state().status().get("active"):
+        return max(3600.0, float(settings.drive_cache_fallback_sync_seconds))
+    return _FALLBACK_SYNC_MIN_SEC_NO_PUSH
+
+
 async def auto_index_loop(worker: IndexingWorker, stop_event: asyncio.Event) -> None:
     """
-    Periodically processes pending files and syncs Drive when auto-index is on.
-    When auto-index is off, the loop only sleeps — full Drive tree walks are skipped
-    so local carousel studio work is not starved by sync traffic.
+    Process pending files on the short interval; refresh Drive file list via
+    push webhooks (preferred) or a rare fallback sync.
     """
     logger.info(
-        "Drive sync background loop started (interval=%ss, full_sync_min=%ss)",
+        "Drive sync background loop started (interval=%ss, webhook=%s)",
         get_runtime_settings().auto_index_interval_seconds,
-        int(_FULL_DRIVE_SYNC_MIN_SEC),
+        resolve_webhook_address(get_settings()) or "(none — startup seed + manual)",
     )
     while not stop_event.is_set():
         runtime = get_runtime_settings()
         interval = max(30, runtime.auto_index_interval_seconds)
 
         if not worker.is_running:
-            # Process the existing queue first. Full Drive sync can take many minutes on
-            # large trees and used to starve pending claims every tick.
             if runtime.auto_index_enabled:
                 try:
                     if runtime.reindex_errored_files or runtime.reindex_skipped_files:
@@ -54,33 +64,39 @@ async def auto_index_loop(worker: IndexingWorker, stop_event: asyncio.Event) -> 
                 except Exception:  # noqa: BLE001
                     logger.exception("Auto-index processing failed")
 
-            # Full Drive tree walks can take many minutes and saturate the single
-            # uvicorn worker's sockets/threads. When auto-index is off (typical
-            # local carousel studio), skip sync so extract/generate stay responsive.
-            # When on, throttle to at most once per _FULL_DRIVE_SYNC_MIN_SEC and
-            # never overlap two walks.
+            # Renew push channel near expiry (no Drive tree walk).
+            try:
+                await register_or_renew_channel(get_drive_client(), force=False)
+            except Exception:  # noqa: BLE001
+                logger.exception("Drive push channel renew tick failed")
+
+            # Rare fallback sync — webhook-driven updates are the primary path.
+            # Continuous short-interval tree walks that starved uvicorn are gone.
+            global _last_full_drive_sync_mono
             if runtime.auto_index_enabled:
-                global _last_full_drive_sync_mono
+                fallback_sec = _fallback_interval_sec()
                 now = time.monotonic()
-                due = (now - _last_full_drive_sync_mono) >= _FULL_DRIVE_SYNC_MIN_SEC
+                due = (now - _last_full_drive_sync_mono) >= fallback_sec
                 if due and not _drive_sync_lock.locked():
                     async with _drive_sync_lock:
-                        # Re-check under lock in case another tick started.
                         now = time.monotonic()
-                        if (now - _last_full_drive_sync_mono) >= _FULL_DRIVE_SYNC_MIN_SEC:
+                        if (now - _last_full_drive_sync_mono) >= fallback_sec:
                             try:
-                                seen = await worker.sync_file_list()
+                                result = await refresh_drive_file_list_cache(
+                                    source="fallback",
+                                    sync_db=True,
+                                )
                                 _last_full_drive_sync_mono = time.monotonic()
                                 logger.info(
-                                    "Auto file-list sync finished: %d file(s); next full sync in ≥%ss",
-                                    seen,
-                                    int(_FULL_DRIVE_SYNC_MIN_SEC),
+                                    "Fallback Drive cache sync finished: %s; next in ≥%ss",
+                                    result,
+                                    int(fallback_sec),
                                 )
                             except DriveDirectError as exc:
-                                logger.warning("Auto file-list sync skipped: %s", exc)
+                                logger.warning("Fallback Drive sync skipped: %s", exc)
                                 _last_full_drive_sync_mono = time.monotonic()
-                            except Exception:  # noqa: BLE001 — keep the loop alive
-                                logger.exception("Auto file-list sync failed")
+                            except Exception:  # noqa: BLE001
+                                logger.exception("Fallback Drive sync failed")
                                 _last_full_drive_sync_mono = time.monotonic()
 
                             try:
