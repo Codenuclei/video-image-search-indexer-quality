@@ -93,6 +93,18 @@ class Settings(BaseSettings):
 
     webhook_secret: str = ""
 
+    # Google Drive push notifications → in-memory file-list cache.
+    # Set DRIVE_WEBHOOK_URL to the public HTTPS endpoint Google will POST to
+    # (e.g. https://dfi-backend-production.up.railway.app/api/webhooks/drive).
+    # If empty, PUBLIC_BASE_URL + /api/webhooks/drive is used when HTTPS.
+    drive_webhook_url: str = ""
+    drive_webhook_channel_token: str = ""
+    # Dev-only: accept simulated push POSTs without a matching channel id.
+    # pydantic-settings parses "true"/"1"/"yes" as True.
+    drive_webhook_allow_unverified: bool = False
+    # Rare fallback full sync when push is active (seconds). Default 6h.
+    drive_cache_fallback_sync_seconds: float = 21600.0
+
     temp_dir: str = "./data/tmp"
     thumbnail_dir: str = "./data/thumbnails"
     max_media_bytes_in_memory: int = 8 * 1024 * 1024

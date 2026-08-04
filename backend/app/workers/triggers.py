@@ -31,7 +31,7 @@ async def trigger_index_cycle(*, reason: str) -> bool:
 
     runtime = get_runtime_settings()
     try:
-        seen = await worker.sync_file_list()
+        seen = await worker.sync_file_list(cache_source=reason)
         logger.info("Drive sync finished (%s): %d file(s)", reason, seen)
         if runtime.auto_index_enabled:
             summary = await worker.process_pending()

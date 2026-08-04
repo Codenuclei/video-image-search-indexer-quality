@@ -18,6 +18,7 @@ from app.db.session import dispose_engine, get_engine, get_session_factory
 from app.dependencies import get_indexing_worker
 from app.fennec.client import get_fennec_client
 from app.routers import (
+    cache as cache_router,
     carousel_script,
     clusters,
     drive,
@@ -111,6 +112,33 @@ async def lifespan(app: FastAPI):
                     "Auto-index enabled (interval=%ss)",
                     runtime.auto_index_interval_seconds,
                 )
+
+            # Seed in-memory Drive file-list cache once (hybrid local mode).
+            # Push notifications keep it warm afterwards when a public HTTPS
+            # webhook URL is configured.
+            async def _seed_drive_cache_and_push() -> None:
+                from app.drive.cache_refresh import refresh_drive_file_list_cache
+                from app.drive.push_channels import register_or_renew_channel
+                from app.dependencies import get_drive_client
+
+                try:
+                    result = await refresh_drive_file_list_cache(
+                        source="startup",
+                        sync_db=False,
+                        process_pending=False,
+                    )
+                    logger.info("Startup Drive file-list cache seed: %s", result)
+                except Exception:  # noqa: BLE001
+                    logger.exception("Startup Drive cache seed failed")
+                try:
+                    reg = await register_or_renew_channel(
+                        get_drive_client(), force=True
+                    )
+                    logger.info("Startup Drive push channel: %s", reg)
+                except Exception:  # noqa: BLE001
+                    logger.exception("Startup Drive push registration failed")
+
+            asyncio.create_task(_seed_drive_cache_and_push())
             logger.info("Startup: deferred boot complete")
         except Exception as exc:  # noqa: BLE001
             _boot_error = str(exc)[:240]
@@ -179,6 +207,9 @@ async def _require_boot_ready(request, call_next):
     # Railway healthcheck must never block on DB.
     if path == "/health":
         return await call_next(request)
+    # Google Drive push must ACK quickly even during deferred boot.
+    if path in ("/api/webhooks/drive", "/webhooks/drive"):
+        return await call_next(request)
     if not _boot_ready.is_set():
         try:
             await asyncio.wait_for(_boot_ready.wait(), timeout=20.0)
@@ -201,6 +232,7 @@ async def _require_boot_ready(request, call_next):
 
 app.include_router(drive_oauth.router)
 app.include_router(drive.router)
+app.include_router(cache_router.router)
 app.include_router(index.router)
 app.include_router(search.router)
 app.include_router(carousel_script.router)

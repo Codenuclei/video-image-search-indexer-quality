@@ -1152,8 +1152,14 @@ class IndexingWorker:
     def is_running(self) -> bool:
         return self._running
 
-    async def sync_file_list(self) -> int:
+    async def sync_file_list(self, *, cache_source: str = "manual") -> int:
         listing = await self._client.list_folder_files()
+        try:
+            from app.drive.file_list_cache import get_file_list_cache
+
+            await get_file_list_cache().replace(listing, source=cache_source)
+        except Exception:  # noqa: BLE001 — cache must never block DB sync
+            logger.exception("Drive file-list cache update failed after listing")
         seen = 0
         new_pending = 0
         removed = 0

@@ -290,7 +290,7 @@ async def sync_drive_files(
 
     async def _sync() -> None:
         try:
-            seen = await worker.sync_file_list()
+            seen = await worker.sync_file_list(cache_source="manual")
             logger.info("Manual Drive file-list sync: %d file(s)", seen)
         except Exception:  # noqa: BLE001
             logger.exception("Manual Drive file-list sync failed")
