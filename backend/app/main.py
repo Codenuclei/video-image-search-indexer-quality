@@ -113,23 +113,34 @@ async def lifespan(app: FastAPI):
                     runtime.auto_index_interval_seconds,
                 )
 
-            # Seed in-memory Drive file-list cache once (hybrid local mode).
-            # Push notifications keep it warm afterwards when a public HTTPS
-            # webhook URL is configured.
             async def _seed_drive_cache_and_push() -> None:
                 from app.drive.cache_refresh import refresh_drive_file_list_cache
+                from app.drive.file_list_cache import get_file_list_cache
                 from app.drive.push_channels import register_or_renew_channel
                 from app.dependencies import get_drive_client
 
-                try:
-                    result = await refresh_drive_file_list_cache(
-                        source="startup",
-                        sync_db=False,
-                        process_pending=False,
+                # Wait briefly if a webhook race already started a refresh.
+                cache = get_file_list_cache()
+                for _ in range(60):
+                    if not cache.refresh_in_flight:
+                        break
+                    await asyncio.sleep(1)
+                if not cache.is_warm():
+                    try:
+                        result = await refresh_drive_file_list_cache(
+                            source="startup",
+                            sync_db=False,
+                            process_pending=False,
+                        )
+                        logger.info("Startup Drive file-list cache seed: %s", result)
+                    except Exception:  # noqa: BLE001
+                        logger.exception("Startup Drive cache seed failed")
+                else:
+                    logger.info(
+                        "Startup Drive cache already warm source=%s count=%d",
+                        cache.source,
+                        len(cache.files),
                     )
-                    logger.info("Startup Drive file-list cache seed: %s", result)
-                except Exception:  # noqa: BLE001
-                    logger.exception("Startup Drive cache seed failed")
                 try:
                     reg = await register_or_renew_channel(
                         get_drive_client(), force=True
