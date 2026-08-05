@@ -70,8 +70,8 @@ class Settings(BaseSettings):
     video_index_stall_seconds: int = 900
 
     # Image caption/embedding backfill throughput (maintenance loop).
-    # Probe-tuned: caption 10/call × high parallel; embed batch 5 × parallel 20 ≈ 50 img/s.
-    image_caption_batch_parallel: int = 20  # concurrent Gemini describe batches
+    # Caption: 10 images/Gemini call × 5 concurrent (semaphore). Embed: batch 5 × parallel 20.
+    image_caption_batch_parallel: int = 5  # concurrent Gemini describe batches (semaphore)
     image_embed_backfill_parallel: int = 20  # concurrent batchEmbedContents calls
     image_embed_batch_size: int = 5         # images per batchEmbedContents call
     image_embed_max_edge: int = 1024        # longest edge before embed (0 = no downscale)
@@ -155,7 +155,7 @@ class Settings(BaseSettings):
 
     # Gemini API client-side concurrency (tune to your tier; see ai.google.dev rate limits).
     # Embedding 2: allow ~20 concurrent batchEmbedContents (batch=5 → ~50 img/s).
-    # Flash-Lite captions at batch_parallel=20 need matching VLM slots.
+    # Embed batches need more slots than caption (caption parallel defaults to 5).
     gemini_embed_max_concurrent: int = 32
     gemini_vlm_max_concurrent: int = 24
     gemini_upload_max_concurrent: int = 4

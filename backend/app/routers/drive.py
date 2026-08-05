@@ -38,6 +38,24 @@ class FolderIndexingAction(BaseModel):
     folder_path: str
 
 
+def _parse_drive_file_status(status: str | None) -> DriveFileStatus | None:
+    """Coerce queue/UI status query params to DriveFileStatus (e.g. Active → processing)."""
+    if not status:
+        return None
+    raw = status.strip().lower()
+    # UI label aliases used by the Folders indexing queue tabs.
+    aliases = {"active": "processing", "completed": "processed", "failed": "error"}
+    raw = aliases.get(raw, raw)
+    try:
+        return DriveFileStatus(raw)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid status {status!r}. Expected one of: "
+            + ", ".join(s.value for s in DriveFileStatus),
+        ) from exc
+
+
 @router.get("/files", response_model=list[DriveFileOut])
 async def list_drive_files(
     status: str | None = None,
@@ -50,8 +68,9 @@ async def list_drive_files(
     limit = max(1, min(limit, 500))
     offset = max(0, offset)
     stmt = select(DriveFile).order_by(DriveFile.path).offset(offset).limit(limit)
-    if status:
-        stmt = stmt.where(DriveFile.status == status)
+    status_enum = _parse_drive_file_status(status)
+    if status_enum is not None:
+        stmt = stmt.where(DriveFile.status == status_enum)
     if source:
         stmt = stmt.where(DriveFile.source == source)
     return list((await session.execute(stmt)).scalars().all())
@@ -71,8 +90,9 @@ async def list_drive_files_page(
     limit = max(1, min(limit, 200))
     offset = max(0, offset)
     filters = []
-    if status:
-        filters.append(DriveFile.status == status)
+    status_enum = _parse_drive_file_status(status)
+    if status_enum is not None:
+        filters.append(DriveFile.status == status_enum)
     if source:
         filters.append(DriveFile.source == source)
     count_stmt = select(sa_func.count()).select_from(DriveFile)

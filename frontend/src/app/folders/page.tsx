@@ -458,6 +458,12 @@ export default function FoldersPage() {
   const queuePageStart = queueTotal === 0 ? 0 : queueOffset + 1;
   const queuePageEnd = Math.min(queueOffset + QUEUE_PAGE_SIZE, queueTotal);
 
+  function openQueue(statusFilter: string = "") {
+    setQueueStatus(statusFilter);
+    setQueueOffset(0);
+    setQueueOpen(true);
+  }
+
   return (
     <div className="space-y-6">
       <Script src="https://apis.google.com/js/api.js" strategy="lazyOnload" />
@@ -689,37 +695,36 @@ export default function FoldersPage() {
               </p>
             )}
           </div>
-          <Button
-            variant="secondary"
-            onClick={() => {
-              setQueueOffset(0);
-              setQueueOpen(true);
-            }}
-          >
+          <Button variant="secondary" onClick={() => openQueue()}>
             View Queue
           </Button>
         </div>
         <div className="mt-4 grid grid-cols-2 gap-2 text-sm sm:grid-cols-5">
-          <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
-            <p className="text-xs text-muted-foreground">Pending</p>
-            <p className="text-lg font-semibold text-amber-600 dark:text-yellow-400">{counts.pending ?? 0}</p>
-          </div>
-          <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
-            <p className="text-xs text-muted-foreground">Active</p>
-            <p className="text-lg font-semibold text-blue-600 dark:text-blue-400">{counts.processing ?? 0}</p>
-          </div>
-          <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
-            <p className="text-xs text-muted-foreground">Completed</p>
-            <p className="text-lg font-semibold text-emerald-600 dark:text-green-400">{counts.processed ?? 0}</p>
-          </div>
-          <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
-            <p className="text-xs text-muted-foreground">Failed</p>
-            <p className="text-lg font-semibold text-red-600 dark:text-red-400">{counts.error ?? 0}</p>
-          </div>
-          <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
-            <p className="text-xs text-muted-foreground">Skipped</p>
-            <p className="text-lg font-semibold text-muted-foreground">{counts.skipped ?? skipStats?.total_skipped ?? 0}</p>
-          </div>
+          {(
+            [
+              { key: "pending", label: "Pending", className: "text-amber-600 dark:text-yellow-400", count: counts.pending ?? 0 },
+              { key: "processing", label: "Active", className: "text-blue-600 dark:text-blue-400", count: counts.processing ?? 0 },
+              { key: "processed", label: "Completed", className: "text-emerald-600 dark:text-green-400", count: counts.processed ?? 0 },
+              { key: "error", label: "Failed", className: "text-red-600 dark:text-red-400", count: counts.error ?? 0 },
+              {
+                key: "skipped",
+                label: "Skipped",
+                className: "text-muted-foreground",
+                count: counts.skipped ?? skipStats?.total_skipped ?? 0,
+              },
+            ] as const
+          ).map((card) => (
+            <button
+              key={card.key}
+              type="button"
+              onClick={() => openQueue(card.key)}
+              title={`Open ${card.label} in indexing queue`}
+              className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-left transition-colors hover:border-border hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <p className="text-xs text-muted-foreground">{card.label}</p>
+              <p className={`text-lg font-semibold ${card.className}`}>{card.count}</p>
+            </button>
+          ))}
         </div>
         {(topSkipReasons.length > 0 || status?.last_run) && (
           <div className="mt-4 border-t border-border/50 pt-4">
@@ -816,14 +821,7 @@ export default function FoldersPage() {
                 {indexErrorItems.length}
               </p>
             </div>
-            <Button
-              variant="secondary"
-              onClick={() => {
-                setQueueStatus("error");
-                setQueueOffset(0);
-                setQueueOpen(true);
-              }}
-            >
+            <Button variant="secondary" onClick={() => openQueue("error")}>
               Open in queue
             </Button>
           </div>
@@ -938,24 +936,33 @@ export default function FoldersPage() {
               Close
             </Button>
           </div>
-          <div className="flex flex-wrap gap-1 border-b border-border px-3 py-2">
-            {QUEUE_STATUS_TABS.map((tab) => (
-              <button
-                key={tab.value || "all"}
-                type="button"
-                onClick={() => {
-                  setQueueStatus(tab.value);
-                  setQueueOffset(0);
-                }}
-                className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
-                  queueStatus === tab.value
-                    ? "bg-primary text-primary-foreground"
-                    : "text-muted-foreground hover:bg-muted hover:text-foreground"
-                }`}
-              >
-                {tab.label}
-              </button>
-            ))}
+          <div className="flex flex-wrap gap-1 border-b border-border px-3 py-2" role="tablist" aria-label="Queue status">
+            {QUEUE_STATUS_TABS.map((tab) => {
+              const tabCount =
+                tab.value === ""
+                  ? Object.values(counts).reduce((a, b) => a + (typeof b === "number" ? b : 0), 0)
+                  : (counts[tab.value] ?? (tab.value === "skipped" ? skipStats?.total_skipped : 0) ?? 0);
+              return (
+                <button
+                  key={tab.value || "all"}
+                  type="button"
+                  role="tab"
+                  aria-selected={queueStatus === tab.value}
+                  onClick={() => {
+                    setQueueStatus(tab.value);
+                    setQueueOffset(0);
+                  }}
+                  className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
+                    queueStatus === tab.value
+                      ? "bg-primary text-primary-foreground"
+                      : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                  }`}
+                >
+                  {tab.label}
+                  <span className="ml-1 tabular-nums opacity-70">{tabCount}</span>
+                </button>
+              );
+            })}
           </div>
           <div className="max-h-[min(60dvh,28rem)] overflow-auto">
             {queueLoading ? (
@@ -963,7 +970,19 @@ export default function FoldersPage() {
                 <Spinner size={14} /> Loading…
               </p>
             ) : queueItems.length === 0 ? (
-              <p className="p-4 text-sm text-muted-foreground">No files in this filter.</p>
+              <div className="space-y-1 p-4 text-sm text-muted-foreground">
+                <p>
+                  {queueStatus === "processing"
+                    ? "No files are actively indexing right now."
+                    : "No files in this filter."}
+                </p>
+                {queueStatus === "processing" && (
+                  <p className="text-xs">
+                    Active only lists files with status <code className="text-[11px]">processing</code>
+                    {" "}(in flight). When the indexer is idle, this tab is empty — check Pending or start indexing.
+                  </p>
+                )}
+              </div>
             ) : (
               <table className="w-full text-left text-sm">
                 <thead className="sticky top-0 border-b border-border bg-card text-muted-foreground">
