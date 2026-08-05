@@ -25,7 +25,12 @@ REQUEUE_BATCH_LIMIT = 30
 RETRY_BY_REASON_LIMIT = 20_000
 
 # Reasons that cannot be fixed by requeue (wrong type / structural).
-NON_RETRYABLE_REASONS = frozenset({"unsupported_mime", "folder_marker"})
+NON_RETRYABLE_REASONS = frozenset({
+    "unsupported_mime",
+    "folder_marker",
+    "duplicate_content",
+    "name_conflict",
+})
 
 
 def normalize_skip_reason(error_message: str | None) -> str:
@@ -39,6 +44,10 @@ def normalize_skip_reason(error_message: str | None) -> str:
         return "corrupt_file"
     if raw.startswith("decode_exhausted"):
         return "decode_exhausted"
+    if raw.startswith("duplicate_content"):
+        return "duplicate_content"
+    if raw.startswith("name_conflict"):
+        return "name_conflict"
     if raw == "folder_marker":
         return "folder_marker"
     if not raw:
@@ -51,6 +60,10 @@ def _is_permanent_skip(drive_file: DriveFile) -> bool:
     if is_indexing_paused_message(msg):
         return True
     if msg.startswith("Unsupported mime type for indexing:"):
+        return True
+    if msg.startswith("duplicate_content"):
+        return True
+    if msg.startswith("name_conflict"):
         return True
     return False
 
@@ -153,17 +166,29 @@ async def requeue_skipped_by_reason(
     key = (reason or "").strip() or "unknown"
     if key in NON_RETRYABLE_REASONS:
         matched = await _count_skipped_for_reason(session, key)
+        if key == "unsupported_mime":
+            message = (
+                "Unsupported file types cannot be indexed. "
+                "Convert to an image/video format or ignore these skips."
+            )
+        elif key == "duplicate_content":
+            message = (
+                "Identical content already indexed elsewhere. "
+                "Use Merge on the dashboard conflict if you want to keep both names."
+            )
+        elif key == "name_conflict":
+            message = (
+                "Same filename as another file with different content. "
+                "Use Replace or Skip on the dashboard conflict."
+            )
+        else:
+            message = "Folder markers are structural and cannot be retried."
         return {
             "reason": key,
             "requeued": 0,
             "ineligible": matched,
             "action": "unsupported",
-            "message": (
-                "Unsupported file types cannot be indexed. "
-                "Convert to an image/video format or ignore these skips."
-                if key == "unsupported_mime"
-                else "Folder markers are structural and cannot be retried."
-            ),
+            "message": message,
         }
 
     if key == "indexing_paused":

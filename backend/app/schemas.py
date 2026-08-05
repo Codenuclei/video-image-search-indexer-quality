@@ -270,3 +270,40 @@ class SearchResponse(BaseModel):
     citations: list[SearchCitationOut]
     files: list[SearchResultFile] = []
     moments: list[SearchMoment] = []
+
+
+class IndexedFolderOut(BaseModel):
+    id: str
+    name: str
+    drive_url: str
+    drive_user_email: str | None = None
+    is_active: bool = False
+    first_indexed_at: datetime | None = None
+    last_indexed_at: datetime | None = None
+    last_file_count: int | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class FileIndexConflictOut(BaseModel):
+    id: int
+    incoming_file_id: str
+    existing_file_id: str
+    conflict_kind: str
+    status: str
+    incoming_name: str
+    existing_name: str
+    content_hash: str | None = None
+    message: str | None = None
+    created_at: datetime | None = None
+    resolved_at: datetime | None = None
+    # UI hints
+    can_replace: bool = False
+    can_merge: bool = False
+    can_skip: bool = True
+
+    model_config = {"from_attributes": True}
+
+
+class ResolveConflictIn(BaseModel):
+    action: str  # skip | replace | merge

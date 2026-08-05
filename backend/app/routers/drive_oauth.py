@@ -294,13 +294,26 @@ async def save_folder(
     user.selected_folder_id = folder_id
     user.selected_folder_name = folder_name
     requeued = await _requeue_folder_selection_errors(session)
+    from app.drive.indexed_folders import record_indexed_folder
+
+    await record_indexed_folder(
+        session,
+        folder_id=folder_id,
+        folder_name=folder_name,
+        drive_user=user,
+        mark_active=True,
+    )
     await session.commit()
     logger.info("Drive folder saved: %s (%s), requeued=%d", folder_name, folder_id, requeued)
     if not worker.is_running:
         background_tasks.add_task(_sync_after_folder_change, worker)
     return {
         "ok": True,
-        "folder": {"id": folder_id, "name": folder_name},
+        "folder": {
+            "id": folder_id,
+            "name": folder_name,
+            "drive_url": f"https://drive.google.com/drive/folders/{folder_id}",
+        },
         "requeued": requeued,
     }
 

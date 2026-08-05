@@ -152,11 +152,6 @@ async def run_caption_backfill(worker: IndexingWorker, *, max_batches: int | Non
 
         session_factory = get_session_factory()
 
-        async def _file_name_for_id(fid: str) -> str:
-            async with session_factory() as session:
-                row = await session.get(DriveFile, fid)
-                return row.name if row else ""
-
         async def _mark_corrupt_skipped(fid: str, error: str) -> None:
             async with session_factory() as session:
                 row = await session.get(DriveFile, fid)
@@ -171,8 +166,24 @@ async def run_caption_backfill(worker: IndexingWorker, *, max_batches: int | Non
         async def _prepare_item(fid: str) -> tuple[str, bytes] | None:
             async with dl_sem:
                 try:
-                    raw = await download_to_memory(worker._client, fid)  # noqa: SLF001
-                    file_name = await _file_name_for_id(fid)
+                    from app.drive.media_cache import ensure_media_cached, read_cached_bytes, resolve_cache_path
+
+                    file_name = ""
+                    raw: bytes | None = None
+                    async with session_factory() as session:
+                        row = await session.get(DriveFile, fid)
+                        if row is None:
+                            return None
+                        file_name = row.name or ""
+                        cached = resolve_cache_path(settings, row)
+                        if cached is not None:
+                            raw = await run_cpu_bound(read_cached_bytes, cached)
+                        else:
+                            path = await ensure_media_cached(worker._client, row, settings)  # noqa: SLF001
+                            await session.commit()
+                            raw = await run_cpu_bound(read_cached_bytes, path)
+                    if raw is None:
+                        raw = await download_to_memory(worker._client, fid)  # noqa: SLF001
                     image_bgr = await run_cpu_bound(decode_image_bgr, raw, file_name=file_name)
                     ok, buf = cv2.imencode(".jpg", image_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
                     if ok:

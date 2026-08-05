@@ -33,6 +33,18 @@ const SKIP_REASON_META: Record<
     retryable: true,
     retryLabel: "Retry all",
   },
+  duplicate_content: {
+    label: "Duplicate content",
+    hint: "Identical bytes already indexed (cross-folder/user dedupe)",
+    retryable: false,
+    retryLabel: "Can't retry",
+  },
+  name_conflict: {
+    label: "Same name conflict",
+    hint: "Filename collides with different content — use Replace/Skip on dashboard",
+    retryable: false,
+    retryLabel: "Can't retry",
+  },
   unknown: {
     label: "Other",
     hint: "Skipped for an unclassified reason",

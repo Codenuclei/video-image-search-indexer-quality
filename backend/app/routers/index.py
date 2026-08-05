@@ -20,6 +20,7 @@ from app.schemas import (
     IndexLaneSlots,
     IndexRunResult,
     IndexStatus,
+    ResolveConflictIn,
     RetrySkippedByReasonIn,
 )
 from app.workers.indexer import IndexingWorker
@@ -364,6 +365,123 @@ async def skip_stats(session: AsyncSession = Depends(get_db)) -> dict[str, objec
         key=lambda x: -x["count"],
     )
     return {"total_skipped": total, "by_reason": ranked}
+
+
+@router.get("/index/folders")
+async def indexed_folders(session: AsyncSession = Depends(get_db)) -> dict[str, object]:
+    """All previously indexed Drive folders with persistent Drive URLs."""
+    from app.db.models import DriveUser
+    from app.drive.indexed_folders import list_indexed_folders, record_indexed_folder
+    from app.schemas import IndexedFolderOut
+
+    rows = await list_indexed_folders(session)
+    if not rows:
+        # Soft backfill: promote the currently selected folder into history.
+        user = (await session.execute(select(DriveUser).limit(1))).scalar_one_or_none()
+        if user and user.selected_folder_id:
+            await record_indexed_folder(
+                session,
+                folder_id=user.selected_folder_id,
+                folder_name=user.selected_folder_name or user.selected_folder_id,
+                drive_user=user,
+                mark_active=True,
+            )
+            await session.commit()
+            rows = await list_indexed_folders(session)
+    return {
+        "folders": [IndexedFolderOut.model_validate(r).model_dump(mode="json") for r in rows],
+        "total": len(rows),
+    }
+
+
+@router.get("/index/conflicts")
+async def index_conflicts(
+    status: str | None = "pending",
+    limit: int = 50,
+    offset: int = 0,
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, object]:
+    """Same-name / same-content conflicts awaiting (or past) user resolution."""
+    from app.drive.conflicts import (
+        KIND_SAME_CONTENT_DIFF_NAME,
+        KIND_SAME_NAME_DIFF_CONTENT,
+        STATUS_AUTOSKIPPED,
+        STATUS_PENDING,
+        list_conflicts,
+    )
+    from app.schemas import FileIndexConflictOut
+
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
+    # Include autoskipped same-content-diff-name so Merge is visible on dashboard.
+    if status == "pending":
+        from app.db.models import FileIndexConflict
+        from sqlalchemy import or_
+
+        q = (
+            select(FileIndexConflict)
+            .where(
+                or_(
+                    FileIndexConflict.status == STATUS_PENDING,
+                    FileIndexConflict.status == STATUS_AUTOSKIPPED,
+                )
+            )
+            .order_by(FileIndexConflict.created_at.desc())
+            .offset(offset)
+            .limit(limit)
+        )
+        count_q = select(func.count()).select_from(FileIndexConflict).where(
+            or_(
+                FileIndexConflict.status == STATUS_PENDING,
+                FileIndexConflict.status == STATUS_AUTOSKIPPED,
+            )
+        )
+        total = int((await session.execute(count_q)).scalar_one())
+        rows = list((await session.execute(q)).scalars().all())
+    else:
+        rows, total = await list_conflicts(session, status=status, limit=limit, offset=offset)
+
+    items = []
+    for r in rows:
+        out = FileIndexConflictOut.model_validate(r)
+        out.can_replace = r.conflict_kind == KIND_SAME_NAME_DIFF_CONTENT and r.status in (
+            STATUS_PENDING,
+            STATUS_AUTOSKIPPED,
+        )
+        out.can_merge = r.conflict_kind in (
+            KIND_SAME_CONTENT_DIFF_NAME,
+            "same_content",
+        ) and r.status in (STATUS_PENDING, STATUS_AUTOSKIPPED)
+        out.can_skip = r.status in (STATUS_PENDING, STATUS_AUTOSKIPPED)
+        items.append(out.model_dump(mode="json"))
+    return {"total": total, "offset": offset, "limit": limit, "items": items}
+
+
+@router.post("/index/conflicts/{conflict_id}/resolve")
+async def resolve_index_conflict(
+    conflict_id: int,
+    body: ResolveConflictIn,
+    background_tasks: BackgroundTasks,
+    worker: IndexingWorker = Depends(get_indexing_worker),
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, object]:
+    """Resolve a conflict with skip | replace | merge."""
+    from app.drive.conflicts import resolve_conflict
+    from app.schemas import FileIndexConflictOut
+
+    action = (body.action or "").strip().lower()
+    if action not in ("skip", "replace", "merge"):
+        raise HTTPException(status_code=400, detail="action must be skip, replace, or merge")
+    try:
+        row = await resolve_conflict(session, conflict_id, action=action)
+        await session.commit()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if action == "replace" and not worker.is_running:
+        background_tasks.add_task(_run_cycle, worker)
+
+    return {"ok": True, "conflict": FileIndexConflictOut.model_validate(row).model_dump(mode="json")}
 
 
 @router.post("/index/skipped/retry")

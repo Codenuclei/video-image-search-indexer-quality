@@ -64,6 +64,13 @@ async def auto_index_loop(worker: IndexingWorker, stop_event: asyncio.Event) -> 
                 except Exception:  # noqa: BLE001
                     logger.exception("Auto-index processing failed")
 
+            # Caption/embed backfill must run every idle tick — not only after the
+            # rare fallback Drive sync (that previously starved captions).
+            try:
+                await maintenance_tick(worker)
+            except Exception:  # noqa: BLE001
+                logger.exception("Auto maintenance tick failed")
+
             # Renew push channel near expiry (no Drive tree walk).
             try:
                 await register_or_renew_channel(get_drive_client(), force=False)
@@ -104,11 +111,6 @@ async def auto_index_loop(worker: IndexingWorker, stop_event: asyncio.Event) -> 
                                 await worker.ensure_parallel_image_indexing()
                             except Exception:  # noqa: BLE001
                                 logger.exception("Post-sync parallel slot fill failed")
-
-                            try:
-                                await maintenance_tick(worker)
-                            except Exception:  # noqa: BLE001
-                                logger.exception("Auto maintenance tick failed")
         else:
             try:
                 await worker.ensure_parallel_video_indexing()
