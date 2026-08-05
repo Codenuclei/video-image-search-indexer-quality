@@ -46,8 +46,9 @@ ENV PYTHONUNBUFFERED=1
 ENV PORT=8000
 # Safer default under InsightFace/OpenBLAS (override via Railway env if needed).
 # Do not raise toward 24 until OPENBLAS_NUM_THREADS=1 is stable in prod.
-ENV WEB_CONCURRENCY=8
-ENV GUNICORN_WORKERS=8
+# 4 workers + BLAS=1 stays well under container thread/pid limits.
+ENV WEB_CONCURRENCY=4
+ENV GUNICORN_WORKERS=4
 ENV OPENBLAS_NUM_THREADS=1
 ENV OMP_NUM_THREADS=1
 ENV MKL_NUM_THREADS=1
