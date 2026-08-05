@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     google_client_id: str = ""
     google_client_secret: str = ""
     google_redirect_uri: str = "http://localhost:8000/auth/google/callback"
+    # Browser API key for Google Picker (setDeveloperKey). Not a Gemini / AI Studio key.
     google_api_key: str = ""
 
     # URL of the Next.js frontend — used to redirect after OAuth
@@ -47,9 +48,14 @@ class Settings(BaseSettings):
     search_variant_max_parallel: int = 0   # 0 = auto (cpu cores); parallel variant embed+Qdrant
     search_llm_batch_parallel: int = 0     # 0 = auto; caption filter + rerank batch concurrency
     cpu_thread_pool_size: int = 0          # 0 = os.cpu_count()
-    # Concurrent image jobs (face detect + embed). On 24 vCPU Railway, 8–10 is a
-    # solid default; raise via IMAGE_INDEX_MAX_PARALLEL if Gemini/CPU headroom allows.
-    image_index_max_parallel: int = 10
+    # Concurrent image jobs (face detect + embed + Drive download). Matched to
+    # drive_download_max_concurrent so index slots don't outrun the Drive throttle.
+    image_index_max_parallel: int = 16
+    # Shared Drive download concurrency (indexer + maintenance + preview).
+    # Google user-rate limits typically tolerate ~10–20 parallel media GETs.
+    drive_download_max_concurrent: int = 16
+    # Parallel Drive folder children listings during recursive tree walk.
+    drive_list_max_concurrent: int = 4
     # Optional Go sidecar canary (claim/download in Go, complete via Python ingest).
     go_indexer_enabled: bool = False
     go_indexer_max_parallel: int = 2

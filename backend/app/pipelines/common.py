@@ -138,11 +138,14 @@ async def file_has_media(session: AsyncSession, drive_file_id: str) -> bool:
 
 
 async def download_to_memory(client: DriveConnectorClient, file_id: str) -> bytes:
-    chunks: list[bytes] = []
-    async with client.stream_file_content(file_id) as response:
-        async for chunk in response.aiter_bytes(chunk_size=1024 * 256):
-            chunks.append(chunk)
-    return b"".join(chunks)
+    from app.drive.rate_limit import drive_download_slot
+
+    async with drive_download_slot():
+        chunks: list[bytes] = []
+        async with client.stream_file_content(file_id) as response:
+            async for chunk in response.aiter_bytes(chunk_size=1024 * 256):
+                chunks.append(chunk)
+        return b"".join(chunks)
 
 
 _plugins_registered = False
@@ -392,13 +395,16 @@ async def download_to_temp_file(
     settings: Settings,
     suffix: str = "",
 ) -> AsyncIterator[str]:
+    from app.drive.rate_limit import drive_download_slot
+
     os.makedirs(settings.temp_dir, exist_ok=True)
     fd, path = tempfile.mkstemp(dir=settings.temp_dir, prefix=f"{file_id}_", suffix=suffix)
     try:
-        with os.fdopen(fd, "wb") as fh:
-            async with client.stream_file_content(file_id) as response:
-                async for chunk in response.aiter_bytes(chunk_size=1024 * 256):
-                    fh.write(chunk)
+        async with drive_download_slot():
+            with os.fdopen(fd, "wb") as fh:
+                async with client.stream_file_content(file_id) as response:
+                    async for chunk in response.aiter_bytes(chunk_size=1024 * 256):
+                        fh.write(chunk)
         yield path
     finally:
         if os.path.exists(path):
