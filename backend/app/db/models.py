@@ -30,6 +30,50 @@ class DriveUser(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
+class IndexedFolder(Base):
+    """Historical record of every Drive folder that was selected for indexing.
+
+    Persists the folder Drive URL even after the user switches or disconnects
+    the active sync root — additive history only, never wiped on folder change.
+    """
+
+    __tablename__ = "indexed_folders"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)  # Google Drive folder id
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    drive_url: Mapped[str] = mapped_column(Text, nullable=False)
+    drive_user_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    drive_user_email: Mapped[str | None] = mapped_column(String, nullable=True)
+    is_active: Mapped[bool] = mapped_column(default=False, nullable=False, server_default="false")
+    first_indexed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    last_indexed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+    last_file_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class FileIndexConflict(Base):
+    """Pending or resolved same-name / same-content indexing conflicts."""
+
+    __tablename__ = "file_index_conflicts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    incoming_file_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    existing_file_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    # same_content | same_content_diff_name | same_name_diff_content
+    conflict_kind: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    # pending | skipped | replaced | merged | autoskipped
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending", server_default="pending", index=True)
+    incoming_name: Mapped[str] = mapped_column(String, nullable=False)
+    existing_name: Mapped[str] = mapped_column(String, nullable=False)
+    content_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class DriveFileStatus(str, enum.Enum):
     PENDING = "pending"
     PROCESSING = "processing"
@@ -79,6 +123,13 @@ class DriveFile(Base):
     carousel_locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     carousel_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     carousel_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    # Content identity for cross-folder / cross-user dedupe (Drive md5Checksum or local sha256).
+    content_hash: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    content_hash_algo: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # Relative path under media_cache_dir after a successful durable copy.
+    cache_rel_path: Mapped[str | None] = mapped_column(String, nullable=True)
+    # IndexedFolders.id of the root folder this file was discovered under (historical).
+    root_folder_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     media: Mapped["Media | None"] = relationship(back_populates="drive_file", uselist=False)

@@ -131,6 +131,8 @@ class Settings(BaseSettings):
     # Video indexing (ffmpeg frames + VTT transcript + Gemini VLM)
     video_indexing_enabled: bool = True
     video_cache_dir: str = "./data/videos"
+    # Durable media copies for Drive images/docs (temp → atomic move; stable paths).
+    media_cache_dir: str = "./data/media_cache"
     video_frame_interval_seconds: float = 1.0
     video_max_sample_frames: int = 300
     video_max_gemini_frames: int = 12

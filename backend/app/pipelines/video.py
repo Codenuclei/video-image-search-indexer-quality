@@ -281,6 +281,15 @@ async def process_video_file(
             shutil.move(tmp, dest)
         logger.info("Cached video: %s", dest)
 
+    try:
+        from app.drive.media_cache import cache_rel_path_for
+        from pathlib import Path as _Path
+
+        # Prefer recording under media_cache when video lives there; else store absolute.
+        drive_file.cache_rel_path = str(_Path(dest).name)
+    except Exception:  # noqa: BLE001
+        pass
+
     probe = await run_cpu_bound(probe_video, dest)
     media = Media(
         drive_file_id=drive_file.id,

@@ -161,6 +161,31 @@ async def ensure_schema(engine: AsyncEngine) -> None:
                 "ON carousel_generation_saves (drive_file_id, kind, created_at DESC)"
             )
         )
+        # Content-hash dedupe + durable media cache paths (additive).
+        await conn.execute(
+            text("ALTER TABLE drive_files ADD COLUMN IF NOT EXISTS content_hash VARCHAR(128)")
+        )
+        await conn.execute(
+            text("ALTER TABLE drive_files ADD COLUMN IF NOT EXISTS content_hash_algo VARCHAR(16)")
+        )
+        await conn.execute(
+            text("ALTER TABLE drive_files ADD COLUMN IF NOT EXISTS cache_rel_path VARCHAR")
+        )
+        await conn.execute(
+            text("ALTER TABLE drive_files ADD COLUMN IF NOT EXISTS root_folder_id VARCHAR")
+        )
+        await conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_drive_files_content_hash "
+                "ON drive_files (content_hash)"
+            )
+        )
+        await conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_drive_files_root_folder_id "
+                "ON drive_files (root_folder_id)"
+            )
+        )
         await conn.run_sync(Base.metadata.create_all)
     logger.info("Database schema verified")
 

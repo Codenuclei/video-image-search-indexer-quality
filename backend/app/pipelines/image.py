@@ -13,7 +13,7 @@ from app.drive.client import DriveConnectorClient
 from app.faces.engine import FaceEngine, get_face_engine
 from app.matching.service import assign_face
 from app.pipelines.async_cpu import run_cpu_bound
-from app.pipelines.common import clear_existing_media, decode_image_bgr, download_to_memory, file_has_media, save_face_thumbnail
+from app.pipelines.common import clear_existing_media, decode_image_bgr, file_has_media, save_face_thumbnail
 from app.pipelines.dedup import LocalIdentityTracker, passes_quality_filter
 from app.search.images import index_image_embedding
 
@@ -36,7 +36,16 @@ async def process_image_file(
 
     await clear_existing_media(session, drive_file.id)
 
-    raw_bytes = await download_to_memory(client, drive_file.id)
+    from app.drive.content_hash import sha256_bytes
+    from app.drive.media_cache import ensure_media_cached, read_cached_bytes
+
+    # Durable cache copy (temp → atomic move) before face/embed work.
+    cache_path = await ensure_media_cached(client, drive_file, settings)
+    raw_bytes = await run_cpu_bound(read_cached_bytes, cache_path)
+    if not drive_file.content_hash:
+        drive_file.content_hash = sha256_bytes(raw_bytes)
+        drive_file.content_hash_algo = "sha256"
+
     image_bgr = await run_cpu_bound(decode_image_bgr, raw_bytes, file_name=drive_file.name)
 
     media = Media(drive_file_id=drive_file.id, type=MediaType.IMAGE)

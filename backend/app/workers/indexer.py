@@ -1164,6 +1164,7 @@ class IndexingWorker:
         new_pending = 0
         removed = 0
         live_ids: set[str] = set()
+        root_folder_id = listing.folder.id if listing.folder else None
         async with self._session_factory() as session:
             paused_paths = await load_paused_folder_paths(session)
             for entry in listing.files:
@@ -1174,7 +1175,12 @@ class IndexingWorker:
                     await self._upsert_folder_placeholder(session, entry)
                     continue
                 seen += 1
-                was_new = await self._upsert_drive_file(session, entry, paused_paths=paused_paths)
+                was_new = await self._upsert_drive_file(
+                    session,
+                    entry,
+                    paused_paths=paused_paths,
+                    root_folder_id=root_folder_id,
+                )
                 if was_new:
                     new_pending += 1
 
@@ -1195,6 +1201,14 @@ class IndexingWorker:
                 for drive_file in stale:
                     await remove_drive_file(session, drive_file, gemini=gemini)
                     removed += 1
+
+            if root_folder_id:
+                try:
+                    from app.drive.indexed_folders import touch_active_folder_file_count
+
+                    await touch_active_folder_file_count(session, file_count=seen)
+                except Exception:  # noqa: BLE001
+                    logger.exception("Failed to update indexed folder file count")
 
             await session.commit()
         logger.info(
@@ -1241,12 +1255,19 @@ class IndexingWorker:
         entry: ConnectorFile,
         *,
         paused_paths: list[str] | None = None,
+        root_folder_id: str | None = None,
     ) -> bool:
         from app.drive.indexing_pause import INDEXING_PAUSED_PREFIX
+        from app.drive.content_hash import hash_from_connector_entry
+        from app.drive.conflicts import apply_dedupe_on_upsert
 
         existing = await session.get(DriveFile, entry.id)
         inferred_mime = infer_image_mime(entry.mime_type, entry.name)
         paused = is_file_indexing_paused(entry.path, paused_paths or [])
+        hash_info = hash_from_connector_entry(entry)
+        algo = hash_info[0] if hash_info else None
+        digest = hash_info[1] if hash_info else None
+
         if existing is None:
             if paused:
                 status = DriveFileStatus.SKIPPED
@@ -1254,34 +1275,67 @@ class IndexingWorker:
             else:
                 status = DriveFileStatus.PENDING
                 error_message = None
-            session.add(
-                DriveFile(
-                    id=entry.id,
-                    name=entry.name,
-                    mime_type=inferred_mime or entry.mime_type,
-                    path=entry.path,
-                    modified_time=entry.modified_time,
-                    size=entry.size_bytes,
-                    status=status,
-                    error_message=error_message,
-                )
+            drive_file = DriveFile(
+                id=entry.id,
+                name=entry.name,
+                mime_type=inferred_mime or entry.mime_type,
+                path=entry.path,
+                modified_time=entry.modified_time,
+                size=entry.size_bytes,
+                status=status,
+                error_message=error_message,
+                content_hash=digest,
+                content_hash_algo=algo,
+                root_folder_id=root_folder_id,
             )
+            session.add(drive_file)
+            await session.flush()
+            if not paused:
+                skip_key = await apply_dedupe_on_upsert(
+                    session, drive_file, algo=algo, digest=digest
+                )
+                if skip_key:
+                    _log_skip(drive_file, skip_key)
             return True
 
         changed = existing.modified_time != entry.modified_time or existing.name != entry.name
+        prev_hash = existing.content_hash
+        hash_changed = bool(digest and digest != prev_hash)
+        newly_hashed = bool(digest and not prev_hash)
         existing.name = entry.name
         existing.mime_type = infer_image_mime(entry.mime_type, entry.name) or entry.mime_type
         existing.path = entry.path
         existing.modified_time = entry.modified_time
         existing.size = entry.size_bytes
+        if root_folder_id:
+            existing.root_folder_id = root_folder_id
+        if digest:
+            existing.content_hash = digest
+            existing.content_hash_algo = algo
         if paused and existing.status in (DriveFileStatus.PENDING, DriveFileStatus.ERROR):
             existing.status = DriveFileStatus.SKIPPED
             existing.error_message = f"{INDEXING_PAUSED_PREFIX} indexing stopped for parent folder"
-        if changed:
-            existing.decode_attempts = 0
-            if existing.status == DriveFileStatus.PROCESSED and not paused:
-                existing.status = DriveFileStatus.PENDING
-                existing.gemini_document_name = None
+        elif not paused and (changed or hash_changed or newly_hashed):
+            from app.drive.content_hash import DUPLICATE_CONTENT_PREFIX, NAME_CONFLICT_PREFIX
+
+            prior_msg = existing.error_message or ""
+            was_conflict_skip = prior_msg.startswith(DUPLICATE_CONTENT_PREFIX) or prior_msg.startswith(
+                NAME_CONFLICT_PREFIX
+            )
+            if existing.status == DriveFileStatus.PROCESSED or was_conflict_skip or hash_changed:
+                if existing.status == DriveFileStatus.PROCESSED or was_conflict_skip:
+                    existing.status = DriveFileStatus.PENDING
+                    existing.error_message = None
+                    existing.gemini_document_name = None
+                existing.decode_attempts = 0
+            skip_key = await apply_dedupe_on_upsert(
+                session,
+                existing,
+                algo=algo or existing.content_hash_algo,
+                digest=digest or existing.content_hash,
+            )
+            if skip_key:
+                _log_skip(existing, skip_key)
         return False
 
     async def process_pending(self, limit: int | None = None) -> dict[str, int]:

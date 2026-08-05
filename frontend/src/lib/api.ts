@@ -162,6 +162,34 @@ export type SkipStats = {
   by_reason: { reason: string; count: number }[];
 };
 
+export type IndexedFolder = {
+  id: string;
+  name: string;
+  drive_url: string;
+  drive_user_email?: string | null;
+  is_active: boolean;
+  first_indexed_at?: string | null;
+  last_indexed_at?: string | null;
+  last_file_count?: number | null;
+};
+
+export type FileIndexConflict = {
+  id: number;
+  incoming_file_id: string;
+  existing_file_id: string;
+  conflict_kind: string;
+  status: string;
+  incoming_name: string;
+  existing_name: string;
+  content_hash?: string | null;
+  message?: string | null;
+  created_at?: string | null;
+  resolved_at?: string | null;
+  can_replace?: boolean;
+  can_merge?: boolean;
+  can_skip?: boolean;
+};
+
 export type RetrySkippedByReasonResult = {
   ok: boolean;
   reason: string;
@@ -1153,6 +1181,26 @@ export const apiClient = {
   indexStatus: () => api<IndexStatus>("/index"),
   goIndexerStatus: () => api<GoIndexerStatus>("/index/go/status"),
   skipStats: () => api<SkipStats>("/index/skip-stats"),
+  indexedFolders: () =>
+    api<{ folders: IndexedFolder[]; total: number }>("/index/folders"),
+  indexConflicts: (status: string | null = "pending", limit = 50, offset = 0) => {
+    const params = new URLSearchParams({
+      limit: String(limit),
+      offset: String(offset),
+    });
+    if (status != null) params.set("status", status);
+    return api<{
+      total: number;
+      offset: number;
+      limit: number;
+      items: FileIndexConflict[];
+    }>(`/index/conflicts?${params}`);
+  },
+  resolveIndexConflict: (id: number, action: "skip" | "replace" | "merge") =>
+    api<{ ok: boolean; conflict: FileIndexConflict }>(`/index/conflicts/${id}/resolve`, {
+      method: "POST",
+      body: JSON.stringify({ action }),
+    }),
   retrySkippedByReason: (reason: string) =>
     api<RetrySkippedByReasonResult>("/index/skipped/retry", {
       method: "POST",

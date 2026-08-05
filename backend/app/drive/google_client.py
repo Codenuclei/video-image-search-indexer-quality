@@ -205,6 +205,8 @@ class DriveDirectClient:
                                         "modifiedTime": child.get("modifiedTime"),
                                         "parentId": folder_id,
                                         "path": child_path,
+                                        "md5Checksum": child.get("md5Checksum"),
+                                        "sha1Checksum": child.get("sha1Checksum"),
                                     }
                                 )
                             )
@@ -293,7 +295,10 @@ async def _list_children(
     while True:
         params: dict[str, str | int] = {
             "q": f"'{folder_id}' in parents and trashed = false",
-            "fields": "nextPageToken,files(id,name,mimeType,size,modifiedTime,shortcutDetails)",
+            "fields": (
+                "nextPageToken,files(id,name,mimeType,size,modifiedTime,"
+                "md5Checksum,sha1Checksum,shortcutDetails)"
+            ),
             "pageSize": 200,
             "spaces": "drive",
             "supportsAllDrives": "true",
