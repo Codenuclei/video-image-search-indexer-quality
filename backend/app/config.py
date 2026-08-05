@@ -72,12 +72,15 @@ class Settings(BaseSettings):
     video_index_stall_seconds: int = 900
 
     # Image caption/embedding backfill throughput (maintenance loop).
-    # Caption: 10 images/Gemini call × 5 concurrent (semaphore). Embed: batch 5 × parallel 20.
-    image_caption_batch_parallel: int = 5  # concurrent Gemini describe batches (semaphore)
+    # Caption ~50/s: batch 10 × parallel ≈ 50*latency_s/10 (probe: ~13s → ~64).
+    # Embed ~50/s: batchEmbedContents batch 5 × parallel 20, max-edge 1024.
+    # Throughput lives in these async semaphores — NOT in more Gunicorn workers.
+    image_caption_batch_parallel: int = 64  # concurrent Gemini describe batches (semaphore)
     image_embed_backfill_parallel: int = 20  # concurrent batchEmbedContents calls
     image_embed_batch_size: int = 5         # images per batchEmbedContents call
     image_embed_max_edge: int = 1024        # longest edge before embed (0 = no downscale)
-    maintenance_batches_per_tick: int = 6   # max caption batches per maintenance tick
+    # Cap work per maintenance tick; keep >= caption/embed parallel or you starve RPS.
+    maintenance_batches_per_tick: int = 64
 
     # Search UI defaults (persisted in app_settings table).
     search_use_captions: bool = False
@@ -157,9 +160,9 @@ class Settings(BaseSettings):
 
     # Gemini API client-side concurrency (tune to your tier; see ai.google.dev rate limits).
     # Embedding 2: allow ~20 concurrent batchEmbedContents (batch=5 → ~50 img/s).
-    # Embed batches need more slots than caption (caption parallel defaults to 5).
+    # VLM: must be >= image_caption_batch_parallel or the caption semaphore is useless.
     gemini_embed_max_concurrent: int = 32
-    gemini_vlm_max_concurrent: int = 24
+    gemini_vlm_max_concurrent: int = 72
     gemini_upload_max_concurrent: int = 4
 
     # Legacy Fennec sidecar (disabled — use video_indexing_enabled instead)

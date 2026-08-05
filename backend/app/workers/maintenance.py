@@ -329,21 +329,25 @@ async def maintenance_tick(worker: IndexingWorker) -> None:
     Runs even while Start Index / ``worker.is_running`` is true so captions are
     not starved for the whole indexing cycle. Captions are never generated
     inline in ``process_image_file`` — this path is the only producer.
+
+    Work per tick is sized to the async Gemini semaphores (caption/embed
+    parallel), not Gunicorn worker count. ``maintenance_batches_per_tick`` is a
+    floor; we never run fewer caption batches than ``image_caption_batch_parallel``.
     """
     settings = get_settings()
     batches_per_tick = max(1, settings.maintenance_batches_per_tick)
+    caption_batches = max(batches_per_tick, max(1, settings.image_caption_batch_parallel))
 
     missing_caps = await count_missing_captions()
     if missing_caps > 0 and not _caption_running:
         logger.info("Maintenance: %d image(s) need captions — starting backfill", missing_caps)
-        await run_caption_backfill(worker, max_batches=batches_per_tick)
+        await run_caption_backfill(worker, max_batches=caption_batches)
 
     missing_embed = await count_missing_embeddings()
     if missing_embed > 0 and not _embed_running:
-        embed_limit = (
-            settings.image_embed_backfill_parallel
-            * max(1, settings.image_embed_batch_size)
-            * batches_per_tick
+        # One full wave of concurrent batchEmbedContents (batch × parallel).
+        embed_limit = settings.image_embed_backfill_parallel * max(
+            1, settings.image_embed_batch_size
         )
         logger.info("Maintenance: %d image(s) need embeddings — starting backfill", missing_embed)
         await run_embedding_backfill(worker, max_items=embed_limit)
