@@ -311,7 +311,12 @@ async def resolve_conflict(
             ).scalar_one_or_none()
             if existing is not None:
                 gemini = get_gemini_service()
-                await remove_drive_file(session, existing, gemini=gemini)
+                await remove_drive_file(
+                    session,
+                    existing,
+                    gemini=gemini,
+                    reason="conflict replace (soft-archive existing)",
+                )
         if incoming is not None:
             incoming.status = DriveFileStatus.PENDING
             incoming.error_message = None

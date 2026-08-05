@@ -25,10 +25,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
-from app.db.models import DriveFile, DriveFileStatus, DriveUser
+from app.db.models import DriveFile, DriveFileStatus, DriveUser, IndexedFolder
 from app.db.session import get_db
 from app.dependencies import get_indexing_worker
 from app.drive.google_client import DriveDirectError, _do_token_refresh, resolve_folder_for_indexing
+from app.drive.indexed_folders import record_indexed_folder
 from app.runtime_settings import get_runtime_settings
 from app.workers.indexer import IndexingWorker
 
@@ -195,6 +196,17 @@ async def get_drive_token(
         user.token_expiry = new_expiry
         await session.commit()
 
+    if not (settings.google_api_key or "").strip():
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "GOOGLE_API_KEY is not set. Create a Browser API key in Google Cloud "
+                "(enable Drive API + Picker API; restrict HTTP referrers to your "
+                "frontend origin, e.g. http://localhost:3001/*) and set GOOGLE_API_KEY "
+                "in backend/.env."
+            ),
+        )
+
     return {
         "accessToken": user.access_token,
         "apiKey": settings.google_api_key,
@@ -291,10 +303,15 @@ async def save_folder(
     except DriveDirectError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    same_folder_already_selected = user.selected_folder_id == folder_id
+    prior_indexed = await session.get(IndexedFolder, folder_id)
+    reuse_existing_index = same_folder_already_selected or prior_indexed is not None
+
     user.selected_folder_id = folder_id
     user.selected_folder_name = folder_name
-    requeued = await _requeue_folder_selection_errors(session)
-    from app.drive.indexed_folders import record_indexed_folder
+    # Only re-queue files that failed specifically because no folder was selected —
+    # never blanket-requeue completed rows for a folder we already indexed.
+    requeued = 0 if reuse_existing_index else await _requeue_folder_selection_errors(session)
 
     await record_indexed_folder(
         session,
@@ -304,9 +321,24 @@ async def save_folder(
         mark_active=True,
     )
     await session.commit()
-    logger.info("Drive folder saved: %s (%s), requeued=%d", folder_name, folder_id, requeued)
-    if not worker.is_running:
+    logger.info(
+        "Drive folder saved: %s (%s), requeued=%d, reuse_existing_index=%s",
+        folder_name,
+        folder_id,
+        requeued,
+        reuse_existing_index,
+    )
+    # Same / previously indexed folder: do not kick a sync→index cycle.
+    # Existing drive_files + embeddings stay the source of truth; with
+    # auto_index off, even a sync would not process pending. Skip entirely
+    # so re-select cannot mark completed files pending via side effects.
+    if not reuse_existing_index and not worker.is_running:
         background_tasks.add_task(_sync_after_folder_change, worker)
+    elif reuse_existing_index:
+        logger.info(
+            "Skipping post-save Drive sync/reindex for known folder %s — reusing indexed data",
+            folder_id,
+        )
     return {
         "ok": True,
         "folder": {
@@ -315,6 +347,7 @@ async def save_folder(
             "drive_url": f"https://drive.google.com/drive/folders/{folder_id}",
         },
         "requeued": requeued,
+        "reused_existing_index": reuse_existing_index,
     }
 
 
@@ -322,10 +355,15 @@ async def save_folder(
 
 @router.post("/api/logout")
 async def logout(session: AsyncSession = Depends(get_db)):
-    """Disconnect Google Drive (delete stored tokens)."""
+    """Disconnect Google Drive (delete stored tokens).
+
+    Indexed folder history (``indexed_folders``), ``drive_files``, and embeddings
+    are intentionally preserved so reconnecting / re-selecting the same folder
+    reuses existing indexed data.
+    """
     user = (await session.execute(select(DriveUser).limit(1))).scalar_one_or_none()
     if user is not None:
         await session.delete(user)
         await session.commit()
-        logger.info("Drive account disconnected")
+        logger.info("Drive account disconnected (indexed_folders preserved)")
     return {"ok": True}

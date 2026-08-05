@@ -239,7 +239,12 @@ async def lookup_file_faces(
 
 @router.get("/library")
 async def drive_library(session: AsyncSession = Depends(get_db)) -> dict[str, object]:
-    """Folder-wise library tree with caption/embed/index status per file."""
+    """Global historical library tree — all indexed roots, including soft-archived.
+
+    Not scoped to the current Drive OAuth session or active folder selection.
+    Soft-archived files remain visible so folder switch / disconnect never hides
+    previously indexed media, captions, or embeddings.
+    """
     from app.qdrant.image_captions import get_captions_by_ids_sync, valid_caption_ids_sync
     from app.qdrant.images import existing_image_ids_sync
     from app.workers.maintenance import maintenance_status
@@ -366,7 +371,12 @@ async def delete_drive_file(file_id: str, session: AsyncSession = Depends(get_db
     if drive_file is None:
         raise HTTPException(status_code=404, detail="File not found")
     gemini = get_gemini_service()
-    await remove_drive_file(session, drive_file, gemini=gemini)
+    await remove_drive_file(
+        session,
+        drive_file,
+        gemini=gemini,
+        reason="explicit API detach",
+    )
     await session.commit()
 
 

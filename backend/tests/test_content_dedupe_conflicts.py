@@ -166,7 +166,11 @@ async def test_same_name_diff_content_pending_replace(db_session: AsyncSession) 
     refreshed = await db_session.get(DriveFile, "new3")
     assert refreshed is not None
     assert refreshed.status == DriveFileStatus.PENDING
-    assert await db_session.get(DriveFile, "exist3") is None
+    # Never-delete: existing is soft-archived, not hard-deleted.
+    existing_row = await db_session.get(DriveFile, "exist3")
+    assert existing_row is not None
+    assert existing_row.status == DriveFileStatus.ARCHIVED
+    assert existing_row.archived_at is not None
 
 
 @requires_postgres

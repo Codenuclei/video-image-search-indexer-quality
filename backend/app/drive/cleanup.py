@@ -1,11 +1,43 @@
 from __future__ import annotations
 
-import asyncio
+import logging
+from datetime import datetime, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import DriveFile
+from app.db.models import DriveFile, DriveFileStatus
 from app.gemini.service import GeminiFileSearchService
+
+logger = logging.getLogger(__name__)
+
+_ARCHIVE_PREFIX = "archived:"
+
+
+async def archive_drive_file(
+    session: AsyncSession,
+    drive_file: DriveFile,
+    *,
+    reason: str = "removed from live Drive listing",
+    gemini: GeminiFileSearchService | None = None,
+) -> None:
+    """Soft-detach a file from the live Drive tree without erasing indexed artifacts.
+
+    Preserves Postgres media/faces, on-disk thumbnails/caches, Gemini documents,
+    and all Qdrant vectors (image, caption, video frames). ``gemini`` is accepted
+    for call-site compatibility and is intentionally unused.
+    """
+    del gemini  # never delete Gemini docs on archive
+    if drive_file.status == DriveFileStatus.ARCHIVED and drive_file.archived_at is not None:
+        return
+    drive_file.status = DriveFileStatus.ARCHIVED
+    drive_file.archived_at = datetime.now(timezone.utc)
+    drive_file.error_message = f"{_ARCHIVE_PREFIX} {reason}"[:500]
+    await session.flush()
+    logger.info(
+        "Archived drive file %s (%s) — vectors/thumbs retained",
+        drive_file.id,
+        drive_file.name,
+    )
 
 
 async def remove_drive_file(
@@ -13,24 +45,36 @@ async def remove_drive_file(
     drive_file: DriveFile,
     *,
     gemini: GeminiFileSearchService | None = None,
+    reason: str = "detached (never-delete policy)",
 ) -> None:
-    """Remove a tracked file and its Gemini document if present."""
-    document_name = drive_file.gemini_document_name
-    file_id = drive_file.id
-    if drive_file.media is not None:
-        await session.delete(drive_file.media)
-    await session.delete(drive_file)
-    await session.flush()
-    if document_name and gemini is not None:
-        await asyncio.to_thread(gemini.delete_document, document_name)
-    # Remove the image vector from Qdrant (best-effort)
-    try:
-        from app.qdrant.images import delete_image_sync
-        await asyncio.to_thread(delete_image_sync, file_id)
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        from app.qdrant.image_captions import delete_caption_sync
-        await asyncio.to_thread(delete_caption_sync, file_id)
-    except Exception:  # noqa: BLE001
-        pass
+    """Detach a tracked file without deleting indexed data.
+
+    Historically this hard-deleted the Postgres row plus Qdrant image/caption
+    points. That path is retired: folder change, disconnect, 404, conflict
+    replace, and API delete all soft-archive instead so embeddings and
+    thumbnails are permanent.
+    """
+    await archive_drive_file(
+        session,
+        drive_file,
+        reason=reason,
+        gemini=gemini,
+    )
+
+
+def restore_archived_drive_file(drive_file: DriveFile) -> bool:
+    """Clear archive markers when a file reappears in a live Drive listing.
+
+    Returns True if the row was archived and was restored.
+    """
+    if drive_file.status != DriveFileStatus.ARCHIVED and drive_file.archived_at is None:
+        return False
+    # Prefer avoiding re-index when prior successful sync markers exist.
+    if drive_file.last_synced_at or drive_file.gemini_document_name or drive_file.cache_rel_path:
+        drive_file.status = DriveFileStatus.PROCESSED
+    else:
+        drive_file.status = DriveFileStatus.PENDING
+    drive_file.archived_at = None
+    if (drive_file.error_message or "").startswith(_ARCHIVE_PREFIX):
+        drive_file.error_message = None
+    return True

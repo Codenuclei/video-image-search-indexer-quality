@@ -871,6 +871,7 @@ export type LibraryFolder = {
   pending_count: number;
   error_count: number;
   skipped_count: number;
+  archived_count: number;
   indexing_paused: boolean;
   folders: LibraryFolder[];
   files: LibraryFile[];
@@ -896,6 +897,7 @@ export type LibraryResponse = {
     pending: number;
     errors: number;
     skipped: number;
+    archived?: number;
     caption_pct: number;
   };
   maintenance: LibraryMaintenance;
