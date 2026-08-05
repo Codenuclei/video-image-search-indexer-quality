@@ -20,12 +20,13 @@ def test_production_defaults_match_probe_settings():
     assert Settings.model_fields["image_embed_batch_size"].default == 5
     assert Settings.model_fields["image_embed_backfill_parallel"].default == 20
     assert Settings.model_fields["image_embed_max_edge"].default == 1024
-    # Production caption path: 10 images per Gemini call × Semaphore(5)
+    # Production caption path: 10/call × Semaphore(~64) → ~50 captions/s at ~13s latency
     assert Settings.model_fields["image_caption_batch_size"].default == 10
-    assert Settings.model_fields["image_caption_batch_parallel"].default == 5
+    assert Settings.model_fields["image_caption_batch_parallel"].default == 64
     assert Settings.model_fields["image_caption_model"].default == "gemini-3.5-flash-lite"
+    assert Settings.model_fields["maintenance_batches_per_tick"].default == 64
     assert Settings.model_fields["gemini_embed_max_concurrent"].default == 32
-    assert Settings.model_fields["gemini_vlm_max_concurrent"].default == 24
+    assert Settings.model_fields["gemini_vlm_max_concurrent"].default == 72
     _ = s
 
 
@@ -43,6 +44,8 @@ def test_maintenance_tick_does_not_skip_when_indexer_running():
     src = inspect.getsource(maintenance_mod.maintenance_tick)
     assert "if worker.is_running" not in src
     assert "run_caption_backfill" in src
+    # Tick size must honor caption parallel (not starve at low MAINTENANCE_BATCHES_PER_TICK)
+    assert "image_caption_batch_parallel" in src
 
 
 def test_gunicorn_start_pins_blas_threads():
@@ -52,7 +55,8 @@ def test_gunicorn_start_pins_blas_threads():
     text = script.read_text(encoding="utf-8")
     assert "OPENBLAS_NUM_THREADS" in text
     assert "OMP_NUM_THREADS" in text
-    assert 'GUNICORN_WORKERS:-8}' in text or 'GUNICORN_WORKERS:-8"' in text
+    assert "GUNICORN_WORKERS:-4}" in text or 'GUNICORN_WORKERS:-4"' in text
+    assert "WEB_CONCURRENCY" in text
 
 
 def test_queue_active_tab_maps_to_processing_status():
