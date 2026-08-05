@@ -202,6 +202,20 @@ class Settings(BaseSettings):
     image_caption_min_score: float = 0.55     # caption text-match precision gate
     image_visual_strong_score: float = 0.50   # keep on strong visual alone
 
+    # Durable backups (Postgres + Qdrant + carousel/deep-dive forever archives).
+    backup_enabled: bool = True
+    backup_dir: str = "./data/backups"
+    # Rolling daily retention only — forever/ is never pruned.
+    backup_retention_days: int = 14
+    backup_interval_seconds: int = 86400
+    # Async SQLAlchemy pool — must fit under Postgres max_connections (200).
+    # With WEB_CONCURRENCY=24: 24 × (2+2) = 96 < 200 with headroom for admin/pg_dump.
+    db_pool_size: int = 2
+    db_max_overflow: int = 2
+    db_pool_timeout: float = 15.0
+    # Qdrant REST client timeout (seconds); raise to avoid false connection errors under load.
+    qdrant_timeout_seconds: float = 60.0
+
     # Append-only body/clothing re-id layer (body_signatures table).
     reid_enabled: bool = True
     reid_min_face_area_fraction: float = 0.015   # face must be prominent in frame

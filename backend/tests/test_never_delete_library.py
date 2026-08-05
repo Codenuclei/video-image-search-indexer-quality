@@ -303,6 +303,50 @@ async def test_library_lists_all_roots_including_archived(db_session):
 
 @requires_postgres
 @pytest.mark.asyncio
+async def test_soft_archive_preserves_carousel_deep_dive_saves(db_session):
+    """Carousel / deep-dive artifacts stay after soft-archive (no FK wipe)."""
+    from app.db.models import CarouselGenerationSave
+    from app.drive.cleanup import remove_drive_file
+
+    db_session.add(
+        DriveFile(
+            id="vid-1",
+            name="talk.mp4",
+            mime_type="video/mp4",
+            path="/A/talk.mp4",
+            status=DriveFileStatus.PROCESSED,
+            root_folder_id="root-a",
+        )
+    )
+    await db_session.flush()
+    db_session.add(
+        CarouselGenerationSave(
+            drive_file_id="vid-1",
+            kind="topics_hooks",
+            theme_key="deep-dive",
+            label="Deep dive 2x",
+            payload={"hooks": ["h1"], "quality": "2x"},
+        )
+    )
+    await db_session.commit()
+
+    row = await db_session.get(DriveFile, "vid-1")
+    await remove_drive_file(db_session, row, reason="folder switch")
+    await db_session.commit()
+
+    archived = await db_session.get(DriveFile, "vid-1")
+    assert archived.status == DriveFileStatus.ARCHIVED
+    save = (
+        await db_session.execute(
+            select(CarouselGenerationSave).where(CarouselGenerationSave.drive_file_id == "vid-1")
+        )
+    ).scalar_one_or_none()
+    assert save is not None
+    assert save.payload.get("quality") == "2x"
+
+
+@requires_postgres
+@pytest.mark.asyncio
 async def test_remove_drive_file_is_soft_archive_only(db_session):
     db_session.add(
         DriveFile(

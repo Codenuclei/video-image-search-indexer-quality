@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 _DIM = 3072
 
 
-def make_qdrant_client(url: str | None = None, timeout: float = 30) -> QdrantClient:
+def make_qdrant_client(url: str | None = None, timeout: float | None = None) -> QdrantClient:
     """Build a Qdrant client that works with Railway's HTTPS public URL.
 
     Railway exposes REST on :443 only; the default client preference for gRPC
@@ -29,7 +29,9 @@ def make_qdrant_client(url: str | None = None, timeout: float = 30) -> QdrantCli
     """
     from app.config import get_settings
 
-    raw = (url or get_settings().qdrant_url).rstrip("/")
+    settings = get_settings()
+    raw = (url or settings.qdrant_url).rstrip("/")
+    to = float(timeout if timeout is not None else settings.qdrant_timeout_seconds)
     # Force REST over TLS for public https endpoints.
     if raw.startswith("https://") and ":443" not in raw.split("/", 3)[2]:
         # https://host[/path] → https://host:443[/path]
@@ -38,7 +40,7 @@ def make_qdrant_client(url: str | None = None, timeout: float = 30) -> QdrantCli
         raw = f"https://{host}:443" + (f"/{path}" if path else "")
     return QdrantClient(
         url=raw,
-        timeout=timeout,
+        timeout=to,
         prefer_grpc=False,
         check_compatibility=False,
     )
@@ -47,8 +49,9 @@ def make_qdrant_client(url: str | None = None, timeout: float = 30) -> QdrantCli
 @lru_cache(maxsize=1)
 def get_qdrant() -> QdrantClient:
     from app.config import get_settings
+
     settings = get_settings()
-    client = make_qdrant_client(settings.qdrant_url, timeout=30)
+    client = make_qdrant_client(settings.qdrant_url)
     _ensure_collection(client, settings.qdrant_collection)
     return client
 

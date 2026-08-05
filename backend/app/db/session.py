@@ -29,8 +29,9 @@ def get_engine() -> AsyncEngine:
             db_url,
             pool_pre_ping=True,
             future=True,
-            # Avoid hanging forever on Railway private-network Postgres during boot.
-            pool_timeout=15,
+            pool_size=max(1, settings.db_pool_size),
+            max_overflow=max(0, settings.db_max_overflow),
+            pool_timeout=settings.db_pool_timeout,
             connect_args={"timeout": 15},
         )
     return _engine
