@@ -11,12 +11,17 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
+from app.db.advisory_locks import (
+    LOCK_CAROUSEL_EXTRACT,
+    LOCK_CAROUSEL_THEMES,
+    advisory_lock,
+)
 from app.db.models import (
     CarouselGenerationSave,
     DriveFile,
@@ -50,9 +55,9 @@ from app.pipelines.common import is_video_mime
 
 logger = logging.getLogger(__name__)
 
-# Single-worker uvicorn cannot usefully run multiple Gemini extract storms at
-# once — studio remounts / e2e retries used to pile up overlapping extracts and
-# starve health + other carousel routes. Serialize extracts process-wide.
+# Process-local fast path + Postgres advisory lock for Gunicorn multi-worker.
+# Studio remounts / e2e retries used to pile up overlapping extracts and starve
+# health + other carousel routes across all 24 workers.
 _EXTRACT_LOCK = asyncio.Lock()
 _EXTRACT_TIMEOUT_SEC = 900.0
 # Same for cold theme LLM generation (cache hits bypass this lock).
@@ -153,6 +158,8 @@ class PipelineThemesRequest(BaseModel):
     person_name: str = Field(default="", max_length=200)
     # When False (default), return a matching saved themes row if cache key matches.
     force: bool = False
+    # Explicit cold generate when cache misses. Never implied by Continue/Load.
+    generate: bool = False
 
 
 SAVE_KIND_TOPICS = "topics_hooks"
@@ -242,16 +249,21 @@ async def _persist_carousel_artifact(
     payload: dict[str, Any],
     source: str,
     layout_mode: str = "single_1",
+    selection_hash: str | None = None,
 ) -> CarouselGenerationSave | None:
     """Persist a ready, deterministic artifact for the cache-first endpoint."""
     safe_payload = _jsonb_safe(payload)
-    input_hash = carousel_input_hash(drive_file_id, safe_payload)
+    # Prefer request-side selection hash so cache hits work before regenerating.
+    input_hash = (selection_hash or "").strip() or carousel_input_hash(drive_file_id, safe_payload)
     existing = await session.scalar(
         select(CarouselGenerationSave)
         .where(
             CarouselGenerationSave.drive_file_id == drive_file_id,
             CarouselGenerationSave.kind == SAVE_KIND_CAROUSEL,
-            CarouselGenerationSave.input_hash == input_hash,
+            or_(
+                CarouselGenerationSave.input_hash == input_hash,
+                CarouselGenerationSave.theme_key == input_hash,
+            ),
         )
         .order_by(CarouselGenerationSave.created_at.desc())
     )
@@ -260,6 +272,7 @@ async def _persist_carousel_artifact(
     save = CarouselGenerationSave(
         drive_file_id=drive_file_id,
         kind=SAVE_KIND_CAROUSEL,
+        theme_key=input_hash[:256],
         label=str(payload.get("title") or "Carousel")[:240],
         status="ready",
         input_hash=input_hash,
@@ -281,6 +294,49 @@ def _themes_transcript_hash(cues: list[Any]) -> str:
     return hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()
 
 
+def _extract_theme_key(slices: list[PipelineThemeSlice]) -> str:
+    """Stable cache key for extract across selected theme windows."""
+    parts = [((s.theme_id or "").strip() or (s.title or "").strip() or f"{s.start_sec}") for s in slices]
+    return "|".join(parts)[:256] or "all"
+
+
+def _carousel_selection_hash(
+    *,
+    drive_file_id: str,
+    hooks: list[TimedPick],
+    topics: list[TimedPick],
+    min_slides: int,
+    max_slides: int,
+    select_images: bool,
+) -> str:
+    """Stable request-side hash so generate can serve cache without Gemini."""
+    import json
+
+    def _pick(p: TimedPick) -> dict[str, Any]:
+        return {
+            "text": " ".join((p.text or "").lower().split()),
+            "start_sec": round(float(p.start_sec or 0), 2),
+            "end_sec": None if p.end_sec is None else round(float(p.end_sec), 2),
+            "id": (p.id or "").strip(),
+        }
+
+    raw = json.dumps(
+        {
+            "drive_file_id": drive_file_id.strip(),
+            "hooks": [_pick(h) for h in hooks],
+            "topics": [_pick(t) for t in topics],
+            "min_slides": int(min_slides),
+            "max_slides": int(max_slides),
+            "select_images": bool(select_images),
+            "algo": CAROUSEL_ALGORITHM_VERSION,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return hashlib.sha256(raw.encode("utf-8", errors="ignore")).hexdigest()
+
+
 class PipelineThemeSlice(BaseModel):
     theme_id: str = Field(default="", max_length=64)
     title: str = Field(default="", max_length=200)
@@ -300,6 +356,9 @@ class PipelineExtractRequest(BaseModel):
     search_entity: str = Field(default="", max_length=200)
     # Multi-theme: extract each window then merge hooks/topics/previews in time order.
     themes: list[PipelineThemeSlice] = Field(default_factory=list, max_length=12)
+    # Cache-first: force regenerates; generate creates on miss; default is cache-only.
+    force: bool = False
+    generate: bool = False
 
 
 class PipelineIntentRequest(BaseModel):
@@ -336,19 +395,41 @@ class TimedPick(BaseModel):
 
 
 class CarouselGenerateRequest(BaseModel):
-    """Generate one carousel per selected hook (≥6 one-line exact-transcript slides)."""
+    """Generate one carousel for a single hook (≥6 one-line exact-transcript slides).
+
+    Product model: one hook per request/job. Batching multiple hooks confuses cache.
+    """
 
     drive_file_id: str = Field(..., min_length=1, max_length=128)
     video_name: str = Field(default="", max_length=400)
     intent: str = Field(default="", max_length=800)
     themes: list[PipelineThemeSlice] = Field(default_factory=list, max_length=12)
-    hooks: list[TimedPick] = Field(default_factory=list, max_length=24)
-    topics: list[TimedPick] = Field(default_factory=list, max_length=24)
+    hooks: list[TimedPick] = Field(default_factory=list, max_length=1)
+    topics: list[TimedPick] = Field(default_factory=list, max_length=1)
     # Per-hook Instagram one-liners: at least 6 slides when cues allow.
     min_slides: int = Field(default=6, ge=2, le=12)
     max_slides: int = Field(default=10, ge=2, le=12)
     # Transcript-first: defer Gemini/frame selection until the user explicitly asks.
     select_images: bool = False
+    # Cache-first: force regenerates; generate creates on miss; default is cache-only.
+    force: bool = False
+    generate: bool = False
+
+
+class CarouselPrerunRequest(BaseModel):
+    """Warm theme + extract caches for indexed videos (studio pre-run)."""
+
+    drive_file_ids: list[str] = Field(default_factory=list, max_length=40)
+    # When True, regenerate themes/extract even if cached.
+    force: bool = False
+
+
+class CarouselUploadIndexResponse(BaseModel):
+    drive_file_id: str
+    name: str
+    status: str
+    message: str
+    queued: bool = True
 
 
 class CarouselSelectImagesBody(BaseModel):
@@ -746,6 +827,199 @@ async def carousel_videos(
     }
 
 
+_UPLOAD_VIDEO_MIMES = {
+    "video/mp4",
+    "video/webm",
+    "video/quicktime",
+    "video/x-msvideo",
+    "video/x-matroska",
+    "video/mpeg",
+}
+_UPLOAD_EXT_MIME = {
+    ".mp4": "video/mp4",
+    ".webm": "video/webm",
+    ".mov": "video/quicktime",
+    ".avi": "video/x-msvideo",
+    ".mkv": "video/x-matroska",
+    ".mpeg": "video/mpeg",
+    ".mpg": "video/mpeg",
+}
+_MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024  # 2 GiB
+
+
+async def _index_uploaded_video(drive_file_id: str) -> None:
+    """Background: index a locally uploaded video through the normal worker path."""
+    from app.dependencies import get_indexing_worker
+
+    worker = get_indexing_worker()
+    try:
+        await worker.ensure_parallel_video_indexing()
+        summary = await worker.process_pending(limit=8)
+        logger.info("Upload index finished for %s: %s", drive_file_id, summary)
+    except Exception:  # noqa: BLE001
+        logger.exception("Upload index failed for %s", drive_file_id)
+
+
+@router.post("/upload")
+async def upload_video_for_index(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Accept a local video upload, store on the video cache volume, queue indexing.
+
+    Thin carousel-studio entry point — reuses the same DriveFile + indexer pipeline
+    as Drive/YouTube sources (source=upload). Does not wipe existing data.
+    """
+    import os
+    from pathlib import Path
+
+    from app.video.youtube_cache import video_cache_path
+
+    raw_name = (file.filename or "upload.mp4").strip() or "upload.mp4"
+    # Harden filename (no path traversal).
+    safe_name = Path(raw_name).name.replace("\x00", "")[:200] or "upload.mp4"
+    ext = Path(safe_name).suffix.lower()
+    mime = (file.content_type or "").split(";")[0].strip().lower()
+    if mime not in _UPLOAD_VIDEO_MIMES:
+        mime = _UPLOAD_EXT_MIME.get(ext, "")
+    if mime not in _UPLOAD_VIDEO_MIMES and ext not in _UPLOAD_EXT_MIME:
+        raise HTTPException(
+            status_code=400,
+            detail="Upload a video file (mp4, webm, mov, mkv, avi).",
+        )
+    if not ext:
+        ext = next((e for e, m in _UPLOAD_EXT_MIME.items() if m == mime), ".mp4")
+        safe_name = f"{safe_name}{ext}"
+
+    file_id = f"upload:{uuid.uuid4().hex}"
+    drive_file = DriveFile(
+        id=file_id,
+        name=safe_name,
+        mime_type=mime or "video/mp4",
+        path=f"uploads/{safe_name}",
+        status=DriveFileStatus.PENDING,
+        source="upload",
+        modified_time=datetime.now(timezone.utc),
+        last_synced_at=datetime.now(timezone.utc),
+    )
+    dest = video_cache_path(get_settings(), drive_file)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    partial = dest.with_suffix(dest.suffix + ".partial")
+
+    written = 0
+    try:
+        with open(partial, "wb") as out:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > _MAX_UPLOAD_BYTES:
+                    raise HTTPException(status_code=413, detail="Video exceeds 2 GiB upload limit")
+                out.write(chunk)
+        if written <= 0:
+            raise HTTPException(status_code=400, detail="Empty upload")
+        os.replace(partial, dest)
+    except HTTPException:
+        if partial.is_file():
+            partial.unlink(missing_ok=True)
+        raise
+    except Exception as exc:  # noqa: BLE001
+        if partial.is_file():
+            partial.unlink(missing_ok=True)
+        logger.exception("carousel upload write failed")
+        raise HTTPException(status_code=500, detail=f"Upload failed: {exc}") from exc
+    finally:
+        await file.close()
+
+    drive_file.size = written
+    session.add(drive_file)
+    await session.commit()
+    background_tasks.add_task(_index_uploaded_video, file_id)
+    logger.info("carousel upload queued id=%s name=%s bytes=%d", file_id, safe_name, written)
+    return {
+        "drive_file_id": file_id,
+        "name": safe_name,
+        "status": DriveFileStatus.PENDING.value,
+        "size": written,
+        "queued": True,
+        "message": "Upload saved — indexing queued (captions via Whisper when enabled).",
+    }
+
+
+@router.post("/pipeline/prerun")
+async def carousel_pipeline_prerun(
+    body: CarouselPrerunRequest,
+    request: Request,
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Warm theme + extract caches for selected/all indexed captioned videos.
+
+    For each video: generate themes if missing (or force), then extract hooks/topics
+    across all themes. Studio clicks later hit cache only.
+    """
+    ids = [x.strip() for x in (body.drive_file_ids or []) if (x or "").strip()]
+    if not ids:
+        # Default: recent captioned videos.
+        recent = await carousel_recent_videos(limit=8, captioned_only=True, session=session)
+        ids = [item["id"] for item in recent.get("items") or []]
+    ids = ids[:20]
+    results: list[dict[str, Any]] = []
+    for drive_file_id in ids:
+        item: dict[str, Any] = {"drive_file_id": drive_file_id, "ok": False}
+        try:
+            themes_body = PipelineThemesRequest(
+                drive_file_id=drive_file_id,
+                force=bool(body.force),
+                generate=True,
+            )
+            themes_res = await carousel_pipeline_themes(themes_body, session)
+            themes = list(themes_res.get("themes") or [])
+            item["themes_cache_hit"] = bool(themes_res.get("cache_hit"))
+            item["themes_generated"] = bool(themes_res.get("generated"))
+            item["theme_count"] = len(themes)
+            if not themes:
+                item["ok"] = False
+                item["error"] = themes_res.get("message") or themes_res.get("warning") or "no themes"
+                results.append(item)
+                continue
+            extract_body = PipelineExtractRequest(
+                drive_file_id=drive_file_id,
+                themes=[
+                    PipelineThemeSlice(
+                        theme_id=t.get("theme_id") or "",
+                        title=t.get("title") or "",
+                        start_sec=float(t.get("start_sec") or 0),
+                        end_sec=t.get("end_sec"),
+                        summary=t.get("summary") or "",
+                    )
+                    for t in themes
+                    if isinstance(t, dict)
+                ],
+                force=bool(body.force),
+                generate=True,
+            )
+            extract_res = await carousel_pipeline_extract(extract_body, request, session)
+            item["extract_cache_hit"] = bool(extract_res.get("cache_hit"))
+            item["extract_generated"] = bool(extract_res.get("generated"))
+            item["hook_count"] = len(extract_res.get("hooks") or [])
+            item["topic_count"] = len(extract_res.get("topics") or [])
+            item["ok"] = True
+        except HTTPException as exc:
+            item["error"] = str(exc.detail)
+        except Exception as exc:  # noqa: BLE001
+            item["error"] = str(exc)[:240]
+            logger.warning("prerun failed for %s: %s", drive_file_id, exc)
+        results.append(item)
+    return {
+        "count": len(results),
+        "ok_count": sum(1 for r in results if r.get("ok")),
+        "force": bool(body.force),
+        "items": results,
+    }
+
+
 async def _person_appears_in_video(
     session: AsyncSession,
     drive_file_id: str,
@@ -777,6 +1051,7 @@ async def carousel_pipeline_themes(
 
     Themes are generated at most once per (video, transcript_hash, model) unless
     ``force=true``. Matching saves are returned immediately without calling Gemini.
+    Without ``force`` or ``generate``, a cache miss returns empty (no Gemini).
 
     When person_name is set, only verify that person appears in the video (face match).
     If absent, return person_not_found — never reframe/harmonize themes around the person.
@@ -786,9 +1061,9 @@ async def carousel_pipeline_themes(
     # matches a known Person row used for presence check below.
     explicit_person = (body.person_name or "").strip()
     drive_file, cues = await _load_video_cues(session, body.drive_file_id.strip())
-    # A forced theme regeneration is a mutation and must not race generation.
+    # A forced/explicit theme generation is a mutation and must not race generation.
     # Cache reads remain available through GET /pipeline/carousel.
-    if body.force:
+    if body.force or body.generate:
         await _assert_carousel_unlocked(session, drive_file.id)
 
     check_name = explicit_person
@@ -884,62 +1159,15 @@ async def carousel_pipeline_themes(
                 "model": row.model or model_name,
             }
 
-    # Serialize cold LLM theme generation so remount storms cannot pile up Gemini
-    # calls while Drive sync / extract already share the single worker. Cache hits
-    # above return before this lock; waiters re-check cache after acquire.
-    async with _THEMES_GEN_LOCK:
-        # Re-check cache under the lock — a sibling request may have just saved.
-        if not body.force:
-            cached_q = (
-                select(CarouselGenerationSave)
-                .where(
-                    CarouselGenerationSave.drive_file_id == drive_file.id,
-                    CarouselGenerationSave.kind == SAVE_KIND_THEMES,
-                    CarouselGenerationSave.transcript_hash == transcript_hash,
-                )
-                .order_by(CarouselGenerationSave.created_at.desc())
-                .limit(4)
-            )
-            for row in list((await session.execute(cached_q)).scalars().all()):
-                if row.model and model_name and row.model != model_name:
-                    continue
-                payload = row.payload or {}
-                themes = list(payload.get("themes") or [])
-                if not themes:
-                    continue
-                logger.info(
-                    "carousel themes cache hit (post-lock) drive=%s save_id=%s",
-                    drive_file.id,
-                    row.id,
-                )
-                return {
-                    "source": row.source or payload.get("source") or "saved",
-                    "drive_file_id": drive_file.id,
-                    "name": drive_file.name,
-                    "search_entity": check_name or None,
-                    "person_name": check_name or None,
-                    "person_found": True if check_name else None,
-                    "harmonized": False,
-                    "cue_count": payload.get("cue_count") or len(cues),
-                    "themes": themes,
-                    "cache_hit": True,
-                    "generated": False,
-                    "save_id": row.id,
-                    "transcript_hash": transcript_hash,
-                    "model": row.model or model_name,
-                }
-
-        themes, source, warning = await build_harmonized_themes(
-            cues=cues,
-            video_name=drive_file.name,
-            search_entity=None,
-            api_key=settings.gemini_api_key,
-            model=settings.gemini_model,
-            claude_api_key=settings.anthropic_api_key or settings.claude_api_key,
-            claude_model=settings.claude_model,
+    # Strict cache-first: Continue/Load never auto-calls Gemini on miss.
+    if not body.force and not body.generate:
+        logger.info(
+            "carousel themes cache miss (no generate) drive=%s hash=%s",
+            drive_file.id,
+            transcript_hash[:12],
         )
-        result: dict[str, Any] = {
-            "source": source,
+        return {
+            "source": "cache_miss",
             "drive_file_id": drive_file.id,
             "name": drive_file.name,
             "search_entity": check_name or None,
@@ -947,52 +1175,134 @@ async def carousel_pipeline_themes(
             "person_found": True if check_name else None,
             "harmonized": False,
             "cue_count": len(cues),
-            "themes": themes,
+            "themes": [],
             "cache_hit": False,
-            "generated": True,
+            "generated": False,
             "transcript_hash": transcript_hash,
             "model": model_name,
-            **({"warning": warning} if warning else {}),
+            "message": "No cached themes for this transcript. Click Generate themes to create them.",
+            "warning": "No cached themes for this transcript. Click Generate themes to create them.",
         }
 
-        if themes:
-            try:
-                label = f"{len(themes)} themes · {source}"
-                save = CarouselGenerationSave(
-                    drive_file_id=drive_file.id,
-                    kind=SAVE_KIND_THEMES,
-                    theme_key="all",
-                    label=_jsonb_safe(label)[:240],
-                    model=model_name,
-                    transcript_hash=transcript_hash,
-                    source=(source or "")[:32] or None,
-                    payload=_jsonb_safe(
-                        {
-                            "drive_file_id": drive_file.id,
-                            "themes": themes,
-                            "source": source,
-                            "cue_count": len(cues),
-                            "transcript_hash": transcript_hash,
-                            "model": model_name,
-                            "person_name": check_name or None,
-                        }
-                    ),
+    # Serialize cold LLM theme generation so remount storms cannot pile up Gemini
+    # calls (process-local + cross-worker). Cache hits above return before this
+    # lock; waiters re-check cache after acquire.
+    async with _THEMES_GEN_LOCK:
+        async with advisory_lock(
+            LOCK_CAROUSEL_THEMES, name="carousel_themes", blocking=True
+        ) as got:
+            if not got:
+                raise HTTPException(
+                    status_code=503,
+                    detail="Theme generation lock unavailable; retry shortly.",
+                    headers={"Retry-After": "3"},
                 )
-                session.add(save)
-                await session.commit()
-                await session.refresh(save)
-                result["save_id"] = save.id
-                logger.info(
-                    "carousel themes saved drive=%s save_id=%s generated=1 hash=%s",
-                    drive_file.id,
-                    save.id,
-                    transcript_hash[:12],
+            # Re-check cache under the lock — a sibling request may have just saved.
+            # Skip when force=True (explicit regenerate).
+            if not body.force:
+                cached_q = (
+                    select(CarouselGenerationSave)
+                    .where(
+                        CarouselGenerationSave.drive_file_id == drive_file.id,
+                        CarouselGenerationSave.kind == SAVE_KIND_THEMES,
+                        CarouselGenerationSave.transcript_hash == transcript_hash,
+                    )
+                    .order_by(CarouselGenerationSave.created_at.desc())
+                    .limit(4)
                 )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("carousel themes autosave failed: %s", exc)
-                await session.rollback()
+                for row in list((await session.execute(cached_q)).scalars().all()):
+                    if row.model and model_name and row.model != model_name:
+                        continue
+                    payload = row.payload or {}
+                    themes = list(payload.get("themes") or [])
+                    if not themes:
+                        continue
+                    logger.info(
+                        "carousel themes cache hit (post-lock) drive=%s save_id=%s",
+                        drive_file.id,
+                        row.id,
+                    )
+                    return {
+                        "source": row.source or payload.get("source") or "saved",
+                        "drive_file_id": drive_file.id,
+                        "name": drive_file.name,
+                        "search_entity": check_name or None,
+                        "person_name": check_name or None,
+                        "person_found": True if check_name else None,
+                        "harmonized": False,
+                        "cue_count": payload.get("cue_count") or len(cues),
+                        "themes": themes,
+                        "cache_hit": True,
+                        "generated": False,
+                        "save_id": row.id,
+                        "transcript_hash": transcript_hash,
+                        "model": row.model or model_name,
+                    }
 
-        return result
+            themes, source, warning = await build_harmonized_themes(
+                cues=cues,
+                video_name=drive_file.name,
+                search_entity=None,
+                api_key=settings.gemini_api_key,
+                model=settings.gemini_model,
+                claude_api_key=settings.anthropic_api_key or settings.claude_api_key,
+                claude_model=settings.claude_model,
+            )
+            result: dict[str, Any] = {
+                "source": source,
+                "drive_file_id": drive_file.id,
+                "name": drive_file.name,
+                "search_entity": check_name or None,
+                "person_name": check_name or None,
+                "person_found": True if check_name else None,
+                "harmonized": False,
+                "cue_count": len(cues),
+                "themes": themes,
+                "cache_hit": False,
+                "generated": True,
+                "transcript_hash": transcript_hash,
+                "model": model_name,
+                **({"warning": warning} if warning else {}),
+            }
+
+            if themes:
+                try:
+                    label = f"{len(themes)} themes · {source}"
+                    save = CarouselGenerationSave(
+                        drive_file_id=drive_file.id,
+                        kind=SAVE_KIND_THEMES,
+                        theme_key="all",
+                        label=_jsonb_safe(label)[:240],
+                        model=model_name,
+                        transcript_hash=transcript_hash,
+                        source=(source or "")[:32] or None,
+                        payload=_jsonb_safe(
+                            {
+                                "drive_file_id": drive_file.id,
+                                "themes": themes,
+                                "source": source,
+                                "cue_count": len(cues),
+                                "transcript_hash": transcript_hash,
+                                "model": model_name,
+                                "person_name": check_name or None,
+                            }
+                        ),
+                    )
+                    session.add(save)
+                    await session.commit()
+                    await session.refresh(save)
+                    result["save_id"] = save.id
+                    logger.info(
+                        "carousel themes saved drive=%s save_id=%s generated=1 hash=%s",
+                        drive_file.id,
+                        save.id,
+                        transcript_hash[:12],
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("carousel themes autosave failed: %s", exc)
+                    await session.rollback()
+
+            return result
 
 
 @router.post("/pipeline/extract")
@@ -1005,9 +1315,16 @@ async def carousel_pipeline_extract(
 
     Hooks prefer English: parallel English caption track when available, else Gemini translate.
     Accepts one theme (legacy fields) or multiple `themes` merged in time order.
+
+    Cache-first: without ``force``/``generate``, return a matching save or an empty miss.
+    Never silently call Gemini on an ambiguous Continue/Extract click.
     """
+    # Cache-only reads skip the extract lock so UI polling stays snappy.
+    if not body.force and not body.generate:
+        return await _carousel_pipeline_extract_impl(body, session, request)
+
     # Serialize extracts so remount/retry storms cannot pin every default
-    # thread-pool slot with concurrent Gemini jobs on workers=1.
+    # thread-pool slot with concurrent Gemini jobs (process-local + cross-worker).
     if _EXTRACT_LOCK.locked():
         raise HTTPException(
             status_code=409,
@@ -1016,9 +1333,18 @@ async def carousel_pipeline_extract(
         )
 
     async with _EXTRACT_LOCK:
-        if await request.is_disconnected():
-            raise HTTPException(status_code=400, detail="Client disconnected before extract started")
-        return await _carousel_pipeline_extract_impl(body, session, request)
+        async with advisory_lock(
+            LOCK_CAROUSEL_EXTRACT, name="carousel_extract", blocking=False
+        ) as got:
+            if not got:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Hook/topic extract already running on another worker; wait for it to finish.",
+                    headers={"Retry-After": "5"},
+                )
+            if await request.is_disconnected():
+                raise HTTPException(status_code=400, detail="Client disconnected before extract started")
+            return await _carousel_pipeline_extract_impl(body, session, request)
 
 
 async def _carousel_pipeline_extract_impl(
@@ -1057,6 +1383,87 @@ async def _carousel_pipeline_extract_impl(
     combined_summary = " ".join(
         (s.summary or "").strip() for s in slices_sorted if (s.summary or "").strip()
     )[:800]
+    theme_key = _extract_theme_key(slices_sorted)
+
+    # Cache lookup before any Gemini work.
+    if not body.force:
+        cached_q = (
+            select(CarouselGenerationSave)
+            .where(
+                CarouselGenerationSave.drive_file_id == drive_file.id,
+                CarouselGenerationSave.kind == SAVE_KIND_TOPICS,
+                CarouselGenerationSave.theme_key == theme_key,
+            )
+            .order_by(CarouselGenerationSave.created_at.desc())
+            .limit(6)
+        )
+        for row in list((await session.execute(cached_q)).scalars().all()):
+            payload = dict(row.payload or {})
+            hooks = list(payload.get("hooks") or [])
+            topics = list(payload.get("topics") or [])
+            topic_tree = list(payload.get("topic_tree") or [])
+            if not hooks and not topics and not topic_tree:
+                continue
+            logger.info(
+                "carousel extract cache hit drive=%s save_id=%s theme_key=%s",
+                drive_file.id,
+                row.id,
+                theme_key[:48],
+            )
+            return {
+                "drive_file_id": drive_file.id,
+                "theme_id": slices[0].theme_id if len(slices) == 1 else None,
+                "theme_ids": [s.theme_id for s in slices if s.theme_id],
+                "hooks": hooks,
+                "topics": topics,
+                "topic_tree": topic_tree,
+                "previews": list(payload.get("previews") or [])[:40],
+                "intent": payload.get("intent"),
+                "intent_score": payload.get("intent_score"),
+                "intent_source": payload.get("intent_source") or "saved",
+                "verbatim": bool(payload.get("verbatim", False)),
+                "hooks_contextual": True,
+                "topics_generated": True,
+                "hooks_english": payload.get("hooks_english", True),
+                "topics_english": payload.get("topics_english", True),
+                "any_translated": bool(payload.get("any_translated")),
+                "english_source": payload.get("english_source"),
+                "transcript_meta": payload.get("transcript_meta"),
+                "save_id": row.id,
+                "cache_hit": True,
+                "generated": False,
+            }
+
+    if not body.force and not body.generate:
+        logger.info(
+            "carousel extract cache miss (no generate) drive=%s theme_key=%s",
+            drive_file.id,
+            theme_key[:48],
+        )
+        return {
+            "drive_file_id": drive_file.id,
+            "theme_id": slices[0].theme_id if len(slices) == 1 else None,
+            "theme_ids": [s.theme_id for s in slices if s.theme_id],
+            "hooks": [],
+            "topics": [],
+            "topic_tree": [],
+            "previews": [],
+            "intent": None,
+            "intent_score": None,
+            "intent_source": None,
+            "verbatim": False,
+            "hooks_contextual": True,
+            "topics_generated": False,
+            "hooks_english": True,
+            "topics_english": True,
+            "any_translated": False,
+            "english_source": None,
+            "transcript_meta": None,
+            "cache_hit": False,
+            "generated": False,
+            "message": "No cached hooks/topics for these themes. Click Generate to extract.",
+            "warning": "No cached hooks/topics for these themes. Click Generate to extract.",
+        }
 
     if await request.is_disconnected():
         raise HTTPException(status_code=400, detail="Client disconnected during extract")
@@ -1142,7 +1549,6 @@ async def _carousel_pipeline_extract_impl(
         api_key=settings.gemini_api_key,
         model=settings.gemini_model,
     )
-    theme_key = "|".join(s.theme_id or s.title for s in slices)[:256]
     # Aggregate per-theme transcript diagnostics (from extract helpers).
     # Structural proof: never ship topic_tree sections with empty hooks arrays.
     empty_hook_sections = 0
@@ -1225,6 +1631,8 @@ async def _carousel_pipeline_extract_impl(
         "any_translated": any_translated,
         "english_source": english_source,
         "transcript_meta": transcript_meta,
+        "cache_hit": False,
+        "generated": True,
     }
 
     # Autosave generation so returning users can restore without regenerating.
@@ -2109,6 +2517,9 @@ async def carousel_pipeline_generate(
     body: CarouselGenerateRequest,
     session: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
+    # Cache-only reads must not claim the carousel lock.
+    if not body.force and not body.generate:
+        return await _carousel_pipeline_generate_impl(body, session)
     drive_file_id = body.drive_file_id.strip()
     token = await _claim_carousel(session, drive_file_id)
     try:
@@ -2223,10 +2634,12 @@ async def _carousel_pipeline_generate_impl(
     body: CarouselGenerateRequest,
     session: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    """Generate Instagram-style carousels: one group per selected hook.
+    """Generate Instagram-style carousels: exactly one hook (or topic) per request.
 
     Each hook gets ≥6 one-line slides of *exact* VTT text. Gemini (when available)
     only proposes cut timestamps; the server never displays rewritten copy.
+
+    Cache-first: without ``force``/``generate``, return a matching save or empty miss.
     """
     settings = get_settings()
     drive_file_id = body.drive_file_id.strip()
@@ -2242,22 +2655,17 @@ async def _carousel_pipeline_generate_impl(
     hooks = [h for h in (body.hooks or []) if (h.text or "").strip()]
     if not topics and not hooks:
         raise HTTPException(status_code=400, detail="Select at least one topic or hook")
+    # Product model: one hook (or one topic-as-goal) per request/job unit.
+    if len(hooks) > 1 or (not hooks and len(topics) > 1):
+        raise HTTPException(
+            status_code=400,
+            detail="Generate one hook at a time (one hook per request).",
+        )
 
     # Product rule: ≥6 one-liners per hook group when cues allow.
     min_slides = min(max(int(body.min_slides), 6), 12)
     max_slides = min(max(int(body.max_slides), min_slides), 12)
     select_images = bool(body.select_images)
-
-    drive_file, indexed_cues = await _load_video_cues(session, drive_file_id)
-    if not video_name or video_name == drive_file_id:
-        video_name = (drive_file.name if drive_file else "") or drive_file_id
-    english_cues = await _maybe_load_english_cues(drive_file, indexed_cues)
-    cue_corpus, used_english_track = _select_carousel_cue_corpus(indexed_cues, english_cues)
-    if len(cue_corpus) < 2:
-        raise HTTPException(
-            status_code=400,
-            detail="Not enough transcript cues to build carousels for this video",
-        )
 
     # One carousel per selected hook. If only topics were picked, treat each as a goal.
     hook_goals: list[TimedPick] = list(hooks) if hooks else list(topics)
@@ -2270,6 +2678,87 @@ async def _carousel_pipeline_generate_impl(
             continue
         seen_goals.add(key)
         unique_hooks.append(h)
+    if not unique_hooks:
+        raise HTTPException(status_code=400, detail="Select at least one topic or hook")
+    if len(unique_hooks) > 1:
+        raise HTTPException(
+            status_code=400,
+            detail="Generate one hook at a time (one hook per request).",
+        )
+
+    selection_hash = _carousel_selection_hash(
+        drive_file_id=drive_file_id,
+        hooks=unique_hooks if hooks else [],
+        topics=[] if hooks else unique_hooks,
+        min_slides=min_slides,
+        max_slides=max_slides,
+        select_images=select_images,
+    )
+
+    if not body.force:
+        cached = await session.scalar(
+            select(CarouselGenerationSave)
+            .where(
+                CarouselGenerationSave.drive_file_id == drive_file_id,
+                CarouselGenerationSave.kind == SAVE_KIND_CAROUSEL,
+                or_(
+                    CarouselGenerationSave.input_hash == selection_hash,
+                    CarouselGenerationSave.theme_key == selection_hash,
+                ),
+                CarouselGenerationSave.status == "ready",
+            )
+            .order_by(CarouselGenerationSave.created_at.desc())
+        )
+        if cached is not None:
+            payload = dict(cached.payload or {})
+            if payload.get("carousels") or payload.get("slides"):
+                logger.info(
+                    "carousel generate cache hit drive=%s save_id=%s hash=%s",
+                    drive_file_id,
+                    cached.id,
+                    selection_hash[:12],
+                )
+                return {
+                    **payload,
+                    "save_id": cached.id,
+                    "cache_hit": True,
+                    "generated": False,
+                    "input_hash": selection_hash,
+                }
+
+    if not body.force and not body.generate:
+        logger.info(
+            "carousel generate cache miss (no generate) drive=%s hash=%s",
+            drive_file_id,
+            selection_hash[:12],
+        )
+        return {
+            "source": "cache_miss",
+            "title": "",
+            "slide_count": 0,
+            "hooks": [h.text for h in unique_hooks],
+            "topics": [t.text for t in topics],
+            "slides": [],
+            "carousels": [],
+            "carousel_count": 0,
+            "images_ready": False,
+            "cache_hit": False,
+            "generated": False,
+            "input_hash": selection_hash,
+            "message": "No cached carousel for this hook. Click Generate to build it.",
+            "warning": "No cached carousel for this hook. Click Generate to build it.",
+        }
+
+    drive_file, indexed_cues = await _load_video_cues(session, drive_file_id)
+    if not video_name or video_name == drive_file_id:
+        video_name = (drive_file.name if drive_file else "") or drive_file_id
+    english_cues = await _maybe_load_english_cues(drive_file, indexed_cues)
+    cue_corpus, used_english_track = _select_carousel_cue_corpus(indexed_cues, english_cues)
+    if len(cue_corpus) < 2:
+        raise HTTPException(
+            status_code=400,
+            detail="Not enough transcript cues to build carousels for this video",
+        )
 
     logger.info(
         "carousel generate drive=%s hooks=%d topics=%d min_slides=%d max_slides=%d select_images=%s cues=%d",
@@ -2362,6 +2851,9 @@ async def _carousel_pipeline_generate_impl(
         "frames_prewarmed": frames_prewarmed,
         "intent": (body.intent or "").strip() or None,
         "transcript_language": translate_meta,
+        "cache_hit": False,
+        "generated": True,
+        "input_hash": selection_hash,
         "layouts": {
             "single_1": {
                 "layout_mode": "single_1",
@@ -2379,6 +2871,7 @@ async def _carousel_pipeline_generate_impl(
             drive_file_id=drive_file_id,
             payload=result,
             source="generate",
+            selection_hash=selection_hash,
         )
         result["save_id"] = save.id if save else None
     except Exception as exc:  # noqa: BLE001

@@ -26,6 +26,7 @@ import {
   Search,
   Sparkles,
   Target,
+  Upload,
   Video,
   X,
 } from "lucide-react";
@@ -256,8 +257,15 @@ export default function CarouselSearchPage() {
   const [themeSaves, setThemeSaves] = useState<CarouselGenerationSaveListItem[]>([]);
   const [themeSaveId, setThemeSaveId] = useState<number | null>(null);
   const [themesFromCache, setThemesFromCache] = useState(false);
+  const [themesMissing, setThemesMissing] = useState(false);
+  const [extractFromCache, setExtractFromCache] = useState(false);
   const [themeHistoryOpen, setThemeHistoryOpen] = useState(false);
   const [loadingThemeSaves, setLoadingThemeSaves] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [uploadNote, setUploadNote] = useState<string | null>(null);
+  const [prerunBusy, setPrerunBusy] = useState(false);
+  const [prerunNote, setPrerunNote] = useState<string | null>(null);
+  const uploadInputRef = useRef<HTMLInputElement>(null);
   const themeHistoryRef = useRef<HTMLDivElement>(null);
   useDismissible(themeHistoryOpen, () => setThemeHistoryOpen(false), themeHistoryRef);
   /** Selection key that currently has loaded themes (null = need Continue). */
@@ -506,16 +514,19 @@ export default function CarouselSearchPage() {
       /** Stable selection key (without regen suffix) for Continue/cache state. */
       selectionKey: string;
       force?: boolean;
+      generate?: boolean;
       signal?: AbortSignal;
     }) => {
-      const { video, personName, entity, requestKey, selectionKey, force, signal } = opts;
+      const { video, personName, entity, requestKey, selectionKey, force, generate, signal } = opts;
       setLoadingThemes(true);
       setPersonNotFound(null);
+      setThemesMissing(false);
       try {
         const res = await apiClient.carouselPipelineThemes(video.id, {
           personName: personName || undefined,
           searchEntity: entity || undefined,
           force: Boolean(force),
+          generate: Boolean(generate),
           signal,
         });
         if (signal?.aborted || themesRequestKeyRef.current !== requestKey) return;
@@ -529,15 +540,19 @@ export default function CarouselSearchPage() {
           setThemes([]);
           setThemeSaveId(null);
           setThemesFromCache(false);
+          setThemesMissing(false);
           setThemesLoadedKey(null);
           setPhase(1);
           return;
         }
-        setThemes(res.themes ?? []);
+        const nextThemes = res.themes ?? [];
+        setThemes(nextThemes);
         setThemeSaveId(res.save_id ?? null);
         setThemesFromCache(Boolean(res.cache_hit));
+        setThemesMissing(!nextThemes.length && !res.cache_hit);
         setThemesLoadedKey(selectionKey);
-        if (res.warning) setError(res.warning);
+        if (res.warning && nextThemes.length === 0) setError(res.warning);
+        else if (res.warning) setError(res.warning);
         // Never clobber an in-progress extract / hooks step back to themes.
         setPhase((p) => (p >= 3 ? p : 2));
         void refreshThemeSaves(video.id);
@@ -548,6 +563,7 @@ export default function CarouselSearchPage() {
         setThemes([]);
         setThemeSaveId(null);
         setThemesFromCache(false);
+        setThemesMissing(false);
         setThemesLoadedKey(null);
       } finally {
         if (!signal?.aborted && themesRequestKeyRef.current === requestKey) {
@@ -589,6 +605,7 @@ export default function CarouselSearchPage() {
     setThemes([]);
     setThemeSaveId(null);
     setThemesFromCache(false);
+    setThemesMissing(false);
     setThemesLoadedKey(null);
     setThemeHistoryOpen(false);
     resetFromPhase2();
@@ -646,6 +663,7 @@ export default function CarouselSearchPage() {
     themesRequestKeyRef.current = requestKey;
     setThemeHistoryOpen(false);
     setError(null);
+    // Cache-only — never auto-call Gemini on Continue/Load.
     await loadThemesForVideo({
       video,
       personName,
@@ -653,6 +671,35 @@ export default function CarouselSearchPage() {
       requestKey,
       selectionKey: requestKey,
       force: false,
+      generate: false,
+      signal: ac.signal,
+    });
+  }
+
+  async function generateThemes() {
+    if (!selectedVideo || loadingThemes) return;
+    const video = selectedVideo;
+    const personName = personPick.trim();
+    const fromObject = objectQuery.trim();
+    const entity =
+      personName && fromObject
+        ? `${personName} / ${fromObject}`
+        : personName || fromObject || "";
+    const requestKey = `${video.id}|${personName}|${entity}|gen`;
+    themesAbortRef.current?.abort();
+    const ac = new AbortController();
+    themesAbortRef.current = ac;
+    themesRequestKeyRef.current = requestKey;
+    setThemeHistoryOpen(false);
+    setError(null);
+    await loadThemesForVideo({
+      video,
+      personName,
+      entity,
+      requestKey,
+      selectionKey: `${video.id}|${personName}|${entity}`,
+      force: false,
+      generate: true,
       signal: ac.signal,
     });
   }
@@ -685,6 +732,7 @@ export default function CarouselSearchPage() {
       requestKey,
       selectionKey,
       force: true,
+      generate: false,
       signal: ac.signal,
     });
   }
@@ -701,6 +749,7 @@ export default function CarouselSearchPage() {
       setThemes(themesPayload);
       setThemeSaveId(res.id);
       setThemesFromCache(true);
+      setThemesMissing(false);
       setThemesLoadedKey(themesSelectionKey || null);
       setSelectedThemes([]);
       setExtract(null);
@@ -718,6 +767,55 @@ export default function CarouselSearchPage() {
     setSelectedVideo(video);
   }
 
+  async function uploadVideos(files: FileList | File[]) {
+    const list = Array.from(files).filter((f) => f.type.startsWith("video/") || /\.(mp4|webm|mov|mkv|avi)$/i.test(f.name));
+    if (!list.length) {
+      setError("Pick a video file (mp4, webm, mov, mkv, avi).");
+      return;
+    }
+    setUploading(true);
+    setUploadNote(null);
+    setError(null);
+    try {
+      const notes: string[] = [];
+      for (const file of list) {
+        const res = await apiClient.carouselUploadVideo(file);
+        notes.push(`${res.name}: ${res.message}`);
+      }
+      setUploadNote(notes.join(" · "));
+      await loadRecentVideos();
+    } catch (e) {
+      setError(formatApiError(e, "Upload failed"));
+    } finally {
+      setUploading(false);
+      if (uploadInputRef.current) uploadInputRef.current.value = "";
+    }
+  }
+
+  async function runPrerun(opts?: { force?: boolean }) {
+    if (prerunBusy) return;
+    setPrerunBusy(true);
+    setPrerunNote(null);
+    setError(null);
+    try {
+      const ids = selectedVideo ? [selectedVideo.id] : [];
+      const res = await apiClient.carouselPipelinePrerun({
+        drive_file_ids: ids,
+        force: Boolean(opts?.force),
+      });
+      const hits = res.items.filter((i) => i.themes_cache_hit || i.extract_cache_hit).length;
+      const gens = res.items.filter((i) => i.themes_generated || i.extract_generated).length;
+      setPrerunNote(
+        `Pre-run finished: ${res.ok_count}/${res.count} ok · cache hits ${hits} · generated ${gens}`
+      );
+      if (selectedVideo) void refreshThemeSaves(selectedVideo.id);
+    } catch (e) {
+      setError(formatApiError(e, "Pre-run failed"));
+    } finally {
+      setPrerunBusy(false);
+    }
+  }
+
   const continueDisabledReason = !selectedVideo
     ? "Select a captioned video first"
     : loadingThemes
@@ -727,6 +825,7 @@ export default function CarouselSearchPage() {
   function onToggleTheme(theme: CarouselPipelineTheme) {
     setSelectedThemes((prev) => toggleTheme(prev, theme));
     setExtract(null);
+    setExtractFromCache(false);
     setSelectedHooks([]);
     setSelectedTopics([]);
     setPhaseIntent(null);
@@ -739,12 +838,15 @@ export default function CarouselSearchPage() {
     if (phase > 2) setPhase(2);
   }
 
-  async function extractFromSelectedThemes() {
+  async function extractFromSelectedThemes(opts?: { force?: boolean; generate?: boolean }) {
     if (!selectedVideo || loadingExtract) return;
     if (!selectedThemes.length) {
       setError("Select at least one theme.");
       return;
     }
+    const force = Boolean(opts?.force);
+    // Explicit Extract/Generate button → generate on miss; Continue-style load uses generate=false.
+    const generate = opts?.generate !== undefined ? Boolean(opts.generate) : true;
     setLoadingExtract(true);
     setError(null);
     setOutline(null);
@@ -755,6 +857,8 @@ export default function CarouselSearchPage() {
       const res = await apiClient.carouselPipelineExtract({
         drive_file_id: selectedVideo.id,
         search_entity: searchEntity || undefined,
+        force,
+        generate,
         themes: ordered.map((t) => ({
           theme_id: t.theme_id,
           title: t.title,
@@ -763,7 +867,22 @@ export default function CarouselSearchPage() {
           summary: t.summary,
         })),
       });
+      const hasTree =
+        (res.hooks?.length ?? 0) > 0 ||
+        (res.topics?.length ?? 0) > 0 ||
+        (res.topic_tree?.length ?? 0) > 0;
+      if (!hasTree && !res.cache_hit) {
+        setExtract(null);
+        setExtractFromCache(false);
+        setError(
+          res.message ||
+            res.warning ||
+            "No cached hooks/topics for these themes. Click Extract to generate."
+        );
+        return;
+      }
       setExtract(res);
+      setExtractFromCache(Boolean(res.cache_hit));
       setSelectedHooks([]);
       setSelectedTopics([]);
       setPhaseIntent(res.intent ?? null);
@@ -776,6 +895,7 @@ export default function CarouselSearchPage() {
     } catch (e) {
       setError(formatApiError(e, "Hook & topic extract failed"));
       setExtract(null);
+      setExtractFromCache(false);
     } finally {
       setLoadingExtract(false);
     }
@@ -808,7 +928,7 @@ export default function CarouselSearchPage() {
     }
   }
 
-  async function generateCarousel() {
+  async function generateCarousel(opts?: { force?: boolean }) {
     if (!selectedVideo || !selectedThemes.length || !extract || building) return;
     setBuilding(true);
     setOutlineError(null);
@@ -817,67 +937,118 @@ export default function CarouselSearchPage() {
       const hookPicks = selectedHooks.map((text) => toHookTimedPick(text, extract));
       // Explicit topics + parents implied by selected hooks → one carousel each.
       const topicPicks = expandTopicSeeds(selectedTopics, selectedHooks, extract);
-      if (!topicPicks.length && !hookPicks.length) {
+      // Product model: one hook (or topic-as-goal) per request.
+      const goals: CarouselTimedPick[] = hookPicks.length
+        ? hookPicks
+        : topicPicks.length
+          ? topicPicks
+          : [];
+      if (!goals.length) {
         setOutlineError("Select at least one topic or hook.");
         return;
       }
 
-      // Transcript-first: never call Gemini frame selection here.
-      const res = await apiClient.carouselPipelineGenerate({
-        drive_file_id: selectedVideo.id,
-        video_name: selectedVideo.name,
-        intent: phaseIntent || extract.intent || undefined,
-        themes: selectedThemes.map((t) => ({
-          theme_id: t.theme_id,
-          title: t.title,
-          start_sec: t.start_sec,
-          end_sec: t.end_sec,
-          summary: t.summary,
-        })),
-        hooks: hookPicks,
-        topics: topicPicks.length
-          ? topicPicks
-          : hookPicks.map((h) => ({
-              id: h.id,
-              text: h.text,
-              start_sec: h.start_sec,
-              end_sec: h.end_sec,
-              theme_id: h.theme_id,
-            })),
-        min_slides: 6,
-        max_slides: 10,
-        select_images: false,
-      });
+      const force = Boolean(opts?.force);
+      const merged: CarouselGeneratedItem[] = [];
+      let lastRes: CarouselOutlineResponse | null = null;
+      let layoutsAcc: CarouselLayouts | null = null;
+      let anyImages = false;
+      let cacheHits = 0;
+      let generated = 0;
 
-      const list =
-        res.carousels && res.carousels.length
-          ? res.carousels
-          : res.slides?.length
-            ? [
+      for (let i = 0; i < goals.length; i++) {
+        const goal = goals[i];
+        const isHook = hookPicks.some((h) => h.text === goal.text);
+        const res = await apiClient.carouselPipelineGenerate({
+          drive_file_id: selectedVideo.id,
+          video_name: selectedVideo.name,
+          intent: phaseIntent || extract.intent || undefined,
+          themes: selectedThemes.map((t) => ({
+            theme_id: t.theme_id,
+            title: t.title,
+            start_sec: t.start_sec,
+            end_sec: t.end_sec,
+            summary: t.summary,
+          })),
+          hooks: isHook ? [goal] : [],
+          topics: isHook
+            ? []
+            : [
                 {
-                  id: "carousel_1",
-                  kind: "hook" as const,
-                  title: res.title,
-                  topic_labels: res.topics ?? selectedTopics,
-                  slide_count: res.slide_count,
-                  slides: res.slides,
-                  hooks: res.hooks,
-                  topics: res.topics,
-                  images_ready: false,
+                  id: goal.id,
+                  text: goal.text,
+                  start_sec: goal.start_sec,
+                  end_sec: goal.end_sec,
+                  theme_id: goal.theme_id,
                 },
-              ]
-            : [];
-      if (!list.length) {
-        setOutlineError("Generate returned no carousels. Try fewer hooks or another theme.");
+              ],
+          min_slides: 6,
+          max_slides: 10,
+          select_images: false,
+          generate: !force,
+          force,
+        });
+        if (res.cache_hit) cacheHits += 1;
+        if (res.generated) generated += 1;
+        const list =
+          res.carousels && res.carousels.length
+            ? res.carousels
+            : res.slides?.length
+              ? [
+                  {
+                    id: `hook_${i + 1}`,
+                    kind: "hook" as const,
+                    title: res.title,
+                    topic_labels: res.topics ?? selectedTopics,
+                    slide_count: res.slide_count,
+                    slides: res.slides,
+                    hooks: res.hooks,
+                    topics: res.topics,
+                    images_ready: false,
+                  },
+                ]
+              : [];
+        for (const c of list) {
+          merged.push({ ...c, id: c.id || `hook_${merged.length + 1}` });
+        }
+        if (res.layouts) layoutsAcc = res.layouts;
+        anyImages = anyImages || Boolean(res.images_ready);
+        lastRes = res;
+      }
+
+      if (!merged.length) {
+        setOutlineError(
+          lastRes?.message ||
+            "Generate returned no carousels. Try fewer hooks or another theme."
+        );
         return;
       }
-      const withPicks = applyHookFrameOverrides(list, hookFrames);
+      // Re-id sequentially for stable tabs after per-hook merge.
+      const normalized = merged.map((c, idx) => ({ ...c, id: `hook_${idx + 1}` }));
+      const withPicks = applyHookFrameOverrides(normalized, hookFrames);
       setGeneratedCarousels(withPicks);
       setActiveCarouselId(withPicks[0]?.id ?? null);
-      setImagesReady(Boolean(res.images_ready));
-      setCarouselLayouts(res.layouts ?? null);
-      setOutline(res);
+      setImagesReady(anyImages);
+      setCarouselLayouts(layoutsAcc);
+      setOutline(
+        lastRes
+          ? {
+              ...lastRes,
+              carousels: withPicks,
+              carousel_count: withPicks.length,
+              slides: withPicks[0]?.slides ?? [],
+              title: withPicks[0]?.title ?? lastRes.title,
+            }
+          : null
+      );
       setOutlineError(null);
+      if (cacheHits && !generated) {
+        setImageQualityNote(`Served from cache (${cacheHits} hook${cacheHits === 1 ? "" : "s"}).`);
+      } else if (cacheHits || generated) {
+        setImageQualityNote(
+          `Per-hook jobs: ${cacheHits} cache hit${cacheHits === 1 ? "" : "s"}, ${generated} generated.`
+        );
+      }
       setPhase(5);
       requestAnimationFrame(() => {
         outlineRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -977,9 +1148,54 @@ export default function CarouselSearchPage() {
           Choose a video
         </h2>
         <p className="mt-2 text-sm text-slate-500">
-          Use a video that already has captions. Narrow by person or topic if you want —
-          themes still come from the full talk.
+          Use a video that already has captions. Upload a new file to index, or pre-run
+          themes/hooks so studio clicks stay cache-first.
         </p>
+
+        <div className="mt-4 flex flex-wrap items-center gap-2">
+          <input
+            ref={uploadInputRef}
+            type="file"
+            accept="video/mp4,video/webm,video/quicktime,video/x-matroska,.mp4,.webm,.mov,.mkv,.avi"
+            className="hidden"
+            multiple
+            onChange={(e) => {
+              if (e.target.files?.length) void uploadVideos(e.target.files);
+            }}
+          />
+          <button
+            type="button"
+            className="studio-btn studio-btn-ghost"
+            disabled={uploading}
+            onClick={() => uploadInputRef.current?.click()}
+            data-testid="carousel-upload-videos"
+            title="Upload videos to index"
+          >
+            <Upload size={14} />
+            {uploading ? <LoadingLabel>Uploading…</LoadingLabel> : "Upload files"}
+          </button>
+          <button
+            type="button"
+            className="studio-btn studio-btn-ghost"
+            disabled={prerunBusy || (!selectedVideo && recent.length === 0)}
+            onClick={() => void runPrerun({ force: false })}
+            data-testid="carousel-prerun"
+            title="Warm theme + extract caches for selected or recent videos"
+          >
+            <Sparkles size={14} />
+            {prerunBusy ? <LoadingLabel>Pre-running…</LoadingLabel> : "Pre-run caches"}
+          </button>
+          {uploadNote && (
+            <p className="w-full text-xs text-muted-foreground" role="status">
+              {uploadNote}
+            </p>
+          )}
+          {prerunNote && (
+            <p className="w-full text-xs text-muted-foreground" role="status">
+              {prerunNote}
+            </p>
+          )}
+        </div>
 
         <div className="mt-5 grid gap-4 sm:grid-cols-2">
           <div className="studio-field">
@@ -1128,7 +1344,8 @@ export default function CarouselSearchPage() {
                 className="studio-btn studio-btn-primary studio-btn-continue"
                 onClick={(e) => {
                   e.preventDefault();
-                  void continueToThemes();
+                  if (themeSaves.length > 0) void continueToThemes();
+                  else void generateThemes();
                 }}
                 disabled={
                   Boolean(continueDisabledReason) ||
@@ -1138,7 +1355,12 @@ export default function CarouselSearchPage() {
                   pipelineLocked
                 }
                 data-testid="carousel-continue-from-video"
-                title={continueDisabledReason || "Load themes for this video"}
+                title={
+                  continueDisabledReason ||
+                  (themeSaves.length > 0
+                    ? "Load cached themes"
+                    : "Generate themes for this video")
+                }
               >
                 {loadingThemes ? (
                   <LoadingLabel>Loading themes…</LoadingLabel>
@@ -1149,7 +1371,7 @@ export default function CarouselSearchPage() {
                   </>
                 ) : (
                   <>
-                    Continue
+                    Generate themes
                     <ArrowRight size={14} className="studio-btn-continue-arrow" />
                   </>
                 )}
@@ -1273,10 +1495,9 @@ export default function CarouselSearchPage() {
                 {loadingThemes || loadingThemeSaves
                   ? "Loading saved themes…"
                   : themeSaves.length > 0
-                    ? "Saved themes are available — load them to select and Extract."
-                    : "Continue generates themes once for this video (then they’re cached)."}
+                    ? "Saved themes are available — load them (cache only, no Gemini)."
+                    : "No cached themes yet — generate once; later clicks stay cache-first."}
               </p>
-              {/* First-time: Continue. Cached: Load (never a second Continue after themes exist). */}
               {!loadingThemeSaves && (
                 <button
                   type="button"
@@ -1287,7 +1508,8 @@ export default function CarouselSearchPage() {
                   }
                   onClick={(e) => {
                     e.preventDefault();
-                    void continueToThemes();
+                    if (themeSaves.length > 0) void continueToThemes();
+                    else void generateThemes();
                   }}
                   disabled={
                     Boolean(continueDisabledReason) ||
@@ -1314,7 +1536,7 @@ export default function CarouselSearchPage() {
                     </>
                   ) : (
                     <>
-                      Continue
+                      Generate themes
                       <ArrowRight size={14} className="studio-btn-continue-arrow" />
                     </>
                   )}
@@ -1322,7 +1544,25 @@ export default function CarouselSearchPage() {
               )}
             </div>
           ) : themes.length === 0 ? (
-            <p className="mt-4 text-sm text-muted-foreground">No themes found for this video yet. Try regenerating themes.</p>
+            <div className="mt-4 space-y-3">
+              <p className="text-sm text-muted-foreground">
+                {themesMissing
+                  ? "No cached themes for this transcript. Generate themes explicitly — Continue never calls Gemini."
+                  : "No themes found for this video yet."}
+              </p>
+              <button
+                type="button"
+                className="studio-btn studio-btn-primary"
+                onClick={(e) => {
+                  e.preventDefault();
+                  void generateThemes();
+                }}
+                disabled={loadingThemes || pipelineLocked}
+                data-testid="carousel-generate-themes"
+              >
+                {loadingThemes ? <LoadingLabel>Generating…</LoadingLabel> : "Generate themes"}
+              </button>
+            </div>
           ) : (
             <ul className="mt-4 space-y-2">
               {themes.map((t) => {
@@ -1375,7 +1615,7 @@ export default function CarouselSearchPage() {
                 className="studio-btn studio-btn-primary"
                 onClick={(e) => {
                   e.preventDefault();
-                  void extractFromSelectedThemes();
+                  void extractFromSelectedThemes({ generate: true });
                 }}
                 disabled={
                   loadingExtract ||
@@ -1390,7 +1630,7 @@ export default function CarouselSearchPage() {
                     ? "Select at least one theme"
                     : loadingExtract
                       ? "Extracting…"
-                      : "Extract hooks & topics from selected themes"
+                      : "Extract hooks & topics (cache-first; generates only on miss)"
                 }
                 data-testid="carousel-extract-themes"
               >
@@ -1404,9 +1644,29 @@ export default function CarouselSearchPage() {
                   "Select themes, then Extract"
                 )}
               </button>
+              <button
+                type="button"
+                className="studio-btn studio-btn-ghost"
+                onClick={(e) => {
+                  e.preventDefault();
+                  void extractFromSelectedThemes({ force: true, generate: false });
+                }}
+                disabled={
+                  loadingExtract ||
+                  loadingThemes ||
+                  building ||
+                  pipelineLocked ||
+                  selectedThemes.length === 0
+                }
+                title="Force regenerate hooks & topics"
+              >
+                <RefreshCw size={14} className={cn(loadingExtract && "animate-spin")} />
+                Regenerate extract
+              </button>
               {selectedThemes.length > 0 ? (
                 <p className="text-xs text-muted-foreground">
                   {selectedThemes.length} theme{selectedThemes.length === 1 ? "" : "s"} selected
+                  {extractFromCache ? " · extract cache hit" : ""}
                 </p>
               ) : (
                 <p className="text-xs text-muted-foreground">
@@ -1587,7 +1847,7 @@ export default function CarouselSearchPage() {
               className="studio-btn studio-btn-primary"
               onClick={(e) => {
                 e.preventDefault();
-                void generateCarousel();
+                void generateCarousel({ force: false });
               }}
               disabled={
                 building ||
@@ -1601,15 +1861,34 @@ export default function CarouselSearchPage() {
                   ? "Building carousels…"
                   : !selectedHooks.length && !selectedTopics.length
                     ? "Select at least one hook or topic"
-                    : undefined
+                    : "One hook per job — cache-first, generates only on miss"
               }
               data-testid="carousel-generate"
             >
               {building ? (
-                <LoadingLabel>Building carousels… (can take a few minutes)</LoadingLabel>
+                <LoadingLabel>Building carousels… (one hook at a time)</LoadingLabel>
               ) : (
                 "Generate carousels"
               )}
+            </button>
+            <button
+              type="button"
+              className="studio-btn studio-btn-ghost"
+              onClick={(e) => {
+                e.preventDefault();
+                void generateCarousel({ force: true });
+              }}
+              disabled={
+                building ||
+                selectingImages ||
+                loadingExtract ||
+                pipelineLocked ||
+                (!selectedHooks.length && !selectedTopics.length)
+              }
+              title="Force regenerate all selected hooks (bypass cache)"
+            >
+              <RefreshCw size={14} className={cn(building && "animate-spin")} />
+              Regenerate carousels
             </button>
             {outlineError && phase < 5 && (
               <p className="text-xs font-medium text-destructive" role="alert">
