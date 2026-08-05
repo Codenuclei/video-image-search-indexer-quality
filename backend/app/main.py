@@ -14,6 +14,11 @@ from app.db.schema import ensure_schema, recover_aborted_transaction_errors, rec
 from app.pipelines.decode_recovery import (
     quarantine_stuck_decode_errors,
 )
+from app.db.advisory_locks import (
+    is_background_leader,
+    release_background_leader,
+    try_become_background_leader,
+)
 from app.db.session import dispose_engine, get_engine, get_session_factory
 from app.dependencies import get_indexing_worker
 from app.fennec.client import get_fennec_client
@@ -80,12 +85,44 @@ async def lifespan(app: FastAPI):
     async def _deferred_boot() -> None:
         global _boot_error
         try:
-            logger.info("Startup: ensuring DB schema…")
-            await ensure_schema(get_engine())
-            logger.info("Startup: loading runtime settings…")
-            await load_runtime_settings_from_db(get_session_factory())
+            # Railway proxy / asyncpg can drop mid-DDL; retry with a fresh pool.
+            last_exc: Exception | None = None
+            for attempt in range(1, 6):
+                try:
+                    logger.info("Startup: ensuring DB schema… (attempt %d/5)", attempt)
+                    await ensure_schema(get_engine())
+                    logger.info("Startup: loading runtime settings…")
+                    await load_runtime_settings_from_db(get_session_factory())
+                    last_exc = None
+                    break
+                except Exception as exc:  # noqa: BLE001
+                    last_exc = exc
+                    logger.warning(
+                        "Startup DB attempt %d/5 failed: %s",
+                        attempt,
+                        str(exc)[:200],
+                    )
+                    try:
+                        await get_engine().dispose()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    await asyncio.sleep(min(30, 2 * attempt))
+            if last_exc is not None:
+                raise last_exc
             _boot_ready.set()
             logger.info("Startup: DB ready (schema + settings)")
+
+            # With Gunicorn multi-worker, only one process may run indexer /
+            # push-channel / recovery loops. Others stay API-only.
+            leader = await try_become_background_leader()
+            if not leader:
+                logger.info(
+                    "Startup: API-only worker (background leader elected elsewhere)"
+                )
+                logger.info("Startup: deferred boot complete (api-only)")
+                return
+
+            logger.info("Startup: this worker is the background leader")
 
             await recover_stuck_processing_files(get_session_factory())
             await recover_aborted_transaction_errors(get_session_factory())
@@ -127,9 +164,11 @@ async def lifespan(app: FastAPI):
                     await asyncio.sleep(1)
                 if not cache.is_warm():
                     try:
+                        # Seed memory on the leader; sync_db so other workers
+                        # can serve /api/cache/files from Postgres.
                         result = await refresh_drive_file_list_cache(
                             source="startup",
-                            sync_db=False,
+                            sync_db=True,
                             process_pending=False,
                         )
                         logger.info("Startup Drive file-list cache seed: %s", result)
@@ -150,7 +189,7 @@ async def lifespan(app: FastAPI):
                     logger.exception("Startup Drive push registration failed")
 
             asyncio.create_task(_seed_drive_cache_and_push())
-            logger.info("Startup: deferred boot complete")
+            logger.info("Startup: deferred boot complete (leader)")
         except Exception as exc:  # noqa: BLE001
             _boot_error = str(exc)[:240]
             logger.exception("Deferred startup recovery failed")
@@ -163,6 +202,9 @@ async def lifespan(app: FastAPI):
         await _boot_ready.wait()
         if _boot_error:
             logger.error("Skipping background workers — boot failed: %s", _boot_error)
+            return
+        if not is_background_leader():
+            logger.info("Skipping background loops — not leader")
             return
         auto_task = asyncio.create_task(auto_index_loop(worker, stop_event))
         maintenance_task = asyncio.create_task(startup_maintenance(worker))
@@ -184,6 +226,7 @@ async def lifespan(app: FastAPI):
             await task
         except asyncio.CancelledError:
             pass
+    await release_background_leader()
     await dispose_engine()
 
 

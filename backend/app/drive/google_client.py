@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 import httpx
 from sqlalchemy import select
 
+from app.config import get_settings
 from app.drive.schemas import ConnectorFile, ConnectorFolder, ConnectorFolderListing
 from app.drive.traverse import FOLDER_MIME, SHORTCUT_MIME, plan_child_traversal
 from app.runtime_settings import get_runtime_settings
@@ -164,71 +165,85 @@ class DriveDirectClient:
         truncated = False
         file_count = 0
         visited_folders: set[str] = set()
+        list_parallel = max(1, get_settings().drive_list_max_concurrent)
 
         queue: list[tuple[str, list[str]]] = [(root_folder_id, [])]
 
         async with httpx.AsyncClient(timeout=60) as client:
             while queue:
-                folder_id, path_parts = queue.pop(0)
-                if folder_id in visited_folders:
+                # Drain a wave of folders (bounded concurrency) for faster tree walks.
+                batch: list[tuple[str, list[str]]] = []
+                while queue and len(batch) < list_parallel:
+                    folder_id, path_parts = queue.pop(0)
+                    if folder_id in visited_folders:
+                        continue
+                    visited_folders.add(folder_id)
+                    batch.append((folder_id, path_parts))
+                if not batch:
                     continue
-                visited_folders.add(folder_id)
 
                 # Yield so /health and carousel list APIs stay responsive during
                 # multi-thousand-folder walks on the single uvicorn worker.
-                if len(visited_folders) % 8 == 0:
+                if len(visited_folders) % (8 * list_parallel) == 0:
                     await asyncio.sleep(0)
 
-                children = await _list_children(client, folder_id, access_token)
+                from app.drive.rate_limit import drive_list_slot
 
-                for child in children:
-                    plan = plan_child_traversal(child, follow_shortcuts=follow_shortcuts)
-                    child_path = "/".join([*path_parts, plan.path_segment]) if plan.path_segment else ""
-                    child_mime = child.get("mimeType") or ""
-                    is_folder = child_mime == FOLDER_MIME or (
-                        child_mime == SHORTCUT_MIME
-                        and (child.get("shortcutDetails") or {}).get("targetMimeType") == FOLDER_MIME
-                    )
+                async def _fetch(fid: str) -> list[dict]:
+                    async with drive_list_slot():
+                        return await _list_children(client, fid, access_token)
 
-                    if plan.include_in_listing:
-                        if not is_folder and file_count >= MAX_ENTRIES:
-                            truncated = True
-                        else:
-                            results.append(
-                                ConnectorFile.model_validate(
-                                    {
-                                        "id": child["id"],
-                                        "name": child["name"],
-                                        "mimeType": FOLDER_MIME if is_folder else child["mimeType"],
-                                        "isFolder": is_folder,
-                                        "size": child.get("size"),
-                                        "modifiedTime": child.get("modifiedTime"),
-                                        "parentId": folder_id,
-                                        "path": child_path,
-                                        "md5Checksum": child.get("md5Checksum"),
-                                        "sha1Checksum": child.get("sha1Checksum"),
-                                    }
-                                )
-                            )
-                            if not is_folder:
-                                file_count += 1
+                children_lists = await asyncio.gather(*[_fetch(fid) for fid, _ in batch])
 
-                    # Always walk the tree so folder markers and remaining files are discovered.
-                    if plan.traverse_folder_id and plan.traverse_folder_id not in visited_folders:
-                        queue.append((plan.traverse_folder_id, [*path_parts, plan.path_segment]))
-                    elif (
-                        plan.traverse_folder_id
-                        and plan.traverse_folder_id in visited_folders
-                        and is_folder
-                        and plan.path_segment
-                    ):
-                        logger.info(
-                            "Drive shortcut %r → already-visited folder %s (path=/%s); "
-                            "files stay under the first path",
-                            child.get("name"),
-                            plan.traverse_folder_id,
-                            child_path,
+                for (folder_id, path_parts), children in zip(batch, children_lists):
+                    for child in children:
+                        plan = plan_child_traversal(child, follow_shortcuts=follow_shortcuts)
+                        child_path = "/".join([*path_parts, plan.path_segment]) if plan.path_segment else ""
+                        child_mime = child.get("mimeType") or ""
+                        is_folder = child_mime == FOLDER_MIME or (
+                            child_mime == SHORTCUT_MIME
+                            and (child.get("shortcutDetails") or {}).get("targetMimeType") == FOLDER_MIME
                         )
+
+                        if plan.include_in_listing:
+                            if not is_folder and file_count >= MAX_ENTRIES:
+                                truncated = True
+                            else:
+                                results.append(
+                                    ConnectorFile.model_validate(
+                                        {
+                                            "id": child["id"],
+                                            "name": child["name"],
+                                            "mimeType": FOLDER_MIME if is_folder else child["mimeType"],
+                                            "isFolder": is_folder,
+                                            "size": child.get("size"),
+                                            "modifiedTime": child.get("modifiedTime"),
+                                            "parentId": folder_id,
+                                            "path": child_path,
+                                            "md5Checksum": child.get("md5Checksum"),
+                                            "sha1Checksum": child.get("sha1Checksum"),
+                                        }
+                                    )
+                                )
+                                if not is_folder:
+                                    file_count += 1
+
+                        # Always walk the tree so folder markers and remaining files are discovered.
+                        if plan.traverse_folder_id and plan.traverse_folder_id not in visited_folders:
+                            queue.append((plan.traverse_folder_id, [*path_parts, plan.path_segment]))
+                        elif (
+                            plan.traverse_folder_id
+                            and plan.traverse_folder_id in visited_folders
+                            and is_folder
+                            and plan.path_segment
+                        ):
+                            logger.info(
+                                "Drive shortcut %r → already-visited folder %s (path=/%s); "
+                                "files stay under the first path",
+                                child.get("name"),
+                                plan.traverse_folder_id,
+                                child_path,
+                            )
 
         if truncated:
             logger.warning(
