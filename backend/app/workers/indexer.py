@@ -1482,3 +1482,10 @@ class IndexingWorker:
             return summary
         finally:
             self._running = False
+            # Kick caption/embed backfill as soon as the cycle flag clears.
+            try:
+                from app.workers.maintenance import schedule_maintenance_tick
+
+                schedule_maintenance_tick(self)
+            except Exception:  # noqa: BLE001
+                logger.exception("Post-cycle maintenance schedule failed")

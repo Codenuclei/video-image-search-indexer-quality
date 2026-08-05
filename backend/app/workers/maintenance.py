@@ -324,10 +324,12 @@ async def run_embedding_backfill(worker: IndexingWorker, *, max_items: int | Non
 
 
 async def maintenance_tick(worker: IndexingWorker) -> None:
-    """Advance caption/embed backfill in bounded parallel chunks each auto-index tick."""
-    if worker.is_running:
-        return
+    """Advance caption/embed backfill in bounded parallel chunks.
 
+    Runs even while Start Index / ``worker.is_running`` is true so captions are
+    not starved for the whole indexing cycle. Captions are never generated
+    inline in ``process_image_file`` — this path is the only producer.
+    """
     settings = get_settings()
     batches_per_tick = max(1, settings.maintenance_batches_per_tick)
 
@@ -345,6 +347,22 @@ async def maintenance_tick(worker: IndexingWorker) -> None:
         )
         logger.info("Maintenance: %d image(s) need embeddings — starting backfill", missing_embed)
         await run_embedding_backfill(worker, max_items=embed_limit)
+
+
+def schedule_maintenance_tick(worker: IndexingWorker) -> None:
+    """Fire-and-forget maintenance so indexing ticks are not blocked by VLM batches."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    loop.create_task(_safe_maintenance_tick(worker), name="maintenance-tick")
+
+
+async def _safe_maintenance_tick(worker: IndexingWorker) -> None:
+    try:
+        await maintenance_tick(worker)
+    except Exception:  # noqa: BLE001
+        logger.exception("Scheduled maintenance tick failed")
 
 
 async def startup_maintenance(worker: IndexingWorker) -> None:

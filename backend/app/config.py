@@ -50,6 +50,8 @@ class Settings(BaseSettings):
     cpu_thread_pool_size: int = 0          # 0 = os.cpu_count()
     # Concurrent image jobs (face detect + embed + Drive download). Matched to
     # drive_download_max_concurrent so index slots don't outrun the Drive throttle.
+    # Folders Active / in-flight ≈ this value (status=processing), not embed RPS.
+    # Keep ≤16 until OpenBLAS × multi-worker crash fix is proven; do not chase 50 slots.
     image_index_max_parallel: int = 16
     # Shared Drive download concurrency (indexer + maintenance + preview).
     # Google user-rate limits typically tolerate ~10–20 parallel media GETs.
@@ -209,7 +211,7 @@ class Settings(BaseSettings):
     backup_retention_days: int = 14
     backup_interval_seconds: int = 86400
     # Async SQLAlchemy pool — must fit under Postgres max_connections (200).
-    # With WEB_CONCURRENCY=24: 24 × (2+2) = 96 < 200 with headroom for admin/pg_dump.
+    # With WEB_CONCURRENCY=8: 8 × (2+2) = 32 < 200 with headroom for admin/pg_dump.
     db_pool_size: int = 2
     db_max_overflow: int = 2
     db_pool_timeout: float = 15.0
