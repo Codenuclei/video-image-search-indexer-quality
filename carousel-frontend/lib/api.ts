@@ -158,6 +158,9 @@ export type CarouselOutlineResponse = {
   slides: CarouselOutlineSlide[];
   cues?: CarouselCueItem[];
   warning?: string;
+  message?: string;
+  cache_hit?: boolean;
+  generated?: boolean;
   carousels?: CarouselGeneratedItem[];
   carousel_count?: number;
   images_ready?: boolean;
@@ -213,6 +216,10 @@ export type CarouselGenerateRequest = {
   min_slides?: number;
   max_slides?: number;
   select_images?: boolean;
+  /** Explicit generate on cache miss. Continue/Load leave this false. */
+  generate?: boolean;
+  /** Explicit regenerate — bypasses cache. */
+  force?: boolean;
 };
 
 export type CarouselCueItem = {
@@ -325,6 +332,10 @@ export type CarouselPipelineExtractResponse = {
   topics_english?: boolean;
   any_translated?: boolean;
   english_source?: string | null;
+  cache_hit?: boolean;
+  generated?: boolean;
+  message?: string;
+  warning?: string;
   transcript_meta?: {
     cue_count_total?: number;
     theme_count?: number;
@@ -476,6 +487,7 @@ export const apiClient = {
       searchEntity?: string;
       personName?: string;
       force?: boolean;
+      generate?: boolean;
       signal?: AbortSignal;
     }
   ) =>
@@ -486,9 +498,10 @@ export const apiClient = {
         search_entity: opts?.searchEntity ?? "",
         person_name: opts?.personName ?? "",
         force: Boolean(opts?.force),
+        generate: Boolean(opts?.generate),
       }),
       signal: opts?.signal,
-      timeoutMs: opts?.force ? 300_000 : 90_000,
+      timeoutMs: opts?.force || opts?.generate ? 300_000 : 90_000,
     }),
   carouselPipelineExtract: (body: {
     drive_file_id: string;
@@ -505,11 +518,13 @@ export const apiClient = {
       end_sec?: number | null;
       summary?: string;
     }[];
+    force?: boolean;
+    generate?: boolean;
   }) =>
     api<CarouselPipelineExtractResponse>("/search/carousel/pipeline/extract", {
       method: "POST",
       body: JSON.stringify(body),
-      timeoutMs: 900_000,
+      timeoutMs: body.force || body.generate ? 900_000 : 90_000,
     }),
   carouselPipelineIntent: (body: {
     theme_title?: string;
@@ -529,11 +544,69 @@ export const apiClient = {
       }
     ),
   carouselPipelineGenerate: (body: CarouselGenerateRequest) =>
-    api<CarouselOutlineResponse>("/search/carousel/pipeline/generate", {
+    api<CarouselOutlineResponse & { cache_hit?: boolean; generated?: boolean; message?: string }>(
+      "/search/carousel/pipeline/generate",
+      {
+        method: "POST",
+        body: JSON.stringify({ ...body, select_images: Boolean(body.select_images) }),
+        timeoutMs: body.force || body.generate ? 900_000 : 90_000,
+      }
+    ),
+  carouselPipelinePrerun: (body?: { drive_file_ids?: string[]; force?: boolean }) =>
+    api<{
+      count: number;
+      ok_count: number;
+      force: boolean;
+      items: {
+        drive_file_id: string;
+        ok: boolean;
+        themes_cache_hit?: boolean;
+        themes_generated?: boolean;
+        theme_count?: number;
+        extract_cache_hit?: boolean;
+        extract_generated?: boolean;
+        hook_count?: number;
+        topic_count?: number;
+        error?: string;
+      }[];
+    }>("/search/carousel/pipeline/prerun", {
       method: "POST",
-      body: JSON.stringify({ ...body, select_images: Boolean(body.select_images) }),
+      body: JSON.stringify({
+        drive_file_ids: body?.drive_file_ids ?? [],
+        force: Boolean(body?.force),
+      }),
       timeoutMs: 900_000,
     }),
+  carouselUploadVideo: async (file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 900_000);
+    try {
+      const res = await fetch(`${API_BASE}/search/carousel/upload`, {
+        method: "POST",
+        body: form,
+        signal: controller.signal,
+        cache: "no-store",
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(formatApiError(new Error(text || res.statusText)));
+      }
+      return (await res.json()) as {
+        drive_file_id: string;
+        name: string;
+        status: string;
+        size?: number;
+        queued: boolean;
+        message: string;
+      };
+    } catch (error) {
+      throw new Error(formatApiError(error, "Upload failed"));
+    } finally {
+      clearTimeout(timer);
+    }
+  },
   carouselPipelineSelectImages: (body: {
     drive_file_id: string;
     carousels: CarouselGeneratedItem[];
