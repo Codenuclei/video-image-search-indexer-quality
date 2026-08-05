@@ -136,6 +136,29 @@ async def backfill_image_captions(
     return {"ok": True, "scheduled": True}
 
 
+@router.post("/index/recover-from-qdrant")
+async def recover_from_qdrant_endpoint(
+    session: AsyncSession = Depends(get_db),
+    dry_run: bool = True,
+    create_orphaned_stubs: bool = False,
+) -> dict[str, object]:
+    """Append-only: mark drive_files PROCESSED + ensure media when Qdrant already has vectors.
+
+    Never deletes Qdrant points or Postgres rows. Never calls Gemini.
+    Captions cannot be recovered when dfi_image_captions is empty.
+    Orphaned points (no PG row) are reported; stubs need create_orphaned_stubs=true
+    (unsafe — payloads lack name/path/mime).
+    """
+    from app.qdrant.recover import recover_from_qdrant
+
+    result = await recover_from_qdrant(
+        session,
+        dry_run=dry_run,
+        create_orphaned_stubs=create_orphaned_stubs,
+    )
+    return {"ok": True, **result.to_dict()}
+
+
 async def _backfill_youtube_transcripts() -> None:
     """Fetch YouTube captions for Drive videos with [videoId] in the filename."""
     from app.db.models import Media, VideoSegment
