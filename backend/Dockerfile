@@ -44,9 +44,15 @@ RUN mkdir -p data/tmp data/thumbnails data/videos data/frame_thumbs data/backups
 
 ENV PYTHONUNBUFFERED=1
 ENV PORT=8000
-# 24 vCPU Railway: one UvicornWorker per core (override via WEB_CONCURRENCY).
-ENV WEB_CONCURRENCY=24
-ENV GUNICORN_WORKERS=24
+# Safer default under InsightFace/OpenBLAS (override via Railway env if needed).
+# Do not raise toward 24 until OPENBLAS_NUM_THREADS=1 is stable in prod.
+ENV WEB_CONCURRENCY=8
+ENV GUNICORN_WORKERS=8
+ENV OPENBLAS_NUM_THREADS=1
+ENV OMP_NUM_THREADS=1
+ENV MKL_NUM_THREADS=1
+ENV NUMEXPR_NUM_THREADS=1
+ENV VECLIB_MAXIMUM_THREADS=1
 ENV GUNICORN_TIMEOUT=900
 ENV GUNICORN_GRACEFUL_TIMEOUT=120
 EXPOSE 8000

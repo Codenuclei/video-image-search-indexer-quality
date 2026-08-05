@@ -14,12 +14,13 @@ from app.workers.backup import prune_daily_backups, restore_dry_run
 
 
 def test_db_pool_fits_under_max_connections_200():
-    workers = 24
-    pool = Settings.model_fields["db_pool_size"].default
-    overflow = Settings.model_fields["db_max_overflow"].default
-    budget = workers * (pool + overflow)
-    assert budget < 200
-    assert budget <= 120  # leave headroom for admin / pg_dump / qdrant ops
+    # Safer gunicorn default is 8 workers (not 24); budget still fine if raised.
+    for workers in (8, 24):
+        pool = Settings.model_fields["db_pool_size"].default
+        overflow = Settings.model_fields["db_max_overflow"].default
+        budget = workers * (pool + overflow)
+        assert budget < 200
+        assert budget <= 120  # leave headroom for admin / pg_dump / qdrant ops
 
 
 def test_prune_daily_never_touches_forever(tmp_path: Path):

@@ -38,6 +38,23 @@ def test_caption_backfill_wires_batch_size_and_semaphore():
     assert "index_image_captions_batch" in src
 
 
+def test_maintenance_tick_does_not_skip_when_indexer_running():
+    """Captions must not wait for Start Index to finish — is_running must not gate."""
+    src = inspect.getsource(maintenance_mod.maintenance_tick)
+    assert "if worker.is_running" not in src
+    assert "run_caption_backfill" in src
+
+
+def test_gunicorn_start_pins_blas_threads():
+    from pathlib import Path
+
+    script = Path(__file__).resolve().parents[1] / "scripts" / "gunicorn_start.sh"
+    text = script.read_text(encoding="utf-8")
+    assert "OPENBLAS_NUM_THREADS" in text
+    assert "OMP_NUM_THREADS" in text
+    assert 'GUNICORN_WORKERS:-8}' in text or 'GUNICORN_WORKERS:-8"' in text
+
+
 def test_queue_active_tab_maps_to_processing_status():
     assert _parse_drive_file_status(None) is None
     assert _parse_drive_file_status("processing") is DriveFileStatus.PROCESSING

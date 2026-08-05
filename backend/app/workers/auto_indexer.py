@@ -15,7 +15,7 @@ from app.drive.push_channels import (
 )
 from app.runtime_settings import get_runtime_settings
 from app.workers.indexer import IndexingWorker
-from app.workers.maintenance import maintenance_tick
+from app.workers.maintenance import schedule_maintenance_tick
 from app.workers.requeue_failed import requeue_failed_files
 
 logger = logging.getLogger(__name__)
@@ -64,12 +64,9 @@ async def auto_index_loop(worker: IndexingWorker, stop_event: asyncio.Event) -> 
                 except Exception:  # noqa: BLE001
                     logger.exception("Auto-index processing failed")
 
-            # Caption/embed backfill must run every idle tick — not only after the
-            # rare fallback Drive sync (that previously starved captions).
-            try:
-                await maintenance_tick(worker)
-            except Exception:  # noqa: BLE001
-                logger.exception("Auto maintenance tick failed")
+            # Caption/embed backfill every tick (including while Start Index runs).
+            # Captions are maintenance-only — never inline in process_image_file.
+            schedule_maintenance_tick(worker)
 
             # Renew push channel near expiry (no Drive tree walk).
             try:
@@ -117,6 +114,8 @@ async def auto_index_loop(worker: IndexingWorker, stop_event: asyncio.Event) -> 
                 await worker.ensure_parallel_image_indexing()
             except Exception:  # noqa: BLE001
                 logger.exception("Parallel video slot fill failed")
+            # Still caption while a Start Index cycle holds is_running.
+            schedule_maintenance_tick(worker)
             logger.debug("Auto sync tick skipped — cycle in progress")
 
         try:
