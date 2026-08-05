@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import inspect
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from app.config import Settings
+from app.db.models import DriveFileStatus
 from app.gemini.video_embeddings import embed_frames_batch_sync
+from app.routers.drive import _parse_drive_file_status
+from app.workers import maintenance as maintenance_mod
 
 
 def test_production_defaults_match_probe_settings():
@@ -18,12 +20,30 @@ def test_production_defaults_match_probe_settings():
     assert Settings.model_fields["image_embed_batch_size"].default == 5
     assert Settings.model_fields["image_embed_backfill_parallel"].default == 20
     assert Settings.model_fields["image_embed_max_edge"].default == 1024
+    # Production caption path: 10 images per Gemini call × Semaphore(5)
     assert Settings.model_fields["image_caption_batch_size"].default == 10
-    assert Settings.model_fields["image_caption_batch_parallel"].default == 20
+    assert Settings.model_fields["image_caption_batch_parallel"].default == 5
     assert Settings.model_fields["image_caption_model"].default == "gemini-3.5-flash-lite"
     assert Settings.model_fields["gemini_embed_max_concurrent"].default == 32
     assert Settings.model_fields["gemini_vlm_max_concurrent"].default == 24
     _ = s
+
+
+def test_caption_backfill_wires_batch_size_and_semaphore():
+    """run_caption_backfill must chunk by batch_size and gate Gemini with Semaphore(parallel)."""
+    src = inspect.getsource(maintenance_mod.run_caption_backfill)
+    assert "settings.image_caption_batch_size" in src
+    assert "settings.image_caption_batch_parallel" in src
+    assert "asyncio.Semaphore(batch_parallel)" in src
+    assert "index_image_captions_batch" in src
+
+
+def test_queue_active_tab_maps_to_processing_status():
+    assert _parse_drive_file_status(None) is None
+    assert _parse_drive_file_status("processing") is DriveFileStatus.PROCESSING
+    assert _parse_drive_file_status("Active") is DriveFileStatus.PROCESSING
+    assert _parse_drive_file_status("completed") is DriveFileStatus.PROCESSED
+    assert _parse_drive_file_status("failed") is DriveFileStatus.ERROR
 
 
 def test_embed_frames_batch_sync_builds_content_per_image(tmp_path):
