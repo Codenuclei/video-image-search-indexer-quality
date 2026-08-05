@@ -70,8 +70,11 @@ class Settings(BaseSettings):
     video_index_stall_seconds: int = 900
 
     # Image caption/embedding backfill throughput (maintenance loop).
-    image_caption_batch_parallel: int = 6   # concurrent Gemini describe batches
-    image_embed_backfill_parallel: int = 6  # concurrent image embedding upserts
+    # Probe-tuned: caption 10/call × high parallel; embed batch 5 × parallel 20 ≈ 50 img/s.
+    image_caption_batch_parallel: int = 20  # concurrent Gemini describe batches
+    image_embed_backfill_parallel: int = 20  # concurrent batchEmbedContents calls
+    image_embed_batch_size: int = 5         # images per batchEmbedContents call
+    image_embed_max_edge: int = 1024        # longest edge before embed (0 = no downscale)
     maintenance_batches_per_tick: int = 6   # max caption batches per maintenance tick
 
     # Search UI defaults (persisted in app_settings table).
@@ -151,10 +154,10 @@ class Settings(BaseSettings):
     whisper_fallback_enabled: bool = True
 
     # Gemini API client-side concurrency (tune to your tier; see ai.google.dev rate limits).
-    # Embedding 2: high RPM (~40k) — safe default 24 concurrent frame embeds.
-    # Flash VLM + File Search uploads: lower — defaults 6 / 4.
-    gemini_embed_max_concurrent: int = 24
-    gemini_vlm_max_concurrent: int = 6
+    # Embedding 2: allow ~20 concurrent batchEmbedContents (batch=5 → ~50 img/s).
+    # Flash-Lite captions at batch_parallel=20 need matching VLM slots.
+    gemini_embed_max_concurrent: int = 32
+    gemini_vlm_max_concurrent: int = 24
     gemini_upload_max_concurrent: int = 4
 
     # Legacy Fennec sidecar (disabled — use video_indexing_enabled instead)
@@ -188,9 +191,9 @@ class Settings(BaseSettings):
     # Search compares the query against captions (text→text, well-calibrated),
     # which filters vague visual matches without slowing search.
     image_caption_enabled: bool = True
-    image_caption_model: str = "gemini-2.5-flash"
+    image_caption_model: str = "gemini-3.5-flash-lite"
     image_caption_max_dim: int = 512          # downscale longest side before VLM
-    image_caption_batch_size: int = 8         # images per Gemini describe call
+    image_caption_batch_size: int = 10        # images per Gemini describe call
     image_caption_min_words: int = 4          # captions shorter than this are re-generated
     qdrant_image_captions_collection: str = "dfi_image_captions"
     # Fusion of visual (image-embedding) and caption (text-embedding) cosine.

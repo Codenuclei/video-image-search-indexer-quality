@@ -12,7 +12,7 @@ from app.concurrency.pools import effective_cpu_workers
 from app.config import get_settings
 from app.db.models import DriveFile
 from app.gemini.tags import person_names_for_drive_file
-from app.gemini.video_embeddings import embed_frame_sync, embed_text_sync
+from app.gemini.video_embeddings import embed_text_sync
 from app.qdrant.image_captions import search_captions_sync
 from app.qdrant.images import search_images_sync
 from app.schemas import SearchResultFile
@@ -304,24 +304,55 @@ async def index_image_captions_batch(items: list[tuple[str, bytes]]) -> int:
 
 
 async def index_image_embedding(jpeg_bytes: bytes, drive_file_id: str) -> None:
-    """Embed a Drive image and upsert to Qdrant."""
+    """Embed a Drive image and upsert to Qdrant (single-image path)."""
+    await index_image_embeddings_batch([(drive_file_id, jpeg_bytes)])
+
+
+async def index_image_embeddings_batch(items: list[tuple[str, bytes]]) -> int:
+    """Embed images via batchEmbedContents and upsert to Qdrant.
+
+    ``items`` is ``(drive_file_id, jpeg_bytes)``. Splits into
+    ``image_embed_batch_size`` chunks. Returns count upserted.
+    """
+    from app.gemini.video_embeddings import embed_frames_batch_sync
     from app.qdrant.images import upsert_image_sync
 
     settings = get_settings()
-    if not settings.gemini_api_key:
-        return
+    if not settings.gemini_api_key or not items:
+        return 0
 
-    fd, path = tempfile.mkstemp(suffix=".jpg", dir=settings.temp_dir)
-    os.close(fd)
-    try:
-        with open(path, "wb") as fh:
-            fh.write(jpeg_bytes)
-        vec = await asyncio.to_thread(embed_frame_sync, path)
-        await asyncio.to_thread(upsert_image_sync, drive_file_id=drive_file_id, vector=vec)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Image embed failed for %s: %s", drive_file_id, exc)
-    finally:
+    batch_size = max(1, settings.image_embed_batch_size)
+    done = 0
+    os.makedirs(settings.temp_dir, exist_ok=True)
+
+    for i in range(0, len(items), batch_size):
+        chunk = items[i : i + batch_size]
+        paths: list[str] = []
+        ids: list[str] = []
         try:
-            os.remove(path)
-        except OSError:
-            pass
+            for fid, jpeg in chunk:
+                fd, path = tempfile.mkstemp(suffix=".jpg", dir=settings.temp_dir)
+                os.close(fd)
+                with open(path, "wb") as fh:
+                    fh.write(jpeg)
+                paths.append(path)
+                ids.append(fid)
+            vectors = await asyncio.to_thread(embed_frames_batch_sync, paths)
+            for fid, vec in zip(ids, vectors):
+                if not vec:
+                    continue
+                await asyncio.to_thread(upsert_image_sync, drive_file_id=fid, vector=vec)
+                done += 1
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Image batch embed failed for %d file(s): %s",
+                len(chunk),
+                exc,
+            )
+        finally:
+            for path in paths:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+    return done
