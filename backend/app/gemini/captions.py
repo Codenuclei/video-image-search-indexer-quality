@@ -64,6 +64,8 @@ def describe_images_batch_sync(images: list[bytes]) -> list[str]:
 
     Returns one caption per image (same order). On failure returns "" for the
     affected batch so indexing can continue (visual embedding still works).
+    Prefers ``image_caption_model``; falls back to gemini-3.1-flash-lite when
+    gemini-3.5-flash-lite returns sustained 503 high-demand.
     """
     from google import genai
     from google.genai import types
@@ -82,27 +84,38 @@ def describe_images_batch_sync(images: list[bytes]) -> list[str]:
         parts.append(types.Part(text=f"Image {i}:"))
         parts.append(types.Part.from_bytes(data=b, mime_type="image/jpeg"))
 
-    for attempt in range(4):
-        try:
-            resp = client.models.generate_content(
-                model=settings.image_caption_model,
-                contents=[types.Content(role="user", parts=parts)],
-                config=types.GenerateContentConfig(
-                    temperature=0.0,
-                    response_mime_type="application/json",
-                ),
-            )
-            parsed = _parse_string_array(resp.text or "", len(images))
-            if parsed is not None:
-                return parsed
-            logger.warning("Caption batch: unparseable/mismatched response — retrying")
-        except Exception as exc:  # noqa: BLE001
-            msg = str(exc)
-            if any(c in msg for c in ("503", "429", "UNAVAILABLE", "RESOURCE_EXHAUSTED", "500")):
-                time.sleep(3 * (attempt + 1))
-                continue
-            logger.warning("Caption batch failed: %s", msg[:160])
-            break
+    primary = settings.image_caption_model
+    models = [primary]
+    if primary != "gemini-3.1-flash-lite":
+        models.append("gemini-3.1-flash-lite")
+
+    for model in models:
+        for attempt in range(4):
+            try:
+                from app.gemini.rate_limit import gemini_vlm_slot
+
+                with gemini_vlm_slot():
+                    resp = client.models.generate_content(
+                        model=model,
+                        contents=[types.Content(role="user", parts=parts)],
+                        config=types.GenerateContentConfig(
+                            temperature=0.0,
+                            response_mime_type="application/json",
+                        ),
+                    )
+                parsed = _parse_string_array(resp.text or "", len(images))
+                if parsed is not None:
+                    if model != primary:
+                        logger.info("Caption batch used fallback model %s", model)
+                    return parsed
+                logger.warning("Caption batch: unparseable/mismatched response — retrying")
+            except Exception as exc:  # noqa: BLE001
+                msg = str(exc)
+                if any(c in msg for c in ("503", "429", "UNAVAILABLE", "RESOURCE_EXHAUSTED", "500")):
+                    time.sleep(3 * (attempt + 1))
+                    continue
+                logger.warning("Caption batch failed (%s): %s", model, msg[:160])
+                break
     return ["" for _ in images]
 
 

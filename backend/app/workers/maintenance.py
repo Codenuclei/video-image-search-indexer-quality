@@ -26,7 +26,7 @@ from app.qdrant.image_captions import (
     valid_caption_ids_sync,
 )
 from app.qdrant.images import existing_image_ids_sync
-from app.search.images import index_image_captions_batch, index_image_embedding
+from app.search.images import index_image_captions_batch, index_image_embeddings_batch
 from app.workers.indexer import IndexingWorker
 
 logger = logging.getLogger(__name__)
@@ -255,14 +255,25 @@ async def run_embedding_backfill(worker: IndexingWorker, *, max_items: int | Non
         if max_items is not None:
             todo = todo[:max_items]
 
+        batch_size = max(1, settings.image_embed_batch_size)
         parallel = max(1, settings.image_embed_backfill_parallel)
+        # Cap work this tick: parallel batches × batch size × maintenance ticks factor.
+        if max_items is None:
+            max_items = parallel * batch_size
+        todo = todo[:max_items]
+
         session_factory = get_session_factory()
         logger.info(
-            "Embedding backfill: %d image(s) this tick (up to %d parallel)",
+            "Embedding backfill: %d image(s) this tick — "
+            "%d per batchEmbedContents × up to %d parallel (max-edge=%d)",
             len(todo),
+            batch_size,
             parallel,
+            settings.image_embed_max_edge,
         )
         embed_sem = asyncio.Semaphore(parallel)
+        dl_workers = effective_cpu_workers(settings.cpu_thread_pool_size)
+        dl_sem = asyncio.Semaphore(max(4, dl_workers))
 
         async def _mark_corrupt_skipped(fid: str, error: str) -> None:
             async with session_factory() as session:
@@ -274,8 +285,8 @@ async def run_embedding_backfill(worker: IndexingWorker, *, max_items: int | Non
                         row.error_message = f"{CORRUPT_SKIPPED_PREFIX} {str(error)[:500]}"
                     await session.commit()
 
-        async def _embed_one(fid: str) -> int:
-            async with embed_sem:
+        async def _prepare(fid: str) -> tuple[str, bytes] | None:
+            async with dl_sem:
                 try:
                     async with session_factory() as session:
                         row = await session.get(DriveFile, fid)
@@ -284,15 +295,24 @@ async def run_embedding_backfill(worker: IndexingWorker, *, max_items: int | Non
                     image_bgr = await run_cpu_bound(decode_image_bgr, raw, file_name=file_name)
                     ok, buf = cv2.imencode(".jpg", image_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
                     if not ok:
-                        return 0
-                    await index_image_embedding(buf.tobytes(), fid)
-                    return 1
+                        return None
+                    return fid, buf.tobytes()
                 except Exception as exc:  # noqa: BLE001
                     await _mark_corrupt_skipped(fid, str(exc))
                     logger.warning("Embedding backfill skipped corrupt file %s", fid)
-                    return 0
+                    return None
 
-        results = await asyncio.gather(*[_embed_one(fid) for fid in todo])
+        chunks = [todo[i : i + batch_size] for i in range(0, len(todo), batch_size)]
+
+        async def _embed_batch(ids: list[str]) -> int:
+            async with embed_sem:
+                prepared = await asyncio.gather(*[_prepare(fid) for fid in ids])
+                items = [item for item in prepared if item]
+                if not items:
+                    return 0
+                return await index_image_embeddings_batch(items)
+
+        results = await asyncio.gather(*[_embed_batch(chunk) for chunk in chunks])
         done = sum(results)
 
         _last_embed_run_at = datetime.now(tz=timezone.utc)
@@ -318,7 +338,11 @@ async def maintenance_tick(worker: IndexingWorker) -> None:
 
     missing_embed = await count_missing_embeddings()
     if missing_embed > 0 and not _embed_running:
-        embed_limit = settings.image_embed_backfill_parallel * batches_per_tick
+        embed_limit = (
+            settings.image_embed_backfill_parallel
+            * max(1, settings.image_embed_batch_size)
+            * batches_per_tick
+        )
         logger.info("Maintenance: %d image(s) need embeddings — starting backfill", missing_embed)
         await run_embedding_backfill(worker, max_items=embed_limit)
 
