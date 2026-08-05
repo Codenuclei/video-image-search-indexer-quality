@@ -8,7 +8,6 @@ from pathlib import Path
 
 from sqlalchemy import and_, case, exists, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-from sqlalchemy.orm import selectinload
 
 from app.config import Settings, get_settings
 from app.db.models import CarouselGenerationSave, DriveFile, DriveFileStatus, Media, VideoSegment
@@ -430,7 +429,12 @@ class IndexingWorker:
                         and "404" in str(exc)
                     )
                     if is_missing:
-                        await remove_drive_file(error_session, failed, gemini=gemini)
+                        await remove_drive_file(
+                            error_session,
+                            failed,
+                            gemini=gemini,
+                            reason="Drive 404 during image index",
+                        )
                     elif is_transient_db_error(exc):
                         failed.status = DriveFileStatus.PENDING
                         failed.error_message = None
@@ -648,7 +652,12 @@ class IndexingWorker:
                         and not is_youtube_source(failed)
                     )
                     if is_missing:
-                        await remove_drive_file(error_session, failed, gemini=gemini)
+                        await remove_drive_file(
+                            error_session,
+                            failed,
+                            gemini=gemini,
+                            reason="Drive 404 during video index",
+                        )
                     elif is_transient_db_error(exc):
                         failed.status = DriveFileStatus.PENDING
                         failed.error_message = None
@@ -1184,8 +1193,10 @@ class IndexingWorker:
                 if was_new:
                     new_pending += 1
 
-            if not listing.truncated and live_ids:
-                gemini = get_gemini_service()
+            # Soft-archive stale files under this sync root only. Never hard-delete
+            # Postgres media, Qdrant vectors, or thumbnails — and never touch rows
+            # from another previously indexed folder when the user re-selects a root.
+            if not listing.truncated and live_ids and root_folder_id:
                 stale = list(
                     (
                         await session.execute(
@@ -1193,13 +1204,18 @@ class IndexingWorker:
                             .where(
                                 DriveFile.id.not_in(live_ids),
                                 DriveFile.source == "drive",
+                                DriveFile.root_folder_id == root_folder_id,
+                                DriveFile.status != DriveFileStatus.ARCHIVED,
                             )
-                            .options(selectinload(DriveFile.media))
                         )
                     ).scalars().all()
                 )
                 for drive_file in stale:
-                    await remove_drive_file(session, drive_file, gemini=gemini)
+                    await remove_drive_file(
+                        session,
+                        drive_file,
+                        reason="stale under sync root (soft-archive)",
+                    )
                     removed += 1
 
             if root_folder_id:
@@ -1212,7 +1228,7 @@ class IndexingWorker:
 
             await session.commit()
         logger.info(
-            "Drive sync: folder=%s files=%d new_pending=%d removed=%d truncated=%s",
+            "Drive sync: folder=%s files=%d new_pending=%d archived=%d truncated=%s",
             listing.folder.name,
             seen,
             new_pending,
@@ -1298,6 +1314,8 @@ class IndexingWorker:
                     _log_skip(drive_file, skip_key)
             return True
 
+        from app.drive.cleanup import restore_archived_drive_file
+
         changed = existing.modified_time != entry.modified_time or existing.name != entry.name
         prev_hash = existing.content_hash
         hash_changed = bool(digest and digest != prev_hash)
@@ -1312,17 +1330,27 @@ class IndexingWorker:
         if digest:
             existing.content_hash = digest
             existing.content_hash_algo = algo
+        restored = restore_archived_drive_file(existing)
         if paused and existing.status in (DriveFileStatus.PENDING, DriveFileStatus.ERROR):
             existing.status = DriveFileStatus.SKIPPED
             existing.error_message = f"{INDEXING_PAUSED_PREFIX} indexing stopped for parent folder"
-        elif not paused and (changed or hash_changed or newly_hashed):
+        elif not paused and restored and not (changed or hash_changed):
+            # Re-attached unchanged archived file — keep restored PROCESSED/PENDING as-is.
+            pass
+        elif not paused and (changed or hash_changed or newly_hashed or restored):
             from app.drive.content_hash import DUPLICATE_CONTENT_PREFIX, NAME_CONFLICT_PREFIX
 
             prior_msg = existing.error_message or ""
             was_conflict_skip = prior_msg.startswith(DUPLICATE_CONTENT_PREFIX) or prior_msg.startswith(
                 NAME_CONFLICT_PREFIX
             )
-            if existing.status == DriveFileStatus.PROCESSED or was_conflict_skip or hash_changed:
+            # Re-queue completed files only when Drive content/mtime actually changed.
+            # Attaching a checksum for the first time on an unchanged PROCESSED file
+            # must NOT flip it back to PENDING (same-folder re-select / sync reuse).
+            content_changed = changed or hash_changed
+            if content_changed and (
+                existing.status == DriveFileStatus.PROCESSED or was_conflict_skip or hash_changed
+            ):
                 if existing.status == DriveFileStatus.PROCESSED or was_conflict_skip:
                     existing.status = DriveFileStatus.PENDING
                     existing.error_message = None
@@ -1411,7 +1439,12 @@ class IndexingWorker:
                         failed = await error_session.get(DriveFile, file_id)
                         if failed is not None:
                             if is_missing:
-                                await remove_drive_file(error_session, failed, gemini=gemini)
+                                await remove_drive_file(
+                                    error_session,
+                                    failed,
+                                    gemini=gemini,
+                                    reason="Drive 404 during index",
+                                )
                             elif is_transient_db_error(exc):
                                 failed.status = DriveFileStatus.PENDING
                                 failed.error_message = None

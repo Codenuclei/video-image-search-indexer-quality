@@ -11,6 +11,7 @@ import {
   type DriveSession,
   type Settings,
   type SkipStats,
+  type IndexedFolder,
   API_BASE,
 } from "@/lib/api";
 import { Button, Card, ConfirmDialog, Input, LoadingLabel, Spinner } from "@/components/ui";
@@ -65,6 +66,7 @@ export default function FoldersPage() {
   const [youtubeMsg, setYoutubeMsg] = useState<string | null>(null);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [settingsSaving, setSettingsSaving] = useState(false);
+  const [indexedFolders, setIndexedFolders] = useState<IndexedFolder[]>([]);
 
   const [queueOpen, setQueueOpen] = useState(false);
   const [queueStatus, setQueueStatus] = useState("");
@@ -79,13 +81,14 @@ export default function FoldersPage() {
 
   async function load() {
     try {
-      const [s, skips, errs, fc, ds, st] = await Promise.all([
+      const [s, skips, errs, fc, ds, st, foldersRes] = await Promise.all([
         apiClient.indexStatus(),
         apiClient.skipStats().catch(() => null as SkipStats | null),
         apiClient.indexErrors(30, 0).catch(() => null),
         apiClient.folderContexts().catch(() => [] as FolderContext[]),
         apiClient.driveSession().catch(() => null as DriveSession | null),
         apiClient.settings().catch(() => null as Settings | null),
+        apiClient.indexedFolders().catch(() => ({ folders: [] as IndexedFolder[], total: 0 })),
       ]);
       setStatus(s);
       setSkipStats(skips);
@@ -99,6 +102,7 @@ export default function FoldersPage() {
       setFolderContexts(Array.isArray(fc) ? fc : []);
       setDriveSession(ds);
       setSettings(st);
+      setIndexedFolders(foldersRes.folders ?? []);
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load");
@@ -161,6 +165,11 @@ export default function FoldersPage() {
     setPickerBusy(true);
     try {
       const { accessToken, apiKey, appId } = await apiClient.driveToken();
+      if (!apiKey) {
+        throw new Error(
+          "GOOGLE_API_KEY is missing on the backend. Set a Browser API key (Drive + Picker APIs, HTTP referrer localhost:3001) in backend/.env and restart."
+        );
+      }
       const FOLDER_MIME = "application/vnd.google-apps.folder";
 
       if (!window._pickerApiLoaded) {
@@ -462,11 +471,68 @@ export default function FoldersPage() {
           <Button className="w-full sm:w-auto" onClick={() => runIndex(false)} disabled={busy || status?.is_running}>
             {status?.is_running || busy ? <LoadingLabel>Indexing…</LoadingLabel> : "Start Index"}
           </Button>
-          <Button className="w-full sm:w-auto" variant="secondary" onClick={() => runIndex(true)} disabled={busy || status?.is_running}>
+          <Button
+            className="w-full sm:w-auto"
+            variant="secondary"
+            onClick={() => runIndex(true)}
+            disabled={busy || status?.is_running}
+            title="Marks completed files pending again — avoid when reusing an existing index"
+          >
             Reindex All
           </Button>
         </div>
       </div>
+
+      <Card>
+        <div className="mb-3">
+          <h3 className="font-medium">Previously indexed folders</h3>
+          <p className="text-xs text-muted-foreground">
+            Persistent Drive links kept after disconnect or folder switch. Re-selecting the same
+            folder reuses existing indexed files (no full reindex when auto-index is off).
+          </p>
+        </div>
+        {indexedFolders.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            No folder history yet. Choose a Drive folder below — it will appear here with a lasting
+            Drive link.
+          </p>
+        ) : (
+          <ul className="divide-y divide-border/50 overflow-hidden rounded-lg border border-border/60">
+            {indexedFolders.map((f) => (
+              <li
+                key={f.id}
+                className="flex flex-wrap items-center justify-between gap-2 px-3 py-2.5 hover:bg-muted/20"
+              >
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="truncate text-sm font-medium">{f.name}</p>
+                    {f.is_active && (
+                      <span className="rounded-md bg-emerald-500/15 px-1.5 py-0.5 text-[11px] font-medium text-emerald-700 dark:text-emerald-400">
+                        Active
+                      </span>
+                    )}
+                  </div>
+                  <p className="mt-0.5 text-xs text-muted-foreground">
+                    {f.last_file_count != null ? `${formatCount(f.last_file_count)} files · ` : ""}
+                    {f.drive_user_email ? `${f.drive_user_email} · ` : ""}
+                    {f.last_indexed_at
+                      ? `last synced ${new Date(f.last_indexed_at).toLocaleString()}`
+                      : null}
+                  </p>
+                </div>
+                <a
+                  href={f.drive_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="shrink-0 text-xs font-medium text-blue-600 underline-offset-2 hover:underline dark:text-blue-400"
+                >
+                  Open in Drive
+                </a>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Card>
 
       <Card className={driveSession?.connected ? "border-green-800/50 bg-green-950/10" : "border-yellow-800/50 bg-yellow-950/10"}>
         <div className="flex flex-wrap items-center justify-between gap-4">

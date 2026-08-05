@@ -80,6 +80,8 @@ class DriveFileStatus(str, enum.Enum):
     PROCESSED = "processed"
     ERROR = "error"
     SKIPPED = "skipped"
+    # Soft-detached from live Drive listing; vectors/thumbs/media are retained forever.
+    ARCHIVED = "archived"
 
 
 class MediaType(str, enum.Enum):
@@ -130,6 +132,9 @@ class DriveFile(Base):
     cache_rel_path: Mapped[str | None] = mapped_column(String, nullable=True)
     # IndexedFolders.id of the root folder this file was discovered under (historical).
     root_folder_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    # Soft-archive timestamp — set when file leaves live Drive listing / 404 / explicit detach.
+    # Never implies deletion of Qdrant vectors, captions, thumbnails, or cached media.
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     media: Mapped["Media | None"] = relationship(back_populates="drive_file", uselist=False)

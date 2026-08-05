@@ -28,7 +28,7 @@ import { Button, Card, DownloadButton, IconLink, Input, LoadingLabel, ServiceErr
 import { ManualFaceTagger } from "@/components/manual-face-tagger";
 import { cn } from "@/lib/utils";
 
-type FilterMode = "all" | "processed" | "skipped" | "missing_caption" | "missing_embed" | "pending" | "error";
+type FilterMode = "all" | "processed" | "skipped" | "archived" | "missing_caption" | "missing_embed" | "pending" | "error";
 
 /** Shared header + row template so Name / Index / Caption / Embed / Size stay aligned. */
 const FILE_TABLE_COLS =
@@ -53,6 +53,7 @@ function statusBadge(status: string) {
     processing: "bg-blue-500/15 text-blue-700 dark:text-blue-400",
     error: "bg-red-500/15 text-red-700 dark:text-red-400",
     skipped: "bg-zinc-500/15 text-zinc-600 dark:text-zinc-400",
+    archived: "bg-slate-500/15 text-slate-600 dark:text-slate-400",
   };
   return map[status] ?? "bg-muted text-muted-foreground";
 }
@@ -64,6 +65,15 @@ function findFolder(node: LibraryFolder, path: string): LibraryFolder | null {
     if (hit) return hit;
   }
   return null;
+}
+
+/** Flatten files under a folder tree (Library root should show every tracked file). */
+function collectFilesDeep(folder: LibraryFolder): LibraryFile[] {
+  const out: LibraryFile[] = [...folder.files];
+  for (const child of folder.folders) {
+    out.push(...collectFilesDeep(child));
+  }
+  return out;
 }
 
 function FolderTreeItem({
@@ -287,9 +297,15 @@ export default function LibraryPage() {
     return findFolder(data.tree, selectedFolderPath) ?? data.tree;
   }, [data, selectedFolderPath]);
 
-  const filteredFiles = useMemo(() => {
+  const folderFiles = useMemo(() => {
     if (!selectedFolder) return [];
-    let files = selectedFolder.files;
+    // Root = all tracked files across every indexed subtree (not only direct children).
+    if (selectedFolder.path === "/") return collectFilesDeep(selectedFolder);
+    return selectedFolder.files;
+  }, [selectedFolder]);
+
+  const filteredFiles = useMemo(() => {
+    let files = folderFiles;
     const q = search.trim().toLowerCase();
     if (q) files = files.filter((f) => f.name.toLowerCase().includes(q) || f.path.toLowerCase().includes(q));
     if (filter === "missing_caption") {
@@ -302,16 +318,18 @@ export default function LibraryPage() {
       files = files.filter((f) => f.status === "processed");
     } else if (filter === "skipped") {
       files = files.filter((f) => f.status === "skipped");
+    } else if (filter === "archived") {
+      files = files.filter((f) => f.status === "archived");
     } else if (filter === "error") {
       files = files.filter((f) => f.status === "error");
     }
     return files;
-  }, [selectedFolder, filter, search]);
+  }, [folderFiles, filter, search]);
 
   const selectedFile = useMemo(() => {
-    if (!selectedFileId || !selectedFolder) return null;
-    return selectedFolder.files.find((f) => f.id === selectedFileId) ?? null;
-  }, [selectedFileId, selectedFolder]);
+    if (!selectedFileId) return null;
+    return folderFiles.find((f) => f.id === selectedFileId) ?? null;
+  }, [selectedFileId, folderFiles]);
 
   const maintenance = data?.maintenance;
   const summary = data?.summary;
@@ -368,7 +386,8 @@ export default function LibraryPage() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Media Library</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Folder-wise view of indexed files — caption, embed, and index status
+            Folder-wise view of all historically indexed files (global — not limited to the
+            current Drive session)
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -451,7 +470,11 @@ export default function LibraryPage() {
         <section className="flex min-w-0 flex-1 flex-col">
           <div className="space-y-2 border-b border-border px-3 py-2">
             <p className="min-w-0 text-sm font-medium">
-              <span className="text-foreground">{folderDisplayName(selectedFolder, selectedFolderPath)}</span>
+              <span className="text-foreground">
+                {selectedFolderPath === "/"
+                  ? "All tracked folders"
+                  : folderDisplayName(selectedFolder, selectedFolderPath)}
+              </span>
               <span className="ml-2 text-muted-foreground">
                 ({filteredFiles.length} file{filteredFiles.length === 1 ? "" : "s"})
               </span>
@@ -466,6 +489,7 @@ export default function LibraryPage() {
                 <option value="all">All files</option>
                 <option value="processed">Processed</option>
                 <option value="skipped">Skipped</option>
+                <option value="archived">Archived (detached)</option>
                 <option value="missing_caption">Missing caption</option>
                 <option value="missing_embed">Missing embed</option>
                 <option value="pending">Pending / processing</option>

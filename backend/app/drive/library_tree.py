@@ -35,6 +35,7 @@ class LibraryFolderNode:
     pending_count: int = 0
     error_count: int = 0
     skipped_count: int = 0
+    archived_count: int = 0
     indexing_paused: bool = False
     folders: dict[str, LibraryFolderNode] = field(default_factory=dict)
     files: list[LibraryFileItem] = field(default_factory=list)
@@ -147,6 +148,8 @@ def build_library_tree(
                 ancestor.error_count += 1
             if item.status == "skipped":
                 ancestor.skipped_count += 1
+            if item.status == "archived":
+                ancestor.archived_count += 1
 
     summary = {
         "total_files": len(all_files),
@@ -160,6 +163,7 @@ def build_library_tree(
         ),
         "errors": sum(1 for f in all_files if f.status == "error"),
         "skipped": sum(1 for f in all_files if f.status == "skipped"),
+        "archived": sum(1 for f in all_files if f.status == "archived"),
     }
     if summary["images"]:
         summary["caption_pct"] = round(100.0 * summary["captioned"] / summary["images"], 1)
@@ -180,6 +184,7 @@ def folder_node_to_dict(node: LibraryFolderNode) -> dict:
         "pending_count": node.pending_count,
         "error_count": node.error_count,
         "skipped_count": node.skipped_count,
+        "archived_count": node.archived_count,
         "indexing_paused": node.indexing_paused,
         "folders": [folder_node_to_dict(child) for child in sorted(node.folders.values(), key=lambda n: n.name.lower())],
         "files": [

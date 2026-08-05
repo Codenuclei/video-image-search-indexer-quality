@@ -186,6 +186,58 @@ async def ensure_schema(engine: AsyncEngine) -> None:
                 "ON drive_files (root_folder_id)"
             )
         )
+        # Soft-archive: never-delete policy for indexed artifacts.
+        await conn.execute(
+            text(
+                """
+                DO $$ BEGIN
+                    ALTER TYPE drive_file_status ADD VALUE IF NOT EXISTS 'archived';
+                EXCEPTION
+                    WHEN undefined_object THEN NULL;
+                    WHEN duplicate_object THEN NULL;
+                END $$
+                """
+            )
+        )
+        await conn.execute(
+            text("ALTER TABLE drive_files ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ")
+        )
+        await conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_drive_files_archived_at "
+                "ON drive_files (archived_at)"
+            )
+        )
+        # Durable folder history (survives disconnect / folder switch).
+        await conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS indexed_folders (
+                    id VARCHAR NOT NULL PRIMARY KEY,
+                    name VARCHAR NOT NULL,
+                    drive_url TEXT NOT NULL,
+                    drive_user_id VARCHAR,
+                    drive_user_email VARCHAR,
+                    is_active BOOLEAN NOT NULL DEFAULT false,
+                    first_indexed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    last_indexed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    last_file_count INTEGER
+                )
+                """
+            )
+        )
+        await conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_indexed_folders_drive_user_id "
+                "ON indexed_folders (drive_user_id)"
+            )
+        )
+        await conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_indexed_folders_is_active "
+                "ON indexed_folders (is_active)"
+            )
+        )
         await conn.run_sync(Base.metadata.create_all)
     logger.info("Database schema verified")
 

@@ -393,24 +393,17 @@ async def skip_stats(session: AsyncSession = Depends(get_db)) -> dict[str, objec
 @router.get("/index/folders")
 async def indexed_folders(session: AsyncSession = Depends(get_db)) -> dict[str, object]:
     """All previously indexed Drive folders with persistent Drive URLs."""
-    from app.db.models import DriveUser
-    from app.drive.indexed_folders import list_indexed_folders, record_indexed_folder
+    from app.drive.indexed_folders import (
+        ensure_indexed_folder_history,
+        list_indexed_folders,
+    )
     from app.schemas import IndexedFolderOut
 
+    # Additive repair: promote selected folder + any drive_files.root_folder_id
+    # into history. Never deletes completed index data.
+    await ensure_indexed_folder_history(session)
+    await session.commit()
     rows = await list_indexed_folders(session)
-    if not rows:
-        # Soft backfill: promote the currently selected folder into history.
-        user = (await session.execute(select(DriveUser).limit(1))).scalar_one_or_none()
-        if user and user.selected_folder_id:
-            await record_indexed_folder(
-                session,
-                folder_id=user.selected_folder_id,
-                folder_name=user.selected_folder_name or user.selected_folder_id,
-                drive_user=user,
-                mark_active=True,
-            )
-            await session.commit()
-            rows = await list_indexed_folders(session)
     return {
         "folders": [IndexedFolderOut.model_validate(r).model_dump(mode="json") for r in rows],
         "total": len(rows),
