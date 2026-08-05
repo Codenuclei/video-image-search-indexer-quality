@@ -410,6 +410,22 @@ async def indexed_folders(session: AsyncSession = Depends(get_db)) -> dict[str, 
     }
 
 
+@router.post("/index/backup/run")
+async def run_backup_now() -> dict[str, object]:
+    """Trigger a durable Postgres + Qdrant + carousel forever backup (leader-safe)."""
+    from app.workers.backup import run_daily_backup
+
+    return await run_daily_backup()
+
+
+@router.get("/index/backup/restore-dry-run")
+async def backup_restore_dry_run(day: str | None = None) -> dict[str, object]:
+    """Verify latest (or named) backup exists without applying a restore."""
+    from app.workers.backup import restore_dry_run
+
+    return await restore_dry_run(day)
+
+
 @router.get("/index/conflicts")
 async def index_conflicts(
     status: str | None = "pending",

@@ -46,6 +46,7 @@ from app.svs.client import svs_ready  # kept for backwards compat — SVS disabl
 from app.pipelines.common import register_image_plugins
 from app.workers.auto_indexer import auto_index_loop
 from app.workers.maintenance import startup_maintenance
+from app.workers.backup import backup_loop
 
 logging.basicConfig(level=logging.INFO)
 
@@ -208,7 +209,8 @@ async def lifespan(app: FastAPI):
             return
         auto_task = asyncio.create_task(auto_index_loop(worker, stop_event))
         maintenance_task = asyncio.create_task(startup_maintenance(worker))
-        app.state.worker_tasks = (auto_task, maintenance_task)
+        backup_task = asyncio.create_task(backup_loop(stop_event))
+        app.state.worker_tasks = (auto_task, maintenance_task, backup_task)
 
     workers_starter = asyncio.create_task(_start_workers_after_db())
     app.state.boot_task = boot_task

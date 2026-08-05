@@ -31,6 +31,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     liblerc4 \
     libzstd1 \
     libraw20 \
+    postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -39,10 +40,15 @@ COPY --from=builder /usr/local/bin /usr/local/bin
 
 COPY . .
 
-RUN mkdir -p data/tmp data/thumbnails data/videos data/frame_thumbs
+RUN mkdir -p data/tmp data/thumbnails data/videos data/frame_thumbs data/backups
 
 ENV PYTHONUNBUFFERED=1
 ENV PORT=8000
+# 24 vCPU Railway: one UvicornWorker per core (override via WEB_CONCURRENCY).
+ENV WEB_CONCURRENCY=24
+ENV GUNICORN_WORKERS=24
+ENV GUNICORN_TIMEOUT=900
+ENV GUNICORN_GRACEFUL_TIMEOUT=120
 EXPOSE 8000
 
-CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port $PORT"]
+CMD ["sh", "-c", "chmod +x scripts/gunicorn_start.sh && scripts/gunicorn_start.sh"]
