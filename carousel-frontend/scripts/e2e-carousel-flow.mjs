@@ -48,7 +48,6 @@ async function uiState(page) {
       phase3: exists('[data-testid="carousel-phase-3"]'),
       phase4: exists('[data-testid="carousel-phase-4"]'),
       phase5: exists('[data-testid="carousel-phase-5"]'),
-      continueVideo: btnText('[data-testid="carousel-continue-from-video"]'),
       continueThemes: btnText('[data-testid="carousel-continue-themes"]'),
       extractBtn: btnText('[data-testid="carousel-extract-themes"]'),
       previewBtn: btnText('[data-testid="carousel-continue-preview"]'),
@@ -121,9 +120,9 @@ async function main() {
       page,
       async () => {
         const s = await uiState(page);
-        if (s.continueVideo || s.continueThemes) return s;
+        if (s.continueThemes) return s;
         // If themes already visible with Extract and no Continue → fallthrough
-        if (s.themeCount > 0 && s.extractBtn && !s.continueVideo && !s.continueThemes) {
+        if (s.themeCount > 0 && s.extractBtn && !s.continueThemes) {
           return { ...s, fallthrough: true };
         }
         return null;
@@ -137,11 +136,9 @@ async function main() {
     assert.equal(st.phase5, false, "phase5 must not appear before generate");
     await shot(page, "02-video-selected-before-continue");
 
-    // Click Continue (prefer step1 CTA, else step2)
+    // Click Continue in Step 2
     log("STEP1→2 Continue for themes");
-    const continueSel = (await page.$('[data-testid="carousel-continue-from-video"]:not([disabled])'))
-      ? '[data-testid="carousel-continue-from-video"]'
-      : '[data-testid="carousel-continue-themes"]';
+    const continueSel = '[data-testid="carousel-continue-themes"]';
     await page.click(continueSel);
     report.steps.push({ step: "1b", continue: continueSel });
 
