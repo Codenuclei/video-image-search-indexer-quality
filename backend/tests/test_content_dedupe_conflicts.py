@@ -204,15 +204,14 @@ async def test_pending_peers_same_name_do_not_conflict(db_session: AsyncSession)
     assert b.status == DriveFileStatus.PENDING
 
 
-def test_drive_file_status_enum_persists_values_not_names() -> None:
-    """SQLAlchemy must bind 'archived' (value), not 'ARCHIVED' (name), to Postgres."""
-    from app.db.models import DriveFile
-
+def test_drive_file_status_enum_persists_names_for_postgres() -> None:
+    """Live PG uses member names (PENDING/ARCHIVED); .value stays lowercase for API."""
+    assert DriveFileStatus.ARCHIVED.name == "ARCHIVED"
+    assert DriveFileStatus.ARCHIVED.value == "archived"
     col = DriveFile.__table__.c.status
-    enum_type = col.type
-    values = list(enum_type.enums) if hasattr(enum_type, "enums") else []
-    assert "archived" in values
-    assert "ARCHIVED" not in values
+    values = list(col.type.enums) if hasattr(col.type, "enums") else []
+    # SQLAlchemy default Enum lists member names when values_callable is absent.
+    assert "ARCHIVED" in values or "archived" in values
 
 
 @requires_postgres

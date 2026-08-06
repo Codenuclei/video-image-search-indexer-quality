@@ -12,6 +12,33 @@ from app.db.models import DriveFile, DriveFileStatus
 logger = logging.getLogger(__name__)
 
 
+async def _ensure_enum_label(conn, type_name: str, label: str) -> None:
+    """Add a Postgres enum label if missing (safe, non-destructive).
+
+    Checks ``pg_enum`` first so we never rely solely on IF NOT EXISTS support,
+    then runs ``ALTER TYPE … ADD VALUE IF NOT EXISTS``.
+    """
+    if not type_name.replace("_", "").isalnum() or not label.replace("_", "").isalnum():
+        raise ValueError(f"refusing unsafe enum identifiers: {type_name!r} {label!r}")
+    exists = await conn.scalar(
+        text(
+            """
+            SELECT 1
+            FROM pg_type t
+            JOIN pg_enum e ON t.oid = e.enumtypid
+            WHERE t.typname = :type_name AND e.enumlabel = :label
+            """
+        ),
+        {"type_name": type_name, "label": label},
+    )
+    if exists:
+        return
+    await conn.execute(
+        text(f"ALTER TYPE {type_name} ADD VALUE IF NOT EXISTS '{label}'")
+    )
+    logger.info("Added Postgres enum label %s.%s", type_name, label)
+
+
 async def ensure_schema(engine: AsyncEngine) -> None:
     """Create pgvector extension and tables if missing (idempotent)."""
     async with engine.begin() as conn:
@@ -187,18 +214,10 @@ async def ensure_schema(engine: AsyncEngine) -> None:
             )
         )
         # Soft-archive: never-delete policy for indexed artifacts.
-        await conn.execute(
-            text(
-                """
-                DO $$ BEGIN
-                    ALTER TYPE drive_file_status ADD VALUE IF NOT EXISTS 'archived';
-                EXCEPTION
-                    WHEN undefined_object THEN NULL;
-                    WHEN duplicate_object THEN NULL;
-                END $$
-                """
-            )
-        )
+        # Live PG enums use SQLAlchemy *member names* (PENDING, SKIPPED, …).
+        # ADD 'ARCHIVED' (uppercase). A prior mistaken 'archived' label may also
+        # exist — leave it; code binds ARCHIVED via the Python enum member name.
+        await _ensure_enum_label(conn, "drive_file_status", "ARCHIVED")
         await conn.execute(
             text("ALTER TABLE drive_files ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ")
         )
