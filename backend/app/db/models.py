@@ -13,10 +13,10 @@ from app.db.base import Base
 # ArcFace (buffalo_l) embeddings are 512-dimensional.
 EMBEDDING_DIM = 512
 
-
-def _enum_values(enum_cls: type[enum.Enum]) -> list[str]:
-    """Persist/compare Postgres enum *values* (e.g. archived), not Python names (ARCHIVED)."""
-    return [member.value for member in enum_cls]
+# NOTE: Postgres enums in this project were created by SQLAlchemy using Python
+# *member names* (PENDING, IMAGE, UNKNOWN, …), not .value strings. Do not add
+# values_callable=lambda e: [m.value …] — that binds lowercase labels the DB
+# does not have. Soft-archive must ADD VALUE 'ARCHIVED' (uppercase) to match.
 
 
 class DriveUser(Base):
@@ -113,11 +113,7 @@ class DriveFile(Base):
     modified_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     size: Mapped[int | None] = mapped_column(Integer, nullable=True)
     status: Mapped[DriveFileStatus] = mapped_column(
-        Enum(
-            DriveFileStatus,
-            name="drive_file_status",
-            values_callable=_enum_values,
-        ),
+        Enum(DriveFileStatus, name="drive_file_status"),
         default=DriveFileStatus.PENDING,
         nullable=False,
     )
@@ -159,7 +155,7 @@ class Media(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     drive_file_id: Mapped[str] = mapped_column(ForeignKey("drive_files.id", ondelete="CASCADE"), unique=True)
     type: Mapped[MediaType] = mapped_column(
-        Enum(MediaType, name="media_type", values_callable=_enum_values),
+        Enum(MediaType, name="media_type"),
         nullable=False,
     )
     page_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -204,7 +200,7 @@ class FaceCluster(Base):
         nullable=True,
     )
     status: Mapped[ClusterStatus] = mapped_column(
-        Enum(ClusterStatus, name="cluster_status", values_callable=_enum_values),
+        Enum(ClusterStatus, name="cluster_status"),
         default=ClusterStatus.UNKNOWN,
         nullable=False,
     )
