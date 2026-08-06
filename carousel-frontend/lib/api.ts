@@ -625,6 +625,34 @@ export const apiClient = {
       method: "DELETE",
       timeoutMs: 30_000,
     }),
+  carouselReferenceUploadImage: async (file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 120_000);
+    try {
+      const res = await fetch(`${API_BASE}/search/carousel/pipeline/references/upload-image`, {
+        method: "POST",
+        body: form,
+        signal: controller.signal,
+        cache: "no-store",
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(formatApiError(new Error(text || res.statusText)));
+      }
+      return (await res.json()) as {
+        ok: boolean;
+        url: string;
+        name: string;
+        size: number;
+      };
+    } catch (error) {
+      throw new Error(formatApiError(error, "Image upload failed"));
+    } finally {
+      clearTimeout(timer);
+    }
+  },
   carouselPipelinePrerun: (body?: { drive_file_ids?: string[]; force?: boolean }) =>
     api<{
       count: number;
