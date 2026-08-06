@@ -13,6 +13,7 @@ import {
   formatApiError,
   type CarouselGenerationSaveListItem,
   type CarouselItemFeedback,
+  type CarouselItemReference,
   type CarouselPipelineExtractResponse,
   type CarouselTopicTreeNode,
   type CarouselTranscriptFrameItem,
@@ -20,6 +21,7 @@ import {
 } from "@/lib/api";
 import { LoadingLabel } from "@/components/ui";
 import { ItemFeedback } from "@/components/item-feedback";
+import { ItemReferences } from "@/components/item-references";
 import { useDismissible } from "@/lib/use-dismissible";
 import { cn } from "@/lib/utils";
 
@@ -85,6 +87,9 @@ export function TopicsHooksTree({
   onFramePicked,
   feedbackByKey,
   onFeedbackSaved,
+  referencesByKey,
+  onReferenceAdded,
+  onReferenceRemoved,
 }: {
   driveFileId: string;
   extract: CarouselPipelineExtractResponse;
@@ -101,6 +106,9 @@ export function TopicsHooksTree({
   onFramePicked?: (hookText: string, frameTs: number, previewUrl: string) => void;
   feedbackByKey?: Record<string, CarouselItemFeedback>;
   onFeedbackSaved?: (item: CarouselItemFeedback) => void;
+  referencesByKey?: Record<string, CarouselItemReference[]>;
+  onReferenceAdded?: (item: CarouselItemReference) => void;
+  onReferenceRemoved?: (id: number) => void;
 }) {
   const tree = useMemo(() => topicTreeFromExtract(extract), [extract]);
 
@@ -374,6 +382,9 @@ export function TopicsHooksTree({
                           }
                           feedbackByKey={feedbackByKey}
                           onFeedbackSaved={onFeedbackSaved}
+                          referencesByKey={referencesByKey}
+                          onReferenceAdded={onReferenceAdded}
+                          onReferenceRemoved={onReferenceRemoved}
                         />
                       </div>
                     );
@@ -401,6 +412,9 @@ export function TopicsHooksTree({
                     }
                     feedbackByKey={feedbackByKey}
                     onFeedbackSaved={onFeedbackSaved}
+                    referencesByKey={referencesByKey}
+                    onReferenceAdded={onReferenceAdded}
+                    onReferenceRemoved={onReferenceRemoved}
                   />
                 </div>
               )}
@@ -440,6 +454,9 @@ export function TopicsHooksTree({
               }
               feedbackByKey={feedbackByKey}
               onFeedbackSaved={onFeedbackSaved}
+              referencesByKey={referencesByKey}
+              onReferenceAdded={onReferenceAdded}
+              onReferenceRemoved={onReferenceRemoved}
             />
           </div>
         );
@@ -471,6 +488,9 @@ function HookLeaves({
   onPickFrame,
   feedbackByKey,
   onFeedbackSaved,
+  referencesByKey,
+  onReferenceAdded,
+  onReferenceRemoved,
 }: {
   driveFileId: string;
   hooks: CarouselVerbatimItem[];
@@ -480,6 +500,9 @@ function HookLeaves({
   onPickFrame: (hook: CarouselVerbatimItem) => void;
   feedbackByKey?: Record<string, CarouselItemFeedback>;
   onFeedbackSaved?: (item: CarouselItemFeedback) => void;
+  referencesByKey?: Record<string, CarouselItemReference[]>;
+  onReferenceAdded?: (item: CarouselItemReference) => void;
+  onReferenceRemoved?: (id: number) => void;
 }) {
   if (!hooks.length) return null;
   // Never show the same hook line twice in one section (old payloads
@@ -556,6 +579,17 @@ function HookLeaves({
               targetLabel={h.text}
               initial={feedbackByKey?.[fbKey] ?? null}
               onSaved={onFeedbackSaved}
+            />
+            <ItemReferences
+              driveFileId={driveFileId}
+              kind="hook"
+              targetKey={targetKey}
+              targetLabel={h.text}
+              frameStartSec={h.start_sec}
+              frameEndSec={h.end_sec}
+              items={referencesByKey?.[fbKey] ?? []}
+              onAdded={onReferenceAdded}
+              onRemoved={onReferenceRemoved}
             />
           </li>
         );

@@ -452,3 +452,30 @@ class CarouselItemFeedback(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class CarouselItemReference(Base):
+    """Image or copywriting reference attached to a theme/hook in Carousel Studio."""
+
+    __tablename__ = "carousel_item_reference"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    drive_file_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    # theme | hook
+    target_kind: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    target_key: Mapped[str] = mapped_column(String(256), nullable=False, index=True)
+    target_label: Mapped[str | None] = mapped_column(String(400), nullable=True)
+    # image | copy
+    ref_kind: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    # Absolute http(s) URL, same-origin /media/... path, or Drive file URL.
+    image_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Optional frame timestamp when the image is a video frame pick.
+    frame_ts: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Reference copy / writing notes.
+    copy_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Short optional label (e.g. "moodboard", "competitor hook").
+    note: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
