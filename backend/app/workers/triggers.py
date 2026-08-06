@@ -3,9 +3,9 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
+from app.db.app_settings_store import refresh_runtime_settings_from_db
 from app.dependencies import get_indexing_worker
 from app.drive.google_client import DriveDirectError
-from app.runtime_settings import get_runtime_settings
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +29,7 @@ async def trigger_index_cycle(*, reason: str) -> bool:
             return False
         _last_webhook_at = now
 
-    runtime = get_runtime_settings()
+    runtime = await refresh_runtime_settings_from_db()
     try:
         seen = await worker.sync_file_list(cache_source=reason)
         logger.info("Drive sync finished (%s): %d file(s)", reason, seen)

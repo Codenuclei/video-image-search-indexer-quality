@@ -5,7 +5,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import get_settings
 from app.db.models import AppSettings
-from app.runtime_settings import RuntimeSettings, set_runtime_settings
+from app.runtime_settings import (
+    RuntimeSettings,
+    get_runtime_settings,
+    set_runtime_settings,
+)
 
 
 def _defaults_from_env() -> RuntimeSettings:
@@ -69,6 +73,35 @@ async def load_runtime_settings_from_db(session_factory: async_sessionmaker[Asyn
             runtime = _row_to_runtime(row)
     set_runtime_settings(runtime)
     return runtime
+
+
+async def refresh_runtime_settings_from_db(
+    session: AsyncSession | None = None,
+    *,
+    session_factory: async_sessionmaker[AsyncSession] | None = None,
+) -> RuntimeSettings:
+    """
+    Reload ``app_settings`` into this process's in-memory cache.
+
+    Gunicorn runs multiple workers; PUT /settings only updates the handling
+    worker's memory. Background loops and GET /index|/settings must re-read
+    Postgres so auto_index_enabled (and peers) stay authoritative from DB.
+    """
+    if session is not None:
+        row = await session.get(AppSettings, 1)
+        if row is None:
+            return get_runtime_settings()
+        runtime = _row_to_runtime(row)
+        set_runtime_settings(runtime)
+        return runtime
+
+    factory = session_factory
+    if factory is None:
+        from app.db.session import get_session_factory
+
+        factory = get_session_factory()
+    async with factory() as own_session:
+        return await refresh_runtime_settings_from_db(own_session)
 
 
 async def save_runtime_settings_to_db(
