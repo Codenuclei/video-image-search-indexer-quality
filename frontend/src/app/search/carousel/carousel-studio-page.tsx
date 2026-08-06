@@ -2017,11 +2017,19 @@ function InstagramCarouselPost({
             const framesVisible = imagesReady || manualFrame;
             const showReal = framesVisible && Boolean(slide.preview_url);
             // Split needs two distinct frames from this slide's own span; without
-            // them a split render would repeat a neighbour's still, so fall back
+            // them a split render would repeat the same still, so fall back
             // to the single-image layout instead.
-            const splitPanels =
+            const rawPanels =
               layoutMode === "split_2" && (slide.panels?.length ?? 0) >= 2
                 ? slide.panels!.slice(0, 2)
+                : null;
+            const splitPanels =
+              rawPanels &&
+              rawPanels[0]?.preview_url &&
+              rawPanels[1]?.preview_url &&
+              rawPanels[0].preview_url !== rawPanels[1].preview_url &&
+              rawPanels[0].frame_ts !== rawPanels[1].frame_ts
+                ? rawPanels
                 : null;
             return (
               <article

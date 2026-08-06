@@ -1,7 +1,12 @@
 import pytest
 
 from app.routers import media
-from app.routers.carousel_script import _attach_layout_panels, _frame_preview_url, _layout_carousels
+from app.routers.carousel_script import (
+    _attach_layout_panels,
+    _frame_preview_url,
+    _layout_carousels,
+    _pick_split_frame_timestamps,
+)
 
 
 @pytest.mark.asyncio
@@ -19,6 +24,33 @@ async def test_cache_only_frame_miss_never_extracts(tmp_path, monkeypatch):
         await media.get_video_frame(
             "drive-id",
             ts=12.5,
+            cache_only=True,
+            session=None,
+        )
+
+    assert exc.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_cache_only_does_not_serve_nearest_neighbour(tmp_path, monkeypatch):
+    """Split panels use distinct ts URLs; nearest±5s must not collapse them."""
+    class Settings:
+        thumbnail_dir = str(tmp_path)
+
+    frames = tmp_path / "video" / "drive-id"
+    frames.mkdir(parents=True)
+    (frames / "15.000.jpg").write_bytes(b"left-panel-bytes")
+
+    async def fail_extract(*args, **kwargs):
+        raise AssertionError("cache-only must not extract")
+
+    monkeypatch.setattr(media, "get_settings", lambda: Settings())
+    monkeypatch.setattr(media, "_extract_frame_on_demand", fail_extract)
+
+    with pytest.raises(media.HTTPException) as exc:
+        await media.get_video_frame(
+            "drive-id",
+            ts=20.0,
             cache_only=True,
             session=None,
         )
@@ -44,8 +76,28 @@ def test_split_layout_has_two_distinct_panels_with_focal_metadata():
     split = _layout_carousels(carousels, split=True)[0]["slides"][0]["panels"]
     assert len(split) == 2
     assert split[0]["frame_ts"] != split[1]["frame_ts"]
+    assert split[0]["preview_url"] != split[1]["preview_url"]
     assert all(
         {"frame_ts", "preview_url", "caption", "focal_x", "focal_y", "front_face_score"}
         <= set(panel)
         for panel in split
     )
+
+
+def test_pick_split_timestamps_prefers_far_cached_frames(tmp_path):
+    frames = tmp_path / "video" / "drive-id"
+    frames.mkdir(parents=True)
+    (frames / "10.000.jpg").write_bytes(b"a")
+    (frames / "15.000.jpg").write_bytes(b"b")
+    (frames / "20.000.jpg").write_bytes(b"c")
+
+    left, right = _pick_split_frame_timestamps(
+        selected_ts=15.0,
+        start=10.0,
+        end_f=20.0,
+        drive_file_id="drive-id",
+        thumbnail_dir=str(tmp_path),
+    )
+    assert left != right
+    assert abs(right - left) >= 0.45
+    assert {left, right} <= {10.0, 15.0, 20.0}
