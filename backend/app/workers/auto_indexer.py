@@ -48,7 +48,11 @@ async def auto_index_loop(worker: IndexingWorker, stop_event: asyncio.Event) -> 
     )
     while not stop_event.is_set():
         # DB is source of truth — other Gunicorn workers may have written PUT /settings.
-        runtime = await refresh_runtime_settings_from_db()
+        try:
+            runtime = await refresh_runtime_settings_from_db()
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to refresh runtime settings from DB; using in-memory cache")
+            runtime = get_runtime_settings()
         interval = max(30, runtime.auto_index_interval_seconds)
 
         if not worker.is_running:

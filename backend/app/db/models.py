@@ -14,6 +14,11 @@ from app.db.base import Base
 EMBEDDING_DIM = 512
 
 
+def _enum_values(enum_cls: type[enum.Enum]) -> list[str]:
+    """Persist/compare Postgres enum *values* (e.g. archived), not Python names (ARCHIVED)."""
+    return [member.value for member in enum_cls]
+
+
 class DriveUser(Base):
     """Stored Google OAuth credentials for the connected Drive account."""
 
@@ -108,7 +113,13 @@ class DriveFile(Base):
     modified_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     size: Mapped[int | None] = mapped_column(Integer, nullable=True)
     status: Mapped[DriveFileStatus] = mapped_column(
-        Enum(DriveFileStatus, name="drive_file_status"), default=DriveFileStatus.PENDING, nullable=False
+        Enum(
+            DriveFileStatus,
+            name="drive_file_status",
+            values_callable=_enum_values,
+        ),
+        default=DriveFileStatus.PENDING,
+        nullable=False,
     )
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     decode_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
@@ -147,7 +158,10 @@ class Media(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     drive_file_id: Mapped[str] = mapped_column(ForeignKey("drive_files.id", ondelete="CASCADE"), unique=True)
-    type: Mapped[MediaType] = mapped_column(Enum(MediaType, name="media_type"), nullable=False)
+    type: Mapped[MediaType] = mapped_column(
+        Enum(MediaType, name="media_type", values_callable=_enum_values),
+        nullable=False,
+    )
     page_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -190,7 +204,9 @@ class FaceCluster(Base):
         nullable=True,
     )
     status: Mapped[ClusterStatus] = mapped_column(
-        Enum(ClusterStatus, name="cluster_status"), default=ClusterStatus.UNKNOWN, nullable=False
+        Enum(ClusterStatus, name="cluster_status", values_callable=_enum_values),
+        default=ClusterStatus.UNKNOWN,
+        nullable=False,
     )
     person_id: Mapped[int | None] = mapped_column(ForeignKey("persons.id", ondelete="SET NULL"), nullable=True)
     centroid: Mapped[list[float] | None] = mapped_column(Vector(EMBEDDING_DIM), nullable=True)

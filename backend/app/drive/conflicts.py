@@ -57,7 +57,11 @@ async def find_by_same_name(
     name: str,
     exclude_id: str,
 ) -> DriveFile | None:
-    """Find another active (non-folder) file with the same name (case-insensitive)."""
+    """Find another claimed/completed file with the same name (case-insensitive).
+
+    PENDING peers are ignored so a large same-name backlog does not skip itself
+    before any file finishes indexing.
+    """
     lowered = name.strip().lower()
     if not lowered:
         return None
@@ -70,7 +74,6 @@ async def find_by_same_name(
                 DriveFile.error_message.is_distinct_from("folder_marker"),
                 DriveFile.status.in_(
                     (
-                        DriveFileStatus.PENDING,
                         DriveFileStatus.PROCESSING,
                         DriveFileStatus.PROCESSED,
                         DriveFileStatus.ERROR,
@@ -187,6 +190,8 @@ async def apply_dedupe_on_upsert(
             return "duplicate_content"
 
     # Same name, different (or unknown) content → do not silently overwrite; await Replace.
+    # Only conflict with work already claimed or completed — pending peers must not
+    # cannibalize each other or the queue never reaches real embeds.
     name_twin = await find_by_same_name(session, name=drive_file.name, exclude_id=drive_file.id)
     if name_twin is not None:
         twin_key = content_identity_key(name_twin.content_hash_algo, name_twin.content_hash)

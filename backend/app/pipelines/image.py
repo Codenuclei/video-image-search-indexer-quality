@@ -30,7 +30,7 @@ async def process_image_file(
     client: DriveConnectorClient,
     settings: Settings | None = None,
     engine: FaceEngine | None = None,
-) -> Media:
+) -> Media | None:
     settings = settings or get_settings()
     engine = engine or get_face_engine()
 
@@ -45,6 +45,25 @@ async def process_image_file(
     if not drive_file.content_hash:
         drive_file.content_hash = sha256_bytes(raw_bytes)
         drive_file.content_hash_algo = "sha256"
+
+    from app.drive.conflicts import apply_dedupe_on_upsert
+
+    skip_key = await apply_dedupe_on_upsert(
+        session,
+        drive_file,
+        algo=drive_file.content_hash_algo,
+        digest=drive_file.content_hash,
+    )
+    if skip_key:
+        logger.info(
+            "index_skip reason=%s file_id=%s mime=%s size=%s name=%s",
+            skip_key,
+            drive_file.id,
+            drive_file.mime_type,
+            drive_file.size,
+            drive_file.name,
+        )
+        return None
 
     image_bgr = await run_cpu_bound(decode_image_bgr, raw_bytes, file_name=drive_file.name)
 

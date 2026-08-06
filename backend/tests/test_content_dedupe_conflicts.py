@@ -175,6 +175,48 @@ async def test_same_name_diff_content_pending_replace(db_session: AsyncSession) 
 
 @requires_postgres
 @pytest.mark.asyncio
+async def test_pending_peers_same_name_do_not_conflict(db_session: AsyncSession) -> None:
+    """Two PENDING files with the same name must not skip each other."""
+    a = DriveFile(
+        id="pend_a",
+        name="dup.jpg",
+        mime_type="image/jpeg",
+        path="/a/dup.jpg",
+        status=DriveFileStatus.PENDING,
+        content_hash="aaa111",
+        content_hash_algo="md5",
+    )
+    b = DriveFile(
+        id="pend_b",
+        name="dup.jpg",
+        mime_type="image/jpeg",
+        path="/b/dup.jpg",
+        status=DriveFileStatus.PENDING,
+        content_hash="bbb222",
+        content_hash_algo="md5",
+    )
+    db_session.add_all([a, b])
+    await db_session.flush()
+
+    reason = await apply_dedupe_on_upsert(db_session, b, algo="md5", digest="bbb222")
+    await db_session.flush()
+    assert reason is None
+    assert b.status == DriveFileStatus.PENDING
+
+
+def test_drive_file_status_enum_persists_values_not_names() -> None:
+    """SQLAlchemy must bind 'archived' (value), not 'ARCHIVED' (name), to Postgres."""
+    from app.db.models import DriveFile
+
+    col = DriveFile.__table__.c.status
+    enum_type = col.type
+    values = list(enum_type.enums) if hasattr(enum_type, "enums") else []
+    assert "archived" in values
+    assert "ARCHIVED" not in values
+
+
+@requires_postgres
+@pytest.mark.asyncio
 async def test_indexed_folder_persists_drive_url(db_session: AsyncSession) -> None:
     row = await record_indexed_folder(
         db_session,
