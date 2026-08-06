@@ -47,6 +47,7 @@ import {
   type CarouselTimedPick,
   type CarouselTopicTreeNode,
   type CarouselVerbatimItem,
+  type CarouselItemFeedback,
   type Person,
 } from "@/lib/api";
 import { DownloadButton, LoadingLabel, ServiceErrorCard } from "@/components/ui";
@@ -62,6 +63,7 @@ import {
   type PickedFrame,
 } from "./utils";
 import { TopicsHooksTree, TranscriptFramePicker } from "./topics-hooks-tree";
+import { ItemFeedback } from "@/components/item-feedback";
 
 type Phase = 1 | 2 | 3 | 4 | 5;
 
@@ -316,6 +318,8 @@ export default function CarouselSearchPage() {
   useDismissible(genHistoryOpen, () => setGenHistoryOpen(false), genHistoryRef);
   // Frames picked against a hook before slides exist, keyed by hook text.
   const [hookFrames, setHookFrames] = useState<Record<string, PickedFrame>>({});
+  // Persisted thumbs/comments keyed by `${kind}:${target_key}`.
+  const [itemFeedback, setItemFeedback] = useState<Record<string, CarouselItemFeedback>>({});
   const outlineRef = useRef<HTMLDivElement>(null);
   const phase3Ref = useRef<HTMLElement | null>(null);
 
@@ -329,6 +333,30 @@ export default function CarouselSearchPage() {
     void apiClient.carouselPipelineSaves(selectedVideo.id, 12, "carousel")
       .then((res) => setCarouselSaves(res.items ?? []))
       .catch(() => setCarouselSaves([]));
+  }, [selectedVideo]);
+
+  useEffect(() => {
+    if (!selectedVideo) {
+      setItemFeedback({});
+      return;
+    }
+    let cancelled = false;
+    void apiClient
+      .carouselFeedbackList(selectedVideo.id)
+      .then((res) => {
+        if (cancelled) return;
+        const map: Record<string, CarouselItemFeedback> = {};
+        for (const item of res.items ?? []) {
+          map[`${item.target_kind}:${item.target_key}`] = item;
+        }
+        setItemFeedback(map);
+      })
+      .catch(() => {
+        if (!cancelled) setItemFeedback({});
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [selectedVideo]);
 
   // Cheap lock polling; this path never invokes Gemini, ffmpeg, or Drive.
@@ -1583,8 +1611,9 @@ export default function CarouselSearchPage() {
             <ul className="mt-4 space-y-2">
               {themes.map((t) => {
                 const active = selectedThemes.some((x) => x.theme_id === t.theme_id);
+                const fbKey = `theme:${t.theme_id || t.title}`;
                 return (
-                  <li key={t.theme_id}>
+                  <li key={t.theme_id} className="studio-theme-item">
                     <button
                       type="button"
                       role="checkbox"
@@ -1618,6 +1647,23 @@ export default function CarouselSearchPage() {
                         </span>
                       </span>
                     </button>
+                    {selectedVideo ? (
+                      <div className="px-3 pb-1">
+                        <ItemFeedback
+                          driveFileId={selectedVideo.id}
+                          kind="theme"
+                          targetKey={t.theme_id || t.title}
+                          targetLabel={t.title}
+                          initial={itemFeedback[fbKey] ?? null}
+                          onSaved={(item) =>
+                            setItemFeedback((prev) => ({
+                              ...prev,
+                              [`${item.target_kind}:${item.target_key}`]: item,
+                            }))
+                          }
+                        />
+                      </div>
+                    ) : null}
                   </li>
                 );
               })}
@@ -1738,6 +1784,13 @@ export default function CarouselSearchPage() {
                   [hookText]: { frame_ts: frameTs, preview_url: previewUrl },
                 }))
               }
+              feedbackByKey={itemFeedback}
+              onFeedbackSaved={(item) =>
+                setItemFeedback((prev) => ({
+                  ...prev,
+                  [`${item.target_kind}:${item.target_key}`]: item,
+                }))
+              }
             />
           )}
           {phase < 4 && (
@@ -1832,28 +1885,61 @@ export default function CarouselSearchPage() {
                 No selected hooks or topics yet.
               </li>
             ) : (
-              selectionPreviewMarkers.map((p) => (
-                <li key={`${p.label}-${p.start_sec}-${p.text.slice(0, 40)}`}>
-                  <button
-                    type="button"
-                    className="flex w-full items-start gap-2 px-3 py-2 text-left text-sm hover:bg-zinc-50"
-                    onClick={() => setPreviewCue({ start_sec: p.start_sec, text: p.text })}
-                  >
-                    <Play size={14} className="mt-0.5 shrink-0 text-muted-foreground" />
-                    <span className="min-w-0">
-                      <span className="font-semibold tabular-nums text-foreground">
-                        {fmtTs(p.start_sec)}
+              selectionPreviewMarkers.map((p) => {
+                const isHook = p.label === "Hook";
+                const isTheme = p.label === "Theme";
+                let targetKey = p.text;
+                if (isHook) {
+                  const match = resolvePick(p.text, extract.hooks ?? []);
+                  targetKey = match?.id || p.text;
+                } else if (isTheme) {
+                  const match = selectedThemes.find(
+                    (t) => t.title === p.text || t.summary === p.text
+                  );
+                  targetKey = match?.theme_id || p.text;
+                }
+                const kind = isHook ? "hook" : isTheme ? "theme" : null;
+                const fbKey = kind ? `${kind}:${targetKey}` : null;
+                return (
+                  <li key={`${p.label}-${p.start_sec}-${p.text.slice(0, 40)}`} className="px-0 py-0">
+                    <button
+                      type="button"
+                      className="flex w-full items-start gap-2 px-3 py-2 text-left text-sm hover:bg-zinc-50"
+                      onClick={() => setPreviewCue({ start_sec: p.start_sec, text: p.text })}
+                    >
+                      <Play size={14} className="mt-0.5 shrink-0 text-muted-foreground" />
+                      <span className="min-w-0">
+                        <span className="font-semibold tabular-nums text-foreground">
+                          {fmtTs(p.start_sec)}
+                        </span>
+                        <span className="ml-2 text-[10px] font-bold uppercase tracking-wide text-muted-foreground">
+                          {p.label}
+                        </span>
+                        <span className="mt-0.5 block line-clamp-2 text-xs text-muted-foreground">
+                          {p.text}
+                        </span>
                       </span>
-                      <span className="ml-2 text-[10px] font-bold uppercase tracking-wide text-muted-foreground">
-                        {p.label}
-                      </span>
-                      <span className="mt-0.5 block line-clamp-2 text-xs text-muted-foreground">
-                        {p.text}
-                      </span>
-                    </span>
-                  </button>
-                </li>
-              ))
+                    </button>
+                    {kind && selectedVideo ? (
+                      <div className="px-3 pb-2">
+                        <ItemFeedback
+                          driveFileId={selectedVideo.id}
+                          kind={kind}
+                          targetKey={targetKey}
+                          targetLabel={p.text}
+                          initial={fbKey ? itemFeedback[fbKey] ?? null : null}
+                          onSaved={(item) =>
+                            setItemFeedback((prev) => ({
+                              ...prev,
+                              [`${item.target_kind}:${item.target_key}`]: item,
+                            }))
+                          }
+                        />
+                      </div>
+                    ) : null}
+                  </li>
+                );
+              })
             )}
           </ul>
 
