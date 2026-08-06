@@ -2618,17 +2618,22 @@ function InstagramCarouselPost({
   return (
     <div className="ig-post studio-fade-in" data-testid="ig-carousel-post">
       <div className="ig-post-header">
-        <p className="ig-post-title" title={title}>
-          {title}
-        </p>
-        <div className="flex items-center gap-2">
+        <div className="ig-post-header-row">
+          <p className="ig-post-title" title={title}>
+            {title}
+          </p>
+          <span className="ig-post-count" aria-live="polite">
+            {active + 1}/{n}
+          </span>
+        </div>
+        <div className="ig-post-actions" role="toolbar" aria-label="Slide frame controls">
           <div className="studio-field studio-field-inline">
             <label htmlFor="carousel-layout" className="sr-only">
               Layout
             </label>
             <select
               id="carousel-layout"
-              className="studio-select px-2 py-1 text-[11px]"
+              className="studio-select ig-post-action-control"
               value={layoutMode}
               onChange={(e) => onLayoutModeChange(e.target.value as "single_1" | "split_2")}
               aria-label="Layout"
@@ -2639,7 +2644,7 @@ function InstagramCarouselPost({
           </div>
           <button
             type="button"
-            className="studio-btn studio-btn-ghost px-2 py-1 text-[11px]"
+            className="studio-btn studio-btn-ghost studio-btn-sm ig-post-action-btn"
             title="Replace this slide's image with a frame from the transcript"
             onClick={() => {
               setChangingImage(false);
@@ -2652,7 +2657,7 @@ function InstagramCarouselPost({
           </button>
           <button
             type="button"
-            className="studio-btn studio-btn-ghost px-2 py-1 text-[11px]"
+            className="studio-btn studio-btn-ghost studio-btn-sm ig-post-action-btn"
             title="Change this slide's image (upload, URL, or attached ref)"
             onClick={() => {
               setPickingFrame(false);
@@ -2666,7 +2671,7 @@ function InstagramCarouselPost({
           {imagesReady && onRegenerateSlide && (
             <button
               type="button"
-              className="studio-btn studio-btn-ghost px-2 py-1 text-[11px]"
+              className="studio-btn studio-btn-ghost studio-btn-sm ig-post-action-btn"
               disabled={regenerating || locked}
               title="Regenerate this slide frame"
               onClick={() => {
@@ -2678,9 +2683,6 @@ function InstagramCarouselPost({
               {regenerating ? "Working…" : "Regenerate"}
             </button>
           )}
-          <span className="ig-post-count" aria-live="polite">
-            {active + 1}/{n}
-          </span>
         </div>
       </div>
 
