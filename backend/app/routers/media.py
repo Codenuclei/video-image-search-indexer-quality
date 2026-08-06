@@ -69,6 +69,28 @@ async def get_media_faces(media_id: int, session: AsyncSession = Depends(get_db)
     return [FaceOut.model_validate({**f.__dict__, "has_thumbnail": bool(f.thumbnail_path)}) for f in faces]
 
 
+@router.get("/carousel-ref/{file_id}")
+async def get_carousel_ref_image(file_id: str) -> FileResponse:
+    """Serve an image uploaded as a carousel theme/hook reference."""
+    import re
+
+    safe = (file_id or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{8,64}\.(jpg|jpeg|png|webp|gif)", safe, flags=re.IGNORECASE):
+        raise HTTPException(status_code=400, detail="Invalid carousel ref id")
+    path = Path(get_settings().thumbnail_dir) / "carousel_refs" / safe
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Carousel ref image not found")
+    ext = path.suffix.lower()
+    media_type = {
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".webp": "image/webp",
+        ".gif": "image/gif",
+    }.get(ext, "application/octet-stream")
+    return FileResponse(path, media_type=media_type)
+
+
 @router.get("/video/{drive_file_id}/frame")
 async def get_video_frame(
     drive_file_id: str,

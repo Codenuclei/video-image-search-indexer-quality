@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { ImagePlus, Link2, Trash2, Type } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ImagePlus, Link2, Trash2, Type, Upload } from "lucide-react";
 import {
   apiAssetUrl,
   apiClient,
@@ -54,6 +54,7 @@ export function ItemReferences({
     { text: string; frame_ts: number; preview_url: string }[]
   >([]);
   const [status, setStatus] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (items.length > 0) setOpen(true);
@@ -159,6 +160,37 @@ export function ItemReferences({
       setPickingFrame(false);
     } finally {
       setLoadingFrames(false);
+    }
+  }
+
+  async function uploadFile(file: File | null | undefined) {
+    if (!file || !driveFileId || !targetKey) return;
+    setSaving(true);
+    setStatus("Uploading…");
+    try {
+      const uploaded = await apiClient.carouselReferenceUploadImage(file);
+      const url = (uploaded.url || "").trim();
+      if (!url) throw new Error("Upload returned no URL");
+      const res = await apiClient.carouselReferenceCreate({
+        drive_file_id: driveFileId,
+        target_kind: kind,
+        target_key: targetKey,
+        target_label: targetLabel,
+        ref_kind: "image",
+        image_url: url,
+        note: note.trim() || file.name || undefined,
+      });
+      onAdded?.(res.item);
+      setImageUrl("");
+      setNote("");
+      setPickingFrame(false);
+      setStatus("Saved");
+      setTimeout(() => setStatus(null), 1200);
+    } catch (e) {
+      setStatus(formatApiError(e, "Could not upload image"));
+    } finally {
+      setSaving(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
     }
   }
 
@@ -298,6 +330,26 @@ export function ItemReferences({
                   onClick={() => void addImage(imageUrl)}
                 >
                   Attach URL
+                </button>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp,image/gif,.jpg,.jpeg,.png,.webp,.gif"
+                  className="item-refs-file-input"
+                  disabled={saving}
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) void uploadFile(f);
+                  }}
+                />
+                <button
+                  type="button"
+                  className="studio-btn studio-btn-ghost studio-btn-sm"
+                  disabled={saving}
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  <Upload size={11} strokeWidth={2.25} />
+                  Upload file
                 </button>
                 {frameStartSec != null ? (
                   <button

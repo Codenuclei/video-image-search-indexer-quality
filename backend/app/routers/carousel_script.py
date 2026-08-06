@@ -5875,6 +5875,91 @@ def _normalize_reference_image_url(raw: str) -> str | None:
     )
 
 
+_REF_IMAGE_MIMES = {
+    "image/jpeg",
+    "image/jpg",
+    "image/png",
+    "image/webp",
+    "image/gif",
+}
+_REF_IMAGE_EXT_MIME = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+}
+_MAX_REF_IMAGE_BYTES = 15 * 1024 * 1024  # 15 MiB
+
+
+@router.post("/pipeline/references/upload-image")
+async def carousel_pipeline_references_upload_image(
+    file: UploadFile = File(...),
+) -> dict[str, Any]:
+    """Accept a local image for theme/hook refs; store on volume; return /media URL."""
+    import os
+    from pathlib import Path
+
+    raw_name = (file.filename or "ref.jpg").strip() or "ref.jpg"
+    safe_name = Path(raw_name).name.replace("\x00", "")[:200] or "ref.jpg"
+    ext = Path(safe_name).suffix.lower()
+    mime = (file.content_type or "").split(";")[0].strip().lower()
+    if mime == "image/jpg":
+        mime = "image/jpeg"
+    if mime not in _REF_IMAGE_MIMES:
+        mime = _REF_IMAGE_EXT_MIME.get(ext, "")
+    if mime not in _REF_IMAGE_MIMES and ext not in _REF_IMAGE_EXT_MIME:
+        raise HTTPException(
+            status_code=400,
+            detail="Upload an image file (jpg, png, webp, gif).",
+        )
+    if not ext or ext not in _REF_IMAGE_EXT_MIME:
+        ext = next((e for e, m in _REF_IMAGE_EXT_MIME.items() if m == mime), ".jpg")
+        if ext == ".jpeg":
+            ext = ".jpg"
+
+    file_id = f"{uuid.uuid4().hex}{ext}"
+    refs_dir = Path(get_settings().thumbnail_dir) / "carousel_refs"
+    refs_dir.mkdir(parents=True, exist_ok=True)
+    dest = refs_dir / file_id
+    partial = dest.with_suffix(dest.suffix + ".partial")
+
+    written = 0
+    try:
+        with open(partial, "wb") as out:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > _MAX_REF_IMAGE_BYTES:
+                    raise HTTPException(status_code=413, detail="Image exceeds 15 MiB upload limit")
+                out.write(chunk)
+        if written <= 0:
+            raise HTTPException(status_code=400, detail="Empty upload")
+        os.replace(partial, dest)
+    except HTTPException:
+        if partial.is_file():
+            partial.unlink(missing_ok=True)
+        raise
+    except Exception as exc:  # noqa: BLE001
+        if partial.is_file():
+            partial.unlink(missing_ok=True)
+        logger.exception("carousel ref image upload write failed")
+        raise HTTPException(status_code=500, detail=f"Upload failed: {exc}") from exc
+    finally:
+        await file.close()
+
+    url = f"/media/carousel-ref/{file_id}"
+    logger.info("carousel ref image saved id=%s name=%s bytes=%d", file_id, safe_name, written)
+    return {
+        "ok": True,
+        "url": url,
+        "name": safe_name,
+        "size": written,
+    }
+
+
 @router.get("/pipeline/references")
 async def carousel_pipeline_references_list(
     drive_file_id: str = Query(..., min_length=1, max_length=128),

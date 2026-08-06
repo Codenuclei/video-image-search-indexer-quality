@@ -1896,6 +1896,23 @@
   display: flex;
   flex-wrap: wrap;
   gap: 0.35rem;
+  align-items: center;
+}
+.carousel-studio .item-refs-file-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.carousel-studio .item-refs-actions .studio-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
 }
 .carousel-studio .item-refs-hint {
   font-size: 0.65rem;
