@@ -71,6 +71,17 @@ export function withReplacedFrame(
   return replaced;
 }
 
+/** Replace slide image with an arbitrary URL (upload / pasted / attached ref). */
+export function withReplacedImage(
+  slide: CarouselOutlineSlide,
+  image: { preview_url: string; frame_ts?: number | null }
+): CarouselOutlineSlide {
+  return withReplacedFrame(slide, {
+    preview_url: image.preview_url,
+    frame_ts: image.frame_ts ?? slide.frame_ts ?? slide.timestamp_sec,
+  });
+}
+
 export function applyHookFrameOverrides<
   T extends {
     hooks?: string[] | null;

@@ -31,6 +31,7 @@ import {
   X,
 } from "lucide-react";
 import {
+  apiAssetUrl,
   cacheOnlyAssetUrl,
   apiClient,
   driveFileDownloadUrl,
@@ -61,6 +62,7 @@ import {
   formatTimestampRange,
   slideFrameUrl,
   withReplacedFrame,
+  withReplacedImage,
   type PickedFrame,
 } from "./utils";
 import { TopicsHooksTree, TranscriptFramePicker } from "./topics-hooks-tree";
@@ -1073,7 +1075,11 @@ export default function CarouselSearchPage() {
                 ]
               : [];
         for (const c of list) {
-          merged.push({ ...c, id: c.id || `hook_${merged.length + 1}` });
+          merged.push({
+            ...c,
+            id: c.id || `hook_${merged.length + 1}`,
+            references: c.references ?? res.references ?? [],
+          });
         }
         if (res.layouts) layoutsAcc = res.layouts;
         anyImages = anyImages || Boolean(res.images_ready);
@@ -1137,7 +1143,10 @@ export default function CarouselSearchPage() {
         drive_file_id: selectedVideo.id,
         carousels: generatedCarousels,
       });
-      const list = res.carousels ?? [];
+      const list = (res.carousels ?? []).map((c) => ({
+        ...c,
+        references: c.references ?? res.references ?? c.references,
+      }));
       setCarouselLayouts(res.layouts ?? null);
       // Image selection returns pipeline frames, so re-apply the user's picks.
       setGeneratedCarousels(
@@ -1157,6 +1166,7 @@ export default function CarouselSearchPage() {
               carousels: list,
               slides: res.slides ?? prev.slides,
               images_ready: true,
+              references: res.references ?? prev.references,
               quality: res.quality,
               layouts: res.layouts ?? prev.layouts,
             }
@@ -2302,6 +2312,11 @@ export default function CarouselSearchPage() {
                 driveFileId={selectedVideo.id}
                 imagesReady={imagesReady}
                 locked={pipelineLocked}
+                references={
+                  activeGeneratedCarousel.references ??
+                  outline?.references ??
+                  []
+                }
                 layoutMode={carouselLayout}
                 onLayoutModeChange={(mode) => {
                   if (pipelineLocked) return;
@@ -2496,6 +2511,7 @@ function InstagramCarouselPost({
   driveFileId,
   imagesReady,
   locked,
+  references: attachedRefs = [],
   onOpenSlide,
   onSlidesChange,
   onRegenerateSlide,
@@ -2508,6 +2524,7 @@ function InstagramCarouselPost({
   driveFileId: string;
   imagesReady: boolean;
   locked: boolean;
+  references?: CarouselItemReference[];
   onOpenSlide: (slide: CarouselOutlineSlide) => void;
   onSlidesChange?: (slides: CarouselOutlineSlide[]) => void;
   onRegenerateSlide?: (slide: CarouselOutlineSlide, index: number) => Promise<void>;
@@ -2519,11 +2536,18 @@ function InstagramCarouselPost({
   ) => Promise<void>;
 }) {
   const trackRef = useRef<HTMLDivElement>(null);
+  const imageFileRef = useRef<HTMLInputElement>(null);
   const [active, setActive] = useState(0);
   const [pickingFrame, setPickingFrame] = useState(false);
+  const [changingImage, setChangingImage] = useState(false);
+  const [imageUrlDraft, setImageUrlDraft] = useState("");
+  const [imageBusy, setImageBusy] = useState(false);
+  const [imageNote, setImageNote] = useState<string | null>(null);
   const [regenerating, setRegenerating] = useState(false);
   const n = slides.length;
   const current = slides[Math.min(Math.max(active, 0), Math.max(n - 1, 0))];
+  const imageRefs = attachedRefs.filter((r) => r.ref_kind === "image" && r.image_url);
+  const copyRefs = attachedRefs.filter((r) => r.ref_kind === "copy" && r.copy_text);
   const references = slides.map((slide, index) => ({
     type: "copy+image",
     slide_index: index,
@@ -2561,18 +2585,30 @@ function InstagramCarouselPost({
     setActive(clamped);
   }
 
-  function updateSlideText(index: number, text: string) {
-    const next = slides.map((s, i) =>
-      i === index
-        ? {
-            ...s,
-            hook_line: text,
-            transcript_text: text,
-            snippet: text,
-          }
-        : s
+  function applySlideImage(previewUrl: string, frameTs?: number | null) {
+    const next = slides.map((slide, i) =>
+      i === active ? withReplacedImage(slide, { preview_url: previewUrl, frame_ts: frameTs }) : slide
     );
     onSlidesChange?.(next);
+    setChangingImage(false);
+    setImageUrlDraft("");
+    setImageNote("Image updated");
+    setTimeout(() => setImageNote(null), 1200);
+  }
+
+  async function uploadSlideImage(file: File | null | undefined) {
+    if (!file) return;
+    setImageBusy(true);
+    setImageNote("Uploading…");
+    try {
+      const uploaded = await apiClient.carouselReferenceUploadImage(file);
+      applySlideImage(uploaded.url, current?.frame_ts ?? current?.timestamp_sec);
+    } catch (e) {
+      setImageNote(formatApiError(e, "Upload failed"));
+    } finally {
+      setImageBusy(false);
+      if (imageFileRef.current) imageFileRef.current.value = "";
+    }
   }
 
   if (!n || !current) {
@@ -2605,11 +2641,27 @@ function InstagramCarouselPost({
             type="button"
             className="studio-btn studio-btn-ghost px-2 py-1 text-[11px]"
             title="Replace this slide's image with a frame from the transcript"
-            onClick={() => setPickingFrame(true)}
+            onClick={() => {
+              setChangingImage(false);
+              setPickingFrame(true);
+            }}
             disabled={locked}
           >
             <ImageIcon size={14} />
             Frame
+          </button>
+          <button
+            type="button"
+            className="studio-btn studio-btn-ghost px-2 py-1 text-[11px]"
+            title="Change this slide's image (upload, URL, or attached ref)"
+            onClick={() => {
+              setPickingFrame(false);
+              setChangingImage((v) => !v);
+            }}
+            disabled={locked || imageBusy}
+          >
+            <Upload size={14} />
+            Image
           </button>
           {imagesReady && onRegenerateSlide && (
             <button
@@ -2631,6 +2683,126 @@ function InstagramCarouselPost({
           </span>
         </div>
       </div>
+
+      {changingImage ? (
+        <div className="mt-3 rounded-lg border border-border bg-white px-3 py-2" data-testid="slide-image-changer">
+          <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+            Change slide image
+          </p>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <input
+              ref={imageFileRef}
+              type="file"
+              accept="image/jpeg,image/png,image/webp,image/gif,.jpg,.jpeg,.png,.webp,.gif"
+              className="sr-only"
+              disabled={imageBusy || locked}
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) void uploadSlideImage(f);
+              }}
+            />
+            <button
+              type="button"
+              className="studio-btn studio-btn-ghost studio-btn-sm"
+              disabled={imageBusy || locked}
+              onClick={() => imageFileRef.current?.click()}
+            >
+              <Upload size={12} />
+              Upload file
+            </button>
+            <input
+              type="url"
+              className="studio-input min-w-[12rem] flex-1 px-2 py-1 text-xs"
+              placeholder="Paste image URL…"
+              value={imageUrlDraft}
+              disabled={imageBusy || locked}
+              onChange={(e) => setImageUrlDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && imageUrlDraft.trim()) {
+                  e.preventDefault();
+                  applySlideImage(imageUrlDraft.trim());
+                }
+              }}
+            />
+            <button
+              type="button"
+              className="studio-btn studio-btn-ghost studio-btn-sm"
+              disabled={imageBusy || locked || !imageUrlDraft.trim()}
+              onClick={() => applySlideImage(imageUrlDraft.trim())}
+            >
+              Use URL
+            </button>
+            <button
+              type="button"
+              className="studio-btn studio-btn-ghost studio-btn-sm"
+              onClick={() => setChangingImage(false)}
+            >
+              Close
+            </button>
+          </div>
+          {imageRefs.length > 0 ? (
+            <ul className="mt-2 flex flex-wrap gap-2">
+              {imageRefs.map((r) => {
+                const src =
+                  r.image_url?.startsWith("http")
+                    ? r.image_url
+                    : apiAssetUrl(r.image_url || "");
+                return (
+                  <li key={r.id}>
+                    <button
+                      type="button"
+                      className="overflow-hidden rounded border border-border"
+                      title={r.note || r.image_url || "Attached ref"}
+                      disabled={imageBusy || locked}
+                      onClick={() =>
+                        applySlideImage(r.image_url!, r.frame_ts ?? current.frame_ts)
+                      }
+                    >
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={src} alt="" className="h-12 w-12 object-cover" />
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          ) : null}
+          {imageNote ? <p className="mt-1 text-[11px] text-muted-foreground">{imageNote}</p> : null}
+        </div>
+      ) : null}
+
+      {(imageRefs.length > 0 || copyRefs.length > 0) && (
+        <div className="mt-3 rounded-lg border border-border bg-slate-50 px-3 py-2" data-testid="carousel-attached-refs">
+          <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+            Attached references used for this carousel
+          </p>
+          <ul className="mt-2 flex flex-col gap-1.5">
+            {imageRefs.map((r) => {
+              const src =
+                r.image_url?.startsWith("http")
+                  ? r.image_url
+                  : apiAssetUrl(r.image_url || "");
+              return (
+                <li key={`img-${r.id}`} className="flex items-center gap-2 text-xs text-foreground">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={src} alt="" className="h-8 w-8 rounded object-cover" />
+                  <span className="truncate">
+                    <span className="font-medium">Image</span>
+                    {r.note ? ` · ${r.note}` : ""}
+                    {r.target_kind ? ` · ${r.target_kind}` : ""}
+                  </span>
+                </li>
+              );
+            })}
+            {copyRefs.map((r) => (
+              <li key={`copy-${r.id}`} className="text-xs text-foreground">
+                <span className="font-medium">Copy</span>
+                {r.note ? ` · ${r.note}` : ""}:{" "}
+                <span className="text-muted-foreground">{r.copy_text}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       <p className="mt-3 text-xs text-muted-foreground" data-testid="carousel-transcript-editor">
         Slide lines are edited in the <span className="font-medium text-foreground">Inline transcript editor</span>{" "}
