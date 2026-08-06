@@ -4,11 +4,11 @@ from __future__ import annotations
 import logging
 
 from app.db.advisory_locks import LOCK_DRIVE_CACHE_REFRESH, advisory_lock
+from app.db.app_settings_store import refresh_runtime_settings_from_db
 from app.dependencies import get_drive_client, get_indexing_worker
 from app.drive.file_list_cache import get_file_list_cache
 from app.drive.google_client import DriveDirectError
 from app.drive.push_channels import advance_page_token
-from app.runtime_settings import get_runtime_settings
 
 logger = logging.getLogger(__name__)
 
@@ -73,11 +73,10 @@ async def refresh_drive_file_list_cache(
                     "files": seen,
                     "db_synced": True,
                 }
-                do_process = (
-                    process_pending
-                    if process_pending is not None
-                    else get_runtime_settings().auto_index_enabled
-                )
+                do_process = process_pending
+                if do_process is None:
+                    runtime = await refresh_runtime_settings_from_db()
+                    do_process = runtime.auto_index_enabled
                 if do_process:
                     summary = await worker.process_pending()
                     result["processed"] = summary

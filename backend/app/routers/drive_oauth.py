@@ -25,12 +25,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
+from app.db.app_settings_store import refresh_runtime_settings_from_db
 from app.db.models import DriveFile, DriveFileStatus, DriveUser, IndexedFolder
 from app.db.session import get_db
 from app.dependencies import get_indexing_worker
 from app.drive.google_client import DriveDirectError, _do_token_refresh, resolve_folder_for_indexing
 from app.drive.indexed_folders import record_indexed_folder
-from app.runtime_settings import get_runtime_settings
 from app.workers.indexer import IndexingWorker
 
 logger = logging.getLogger(__name__)
@@ -260,7 +260,8 @@ async def _sync_after_folder_change(worker: IndexingWorker) -> None:
     try:
         seen = await worker.sync_file_list()
         logger.info("Drive folder sync complete: %d file(s)", seen)
-        if get_runtime_settings().auto_index_enabled:
+        runtime = await refresh_runtime_settings_from_db()
+        if runtime.auto_index_enabled:
             summary = await worker.process_pending()
             logger.info("Post folder-save auto-index: %s", summary)
     except DriveDirectError as exc:

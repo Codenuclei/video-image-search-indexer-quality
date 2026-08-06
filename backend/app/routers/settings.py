@@ -4,7 +4,10 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.db.app_settings_store import save_runtime_settings_to_db
+from app.db.app_settings_store import (
+    refresh_runtime_settings_from_db,
+    save_runtime_settings_to_db,
+)
 from app.db.session import get_db
 from app.runtime_settings import get_runtime_settings, update_runtime_settings
 from app.schemas import SettingsOut, SettingsUpdate
@@ -33,7 +36,8 @@ def _settings_out() -> SettingsOut:
 
 
 @router.get("", response_model=SettingsOut)
-async def read_settings() -> SettingsOut:
+async def read_settings(session: AsyncSession = Depends(get_db)) -> SettingsOut:
+    await refresh_runtime_settings_from_db(session)
     return _settings_out()
 
 
@@ -42,6 +46,8 @@ async def write_settings(
     payload: SettingsUpdate,
     session: AsyncSession = Depends(get_db),
 ) -> SettingsOut:
+    # Refresh first so partial updates merge onto DB truth, not a stale worker cache.
+    await refresh_runtime_settings_from_db(session)
     runtime = update_runtime_settings(
         auto_index_enabled=payload.auto_index_enabled,
         auto_index_interval_seconds=payload.auto_index_interval_seconds,

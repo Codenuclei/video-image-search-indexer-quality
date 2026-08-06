@@ -8,6 +8,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.app_settings_store import refresh_runtime_settings_from_db
 from app.db.models import DriveFile, DriveFileStatus
 from app.db.session import get_db, get_session_factory
 from app.dependencies import get_indexing_worker
@@ -640,7 +641,8 @@ async def _build_index_status(worker: IndexingWorker, session: AsyncSession) -> 
     ).scalar_one()
 
     last_run = IndexRunResult(**worker.last_run_summary) if worker.last_run_summary else None
-    runtime = get_runtime_settings()
+    # DB is authoritative across Gunicorn workers (PUT /settings hits one process only).
+    runtime = await refresh_runtime_settings_from_db(session)
     from app.config import get_settings
     from app.workers.go_indexer_state import get_go_indexer_state, go_is_alive
 
@@ -648,11 +650,27 @@ async def _build_index_status(worker: IndexingWorker, session: AsyncSession) -> 
     go_alive = go_is_alive(max_age_seconds=settings.go_indexer_heartbeat_seconds)
     go_stats = get_go_indexer_state().last_stats
 
+    # Process-local task counts are accurate on the background leader; API-only
+    # workers always see 0. Prefer DB PROCESSING so Active/is_running stay stable.
+    db_processing = int(counts.get("processing", 0) or 0)
     image_active = worker.active_image_count
     video_active = worker.active_video_count
+    if image_active + video_active == 0 and db_processing > 0:
+        image_active = len(current_image_files)
+        video_active = len(current_video_files)
+        listed = image_active + video_active
+        if listed == 0:
+            image_active = db_processing
+        elif listed < db_processing:
+            image_active += db_processing - listed
 
     return IndexStatus(
-        is_running=worker.is_running or image_active > 0 or video_active > 0,
+        is_running=(
+            worker.is_running
+            or image_active > 0
+            or video_active > 0
+            or db_processing > 0
+        ),
         counts_by_status=counts,
         last_run=last_run,
         last_run_at=worker.last_run_at,

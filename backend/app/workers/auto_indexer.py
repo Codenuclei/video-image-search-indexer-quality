@@ -13,10 +13,12 @@ from app.drive.push_channels import (
     register_or_renew_channel,
     resolve_webhook_address,
 )
+from app.db.app_settings_store import refresh_runtime_settings_from_db
 from app.runtime_settings import get_runtime_settings
 from app.workers.indexer import IndexingWorker
 from app.workers.maintenance import schedule_maintenance_tick
 from app.workers.requeue_failed import requeue_failed_files
+
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +47,8 @@ async def auto_index_loop(worker: IndexingWorker, stop_event: asyncio.Event) -> 
         resolve_webhook_address(get_settings()) or "(none — startup seed + manual)",
     )
     while not stop_event.is_set():
-        runtime = get_runtime_settings()
+        # DB is source of truth — other Gunicorn workers may have written PUT /settings.
+        runtime = await refresh_runtime_settings_from_db()
         interval = max(30, runtime.auto_index_interval_seconds)
 
         if not worker.is_running:
