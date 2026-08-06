@@ -2541,6 +2541,9 @@ async def _build_hook_carousels(
     select_images: bool,
     api_key: str | None,
     model: str | None,
+    copy_refs: list[str] | None = None,
+    image_ref_bytes: list[bytes] | None = None,
+    references: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """One carousel per hook, built sequentially against a shared reserved pool.
 
@@ -2551,6 +2554,9 @@ async def _build_hook_carousels(
     reserved_texts: set[str] = set()
     reserved_starts: set[float] = set()
     carousels: list[dict[str, Any]] = []
+    copy_refs = list(copy_refs or [])
+    image_ref_bytes = list(image_ref_bytes or [])
+    references = list(references or [])
 
     for idx, hook in enumerate(unique_hooks):
         hs, he = _anchor_hook_span(hook, cue_corpus)
@@ -2564,6 +2570,8 @@ async def _build_hook_carousels(
             model=model,
             reserved_texts=reserved_texts,
             reserved_starts=reserved_starts,
+            copy_refs=copy_refs,
+            image_ref_bytes=image_ref_bytes,
         )
         spans = list(plan.get("spans") or [])
         if len(spans) < 2:
@@ -2627,6 +2635,7 @@ async def _build_hook_carousels(
                 "images_ready": select_images,
                 "hook_start_sec": hs,
                 "hook_end_sec": he,
+                "references": references,
             }
         )
     return carousels
@@ -2720,6 +2729,19 @@ async def _carousel_pipeline_generate_impl(
                     cached.id,
                     selection_hash[:12],
                 )
+                if not payload.get("references"):
+                    # Older saves may lack refs — attach live ones for UI + polish.
+                    live_refs = await _load_attached_references(
+                        session,
+                        drive_file_id=drive_file_id,
+                        hooks=unique_hooks,
+                        themes=list(body.themes or []),
+                    )
+                    if live_refs:
+                        payload["references"] = live_refs
+                        for car in payload.get("carousels") or []:
+                            if isinstance(car, dict) and not car.get("references"):
+                                car["references"] = live_refs
                 return {
                     **payload,
                     "save_id": cached.id,
@@ -2774,6 +2796,34 @@ async def _carousel_pipeline_generate_impl(
     )
 
     _RELAXED_CUE_LINES.set(_cue_corpus_needs_relaxed_lines(cue_corpus))
+    attached_refs = await _load_attached_references(
+        session,
+        drive_file_id=drive_file_id,
+        hooks=unique_hooks,
+        themes=list(body.themes or []),
+    )
+    copy_refs = [
+        str(r.get("copy_text") or "").strip()
+        for r in attached_refs
+        if (r.get("ref_kind") or "").strip().lower() == "copy" and (r.get("copy_text") or "").strip()
+    ]
+    image_ref_bytes = await _load_reference_image_bytes_list(
+        [
+            str(r.get("image_url") or "").strip()
+            for r in attached_refs
+            if (r.get("ref_kind") or "").strip().lower() == "image" and (r.get("image_url") or "").strip()
+        ],
+        session=session,
+        settings=settings,
+    )
+    if attached_refs:
+        logger.info(
+            "carousel generate refs drive=%s copy=%d image=%d (bytes_ok=%d)",
+            drive_file_id,
+            len(copy_refs),
+            sum(1 for r in attached_refs if (r.get("ref_kind") or "").lower() == "image"),
+            len(image_ref_bytes),
+        )
     carousels = await _build_hook_carousels(
         unique_hooks=unique_hooks,
         cue_corpus=cue_corpus,
@@ -2784,6 +2834,9 @@ async def _carousel_pipeline_generate_impl(
         select_images=select_images,
         api_key=settings.gemini_api_key,
         model=settings.gemini_model,
+        copy_refs=copy_refs,
+        image_ref_bytes=image_ref_bytes,
+        references=attached_refs,
     )
     if not carousels and not _RELAXED_CUE_LINES.get():
         # Punctuation/casing gates can starve every hook on transcripts that
@@ -2802,6 +2855,9 @@ async def _carousel_pipeline_generate_impl(
             select_images=select_images,
             api_key=settings.gemini_api_key,
             model=settings.gemini_model,
+            copy_refs=copy_refs,
+            image_ref_bytes=image_ref_bytes,
+            references=attached_refs,
         )
 
     if not carousels:
@@ -2829,7 +2885,12 @@ async def _carousel_pipeline_generate_impl(
             for carousel in carousels
             for slide in (carousel.get("slides") or [])
         ]
-        polished = await _polish_outline_frames(flat_slides, session)
+        polished = await _polish_outline_frames(
+            flat_slides,
+            session,
+            style_copy_refs=copy_refs,
+            style_image_bytes=image_ref_bytes,
+        )
         cursor = 0
         for carousel in carousels:
             count = len(carousel.get("slides") or [])
@@ -2856,6 +2917,7 @@ async def _carousel_pipeline_generate_impl(
         "cache_hit": False,
         "generated": True,
         "input_hash": selection_hash,
+        "references": attached_refs,
         "layouts": {
             "single_1": {
                 "layout_mode": "single_1",
@@ -2927,7 +2989,40 @@ async def _carousel_pipeline_select_images_impl(
     # Harvest all slides locally and rank in grouped requests. This keeps the
     # default image pass at the hard three-call Gemini cap even with several
     # carousel tabs.
-    selected_slides = await _polish_outline_frames(all_slides, session)
+    style_refs: list[dict[str, Any]] = []
+    for item in polished:
+        for r in item.get("references") or []:
+            if isinstance(r, dict):
+                style_refs.append(r)
+    if not style_refs:
+        # Fall back to persisted theme/hook refs for this video.
+        style_refs = await _load_attached_references(
+            session,
+            drive_file_id=drive_file_id,
+            hooks=[],
+            themes=[],
+            include_all_for_drive=True,
+        )
+    copy_refs = [
+        str(r.get("copy_text") or "").strip()
+        for r in style_refs
+        if (r.get("ref_kind") or "").strip().lower() == "copy" and (r.get("copy_text") or "").strip()
+    ]
+    image_ref_bytes = await _load_reference_image_bytes_list(
+        [
+            str(r.get("image_url") or "").strip()
+            for r in style_refs
+            if (r.get("ref_kind") or "").strip().lower() == "image" and (r.get("image_url") or "").strip()
+        ],
+        session=session,
+        settings=get_settings(),
+    )
+    selected_slides = await _polish_outline_frames(
+        all_slides,
+        session,
+        style_copy_refs=copy_refs,
+        style_image_bytes=image_ref_bytes,
+    )
     for s in selected_slides:
         if isinstance(s.get("frame_quality"), dict):
             quality_rollup.append(s["frame_quality"])
@@ -2943,6 +3038,8 @@ async def _carousel_pipeline_select_images_impl(
         item["slides"] = slides
         item["slide_count"] = len(slides)
         item["images_ready"] = True
+        if style_refs and not item.get("references"):
+            item["references"] = style_refs
 
     rejected: dict[str, int] = {}
     candidates = kept = 0
@@ -2963,6 +3060,7 @@ async def _carousel_pipeline_select_images_impl(
         "title": primary.get("title"),
         "slides": primary.get("slides") or [],
         "slide_count": primary.get("slide_count") or 0,
+        "references": style_refs,
         "layouts": {
             "single_1": {
                 "layout_mode": "single_1",
@@ -3408,6 +3506,8 @@ async def _polish_outline_frames(
     *,
     prefer_local: bool = False,
     max_candidates: int = 4,
+    style_copy_refs: list[str] | None = None,
+    style_image_bytes: list[bytes] | None = None,
 ) -> list[dict[str, Any]]:
     """Gemini rank + Instagram-ready check for each slide's display frame (span text unchanged)."""
     from app.search.carousel_frame_select import polish_slides_instagram_frames
@@ -3481,6 +3581,8 @@ async def _polish_outline_frames(
             ensure_frame=ensure_frame,
             concurrency=3,
             prefer_local=prefer_local,
+            style_copy_refs=style_copy_refs,
+            style_image_bytes=style_image_bytes,
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("Instagram frame polish skipped: %s", exc)
@@ -4410,12 +4512,16 @@ async def _plan_hook_oneline_spans_gemini(
     model: str,
     reserved_texts: set[str] | None = None,
     reserved_starts: set[float] | None = None,
+    copy_refs: list[str] | None = None,
+    image_ref_bytes: list[bytes] | None = None,
 ) -> list[dict[str, float]] | None:
     """Gemini proposes cut timestamps only; text is filled verbatim later."""
     import json
 
     from google import genai
     from google.genai import types
+
+    from app.search.carousel_frame_select import _downscale_jpeg
 
     catalog = _cues_near_hook(
         cues,
@@ -4446,6 +4552,25 @@ async def _plan_hook_oneline_spans_gemini(
             f"{sorted(list(reserved_starts))[:40]}\n"
         )
 
+    copy_note = ""
+    clean_copy = [c.strip() for c in (copy_refs or []) if (c or "").strip()][:8]
+    if clean_copy:
+        listed = "\n".join(f"- {c[:400]}" for c in clean_copy)
+        copy_note = (
+            "\nAttached COPY references (tone/angle inspiration only — NEVER output these "
+            "as slide text; slides must stay exact transcript):\n"
+            f"{listed}\n"
+        )
+
+    image_note = ""
+    image_bytes = list(image_ref_bytes or [])[:4]
+    if image_bytes:
+        image_note = (
+            "\nAttached IMAGE references follow this prompt as multimodal parts. "
+            "Use them as visual/mood inspiration when choosing which transcript cuts "
+            "best support this hook (still: never invent spoken words).\n"
+        )
+
     prompt = (
         "You plan Instagram carousel CUT POINTS from a video transcript.\n"
         "Carousel best practice: 6–10 slides, ONE idea per slide, short readable lines,\n"
@@ -4454,6 +4579,8 @@ async def _plan_hook_oneline_spans_gemini(
         "Return ONLY JSON: {\"spans\":[{\"start_sec\":number,\"end_sec\":number,\"cue_i\":number}]}\n"
         f"Hook / goal to convey (intent only — do not output this as slide text): {hook.text}\n"
         f"Topic context: {getattr(hook, 'topic_text', None) or ''}\n"
+        f"{copy_note}"
+        f"{image_note}"
         f"Produce between {min_slides} and {max_slides} ordered spans.\n"
         "Rules for each span:\n"
         "- Short enough for ONE carousel line (~3–12 spoken words)\n"
@@ -4466,11 +4593,19 @@ async def _plan_hook_oneline_spans_gemini(
         f"Cue catalog JSON:\n{json.dumps(catalog, ensure_ascii=False)}"
     )
     try:
+        parts: list[Any] = [types.Part(text=prompt)]
+        for i, raw in enumerate(image_bytes):
+            try:
+                jpeg = _downscale_jpeg(raw)
+            except Exception:  # noqa: BLE001
+                jpeg = raw
+            parts.append(types.Part(text=f"Visual reference {i + 1}:"))
+            parts.append(types.Part.from_bytes(data=jpeg, mime_type="image/jpeg"))
         client = genai.Client(api_key=api_key)
         resp = await __import__("asyncio").to_thread(
             client.models.generate_content,
             model=model,
-            contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
+            contents=[types.Content(role="user", parts=parts)],
             config=types.GenerateContentConfig(
                 temperature=0.2,
                 response_mime_type="application/json",
@@ -4551,6 +4686,8 @@ async def _plan_hook_oneline_spans(
     model: str | None,
     reserved_texts: set[str] | None = None,
     reserved_starts: set[float] | None = None,
+    copy_refs: list[str] | None = None,
+    image_ref_bytes: list[bytes] | None = None,
 ) -> dict[str, Any]:
     """Plan ≥6 short exact-transcript spans that convey a hook's goal."""
     source = "heuristic"
@@ -4574,6 +4711,8 @@ async def _plan_hook_oneline_spans(
             model=model,
             reserved_texts=reserved_texts,
             reserved_starts=reserved_starts,
+            copy_refs=copy_refs,
+            image_ref_bytes=image_ref_bytes,
         )
         if gem:
             # Prefer cuts near the hook; widen only if the tight window is thin.
@@ -5837,6 +5976,151 @@ class CarouselReferenceCreate(BaseModel):
     frame_ts: float | None = None
     copy_text: str = Field(default="", max_length=4000)
     note: str = Field(default="", max_length=200)
+
+
+async def _load_attached_references(
+    session: AsyncSession,
+    *,
+    drive_file_id: str,
+    hooks: list["TimedPick"],
+    themes: list["PipelineThemeSlice"],
+    include_all_for_drive: bool = False,
+) -> list[dict[str, Any]]:
+    """Load persisted theme/hook image+copy refs that apply to this generate job."""
+    fid = (drive_file_id or "").strip()
+    if not fid:
+        return []
+    rows = list(
+        (
+            await session.scalars(
+                select(CarouselItemReference)
+                .where(CarouselItemReference.drive_file_id == fid)
+                .order_by(CarouselItemReference.updated_at.desc())
+            )
+        ).all()
+    )
+    if not rows:
+        return []
+    if include_all_for_drive:
+        return [_reference_row_dict(r) for r in rows[:32]]
+
+    hook_keys: set[str] = set()
+    for h in hooks:
+        if (h.id or "").strip():
+            hook_keys.add(h.id.strip())
+        if (h.text or "").strip():
+            hook_keys.add(h.text.strip())
+    theme_keys: set[str] = set()
+    for t in themes:
+        if (t.theme_id or "").strip():
+            theme_keys.add(t.theme_id.strip())
+        if (t.title or "").strip():
+            theme_keys.add(t.title.strip())
+        # Also match hooks that carry theme_id.
+    for h in hooks:
+        if (h.theme_id or "").strip():
+            theme_keys.add(h.theme_id.strip())
+
+    out: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    for row in rows:
+        kind = (row.target_kind or "").strip().lower()
+        key = (row.target_key or "").strip()
+        keep = False
+        if kind == "hook" and key in hook_keys:
+            keep = True
+        elif kind == "theme" and key in theme_keys:
+            keep = True
+        if not keep:
+            continue
+        if row.id in seen:
+            continue
+        seen.add(row.id)
+        out.append(_reference_row_dict(row))
+        if len(out) >= 24:
+            break
+    return out
+
+
+async def _load_one_reference_image_bytes(
+    url: str,
+    *,
+    session: AsyncSession,
+    settings,
+) -> bytes | None:
+    """Best-effort load of a reference image into bytes for multimodal Gemini."""
+    from pathlib import Path
+    from urllib.parse import parse_qs, urlparse
+
+    import httpx
+
+    from app.search.carousel_frame_select import load_cached_frame_bytes
+
+    raw = (url or "").strip()
+    if not raw:
+        return None
+
+    # Uploaded carousel refs: /media/carousel-ref/{file_id}
+    m = re.match(r"^/media/carousel-ref/([A-Za-z0-9_.-]+)$", raw)
+    if m:
+        path = Path(settings.thumbnail_dir) / "carousel_refs" / m.group(1)
+        if path.is_file():
+            data = path.read_bytes()
+            return data if data else None
+        return None
+
+    # Video frame paths: /media/video/{fid}/frame?ts=...
+    m = re.match(r"^/media/video/([^/]+)/frame", raw)
+    if m:
+        fid = m.group(1)
+        qs = parse_qs(urlparse(raw).query)
+        try:
+            ts = float((qs.get("ts") or ["0"])[0])
+        except (TypeError, ValueError):
+            ts = 0.0
+        cached = load_cached_frame_bytes(str(settings.thumbnail_dir), fid, ts)
+        if cached:
+            return cached
+        return await _ensure_outline_frame_bytes(fid, ts, session, settings)
+
+    if raw.startswith("http://") or raw.startswith("https://"):
+        lower = raw.lower()
+        # Skip Drive HTML view pages — not direct image bytes.
+        if "drive.google.com/file/" in lower and "/view" in lower:
+            return None
+        try:
+            async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+                resp = await client.get(raw)
+                if resp.status_code >= 400:
+                    return None
+                ctype = (resp.headers.get("content-type") or "").split(";")[0].strip().lower()
+                if ctype and not ctype.startswith("image/"):
+                    return None
+                data = resp.content
+                if not data or len(data) > _MAX_REF_IMAGE_BYTES:
+                    return None
+                return data
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("reference image fetch failed: %s", exc)
+            return None
+    return None
+
+
+async def _load_reference_image_bytes_list(
+    urls: list[str],
+    *,
+    session: AsyncSession,
+    settings,
+    limit: int = 4,
+) -> list[bytes]:
+    out: list[bytes] = []
+    for url in urls:
+        if len(out) >= limit:
+            break
+        data = await _load_one_reference_image_bytes(url, session=session, settings=settings)
+        if data:
+            out.append(data)
+    return out
 
 
 def _reference_row_dict(row: CarouselItemReference) -> dict[str, Any]:

@@ -166,6 +166,7 @@ export type CarouselOutlineResponse = {
   images_ready?: boolean;
   intent?: string | null;
   layouts?: CarouselLayouts | null;
+  references?: CarouselItemReference[];
   quality?: {
     candidates?: number;
     kept?: number;
@@ -186,6 +187,8 @@ export type CarouselGeneratedItem = {
   topics?: string[];
   images_ready?: boolean;
   plan_source?: string | null;
+  /** Theme/hook image+copy refs that influenced this carousel. */
+  references?: CarouselItemReference[];
 };
 
 export type CarouselTimedPick = {

@@ -685,12 +685,23 @@ def _parse_grouped_rank_response(
 
 def _group_rank_prompt(
     groups: list[tuple[int, str, list[FrameCandidate]]],
+    *,
+    style_copy_refs: list[str] | None = None,
 ) -> str:
     parts = [
         "Rank candidates for multiple Instagram carousel slides. "
         "Return ONLY JSON with a slides array. Each item must contain "
         "slide (group index), order (best to worst), and ready flags.",
     ]
+    clean_copy = [c.strip() for c in (style_copy_refs or []) if (c or "").strip()][:6]
+    if clean_copy:
+        parts.append(
+            "\nAttached COPY references (tone/angle inspiration for frame choice):\n"
+            + "\n".join(f"- {c[:300]}" for c in clean_copy)
+        )
+        parts.append(
+            "\nPrefer frames whose mood/composition fits those references when possible."
+        )
     for group_idx, hook, candidates in groups:
         parts.append(
             f'\nSlide {group_idx}, spoken text: "{(hook or "").strip()[:240]}"\n'
@@ -711,6 +722,8 @@ def rank_grouped_candidates_with_gemini_sync(
     groups: list[tuple[int, str, list[FrameCandidate], list[bytes | None]]],
     api_key: str,
     model: str,
+    style_copy_refs: list[str] | None = None,
+    style_image_bytes: list[bytes] | None = None,
 ) -> dict[int, tuple[list[int] | None, list[bool] | None]]:
     """Rank several slides in one multimodal Gemini request."""
     if not api_key or not groups:
@@ -723,7 +736,14 @@ def rank_grouped_candidates_with_gemini_sync(
         (local_i, hook, candidates)
         for local_i, (_, hook, candidates, _) in enumerate(groups)
     ]
-    parts: list = [types.Part(text=_group_rank_prompt(prompt_groups))]
+    parts: list = [
+        types.Part(text=_group_rank_prompt(prompt_groups, style_copy_refs=style_copy_refs))
+    ]
+    for i, raw in enumerate((style_image_bytes or [])[:4]):
+        parts.append(types.Part(text=f"STYLE REFERENCE IMAGE {i + 1}:"))
+        parts.append(
+            types.Part.from_bytes(data=_downscale_jpeg(raw), mime_type="image/jpeg")
+        )
     for local_i, (_, _, candidates, images) in enumerate(groups):
         parts.append(types.Part(text=f"SLIDE {local_i} CANDIDATES"))
         for candidate, image in zip(candidates, images):
@@ -1199,6 +1219,8 @@ async def polish_slides_instagram_frames(
     ensure_frame: Callable[[str, float], Awaitable[bytes | None]] | None = None,
     concurrency: int = 2,
     prefer_local: bool = False,
+    style_copy_refs: list[str] | None = None,
+    style_image_bytes: list[bytes] | None = None,
 ) -> list[dict[str, Any]]:
     """Apply frame polish with concurrent harvest and grouped Gemini ranking.
 
@@ -1404,6 +1426,8 @@ async def polish_slides_instagram_frames(
                     groups=batch,
                     api_key=api_key,
                     model=model,
+                    style_copy_refs=style_copy_refs,
+                    style_image_bytes=style_image_bytes,
                 )
                 for batch in batches
             ]
