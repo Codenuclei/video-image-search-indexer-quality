@@ -214,10 +214,11 @@ class Settings(BaseSettings):
     backup_retention_days: int = 14
     backup_interval_seconds: int = 86400
     # Async SQLAlchemy pool — must fit under Postgres max_connections (200).
-    # With WEB_CONCURRENCY=4: 4 × (2+2) = 16 < 200 with headroom for admin/pg_dump.
-    db_pool_size: int = 2
-    db_max_overflow: int = 2
-    db_pool_timeout: float = 15.0
+    # With WEB_CONCURRENCY=4: 4 × (5+5) = 40 < 200 (headroom for admin/pg_dump/other services).
+    # pool_size=2 was starving GET /index under concurrent workers (QueuePool timeout).
+    db_pool_size: int = 5
+    db_max_overflow: int = 5
+    db_pool_timeout: float = 30.0
     # Qdrant REST client timeout (seconds); raise to avoid false connection errors under load.
     qdrant_timeout_seconds: float = 60.0
 

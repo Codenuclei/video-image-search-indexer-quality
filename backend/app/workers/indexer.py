@@ -331,6 +331,12 @@ class IndexingWorker:
 
             # Filter image MIME in SQL so a large non-image backlog cannot starve
             # the claim window (size-ordered PENDING scan).
+            # Widen the window so known content/name conflicts can be skipped in-SQL
+            # without exhausting free Active slots on downloads that will only autoskip.
+            scan_limit = max(
+                claim_window(self._settings, slots),
+                min(5000, max(200, slots * 250)),
+            )
             pending = list(
                 (
                     await session.execute(
@@ -343,11 +349,12 @@ class IndexingWorker:
                             ),
                         )
                         .order_by(*pending_order_by(self._settings))
-                        .limit(claim_window(self._settings, slots))
+                        .limit(scan_limit)
                     )
                 ).scalars().all()
             )
 
+            dirty = False
             for drive_file in pending:
                 if len(claimed_ids) >= slots:
                     break
@@ -359,12 +366,27 @@ class IndexingWorker:
                     continue
                 if drive_file.id in occupied:
                     continue
+                # Skip known content/name conflicts without occupying an Active slot.
+                if drive_file.content_hash and drive_file.content_hash_algo:
+                    from app.drive.conflicts import apply_dedupe_on_upsert
+
+                    skip_key = await apply_dedupe_on_upsert(
+                        session,
+                        drive_file,
+                        algo=drive_file.content_hash_algo,
+                        digest=drive_file.content_hash,
+                    )
+                    if skip_key:
+                        _log_skip(drive_file, skip_key)
+                        dirty = True
+                        continue
                 drive_file.status = DriveFileStatus.PROCESSING
                 drive_file.last_synced_at = datetime.now(timezone.utc)
                 claimed_ids.append(drive_file.id)
                 occupied.add(drive_file.id)
+                dirty = True
 
-            if claimed_ids:
+            if dirty:
                 await session.commit()
 
         for file_id in claimed_ids:
@@ -1109,6 +1131,8 @@ class IndexingWorker:
                 self._client,
                 self._settings,
             )
+            if drive_file.status == DriveFileStatus.SKIPPED:
+                return
 
         person_names = await person_names_for_drive_file(session, file_id)
 
@@ -1193,31 +1217,6 @@ class IndexingWorker:
                 if was_new:
                     new_pending += 1
 
-            # Soft-archive stale files under this sync root only. Never hard-delete
-            # Postgres media, Qdrant vectors, or thumbnails — and never touch rows
-            # from another previously indexed folder when the user re-selects a root.
-            if not listing.truncated and live_ids and root_folder_id:
-                stale = list(
-                    (
-                        await session.execute(
-                            select(DriveFile)
-                            .where(
-                                DriveFile.id.not_in(live_ids),
-                                DriveFile.source == "drive",
-                                DriveFile.root_folder_id == root_folder_id,
-                                DriveFile.status != DriveFileStatus.ARCHIVED,
-                            )
-                        )
-                    ).scalars().all()
-                )
-                for drive_file in stale:
-                    await remove_drive_file(
-                        session,
-                        drive_file,
-                        reason="stale under sync root (soft-archive)",
-                    )
-                    removed += 1
-
             if root_folder_id:
                 try:
                     from app.drive.indexed_folders import touch_active_folder_file_count
@@ -1226,7 +1225,42 @@ class IndexingWorker:
                 except Exception:  # noqa: BLE001
                     logger.exception("Failed to update indexed folder file count")
 
+            # Commit upserts/dedupe first so a soft-archive failure cannot roll them back.
             await session.commit()
+
+        # Soft-archive stale files under this sync root only. Never hard-delete
+        # Postgres media, Qdrant vectors, or thumbnails — and never touch rows
+        # from another previously indexed folder when the user re-selects a root.
+        if not listing.truncated and live_ids and root_folder_id:
+            try:
+                async with self._session_factory() as session:
+                    stale = list(
+                        (
+                            await session.execute(
+                                select(DriveFile)
+                                .where(
+                                    DriveFile.id.not_in(live_ids),
+                                    DriveFile.source == "drive",
+                                    DriveFile.root_folder_id == root_folder_id,
+                                    DriveFile.status != DriveFileStatus.ARCHIVED,
+                                )
+                            )
+                        ).scalars().all()
+                    )
+                    for drive_file in stale:
+                        await remove_drive_file(
+                            session,
+                            drive_file,
+                            reason="stale under sync root (soft-archive)",
+                        )
+                        removed += 1
+                    if removed:
+                        await session.commit()
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "Soft-archive of stale Drive rows failed (upserts already committed)"
+                )
+
         logger.info(
             "Drive sync: folder=%s files=%d new_pending=%d archived=%d truncated=%s",
             listing.folder.name,
