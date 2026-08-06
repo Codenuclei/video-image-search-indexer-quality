@@ -24,6 +24,7 @@ from app.db.advisory_locks import (
 )
 from app.db.models import (
     CarouselGenerationSave,
+    CarouselItemFeedback,
     DriveFile,
     DriveFileStatus,
     Face,
@@ -5739,6 +5740,90 @@ async def _transcript_moments_for_file(drive_file_id: str) -> list[SnapshotConte
             )
         )
     return out
+
+
+class CarouselFeedbackUpsert(BaseModel):
+    drive_file_id: str = Field(..., min_length=1, max_length=128)
+    target_kind: str = Field(..., min_length=1, max_length=16)  # theme | hook
+    target_key: str = Field(..., min_length=1, max_length=256)
+    target_label: str = Field(default="", max_length=400)
+    rating: str | None = Field(default=None, max_length=8)  # up | down | null
+    comment: str = Field(default="", max_length=800)
+
+
+def _feedback_row_dict(row: CarouselItemFeedback) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "drive_file_id": row.drive_file_id,
+        "target_kind": row.target_kind,
+        "target_key": row.target_key,
+        "target_label": row.target_label,
+        "rating": row.rating,
+        "comment": row.comment,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    }
+
+
+@router.get("/pipeline/feedback")
+async def carousel_pipeline_feedback_list(
+    drive_file_id: str = Query(..., min_length=1, max_length=128),
+    target_kind: str | None = Query(default=None, max_length=16),
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    fid = drive_file_id.strip()
+    if not fid:
+        raise HTTPException(status_code=400, detail="drive_file_id is required")
+    stmt = select(CarouselItemFeedback).where(CarouselItemFeedback.drive_file_id == fid)
+    kind = (target_kind or "").strip().lower()
+    if kind in {"theme", "hook"}:
+        stmt = stmt.where(CarouselItemFeedback.target_kind == kind)
+    rows = (await session.scalars(stmt.order_by(CarouselItemFeedback.updated_at.desc()))).all()
+    return {"drive_file_id": fid, "items": [_feedback_row_dict(r) for r in rows]}
+
+
+@router.put("/pipeline/feedback")
+async def carousel_pipeline_feedback_upsert(
+    body: CarouselFeedbackUpsert,
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    fid = body.drive_file_id.strip()
+    kind = body.target_kind.strip().lower()
+    key = body.target_key.strip()[:256]
+    if not fid or not key:
+        raise HTTPException(status_code=400, detail="drive_file_id and target_key are required")
+    if kind not in {"theme", "hook"}:
+        raise HTTPException(status_code=400, detail="target_kind must be theme or hook")
+    rating = (body.rating or "").strip().lower() or None
+    if rating not in {None, "up", "down"}:
+        raise HTTPException(status_code=400, detail="rating must be up, down, or null")
+    comment = (body.comment or "").strip()[:800] or None
+    label = (body.target_label or "").strip()[:400] or None
+
+    existing = await session.scalar(
+        select(CarouselItemFeedback).where(
+            CarouselItemFeedback.drive_file_id == fid,
+            CarouselItemFeedback.target_kind == kind,
+            CarouselItemFeedback.target_key == key,
+        )
+    )
+    if existing is None:
+        existing = CarouselItemFeedback(
+            drive_file_id=fid,
+            target_kind=kind,
+            target_key=key,
+            target_label=label,
+            rating=rating,
+            comment=comment,
+        )
+        session.add(existing)
+    else:
+        existing.target_label = label or existing.target_label
+        existing.rating = rating
+        existing.comment = comment
+        existing.updated_at = datetime.now(timezone.utc)
+    await session.commit()
+    await session.refresh(existing)
+    return {"ok": True, "item": _feedback_row_dict(existing)}
 
 
 def _fallback_script(

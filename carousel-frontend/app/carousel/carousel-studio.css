@@ -1643,3 +1643,86 @@
 .carousel-studio .ig-thumb[data-on="true"] {
   border-color: #0f172a !important;
 }
+
+/* Per-theme / per-hook feedback */
+.carousel-studio .item-feedback {
+  margin-top: 0.4rem;
+}
+.carousel-studio .item-feedback-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+}
+.carousel-studio .item-feedback-thumb {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.6rem;
+  height: 1.6rem;
+  border-radius: 0.4rem;
+  border: 1px solid #e2e8f0;
+  background: #fff;
+  color: #64748b;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+.carousel-studio .item-feedback-thumb:hover:not(:disabled) {
+  background: #f8fafc;
+  color: #0f172a;
+}
+.carousel-studio .item-feedback-thumb.is-on.is-up {
+  border-color: #0f172a;
+  background: #0f172a;
+  color: #fff;
+}
+.carousel-studio .item-feedback-thumb.is-on.is-down {
+  border-color: #b91c1c;
+  background: #fef2f2;
+  color: #b91c1c;
+}
+.carousel-studio .item-feedback-comment-toggle {
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: #64748b;
+  padding: 0.15rem 0.35rem;
+  border-radius: 0.35rem;
+}
+.carousel-studio .item-feedback-comment-toggle:hover {
+  color: #0f172a;
+  background: #f1f5f9;
+}
+.carousel-studio .item-feedback-note {
+  font-size: 0.65rem;
+  color: #64748b;
+}
+.carousel-studio .item-feedback-textarea {
+  margin-top: 0.35rem;
+  width: 100%;
+  resize: vertical;
+  min-height: 2.4rem;
+  border-radius: 0.5rem;
+  border: 1px solid #e2e8f0;
+  background: #fff;
+  padding: 0.45rem 0.55rem;
+  font-size: 0.75rem;
+  line-height: 1.35;
+  color: #0f172a;
+}
+.carousel-studio .item-feedback-textarea:focus {
+  outline: none;
+  border-color: #94a3b8;
+  box-shadow: 0 0 0 3px rgba(15, 23, 42, 0.08);
+}
+.carousel-studio .studio-theme-item {
+  border-radius: 0.65rem;
+  border: 1px solid #e2e8f0;
+  background: #fff;
+  padding: 0.15rem 0.15rem 0.45rem;
+}
+.carousel-studio .topics-hooks-hook .item-feedback,
+.carousel-studio .topics-hooks-topic .item-feedback {
+  margin-left: 1.75rem;
+  margin-right: 0.35rem;
+  margin-bottom: 0.35rem;
+}

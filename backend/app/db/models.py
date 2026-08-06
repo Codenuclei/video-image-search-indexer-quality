@@ -423,3 +423,32 @@ class CarouselGenerationSave(Base):
     algorithm_version: Mapped[str] = mapped_column(String(32), nullable=False, default="p0")
     payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class CarouselItemFeedback(Base):
+    """Per-theme / per-hook thumbs + short comment from Carousel Studio."""
+
+    __tablename__ = "carousel_item_feedback"
+    __table_args__ = (
+        UniqueConstraint(
+            "drive_file_id",
+            "target_kind",
+            "target_key",
+            name="uq_carousel_item_feedback_target",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    drive_file_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    # theme | hook
+    target_kind: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    # Stable id (theme_id / hook id) or normalized text fallback.
+    target_key: Mapped[str] = mapped_column(String(256), nullable=False)
+    target_label: Mapped[str | None] = mapped_column(String(400), nullable=True)
+    # up | down | None (comment-only)
+    rating: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )

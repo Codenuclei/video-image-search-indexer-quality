@@ -12,12 +12,14 @@ import {
   apiClient,
   formatApiError,
   type CarouselGenerationSaveListItem,
+  type CarouselItemFeedback,
   type CarouselPipelineExtractResponse,
   type CarouselTopicTreeNode,
   type CarouselTranscriptFrameItem,
   type CarouselVerbatimItem,
 } from "@/lib/api";
 import { LoadingLabel } from "@/components/ui";
+import { ItemFeedback } from "@/components/item-feedback";
 import { useDismissible } from "@/lib/use-dismissible";
 import { cn } from "@/lib/utils";
 
@@ -81,6 +83,8 @@ export function TopicsHooksTree({
   onPreview,
   onRestoreExtract,
   onFramePicked,
+  feedbackByKey,
+  onFeedbackSaved,
 }: {
   driveFileId: string;
   extract: CarouselPipelineExtractResponse;
@@ -95,6 +99,8 @@ export function TopicsHooksTree({
     selectedTopics: string[]
   ) => void;
   onFramePicked?: (hookText: string, frameTs: number, previewUrl: string) => void;
+  feedbackByKey?: Record<string, CarouselItemFeedback>;
+  onFeedbackSaved?: (item: CarouselItemFeedback) => void;
 }) {
   const tree = useMemo(() => topicTreeFromExtract(extract), [extract]);
 
@@ -354,6 +360,7 @@ export function TopicsHooksTree({
                           </button>
                         </div>
                         <HookLeaves
+                          driveFileId={driveFileId}
                           hooks={sub.hooks ?? []}
                           selectedHooks={selectedHooks}
                           onToggleHook={onToggleHook}
@@ -365,11 +372,14 @@ export function TopicsHooksTree({
                               end_sec: h.end_sec,
                             })
                           }
+                          feedbackByKey={feedbackByKey}
+                          onFeedbackSaved={onFeedbackSaved}
                         />
                       </div>
                     );
                   })}
                   <HookLeaves
+                    driveFileId={driveFileId}
                     hooks={(topic.hooks ?? []).filter((h) => {
                       const key = (h.text || "").trim().toLowerCase();
                       if (!key) return false;
@@ -389,6 +399,8 @@ export function TopicsHooksTree({
                         end_sec: h.end_sec,
                       })
                     }
+                    feedbackByKey={feedbackByKey}
+                    onFeedbackSaved={onFeedbackSaved}
                   />
                 </div>
               )}
@@ -414,6 +426,7 @@ export function TopicsHooksTree({
               Other hooks
             </p>
             <HookLeaves
+              driveFileId={driveFileId}
               hooks={orphans}
               selectedHooks={selectedHooks}
               onToggleHook={onToggleHook}
@@ -425,6 +438,8 @@ export function TopicsHooksTree({
                   end_sec: h.end_sec,
                 })
               }
+              feedbackByKey={feedbackByKey}
+              onFeedbackSaved={onFeedbackSaved}
             />
           </div>
         );
@@ -448,17 +463,23 @@ export function TopicsHooksTree({
 }
 
 function HookLeaves({
+  driveFileId,
   hooks,
   selectedHooks,
   onToggleHook,
   onPreview,
   onPickFrame,
+  feedbackByKey,
+  onFeedbackSaved,
 }: {
+  driveFileId: string;
   hooks: CarouselVerbatimItem[];
   selectedHooks: string[];
   onToggleHook: (text: string) => void;
   onPreview: (item: { start_sec: number; text: string }) => void;
   onPickFrame: (hook: CarouselVerbatimItem) => void;
+  feedbackByKey?: Record<string, CarouselItemFeedback>;
+  onFeedbackSaved?: (item: CarouselItemFeedback) => void;
 }) {
   if (!hooks.length) return null;
   // Never show the same hook line twice in one section (old payloads
@@ -477,12 +498,15 @@ function HookLeaves({
     <ul className="topics-hooks-hooks">
       {unique.map((h, i) => {
         const on = selectedHooks.includes(h.text);
+        const targetKey = h.id || h.text;
+        const fbKey = `hook:${targetKey}`;
         return (
           <li
             key={h.id}
             className="topics-hooks-hook"
             style={{ animationDelay: `${i * 30}ms` }}
           >
+            <div className="topics-hooks-topic-row">
             <span className="topics-hooks-rail is-hook" aria-hidden />
             <button
               type="button"
@@ -524,6 +548,15 @@ function HookLeaves({
             >
               <Play size={14} />
             </button>
+            </div>
+            <ItemFeedback
+              driveFileId={driveFileId}
+              kind="hook"
+              targetKey={targetKey}
+              targetLabel={h.text}
+              initial={feedbackByKey?.[fbKey] ?? null}
+              onSaved={onFeedbackSaved}
+            />
           </li>
         );
       })}

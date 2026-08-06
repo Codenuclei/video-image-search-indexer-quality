@@ -383,6 +383,17 @@ export type CarouselTranscriptFrameItem = {
   cached?: boolean;
 };
 
+export type CarouselItemFeedback = {
+  id: number;
+  drive_file_id: string;
+  target_kind: "theme" | "hook" | string;
+  target_key: string;
+  target_label?: string | null;
+  rating?: "up" | "down" | null;
+  comment?: string | null;
+  updated_at?: string | null;
+};
+
 async function api<T>(path: string, init?: RequestInit & { timeoutMs?: number }): Promise<T> {
   const { timeoutMs, ...rest } = init ?? {};
   const timeout =
@@ -552,6 +563,26 @@ export const apiClient = {
         timeoutMs: body.force || body.generate ? 900_000 : 90_000,
       }
     ),
+  carouselFeedbackList: (driveFileId: string, targetKind?: "theme" | "hook") => {
+    const qs = new URLSearchParams({ drive_file_id: driveFileId });
+    if (targetKind) qs.set("target_kind", targetKind);
+    return api<{ drive_file_id: string; items: CarouselItemFeedback[] }>(
+      `/search/carousel/pipeline/feedback?${qs}`
+    );
+  },
+  carouselFeedbackUpsert: (body: {
+    drive_file_id: string;
+    target_kind: "theme" | "hook";
+    target_key: string;
+    target_label?: string;
+    rating?: "up" | "down" | null;
+    comment?: string;
+  }) =>
+    api<{ ok: boolean; item: CarouselItemFeedback }>("/search/carousel/pipeline/feedback", {
+      method: "PUT",
+      body: JSON.stringify(body),
+      timeoutMs: 30_000,
+    }),
   carouselPipelinePrerun: (body?: { drive_file_ids?: string[]; force?: boolean }) =>
     api<{
       count: number;
