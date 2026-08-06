@@ -52,10 +52,10 @@ async function main() {
     (prefer || rows[0])?.click();
   });
 
-  await page.waitForSelector('[data-testid="carousel-continue-from-video"]:not([disabled])', {
+  await page.waitForSelector('[data-testid="carousel-continue-themes"]:not([disabled])', {
     timeout: 60_000,
   });
-  await page.click('[data-testid="carousel-continue-from-video"]');
+  await page.click('[data-testid="carousel-continue-themes"]');
 
   await waitCount(page, '[data-testid="carousel-phase-2"] [role="checkbox"]', {
     timeoutMs: 180_000,

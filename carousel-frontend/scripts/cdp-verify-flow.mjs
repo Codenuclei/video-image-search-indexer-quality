@@ -90,7 +90,6 @@ async function pageState(page) {
       phase3: phase(3),
       phase4: phase(4),
       phase5: phase(5),
-      continueFromVideo: btnInfo('[data-testid="carousel-continue-from-video"]'),
       continueThemes: btnInfo('[data-testid="carousel-continue-themes"]'),
       extractBtn: btnInfo('[data-testid="carousel-extract-themes"]'),
       previewBtn: btnInfo('[data-testid="carousel-continue-preview"]'),
@@ -155,7 +154,6 @@ async function main() {
       const buttons = [...document.querySelectorAll(".studio-video-list button, [data-testid='carousel-phase-1'] li button, [data-testid='carousel-phase-1'] button")];
       const candidates = buttons.filter(
         (b) =>
-          !b.matches('[data-testid="carousel-continue-from-video"]') &&
           !b.matches('[data-testid="carousel-continue-themes"]') &&
           (b.innerText || "").trim().length > 8
       );
@@ -180,17 +178,13 @@ async function main() {
     s = await poll(
       async () => {
         const st = await pageState(page);
-        const btn = st.continueFromVideo || st.continueThemes;
+        const btn = st.continueThemes;
         return { ok: !!btn && !btn.disabled, ...st };
       },
       { timeoutMs: 45_000, intervalMs: 1500, label: "continue-enabled" }
     );
 
-    if (s.continueFromVideo && !s.continueFromVideo.disabled) {
-      await page.click('[data-testid="carousel-continue-from-video"]');
-    } else {
-      await page.click('[data-testid="carousel-continue-themes"]');
-    }
+    await page.click('[data-testid="carousel-continue-themes"]');
 
     s = await poll(
       async () => {

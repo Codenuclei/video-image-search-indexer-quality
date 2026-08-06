@@ -1413,45 +1413,6 @@ export default function CarouselSearchPage() {
                   ? ` · ${themes.length} themes loaded — select themes, then Extract`
                   : ""}
             </p>
-            {themesNeedContinue && (
-              <button
-                type="button"
-                className="studio-btn studio-btn-primary studio-btn-continue"
-                onClick={(e) => {
-                  e.preventDefault();
-                  if (themeSaves.length > 0) void continueToThemes();
-                  else void generateThemes();
-                }}
-                disabled={
-                  Boolean(continueDisabledReason) ||
-                  loadingThemes ||
-                  loadingExtract ||
-                  building ||
-                  pipelineLocked
-                }
-                data-testid="carousel-continue-from-video"
-                title={
-                  continueDisabledReason ||
-                  (themeSaves.length > 0
-                    ? "Load cached themes"
-                    : "Generate themes for this video")
-                }
-              >
-                {loadingThemes ? (
-                  <LoadingLabel>Loading themes…</LoadingLabel>
-                ) : themeSaves.length > 0 ? (
-                  <>
-                    <Sparkles size={15} />
-                    Load themes
-                  </>
-                ) : (
-                  <>
-                    Generate themes
-                    <ArrowRight size={14} className="studio-btn-continue-arrow" />
-                  </>
-                )}
-              </button>
-            )}
           </div>
         )}
       </section>
