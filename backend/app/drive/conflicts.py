@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import DriveFile, DriveFileStatus, FileIndexConflict
@@ -34,7 +34,12 @@ async def find_by_content_hash(
     digest: str,
     exclude_id: str,
 ) -> DriveFile | None:
-    """Find another file already known with the same content hash."""
+    """Find another file whose identical bytes are already claimed or indexed.
+
+    PENDING peers are ignored — matching them autoskipped copies against a twin
+    that has not finished yet, and (worse) could demote a PROCESSED row when a
+    hash is attached for the first time during Drive sync.
+    """
     row = (
         await session.execute(
             select(DriveFile)
@@ -43,8 +48,21 @@ async def find_by_content_hash(
                 DriveFile.content_hash_algo == algo,
                 DriveFile.id != exclude_id,
                 DriveFile.error_message.is_distinct_from("folder_marker"),
+                DriveFile.status.in_(
+                    (
+                        DriveFileStatus.PROCESSING,
+                        DriveFileStatus.PROCESSED,
+                    )
+                ),
             )
-            .order_by(DriveFile.created_at.asc())
+            .order_by(
+                # Prefer a finished twin so autoskip means "already indexed".
+                case(
+                    (DriveFile.status == DriveFileStatus.PROCESSED, 0),
+                    else_=1,
+                ),
+                DriveFile.created_at.asc(),
+            )
             .limit(1)
         )
     ).scalar_one_or_none()
@@ -155,6 +173,10 @@ async def apply_dedupe_on_upsert(
     if algo and digest:
         drive_file.content_hash = digest.strip().lower()
         drive_file.content_hash_algo = algo
+
+    # Never demote a finished index row — hash attach / re-sync must keep PROCESSED.
+    if drive_file.status == DriveFileStatus.PROCESSED:
+        return None
 
     # Same content → autoskip (do not reindex). Record mergeable conflict when names differ.
     if drive_file.content_hash and drive_file.content_hash_algo:

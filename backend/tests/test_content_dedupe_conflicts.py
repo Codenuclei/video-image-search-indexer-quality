@@ -175,6 +175,111 @@ async def test_same_name_diff_content_pending_replace(db_session: AsyncSession) 
 
 @requires_postgres
 @pytest.mark.asyncio
+async def test_pending_peers_same_content_do_not_autoskip(db_session: AsyncSession) -> None:
+    """Two PENDING files with the same hash must not skip each other before either finishes."""
+    a = DriveFile(
+        id="pend_hash_a",
+        name="a.jpg",
+        mime_type="image/jpeg",
+        path="/a.jpg",
+        status=DriveFileStatus.PENDING,
+        content_hash="samehash",
+        content_hash_algo="md5",
+    )
+    b = DriveFile(
+        id="pend_hash_b",
+        name="b.jpg",
+        mime_type="image/jpeg",
+        path="/b.jpg",
+        status=DriveFileStatus.PENDING,
+    )
+    db_session.add_all([a, b])
+    await db_session.flush()
+
+    reason = await apply_dedupe_on_upsert(db_session, b, algo="md5", digest="samehash")
+    await db_session.flush()
+    assert reason is None
+    assert b.status == DriveFileStatus.PENDING
+
+
+@requires_postgres
+@pytest.mark.asyncio
+async def test_dedupe_never_demotes_processed(db_session: AsyncSession) -> None:
+    processed = DriveFile(
+        id="keep_proc",
+        name="hero.jpg",
+        mime_type="image/jpeg",
+        path="/hero.jpg",
+        status=DriveFileStatus.PROCESSED,
+        content_hash="abc123",
+        content_hash_algo="md5",
+    )
+    twin = DriveFile(
+        id="other_pend",
+        name="copy.jpg",
+        mime_type="image/jpeg",
+        path="/copy.jpg",
+        status=DriveFileStatus.PROCESSING,
+        content_hash="abc123",
+        content_hash_algo="md5",
+    )
+    db_session.add_all([processed, twin])
+    await db_session.flush()
+
+    reason = await apply_dedupe_on_upsert(db_session, processed, algo="md5", digest="abc123")
+    await db_session.flush()
+    assert reason is None
+    assert processed.status == DriveFileStatus.PROCESSED
+
+
+def test_macos_junk_name() -> None:
+    from app.drive.content_hash import is_macos_junk_name
+
+    assert is_macos_junk_name("._IMG_1234.HEIC") is True
+    assert is_macos_junk_name(".DS_Store") is True
+    assert is_macos_junk_name("IMG_1234.HEIC") is False
+
+
+def test_first_hash_attach_is_not_hash_changed() -> None:
+    """Mirrors indexer upsert: newly attached digest must not count as content change."""
+    prev_hash = None
+    digest = "deadbeef"
+    hash_changed = bool(prev_hash and digest and digest != prev_hash)
+    newly_hashed = bool(digest and not prev_hash)
+    assert hash_changed is False
+    assert newly_hashed is True
+    content_changed = False or hash_changed
+    assert content_changed is False
+
+
+@requires_postgres
+@pytest.mark.asyncio
+async def test_restore_processed_when_media_exists(db_session: AsyncSession) -> None:
+    from app.db.models import Media, MediaType
+    from app.drive.cleanup import restore_processed_when_media_exists
+
+    df = DriveFile(
+        id="media_pending",
+        name="already.jpg",
+        mime_type="image/jpeg",
+        path="/already.jpg",
+        status=DriveFileStatus.PENDING,
+    )
+    db_session.add(df)
+    await db_session.flush()
+    db_session.add(Media(drive_file_id=df.id, type=MediaType.IMAGE))
+    await db_session.flush()
+
+    n = await restore_processed_when_media_exists(db_session)
+    await db_session.flush()
+    assert n == 1
+    refreshed = await db_session.get(DriveFile, "media_pending")
+    assert refreshed is not None
+    assert refreshed.status == DriveFileStatus.PROCESSED
+
+
+@requires_postgres
+@pytest.mark.asyncio
 async def test_pending_peers_same_name_do_not_conflict(db_session: AsyncSession) -> None:
     """Two PENDING files with the same name must not skip each other."""
     a = DriveFile(

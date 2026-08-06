@@ -9,6 +9,13 @@ from app.drive.schemas import ConnectorFile
 # Skip-reason prefixes written to drive_files.error_message.
 DUPLICATE_CONTENT_PREFIX = "duplicate_content:"
 NAME_CONFLICT_PREFIX = "name_conflict:"
+APPLEDOUBLE_SKIP_PREFIX = "appledouble_junk:"
+
+
+def is_macos_junk_name(name: str | None) -> bool:
+    """True for AppleDouble resource forks / .DS_Store that cannot be decoded as media."""
+    base = (name or "").rsplit("/", 1)[-1]
+    return base.startswith("._") or base == ".DS_Store" or base.startswith(".DS_Store")
 
 
 def drive_url_for_folder(folder_id: str) -> str:
