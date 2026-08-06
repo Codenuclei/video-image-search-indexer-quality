@@ -80,4 +80,7 @@ def test_library_tree_includes_archived_globally():
     assert summary["total_files"] == 2
     assert summary["archived"] == 1
     assert summary["embedded"] == 2
+    # a is processed + missing caption; b is archived (not in needs_work caption term)
+    assert summary["missing_captions"] == 1
+    assert summary["needs_work"] == summary["pending"] + summary["errors"] + summary["missing_captions"]
     assert root.archived_count == 1
