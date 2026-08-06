@@ -1987,6 +1987,7 @@ async def regenerate_carousel_slide(
         polished = await _polish_outline_frames(
             [candidate], session, prefer_local=True, max_candidates=4
         )
+        _attach_layout_panels([{"slides": polished}])
         await _prewarm_carousel_frames([{"slides": polished}], session, get_settings())
         slides[body.slide_index] = polished[0]
         target_car["slides"] = slides
@@ -1995,6 +1996,16 @@ async def regenerate_carousel_slide(
         if carousels and carousels[0] is target_car:
             payload["slides"] = slides
         payload["images_ready"] = True
+        payload["layouts"] = {
+            "single_1": {
+                "layout_mode": "single_1",
+                "carousels": _layout_carousels(carousels, split=False),
+            },
+            "split_2": {
+                "layout_mode": "split_2",
+                "carousels": _layout_carousels(carousels, split=True),
+            },
+        }
         replacement = CarouselGenerationSave(
             drive_file_id=body.drive_file_id.strip(),
             kind=SAVE_KIND_CAROUSEL,
@@ -3612,7 +3623,9 @@ async def _prewarm_carousel_frames(
             ts = _frame_ts(float(slide.get("timestamp_sec") or 0), slide.get("end_timestamp_sec"))
             slide["frame_ts"] = ts
         async with sem:
-            data = await _ensure_outline_frame_bytes(fid, float(ts), session, settings)
+            data = await _ensure_outline_frame_bytes(
+                fid, float(ts), session, settings, exact_only=True
+            )
         if not data:
             return f"{fid}@{float(ts):.3f}"
         path = cached_frame_path(str(settings.thumbnail_dir), fid, float(ts))
@@ -3655,9 +3668,61 @@ def _split_exact_caption_lines(text: str) -> tuple[str, str]:
     return cleaned, cleaned
 
 
+def _pick_split_frame_timestamps(
+    *,
+    selected_ts: float,
+    start: float,
+    end_f: float,
+    drive_file_id: str,
+    thumbnail_dir: str | None,
+) -> tuple[float, float]:
+    """Pick two panel timestamps that resolve to different stills when possible.
+
+    Prefer on-disk frames inside the spoken span (far apart). Fall back to the
+    span endpoints / a small nudge so split_2 never intentionally duplicates.
+    """
+    min_gap = 0.45
+    left = round(float(selected_ts), 3)
+    cached: list[float] = []
+    if thumbnail_dir and drive_file_id:
+        from app.search.carousel_frame_select import list_cached_timestamps_in_span
+
+        cached = list_cached_timestamps_in_span(
+            thumbnail_dir,
+            drive_file_id,
+            start,
+            end_f,
+            limit=32,
+        )
+    if len(cached) >= 2:
+        anchor = min(cached, key=lambda t: abs(t - left))
+        partner = max(cached, key=lambda t: abs(t - anchor))
+        if abs(partner - anchor) >= min_gap:
+            # Keep AI/heuristic pick on the left when it is already a cached ts.
+            if abs(anchor - left) < 0.05:
+                return round(anchor, 3), round(partner, 3)
+            return round(anchor, 3), round(partner, 3)
+        if abs(cached[-1] - cached[0]) >= min_gap:
+            return round(cached[0], 3), round(cached[-1], 3)
+
+    alternate = round(end_f if abs(end_f - left) >= min_gap else start, 3)
+    if abs(alternate - left) < 0.01:
+        alternate = round(left + 0.5, 3)
+    if abs(alternate - left) < min_gap:
+        if abs(end_f - start) >= min_gap:
+            return round(start, 3), round(end_f, 3)
+        alternate = round(left + 1.0, 3)
+    return left, alternate
+
+
 def _attach_layout_panels(carousels: list[dict[str, Any]]) -> None:
     """Attach cache-backed single and two-panel layout metadata to slides."""
     from app.search.carousel_frame_select import focal_point_for_slide
+
+    try:
+        thumbnail_dir = str(get_settings().thumbnail_dir)
+    except Exception:  # noqa: BLE001
+        thumbnail_dir = None
 
     for carousel in carousels:
         for slide in carousel.get("slides") or []:
@@ -3669,9 +3734,13 @@ def _attach_layout_panels(carousels: list[dict[str, Any]]) -> None:
             except (TypeError, ValueError):
                 end_f = start
             selected_ts = float(slide.get("frame_ts") or _frame_ts(start, end_f))
-            alternate = round(end_f if abs(end_f - selected_ts) >= 0.45 else start, 3)
-            if abs(alternate - selected_ts) < 0.01:
-                alternate = round(selected_ts + 0.5, 3)
+            left_ts, right_ts = _pick_split_frame_timestamps(
+                selected_ts=selected_ts,
+                start=start,
+                end_f=end_f,
+                drive_file_id=fid,
+                thumbnail_dir=thumbnail_dir,
+            )
             text = str(
                 slide.get("transcript_text")
                 or slide.get("hook_line")
@@ -3679,8 +3748,8 @@ def _attach_layout_panels(carousels: list[dict[str, Any]]) -> None:
                 or ""
             )
             top, bottom = _split_exact_caption_lines(text)
-            fx, fy, fs = focal_point_for_slide(slide, selected_ts)
-            ax, ay, afs = focal_point_for_slide(slide, alternate)
+            fx, fy, fs = focal_point_for_slide(slide, left_ts)
+            ax, ay, afs = focal_point_for_slide(slide, right_ts)
             def panel(ts: float, caption: str, px: float, py: float, score: float) -> dict[str, Any]:
                 return {
                     "drive_file_id": fid,
@@ -3696,10 +3765,10 @@ def _attach_layout_panels(carousels: list[dict[str, Any]]) -> None:
                 }
             # single_1 is represented by one panel and the existing bottom
             # caption; split_2 is materialized in the artifact layouts below.
-            slide["panels"] = [panel(selected_ts, bottom, fx, fy, fs)]
+            slide["panels"] = [panel(left_ts, bottom, fx, fy, fs)]
             slide["_split_panels"] = [
-                panel(selected_ts, top, fx, fy, fs),
-                panel(alternate, bottom, ax, ay, afs),
+                panel(left_ts, top, fx, fy, fs),
+                panel(right_ts, bottom, ax, ay, afs),
             ]
 
 
@@ -3729,15 +3798,28 @@ async def _ensure_outline_frame_bytes(
     ts: float,
     session: AsyncSession,
     settings,
+    *,
+    exact_only: bool = False,
 ) -> bytes | None:
-    """Load or extract a JPEG for Gemini ranking (best-effort; never raises)."""
+    """Load or extract a JPEG for Gemini ranking (best-effort; never raises).
+
+    When exact_only=True (carousel prewarm / split panels), never satisfy a
+    timestamp with a neighbour's cached JPEG — that made both split panels
+    show the same still after writing identical bytes under two paths.
+    """
     from app.routers.media import _extract_frame_on_demand
     from app.search.carousel_frame_select import cached_frame_path, load_cached_frame_bytes
 
-    cached = load_cached_frame_bytes(str(settings.thumbnail_dir), drive_file_id, ts)
-    if cached:
-        return cached
     out_path = cached_frame_path(str(settings.thumbnail_dir), drive_file_id, ts)
+    if exact_only:
+        if out_path.is_file():
+            data = out_path.read_bytes()
+            if data:
+                return data
+    else:
+        cached = load_cached_frame_bytes(str(settings.thumbnail_dir), drive_file_id, ts)
+        if cached:
+            return cached
     try:
         out_path.parent.mkdir(parents=True, exist_ok=True)
         ok = await _extract_frame_on_demand(drive_file_id, ts, out_path, settings, session)

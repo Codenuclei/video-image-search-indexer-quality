@@ -127,7 +127,13 @@ async def get_video_frame(
     if out_path.is_file():
         return _respond(out_path)
 
-    # 2. Nearest pre-extracted frame (within ±5 s tolerance)
+    # Ready carousel artifacts use cache_only deliberately: a miss must fail
+    # immediately rather than collapsing distinct panel timestamps onto the
+    # same nearest JPEG (or turning an image GET into ffmpeg/Drive I/O).
+    if cache_only:
+        raise HTTPException(status_code=404, detail="Cached frame not available")
+
+    # 2. Nearest pre-extracted frame (within ±5 s tolerance) — interactive only
     if frames_dir.is_dir():
         candidates = sorted(
             frames_dir.glob("*.jpg"),
@@ -135,11 +141,6 @@ async def get_video_frame(
         )
         if candidates and abs(float(candidates[0].stem) - ts) <= 5.0:
             return _respond(candidates[0])
-
-    # Ready carousel artifacts use this mode deliberately: a cache miss must
-    # fail immediately rather than turning an image GET into ffmpeg/Drive I/O.
-    if cache_only:
-        raise HTTPException(status_code=404, detail="Cached frame not available")
 
     # 3. Check VideoSegment.frame_path in DB (pre-indexed frames, any timestamp)
     seg = (
