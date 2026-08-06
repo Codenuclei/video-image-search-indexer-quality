@@ -151,19 +151,32 @@ def build_library_tree(
             if item.status == "archived":
                 ancestor.archived_count += 1
 
+    pending = sum(
+        1 for f in all_files
+        if f.status == "pending" and not is_file_indexing_paused(f.path, paused)
+    )
+    errors = sum(1 for f in all_files if f.status == "error")
+    # Caption gaps only on already-indexed images — do NOT use (images - captioned),
+    # which double-counts every still-pending image into "Needs work".
+    missing_captions = sum(
+        1
+        for f in all_files
+        if f.is_image and f.status == "processed" and not f.has_caption
+    )
     summary = {
         "total_files": len(all_files),
         "images": sum(1 for f in all_files if f.is_image),
         "videos": sum(1 for f in all_files if f.is_video),
         "captioned": sum(1 for f in all_files if f.is_image and f.has_caption),
         "embedded": sum(1 for f in all_files if f.is_image and f.has_embedding),
-        "pending": sum(
-            1 for f in all_files
-            if f.status == "pending" and not is_file_indexing_paused(f.path, paused)
-        ),
-        "errors": sum(1 for f in all_files if f.status == "error"),
+        "pending": pending,
+        "errors": errors,
         "skipped": sum(1 for f in all_files if f.status == "skipped"),
         "archived": sum(1 for f in all_files if f.status == "archived"),
+        "missing_captions": missing_captions,
+        # Index queue + failed retries + caption backfill on completed images.
+        # Excludes skipped/junk/duplicates and does not double-count pending images.
+        "needs_work": pending + errors + missing_captions,
     }
     if summary["images"]:
         summary["caption_pct"] = round(100.0 * summary["captioned"] / summary["images"], 1)

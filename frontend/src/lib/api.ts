@@ -898,6 +898,10 @@ export type LibraryResponse = {
     errors: number;
     skipped: number;
     archived?: number;
+    /** Processed images still missing a caption (not pending images). */
+    missing_captions?: number;
+    /** pending + errors + missing_captions — excludes skipped / no double-count. */
+    needs_work?: number;
     caption_pct: number;
   };
   maintenance: LibraryMaintenance;

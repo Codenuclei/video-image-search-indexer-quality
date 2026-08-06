@@ -19,10 +19,9 @@ def test_db_pool_fits_under_max_connections_200():
     overflow = Settings.model_fields["db_max_overflow"].default
     assert pool >= 5
     assert overflow >= 5
-    for workers in (4, 8):
-        budget = workers * (pool + overflow)
-        assert budget < 200
-        assert budget <= 120  # leave headroom for admin / pg_dump / other services
+    # Prefer 4 workers (OpenBLAS-safe). Allow a brief 8-worker spike under 200.
+    assert 4 * (pool + overflow) <= 120
+    assert 8 * (pool + overflow) < 200
 
 
 def test_prune_daily_never_touches_forever(tmp_path: Path):

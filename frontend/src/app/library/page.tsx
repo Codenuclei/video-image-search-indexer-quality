@@ -438,8 +438,13 @@ export default function LibraryPage() {
           <StatCard label="Embedded" value={`${summary.embedded}/${summary.images}`} />
           <StatCard
             label="Needs work"
-            value={summary.pending + (summary.images - summary.captioned)}
-            hint={`${summary.pending} pending · ${summary.errors} errors`}
+            value={
+              summary.needs_work ??
+              summary.pending +
+                summary.errors +
+                (summary.missing_captions ?? 0)
+            }
+            hint={`${summary.pending} pending · ${summary.errors} errors · ${summary.missing_captions ?? 0} need captions`}
           />
         </div>
       )}

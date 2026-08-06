@@ -50,12 +50,13 @@ class Settings(BaseSettings):
     cpu_thread_pool_size: int = 0          # 0 = os.cpu_count()
     # Concurrent image jobs (face detect + embed + Drive download). Matched to
     # drive_download_max_concurrent so index slots don't outrun the Drive throttle.
-    # Folders Active / in-flight ≈ this value (status=processing), not embed RPS.
-    # Keep ≤16 until OpenBLAS × multi-worker crash fix is proven; do not chase 50 slots.
-    image_index_max_parallel: int = 16
+    # Folders Active / in-flight ≈ image + video slots (status=processing), not embed RPS.
+    # Default 46 + VIDEO_INDEX_MAX_PARALLEL(4) ≈ 50 Active when the queue is full.
+    # OPENBLAS/OMP must stay at 1 under WEB_CONCURRENCY=4 — do not raise worker count.
+    image_index_max_parallel: int = 46
     # Shared Drive download concurrency (indexer + maintenance + preview).
-    # Google user-rate limits typically tolerate ~10–20 parallel media GETs.
-    drive_download_max_concurrent: int = 16
+    # Keep in lockstep with image slots so Active jobs are not download-starved.
+    drive_download_max_concurrent: int = 46
     # Parallel Drive folder children listings during recursive tree walk.
     drive_list_max_concurrent: int = 4
     # Optional Go sidecar canary (claim/download in Go, complete via Python ingest).
@@ -216,8 +217,10 @@ class Settings(BaseSettings):
     # Async SQLAlchemy pool — must fit under Postgres max_connections (200).
     # With WEB_CONCURRENCY=4: 4 × (5+5) = 40 < 200 (headroom for admin/pg_dump/other services).
     # pool_size=2 was starving GET /index under concurrent workers (QueuePool timeout).
-    db_pool_size: int = 5
-    db_max_overflow: int = 5
+    # Per-worker pool: ~50 concurrent index jobs on the background leader need headroom.
+    # WEB_CONCURRENCY=4 → 4×(15+9)=96 < 200 Postgres max (leave room for pg_dump).
+    db_pool_size: int = 15
+    db_max_overflow: int = 9
     db_pool_timeout: float = 30.0
     # Qdrant REST client timeout (seconds); raise to avoid false connection errors under load.
     qdrant_timeout_seconds: float = 60.0
