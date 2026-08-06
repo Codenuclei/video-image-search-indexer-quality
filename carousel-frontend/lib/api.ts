@@ -394,6 +394,20 @@ export type CarouselItemFeedback = {
   updated_at?: string | null;
 };
 
+export type CarouselItemReference = {
+  id: number;
+  drive_file_id: string;
+  target_kind: "theme" | "hook" | string;
+  target_key: string;
+  target_label?: string | null;
+  ref_kind: "image" | "copy" | string;
+  image_url?: string | null;
+  frame_ts?: number | null;
+  copy_text?: string | null;
+  note?: string | null;
+  updated_at?: string | null;
+};
+
 async function api<T>(path: string, init?: RequestInit & { timeoutMs?: number }): Promise<T> {
   const { timeoutMs, ...rest } = init ?? {};
   const timeout =
@@ -581,6 +595,34 @@ export const apiClient = {
     api<{ ok: boolean; item: CarouselItemFeedback }>("/search/carousel/pipeline/feedback", {
       method: "PUT",
       body: JSON.stringify(body),
+      timeoutMs: 30_000,
+    }),
+  carouselReferencesList: (driveFileId: string, targetKind?: "theme" | "hook") => {
+    const qs = new URLSearchParams({ drive_file_id: driveFileId });
+    if (targetKind) qs.set("target_kind", targetKind);
+    return api<{ drive_file_id: string; items: CarouselItemReference[] }>(
+      `/search/carousel/pipeline/references?${qs}`
+    );
+  },
+  carouselReferenceCreate: (body: {
+    drive_file_id: string;
+    target_kind: "theme" | "hook";
+    target_key: string;
+    target_label?: string;
+    ref_kind: "image" | "copy";
+    image_url?: string;
+    frame_ts?: number | null;
+    copy_text?: string;
+    note?: string;
+  }) =>
+    api<{ ok: boolean; item: CarouselItemReference }>("/search/carousel/pipeline/references", {
+      method: "POST",
+      body: JSON.stringify(body),
+      timeoutMs: 30_000,
+    }),
+  carouselReferenceDelete: (refId: number) =>
+    api<{ ok: boolean; id: number }>(`/search/carousel/pipeline/references/${refId}`, {
+      method: "DELETE",
       timeoutMs: 30_000,
     }),
   carouselPipelinePrerun: (body?: { drive_file_ids?: string[]; force?: boolean }) =>

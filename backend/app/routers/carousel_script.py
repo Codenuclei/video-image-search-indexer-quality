@@ -25,6 +25,7 @@ from app.db.advisory_locks import (
 from app.db.models import (
     CarouselGenerationSave,
     CarouselItemFeedback,
+    CarouselItemReference,
     DriveFile,
     DriveFileStatus,
     Face,
@@ -5824,6 +5825,154 @@ async def carousel_pipeline_feedback_upsert(
     await session.commit()
     await session.refresh(existing)
     return {"ok": True, "item": _feedback_row_dict(existing)}
+
+
+class CarouselReferenceCreate(BaseModel):
+    drive_file_id: str = Field(..., min_length=1, max_length=128)
+    target_kind: str = Field(..., min_length=1, max_length=16)  # theme | hook
+    target_key: str = Field(..., min_length=1, max_length=256)
+    target_label: str = Field(default="", max_length=400)
+    ref_kind: str = Field(..., min_length=1, max_length=16)  # image | copy
+    image_url: str = Field(default="", max_length=2000)
+    frame_ts: float | None = None
+    copy_text: str = Field(default="", max_length=4000)
+    note: str = Field(default="", max_length=200)
+
+
+def _reference_row_dict(row: CarouselItemReference) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "drive_file_id": row.drive_file_id,
+        "target_kind": row.target_kind,
+        "target_key": row.target_key,
+        "target_label": row.target_label,
+        "ref_kind": row.ref_kind,
+        "image_url": row.image_url,
+        "frame_ts": row.frame_ts,
+        "copy_text": row.copy_text,
+        "note": row.note,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    }
+
+
+def _normalize_reference_image_url(raw: str) -> str | None:
+    url = (raw or "").strip()
+    if not url:
+        return None
+    if len(url) > 2000:
+        raise HTTPException(status_code=400, detail="image_url is too long")
+    lower = url.lower()
+    if lower.startswith("https://") or lower.startswith("http://"):
+        return url
+    if url.startswith("/media/") or url.startswith("/api/"):
+        return url
+    # Allow bare Drive file ids as a convenience (frontend can also pass full URLs).
+    if re.fullmatch(r"[A-Za-z0-9_-]{10,128}", url):
+        return f"https://drive.google.com/file/d/{url}/view"
+    raise HTTPException(
+        status_code=400,
+        detail="image_url must be http(s), /media/…, or a Drive file id",
+    )
+
+
+@router.get("/pipeline/references")
+async def carousel_pipeline_references_list(
+    drive_file_id: str = Query(..., min_length=1, max_length=128),
+    target_kind: str | None = Query(default=None, max_length=16),
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    fid = drive_file_id.strip()
+    if not fid:
+        raise HTTPException(status_code=400, detail="drive_file_id is required")
+    stmt = select(CarouselItemReference).where(CarouselItemReference.drive_file_id == fid)
+    kind = (target_kind or "").strip().lower()
+    if kind in {"theme", "hook"}:
+        stmt = stmt.where(CarouselItemReference.target_kind == kind)
+    rows = (await session.scalars(stmt.order_by(CarouselItemReference.updated_at.desc()))).all()
+    return {"drive_file_id": fid, "items": [_reference_row_dict(r) for r in rows]}
+
+
+@router.post("/pipeline/references")
+async def carousel_pipeline_references_create(
+    body: CarouselReferenceCreate,
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    fid = body.drive_file_id.strip()
+    kind = body.target_kind.strip().lower()
+    key = body.target_key.strip()[:256]
+    ref_kind = body.ref_kind.strip().lower()
+    if not fid or not key:
+        raise HTTPException(status_code=400, detail="drive_file_id and target_key are required")
+    if kind not in {"theme", "hook"}:
+        raise HTTPException(status_code=400, detail="target_kind must be theme or hook")
+    if ref_kind not in {"image", "copy"}:
+        raise HTTPException(status_code=400, detail="ref_kind must be image or copy")
+
+    label = (body.target_label or "").strip()[:400] or None
+    note = (body.note or "").strip()[:200] or None
+    image_url: str | None = None
+    copy_text: str | None = None
+    frame_ts: float | None = None
+
+    if ref_kind == "image":
+        image_url = _normalize_reference_image_url(body.image_url)
+        if not image_url:
+            raise HTTPException(status_code=400, detail="image_url is required for image refs")
+        if body.frame_ts is not None:
+            try:
+                frame_ts = float(body.frame_ts)
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(status_code=400, detail="frame_ts must be a number") from exc
+            if frame_ts < 0:
+                frame_ts = 0.0
+    else:
+        copy_text = (body.copy_text or "").strip()[:4000] or None
+        if not copy_text:
+            raise HTTPException(status_code=400, detail="copy_text is required for copy refs")
+
+    # Cap attachments per target so a row cannot grow without bound.
+    existing_count = len(
+        (
+            await session.scalars(
+                select(CarouselItemReference.id).where(
+                    CarouselItemReference.drive_file_id == fid,
+                    CarouselItemReference.target_kind == kind,
+                    CarouselItemReference.target_key == key,
+                )
+            )
+        ).all()
+    )
+    if existing_count >= 24:
+        raise HTTPException(status_code=400, detail="At most 24 references per theme/hook")
+
+    row = CarouselItemReference(
+        drive_file_id=fid,
+        target_kind=kind,
+        target_key=key,
+        target_label=label,
+        ref_kind=ref_kind,
+        image_url=image_url,
+        frame_ts=frame_ts,
+        copy_text=copy_text,
+        note=note,
+    )
+    session.add(row)
+    await session.commit()
+    await session.refresh(row)
+    return {"ok": True, "item": _reference_row_dict(row)}
+
+
+@router.delete("/pipeline/references/{ref_id}")
+async def carousel_pipeline_references_delete(
+    ref_id: int,
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    row = await session.get(CarouselItemReference, ref_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Reference not found")
+    await session.delete(row)
+    await session.commit()
+    return {"ok": True, "id": ref_id}
 
 
 def _fallback_script(

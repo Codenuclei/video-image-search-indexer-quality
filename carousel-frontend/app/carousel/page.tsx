@@ -48,6 +48,7 @@ import {
   type CarouselTopicTreeNode,
   type CarouselVerbatimItem,
   type CarouselItemFeedback,
+  type CarouselItemReference,
   type Person,
 } from "@/lib/api";
 import { DownloadButton, LoadingLabel, ServiceErrorCard } from "@/components/ui";
@@ -64,6 +65,7 @@ import {
 } from "./utils";
 import { TopicsHooksTree, TranscriptFramePicker } from "./topics-hooks-tree";
 import { ItemFeedback } from "@/components/item-feedback";
+import { ItemReferences } from "@/components/item-references";
 
 type Phase = 1 | 2 | 3 | 4 | 5;
 
@@ -320,6 +322,10 @@ export default function CarouselSearchPage() {
   const [hookFrames, setHookFrames] = useState<Record<string, PickedFrame>>({});
   // Persisted thumbs/comments keyed by `${kind}:${target_key}`.
   const [itemFeedback, setItemFeedback] = useState<Record<string, CarouselItemFeedback>>({});
+  // Persisted image/copy refs keyed by `${kind}:${target_key}` → list.
+  const [itemReferences, setItemReferences] = useState<Record<string, CarouselItemReference[]>>(
+    {}
+  );
   const outlineRef = useRef<HTMLDivElement>(null);
   const phase3Ref = useRef<HTMLElement | null>(null);
 
@@ -338,6 +344,7 @@ export default function CarouselSearchPage() {
   useEffect(() => {
     if (!selectedVideo) {
       setItemFeedback({});
+      setItemReferences({});
       return;
     }
     let cancelled = false;
@@ -353,6 +360,20 @@ export default function CarouselSearchPage() {
       })
       .catch(() => {
         if (!cancelled) setItemFeedback({});
+      });
+    void apiClient
+      .carouselReferencesList(selectedVideo.id)
+      .then((res) => {
+        if (cancelled) return;
+        const map: Record<string, CarouselItemReference[]> = {};
+        for (const item of res.items ?? []) {
+          const key = `${item.target_kind}:${item.target_key}`;
+          (map[key] ??= []).push(item);
+        }
+        setItemReferences(map);
+      })
+      .catch(() => {
+        if (!cancelled) setItemReferences({});
       });
     return () => {
       cancelled = true;
@@ -1662,6 +1683,33 @@ export default function CarouselSearchPage() {
                             }))
                           }
                         />
+                        <ItemReferences
+                          driveFileId={selectedVideo.id}
+                          kind="theme"
+                          targetKey={t.theme_id || t.title}
+                          targetLabel={t.title}
+                          frameStartSec={t.start_sec}
+                          frameEndSec={t.end_sec}
+                          items={itemReferences[fbKey] ?? []}
+                          onAdded={(item) =>
+                            setItemReferences((prev) => {
+                              const key = `${item.target_kind}:${item.target_key}`;
+                              const existing = prev[key] ?? [];
+                              if (existing.some((r) => r.id === item.id)) return prev;
+                              return { ...prev, [key]: [item, ...existing] };
+                            })
+                          }
+                          onRemoved={(id) =>
+                            setItemReferences((prev) => {
+                              const next: Record<string, CarouselItemReference[]> = {};
+                              for (const [k, list] of Object.entries(prev)) {
+                                const filtered = list.filter((r) => r.id !== id);
+                                if (filtered.length) next[k] = filtered;
+                              }
+                              return next;
+                            })
+                          }
+                        />
                       </div>
                     ) : null}
                   </li>
@@ -1790,6 +1838,25 @@ export default function CarouselSearchPage() {
                   ...prev,
                   [`${item.target_kind}:${item.target_key}`]: item,
                 }))
+              }
+              referencesByKey={itemReferences}
+              onReferenceAdded={(item) =>
+                setItemReferences((prev) => {
+                  const key = `${item.target_kind}:${item.target_key}`;
+                  const existing = prev[key] ?? [];
+                  if (existing.some((r) => r.id === item.id)) return prev;
+                  return { ...prev, [key]: [item, ...existing] };
+                })
+              }
+              onReferenceRemoved={(id) =>
+                setItemReferences((prev) => {
+                  const next: Record<string, CarouselItemReference[]> = {};
+                  for (const [k, list] of Object.entries(prev)) {
+                    const filtered = list.filter((r) => r.id !== id);
+                    if (filtered.length) next[k] = filtered;
+                  }
+                  return next;
+                })
               }
             />
           )}
@@ -1935,6 +2002,35 @@ export default function CarouselSearchPage() {
                             }))
                           }
                         />
+                        {fbKey ? (
+                          <ItemReferences
+                            driveFileId={selectedVideo.id}
+                            kind={kind}
+                            targetKey={targetKey}
+                            targetLabel={p.text}
+                            frameStartSec={p.start_sec}
+                            frameEndSec={p.end_sec}
+                            items={itemReferences[fbKey] ?? []}
+                            onAdded={(item) =>
+                              setItemReferences((prev) => {
+                                const key = `${item.target_kind}:${item.target_key}`;
+                                const existing = prev[key] ?? [];
+                                if (existing.some((r) => r.id === item.id)) return prev;
+                                return { ...prev, [key]: [item, ...existing] };
+                              })
+                            }
+                            onRemoved={(id) =>
+                              setItemReferences((prev) => {
+                                const next: Record<string, CarouselItemReference[]> = {};
+                                for (const [k, list] of Object.entries(prev)) {
+                                  const filtered = list.filter((r) => r.id !== id);
+                                  if (filtered.length) next[k] = filtered;
+                                }
+                                return next;
+                              })
+                            }
+                          />
+                        ) : null}
                       </div>
                     ) : null}
                   </li>
