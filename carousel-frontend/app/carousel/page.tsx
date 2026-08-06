@@ -959,7 +959,10 @@ export default function CarouselSearchPage() {
       for (let i = 0; i < goals.length; i++) {
         const goal = goals[i];
         const isHook = hookPicks.some((h) => h.text === goal.text);
-        const res = await apiClient.carouselPipelineGenerate({
+        setImageQualityNote(
+          `Building hook ${i + 1}/${goals.length}…`
+        );
+        const body = {
           drive_file_id: selectedVideo.id,
           video_name: selectedVideo.name,
           intent: phaseIntent || extract.intent || undefined,
@@ -985,9 +988,21 @@ export default function CarouselSearchPage() {
           min_slides: 6,
           max_slides: 10,
           select_images: false,
-          generate: !force,
+          // Explicit Generate must always fall through to Gemini on cache miss.
+          generate: true,
           force,
-        });
+        };
+        let res = await apiClient.carouselPipelineGenerate(body);
+        const empty =
+          !(res.carousels && res.carousels.length) && !(res.slides && res.slides.length);
+        // Safety net: if a stale client/proxy dropped generate, retry once forced.
+        if (empty && !res.cache_hit) {
+          res = await apiClient.carouselPipelineGenerate({
+            ...body,
+            generate: true,
+            force: true,
+          });
+        }
         if (res.cache_hit) cacheHits += 1;
         if (res.generated) generated += 1;
         const list =
@@ -1019,6 +1034,7 @@ export default function CarouselSearchPage() {
       if (!merged.length) {
         setOutlineError(
           lastRes?.message ||
+            lastRes?.warning ||
             "Generate returned no carousels. Try fewer hooks or another theme."
         );
         return;
