@@ -13,7 +13,8 @@ from app.config import Settings, get_settings
 from app.db.models import CarouselGenerationSave, DriveFile, DriveFileStatus, Media, VideoSegment
 from app.drive.client import DriveConnectorClient, DriveConnectorError
 from app.drive.google_client import DriveDirectError
-from app.drive.cleanup import remove_drive_file
+from app.drive.cleanup import remove_drive_file, restore_processed_when_media_exists
+from app.drive.content_hash import APPLEDOUBLE_SKIP_PREFIX, is_macos_junk_name
 from app.drive.schemas import ConnectorFile
 from app.gemini.service import GeminiFileSearchService, get_gemini_service
 from app.gemini.tags import person_names_for_drive_file
@@ -360,6 +361,13 @@ class IndexingWorker:
                     break
                 if not is_image_mime(drive_file.mime_type, drive_file.name):
                     continue
+                if is_macos_junk_name(drive_file.name):
+                    drive_file.status = DriveFileStatus.SKIPPED
+                    drive_file.error_message = (
+                        f"{APPLEDOUBLE_SKIP_PREFIX} macOS resource fork / Finder metadata"
+                    )
+                    dirty = True
+                    continue
                 if (drive_file.decode_attempts or 0) >= decode_max_attempts():
                     continue
                 if is_file_indexing_paused(drive_file.path, paused_paths):
@@ -556,6 +564,12 @@ class IndexingWorker:
                     break
                 if not is_video_mime(drive_file.mime_type):
                     continue
+                if is_macos_junk_name(drive_file.name):
+                    drive_file.status = DriveFileStatus.SKIPPED
+                    drive_file.error_message = (
+                        f"{APPLEDOUBLE_SKIP_PREFIX} macOS resource fork / Finder metadata"
+                    )
+                    continue
                 if is_file_indexing_paused(drive_file.path, paused_paths):
                     continue
                 if drive_file.id in occupied:
@@ -565,8 +579,8 @@ class IndexingWorker:
                 claimed_ids.append(drive_file.id)
                 occupied.add(drive_file.id)
 
-            if claimed_ids:
-                await session.commit()
+            # Commit junk skips even when no video slots were claimed.
+            await session.commit()
 
         for file_id in claimed_ids:
             self._start_video_task(file_id)
@@ -1226,6 +1240,9 @@ class IndexingWorker:
                     logger.exception("Failed to update indexed folder file count")
 
             # Commit upserts/dedupe first so a soft-archive failure cannot roll them back.
+            restored = await restore_processed_when_media_exists(session)
+            if restored:
+                logger.info("sync_file_list restored %d media-backed PROCESSED row(s)", restored)
             await session.commit()
 
         # Soft-archive stale files under this sync root only. Never hard-delete
@@ -1317,9 +1334,13 @@ class IndexingWorker:
         hash_info = hash_from_connector_entry(entry)
         algo = hash_info[0] if hash_info else None
         digest = hash_info[1] if hash_info else None
+        junk = is_macos_junk_name(entry.name)
 
         if existing is None:
-            if paused:
+            if junk:
+                status = DriveFileStatus.SKIPPED
+                error_message = f"{APPLEDOUBLE_SKIP_PREFIX} macOS resource fork / Finder metadata"
+            elif paused:
                 status = DriveFileStatus.SKIPPED
                 error_message = f"{INDEXING_PAUSED_PREFIX} indexing stopped for parent folder"
             else:
@@ -1340,7 +1361,7 @@ class IndexingWorker:
             )
             session.add(drive_file)
             await session.flush()
-            if not paused:
+            if not paused and not junk:
                 skip_key = await apply_dedupe_on_upsert(
                     session, drive_file, algo=algo, digest=digest
                 )
@@ -1352,7 +1373,8 @@ class IndexingWorker:
 
         changed = existing.modified_time != entry.modified_time or existing.name != entry.name
         prev_hash = existing.content_hash
-        hash_changed = bool(digest and digest != prev_hash)
+        # First-time hash attach is NOT a content change (prev_hash was None).
+        hash_changed = bool(prev_hash and digest and digest != prev_hash)
         newly_hashed = bool(digest and not prev_hash)
         existing.name = entry.name
         existing.mime_type = infer_image_mime(entry.mime_type, entry.name) or entry.mime_type
@@ -1365,6 +1387,10 @@ class IndexingWorker:
             existing.content_hash = digest
             existing.content_hash_algo = algo
         restored = restore_archived_drive_file(existing)
+        if junk:
+            existing.status = DriveFileStatus.SKIPPED
+            existing.error_message = f"{APPLEDOUBLE_SKIP_PREFIX} macOS resource fork / Finder metadata"
+            return False
         if paused and existing.status in (DriveFileStatus.PENDING, DriveFileStatus.ERROR):
             existing.status = DriveFileStatus.SKIPPED
             existing.error_message = f"{INDEXING_PAUSED_PREFIX} indexing stopped for parent folder"
@@ -1404,6 +1430,12 @@ class IndexingWorker:
         summary = {"processed": 0, "skipped": 0, "errored": 0, "deferred": 0, "videos_started": 0, "images_started": 0}
         gemini = get_gemini_service()
         processed_count = 0
+
+        async with self._session_factory() as session:
+            restored = await restore_processed_when_media_exists(session)
+            if restored:
+                await session.commit()
+                logger.info("process_pending restored %d media-backed PROCESSED row(s)", restored)
 
         summary["videos_started"] = await self.ensure_parallel_video_indexing()
         summary["images_started"] = await self.ensure_parallel_image_indexing()

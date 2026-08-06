@@ -3,14 +3,47 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import DriveFile, DriveFileStatus
+from app.db.models import DriveFile, DriveFileStatus, Media
 from app.gemini.service import GeminiFileSearchService
 
 logger = logging.getLogger(__name__)
 
 _ARCHIVE_PREFIX = "archived:"
+
+
+async def restore_processed_when_media_exists(session: AsyncSession) -> int:
+    """Re-mark PENDING/ERROR rows as PROCESSED when a media row already exists.
+
+    Protects Completed/done counts after a bad re-pend (e.g. first-time content
+    hash treated as a content change). Append-only: never deletes media/vectors.
+    """
+    ids = list(
+        (
+            await session.execute(
+                select(DriveFile.id).where(
+                    DriveFile.status.in_(
+                        (DriveFileStatus.PENDING, DriveFileStatus.ERROR)
+                    ),
+                    DriveFile.id.in_(select(Media.drive_file_id)),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not ids:
+        return 0
+    await session.execute(
+        update(DriveFile)
+        .where(DriveFile.id.in_(ids))
+        .values(status=DriveFileStatus.PROCESSED, error_message=None)
+    )
+    await session.flush()
+    logger.info("Restored PROCESSED for %d file(s) that already have media rows", len(ids))
+    return len(ids)
 
 
 async def archive_drive_file(
