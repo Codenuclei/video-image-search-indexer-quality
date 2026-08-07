@@ -2,7 +2,7 @@ import StudioLogo from "./StudioLogo";
 
 const LINKS = [
   { label: "Studio", href: "/carousel" },
-  { label: "How it works", href: "#how-it-works" },
+  { label: "Library", href: "/library" },
 ] as const;
 
 export default function Navbar() {

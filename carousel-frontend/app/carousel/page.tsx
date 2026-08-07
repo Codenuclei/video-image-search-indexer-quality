@@ -17,10 +17,12 @@ import {
   ChevronLeft,
   ChevronRight,
   Clapperboard,
+  Download,
   Film,
   History,
   ImageIcon,
   Layers,
+  Link2,
   Play,
   RefreshCw,
   Search,
@@ -52,6 +54,7 @@ import {
   type CarouselItemReference,
   type Person,
 } from "@/lib/api";
+import { downloadFromUrl } from "@/lib/download";
 import { DownloadButton, LoadingLabel, ServiceErrorCard } from "@/components/ui";
 import { ModalOverlay } from "@/components/modal";
 import { useDismissible } from "@/lib/use-dismissible";
@@ -271,6 +274,9 @@ export default function CarouselSearchPage() {
   const [uploadNote, setUploadNote] = useState<string | null>(null);
   const [prerunBusy, setPrerunBusy] = useState(false);
   const [prerunNote, setPrerunNote] = useState<string | null>(null);
+  const [youtubeUrl, setYoutubeUrl] = useState("");
+  const [youtubeBusy, setYoutubeBusy] = useState(false);
+  const [youtubeNote, setYoutubeNote] = useState<string | null>(null);
   const uploadInputRef = useRef<HTMLInputElement>(null);
   const themeHistoryRef = useRef<HTMLDivElement>(null);
   useDismissible(themeHistoryOpen, () => setThemeHistoryOpen(false), themeHistoryRef);
@@ -843,6 +849,46 @@ export default function CarouselSearchPage() {
     }
   }
 
+  async function downloadYoutubeVideo() {
+    const urls = youtubeUrl
+      .split(/[\s,]+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (!urls.length) {
+      setError("Paste a YouTube URL or video id first.");
+      return;
+    }
+    setYoutubeBusy(true);
+    setYoutubeNote(null);
+    setError(null);
+    try {
+      const res = await apiClient.addYoutubeVideos(urls, true, true);
+      const parts = (res.registered ?? []).map((r) => {
+        if (!r.drive_file_id) return r.message || r.name;
+        return `${r.name}: ${r.message}`;
+      });
+      setYoutubeNote(
+        parts.join(" · ") +
+          (res.index_scheduled ? " · Indexing queued." : "")
+      );
+      // Browser-side save when a library file id is already known (yt-dlp, no ffmpeg merge).
+      for (const r of res.registered ?? []) {
+        if (!r.drive_file_id || r.linked_to_drive) continue;
+        try {
+          await downloadFromUrl(driveFileDownloadUrl(r.drive_file_id), r.name || "youtube.mp4");
+        } catch {
+          /* file may still be downloading in the background */
+        }
+      }
+      setYoutubeUrl("");
+      await loadRecentVideos();
+    } catch (e) {
+      setError(formatApiError(e, "YouTube download failed"));
+    } finally {
+      setYoutubeBusy(false);
+    }
+  }
+
   async function runPrerun(opts?: { force?: boolean }) {
     if (prerunBusy) return;
     setPrerunBusy(true);
@@ -1268,6 +1314,47 @@ export default function CarouselSearchPage() {
           {prerunNote && (
             <p className="w-full text-xs text-muted-foreground" role="status">
               {prerunNote}
+            </p>
+          )}
+        </div>
+
+        <div
+          className="mt-4 flex flex-wrap items-end gap-2 rounded-xl border border-slate-200 bg-slate-50/80 p-3"
+          data-testid="carousel-youtube-download"
+        >
+          <div className="studio-field min-w-[14rem] flex-1">
+            <label htmlFor="youtube-url" className="studio-field-label">
+              <Link2 size={12} className="inline" /> YouTube link
+            </label>
+            <input
+              id="youtube-url"
+              type="url"
+              className="studio-input"
+              placeholder="https://youtube.com/watch?v=…"
+              value={youtubeUrl}
+              onChange={(e) => setYoutubeUrl(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  void downloadYoutubeVideo();
+                }
+              }}
+              disabled={youtubeBusy}
+            />
+          </div>
+          <button
+            type="button"
+            className="studio-btn studio-btn-ghost"
+            disabled={youtubeBusy || !youtubeUrl.trim()}
+            onClick={() => void downloadYoutubeVideo()}
+            title="Download via API (yt-dlp progressive file, no ffmpeg) then browser save"
+          >
+            <Download size={14} />
+            {youtubeBusy ? <LoadingLabel>Downloading…</LoadingLabel> : "Download video"}
+          </button>
+          {youtubeNote && (
+            <p className="w-full text-xs text-muted-foreground" role="status">
+              {youtubeNote}
             </p>
           )}
         </div>

@@ -27,12 +27,20 @@ export default function Hero() {
             Turn indexed videos and transcripts into Instagram-ready carousels —
             pick themes, hooks, and frames in one studio.
           </p>
-          <a
-            href="/carousel"
-            className="mt-6 rounded-lg bg-[#191919] px-6 py-3 text-sm font-medium text-white transition-colors hover:bg-[#191919]/90 sm:mt-8 sm:px-8 sm:py-3.5 md:mt-10"
-          >
-            Start creating
-          </a>
+          <div className="mt-6 flex flex-wrap items-center justify-center gap-3 sm:mt-8 md:mt-10">
+            <a
+              href="/carousel"
+              className="rounded-lg bg-[#191919] px-6 py-3 text-sm font-medium text-white transition-colors hover:bg-[#191919]/90 sm:px-8 sm:py-3.5"
+            >
+              Start creating
+            </a>
+            <a
+              href="/library"
+              className="rounded-lg border border-[#191919]/20 bg-white/80 px-6 py-3 text-sm font-medium text-[#191919] backdrop-blur-sm transition-colors hover:bg-white sm:px-8 sm:py-3.5"
+            >
+              Library
+            </a>
+          </div>
         </div>
 
         <div className="mt-auto w-full max-w-5xl px-4 pt-10 sm:px-6 sm:pt-14">

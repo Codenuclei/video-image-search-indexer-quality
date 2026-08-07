@@ -179,6 +179,8 @@ def download_youtube_video_sync(video_id: str, *, title: str | None = None) -> t
     out_template = str(Path(out_dir) / f"%(title)s [{video_id}].%(ext)s")
     url = f"https://www.youtube.com/watch?v={video_id}"
 
+    # Progressive single-file formats only — no ffmpeg merge/mux.
+    # Prefer mp4/webm already packaged by YouTube; never bestvideo+bestaudio.
     cmd = [
         "yt-dlp",
         "--no-playlist",
@@ -186,9 +188,7 @@ def download_youtube_video_sync(video_id: str, *, title: str | None = None) -> t
         "--cookies",
         cookies_file,
         "-f",
-        "bestvideo[ext=webm]+bestaudio[ext=webm]/bestvideo+bestaudio/best",
-        "--merge-output-format",
-        "webm",
+        "best[ext=mp4]/best[ext=webm]/best",
         "-o",
         out_template,
         url,

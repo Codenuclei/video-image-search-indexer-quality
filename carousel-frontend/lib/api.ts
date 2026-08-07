@@ -248,6 +248,34 @@ export type CarouselRecentVideo = {
   cue_count?: number;
 };
 
+export type YoutubeDriveFile = {
+  id: string;
+  name: string;
+  mime_type: string;
+  path: string;
+  status: string;
+  size: number | null;
+  modified_time: string | null;
+  last_synced_at: string | null;
+  error_message: string | null;
+  source?: string;
+};
+
+export type YoutubeRegisterResult = {
+  drive_file_id: string;
+  name: string;
+  youtube_video_id: string | null;
+  linked_to_drive: boolean;
+  download_queued?: boolean;
+  message: string;
+};
+
+export type YoutubeRegisterResponse = {
+  ok: boolean;
+  registered: YoutubeRegisterResult[];
+  index_scheduled: boolean;
+};
+
 export type CarouselPipelineTheme = {
   theme_id: string;
   title: string;
@@ -485,6 +513,13 @@ export const cacheOnlyAssetUrl = (path: string) => {
 
 export const apiClient = {
   persons: () => api<Person[]>("/persons"),
+  youtubeVideos: () => api<YoutubeDriveFile[]>("/youtube/videos"),
+  addYoutubeVideos: (urls: string[], indexNow = true, downloadLocal = true) =>
+    api<YoutubeRegisterResponse>("/youtube/videos", {
+      method: "POST",
+      body: JSON.stringify({ urls, index_now: indexNow, download_local: downloadLocal }),
+      timeoutMs: 120_000,
+    }),
   carouselRecentVideos: (limit = 5, captionedOnly = true) =>
     api<{ items: CarouselRecentVideo[]; captioned_only?: boolean }>(
       `/search/carousel/recent-videos?limit=${limit}&captioned_only=${captionedOnly ? "true" : "false"}`
