@@ -15,10 +15,10 @@ export default function CarouselStudioLayout({ children }: { children: ReactNode
           </Link>
           <div className="flex items-center gap-3">
             <Link
-              href="/#how-it-works"
+              href="/library"
               className="hidden text-sm text-slate-500 transition-colors hover:text-slate-900 sm:inline"
             >
-              How it works
+              Library
             </Link>
             {/* Current-page CTA: not a link — <a href="/carousel"> full-reloads the studio. */}
             <span
