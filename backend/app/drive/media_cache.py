@@ -11,8 +11,11 @@ from typing import TYPE_CHECKING, AsyncIterator
 
 from app.config import Settings, get_settings
 from app.pipelines.common import download_to_temp_file
+from app.storage import ensure_disk_space
 
 if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
     from app.db.models import DriveFile
     from app.drive.client import DriveConnectorClient
 
@@ -106,10 +109,22 @@ async def ensure_media_cached(
             pass
 
     suffix = dest.suffix or _suffix_for_file(drive_file)
-    async with download_to_temp_file(client, drive_file.id, settings, suffix=suffix) as tmp:
-        # Stage onto same filesystem as dest, then atomic replace.
-        shutil.move(tmp, partial)
-        os.replace(partial, dest)
+    expected_size = getattr(drive_file, "size", None)
+    ensure_disk_space(dest, expected_size or 0)
+    try:
+        async with download_to_temp_file(
+            client,
+            drive_file.id,
+            settings,
+            suffix=suffix,
+            expected_size=expected_size,
+        ) as tmp:
+            # Stage onto same filesystem as dest, then atomically publish.
+            shutil.move(tmp, partial)
+            os.replace(partial, dest)
+    finally:
+        if partial.exists():
+            partial.unlink(missing_ok=True)
 
     drive_file.cache_rel_path = cache_rel_path_for(settings, dest)
     logger.info("Cached media %s → %s", drive_file.id[:12], dest)
@@ -130,3 +145,115 @@ async def open_cached_or_download(
 
 def read_cached_bytes(path: Path) -> bytes:
     return path.read_bytes()
+
+
+def _is_drive_sourced(drive_file: "DriveFile") -> bool:
+    source = (getattr(drive_file, "source", None) or "drive").strip().lower()
+    file_id = str(getattr(drive_file, "id", "") or "")
+    if source in {"upload", "youtube"}:
+        return False
+    if file_id.startswith("yt:") or file_id.startswith("upload:"):
+        return False
+    return True
+
+
+def unlink_drive_source_cache(
+    drive_file: "DriveFile",
+    settings: Settings | None = None,
+    *,
+    clear_rel_path: bool = True,
+) -> bool:
+    """Remove Drive download leftovers after Media exists or on ERROR.
+
+    Never deletes upload/YouTube source bytes (irreplaceable). Clears
+    ``cache_rel_path`` when a file was removed so the next index re-downloads.
+    """
+    settings = settings or get_settings()
+    if not _is_drive_sourced(drive_file):
+        return False
+
+    removed = False
+    candidates: list[Path] = []
+
+    resolved = resolve_cache_path(settings, drive_file)
+    if resolved is not None:
+        candidates.append(resolved)
+
+    # Video pipeline stores under video_cache_dir (often only the basename in cache_rel_path).
+    try:
+        from app.video.youtube_cache import video_cache_path
+
+        video_path = video_cache_path(settings, drive_file)
+        if video_path.is_file() and video_path.stat().st_size > 0:
+            candidates.append(video_path)
+    except Exception:  # noqa: BLE001
+        pass
+
+    seen: set[str] = set()
+    for path in candidates:
+        key = str(path.resolve())
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            path.unlink(missing_ok=True)
+            removed = True
+            logger.info(
+                "unlink_drive_cache file_id=%s path=%s",
+                getattr(drive_file, "id", "")[:12],
+                path,
+            )
+        except OSError as exc:
+            logger.warning(
+                "unlink_drive_cache_failed file_id=%s path=%s err=%s",
+                getattr(drive_file, "id", "")[:12],
+                path,
+                exc,
+            )
+
+    # Drop orphaned *.partial siblings next to known destinations.
+    for path in list(candidates):
+        partial = Path(f"{path}.partial")
+        try:
+            if partial.exists():
+                partial.unlink(missing_ok=True)
+                removed = True
+        except OSError:
+            pass
+
+    if clear_rel_path and removed:
+        drive_file.cache_rel_path = None
+    return removed
+
+
+async def unlink_drive_caches_for_ids(
+    session: "AsyncSession",
+    file_ids: list[str],
+    settings: Settings | None = None,
+) -> int:
+    """Load DriveFile rows and unlink Drive-sourced caches. Returns unlink count."""
+    from sqlalchemy import select
+
+    from app.db.models import DriveFile
+
+    settings = settings or get_settings()
+    ids = [fid for fid in file_ids if fid]
+    if not ids:
+        return 0
+    try:
+        result = await session.execute(select(DriveFile).where(DriveFile.id.in_(ids)))
+        rows = list(result.scalars().all())
+    except Exception:  # noqa: BLE001
+        logger.exception("unlink_drive_caches_for_ids_lookup_failed count=%d", len(ids))
+        return 0
+    n = 0
+    for row in rows:
+        try:
+            if unlink_drive_source_cache(row, settings):
+                n += 1
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "unlink_drive_cache_row_failed file_id=%s",
+                getattr(row, "id", "")[:12],
+            )
+    return n
