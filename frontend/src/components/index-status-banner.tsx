@@ -73,7 +73,7 @@ export function IndexStatusBanner() {
 
   useEffect(() => {
     poll();
-    const t = setInterval(poll, 5000);
+    const t = setInterval(poll, 12000);
     return () => clearInterval(t);
   }, [poll]);
 

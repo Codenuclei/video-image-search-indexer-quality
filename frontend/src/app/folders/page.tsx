@@ -177,35 +177,33 @@ export default function FoldersPage() {
         window._pickerApiLoaded = true;
       }
 
+      // My Drive tabs stay split (folders vs media). Pin enableDrives(false) so
+      // SUPPORT_DRIVES does not spawn a paired "Shared drives" tab per view.
       const myDriveFolderView = new window.google.picker.DocsView(window.google.picker.ViewId.FOLDERS)
+        .setEnableDrives(false)
         .setIncludeFolders(true)
         .setSelectFolderEnabled(true)
         .setMimeTypes(FOLDER_MIME)
         .setLabel("My Drive folders");
 
-      const sharedDriveView = new window.google.picker.DocsView()
+      const myDriveMediaView = new window.google.picker.DocsView(window.google.picker.ViewId.DOCS_IMAGES_AND_VIDEOS)
+        .setEnableDrives(false)
+        .setIncludeFolders(true)
+        .setSelectFolderEnabled(true)
+        .setLabel("My Drive images & videos");
+
+      // Single Shared drives tab: all file types (docs + images/videos + folders).
+      const sharedDriveView = new window.google.picker.DocsView(window.google.picker.ViewId.DOCS)
         .setEnableDrives(true)
         .setIncludeFolders(true)
         .setSelectFolderEnabled(true)
         .setLabel("Shared drives");
 
-      const myDriveMediaView = new window.google.picker.DocsView(window.google.picker.ViewId.DOCS_IMAGES_AND_VIDEOS)
-        .setIncludeFolders(true)
-        .setSelectFolderEnabled(true)
-        .setLabel("My Drive images & videos");
-
-      const sharedDriveMediaView = new window.google.picker.DocsView(window.google.picker.ViewId.DOCS_IMAGES_AND_VIDEOS)
-        .setEnableDrives(true)
-        .setIncludeFolders(true)
-        .setSelectFolderEnabled(true)
-        .setLabel("Shared drive images & videos");
-
       const builder = new window.google.picker.PickerBuilder()
         .setTitle("Choose a folder to index")
         .addView(myDriveFolderView)
-        .addView(sharedDriveView)
         .addView(myDriveMediaView)
-        .addView(sharedDriveMediaView)
+        .addView(sharedDriveView)
         .setOAuthToken(accessToken)
         .setDeveloperKey(apiKey)
         .enableFeature(window.google.picker.Feature.SUPPORT_DRIVES)
@@ -242,7 +240,7 @@ export default function FoldersPage() {
 
   useEffect(() => {
     load();
-    const t = setInterval(load, 4000);
+    const t = setInterval(load, 12000);
     return () => clearInterval(t);
   }, []);
 
@@ -482,9 +480,9 @@ export default function FoldersPage() {
             variant="secondary"
             onClick={() => runIndex(true)}
             disabled={busy || status?.is_running}
-            title="Marks completed files pending again — avoid when reusing an existing index"
+            title="Queues ERROR files and PROCESSED images missing Media — never bulk-wipes indexed files"
           >
-            Reindex All
+            Backfill missing
           </Button>
         </div>
       </div>

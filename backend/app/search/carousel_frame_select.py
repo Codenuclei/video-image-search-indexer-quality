@@ -555,18 +555,19 @@ def front_face_score(face: Any) -> float:
     confidence = max(0.0, min(1.0, value("detection_confidence", value("confidence", 0.5))))
     x = value("bbox_x", value("x", 0.0))
     y = value("bbox_y", value("y", 0.0))
+    w = value("bbox_width", value("width", 0.0))
+    h = value("bbox_height", value("height", 0.0))
     # Normalized boxes are what the index stores. A border-touching face is
     # unusable for a portrait crop even when its detector confidence is high.
     edge_penalty = 1.0
-    if x <= 0.015 or y <= 0.015 or x + value("bbox_width", value("width", 0.0)) >= 0.985:
+    if x <= 0.015 or y <= 0.015 or x + w >= 0.985:
         edge_penalty *= 0.35
-    if y + value("bbox_height", value("height", 0.0)) >= 0.985:
+    if y + h >= 0.985:
         edge_penalty *= 0.5
-    area = max(
-        0.0,
-        value("bbox_width", value("width", 0.0))
-        * value("bbox_height", value("height", 0.0)),
-    )
+    # Prefer a horizontally centered subject (chest-up Instagram crop).
+    cx = x + w / 2.0
+    center_bonus = max(0.0, 1.0 - abs(cx - 0.5) / 0.5)
+    area = max(0.0, w * h)
     pose = (
         max(0.0, 1.0 - min(yaw, 90.0) / 90.0) * 0.55
         + max(0.0, 1.0 - min(pitch, 90.0) / 90.0) * 0.25
@@ -577,7 +578,14 @@ def front_face_score(face: Any) -> float:
         pose *= 0.08
     elif yaw >= 42.0:
         pose *= 0.3
-    return round((pose * 0.65 + confidence * 0.2 + min(area, 0.5) * 0.3) * edge_penalty, 6)
+    # Front-facing + centered: dominate ranking so Gemini cannot pick backs.
+    if yaw <= 25.0 and center_bonus >= 0.55 and area >= 0.03:
+        pose = max(pose, 0.85)
+    return round(
+        (pose * 0.55 + confidence * 0.15 + min(area, 0.5) * 0.2 + center_bonus * 0.25)
+        * edge_penalty,
+        6,
+    )
 
 
 def _face_for_slide(slide: dict[str, Any], timestamp_sec: float) -> dict[str, Any] | None:
@@ -593,7 +601,7 @@ def _face_for_slide(slide: dict[str, Any], timestamp_sec: float) -> dict[str, An
         face_ts = face.get("timestamp_sec", face.get("frame_timestamp", face.get("ts")))
         if face_ts is not None:
             try:
-                if abs(float(face_ts) - timestamp_sec) > 0.8:
+                if abs(float(face_ts) - timestamp_sec) > 2.0:
                     continue
             except (TypeError, ValueError):
                 pass
@@ -620,7 +628,11 @@ def focal_point_for_slide(slide: dict[str, Any], timestamp_sec: float) -> tuple[
 
 
 def _front_face_for_slide(slide: dict[str, Any], timestamp_sec: float) -> float:
-    """Return the best indexed/heuristic face score for a candidate timestamp."""
+    """Return the best indexed/heuristic face score for a candidate timestamp.
+
+    Penalize audience-style multi-face frames and tiny/edge faces that read as
+    torso crops so Instagram picks prefer a single centered speaker.
+    """
     raw = slide.get("faces") or slide.get("face_detections") or slide.get("frame_faces")
     if isinstance(raw, dict):
         # Indexed payloads commonly use either timestamp keys or a faces list.
@@ -628,6 +640,7 @@ def _front_face_for_slide(slide: dict[str, Any], timestamp_sec: float) -> float:
     if not isinstance(raw, list):
         raw = [raw] if raw else []
     scored: list[float] = []
+    near_faces: list[dict[str, Any]] = []
     for face in raw:
         if not isinstance(face, dict):
             scored.append(front_face_score(face))
@@ -637,13 +650,33 @@ def _front_face_for_slide(slide: dict[str, Any], timestamp_sec: float) -> float:
         )
         if face_ts is not None:
             try:
-                if abs(float(face_ts) - timestamp_sec) > 0.8:
+                if abs(float(face_ts) - timestamp_sec) > 2.0:
                     continue
             except (TypeError, ValueError):
                 pass
+        near_faces.append(face)
         # InsightFace landmarks can expose yaw as pose_yaw or head_pose_yaw.
         scored.append(front_face_score(face))
-    return max(scored, default=0.0)
+    if not scored:
+        return 0.0
+    best = max(scored)
+    # Audience / group shot: many faces near this timestamp → hard demote.
+    if len(near_faces) >= 3:
+        best *= 0.12
+    elif len(near_faces) == 2:
+        best *= 0.55
+    # Tiny face ≈ torso / wide establishing shot — demote for chest-up IG crop.
+    for face in near_faces:
+        try:
+            area = float(face.get("bbox_width") or face.get("width") or 0) * float(
+                face.get("bbox_height") or face.get("height") or 0
+            )
+        except (TypeError, ValueError):
+            area = 0.0
+        if area > 0 and area < 0.02:
+            best *= 0.35
+            break
+    return round(best, 6)
 
 
 def _parse_grouped_rank_response(
@@ -795,7 +828,14 @@ def _rank_prompt(hook_line: str, candidates: list[FrameCandidate]) -> str:
         f"Candidate frames (0-based indices): {labels}\n"
         "The candidate labeled heuristic is the current default (mid spoken span).\n\n"
         "Rank ALL candidates best→worst for Instagram display:\n"
-        "- clear subject / speaker face when speaking\n"
+        "- SINGLE subject only — one speaker, chest-up / talking-head portrait\n"
+        "- face clearly visible, front-facing toward camera (not profile, not back of head)\n"
+        "- subject centered horizontally; face in the upper-middle of the frame\n"
+        "- REJECT back-facing, extreme profile, audience/crowd, empty stages, and torso-only crops\n"
+        "- if multiple candidates have a usable front face, pick the most centered one\n"
+        "- if none have a clear front face, pick the least-bad usable frame (still avoid backs)\n"
+        "- REJECT audience groups, crowded rooms, backs of heads, extreme profiles\n"
+        "- REJECT torso-only / neck-down crops with no usable face\n"
         "- good composition, not awkward crop or cut-off heads\n"
         "- not transitional blur, mid-blink, or UI chrome junk\n"
         "- readable when short text overlays the bottom third\n\n"
@@ -865,6 +905,50 @@ def rank_candidates_with_gemini_sync(
 
 def cached_frame_path(thumbnail_dir: str, drive_file_id: str, ts: float) -> Path:
     return Path(thumbnail_dir) / "video" / drive_file_id / f"{ts:.3f}.jpg"
+
+
+def nearest_cached_frame(
+    thumbnail_dir: str,
+    drive_file_id: str,
+    ts: float,
+    *,
+    nearest_tolerance_sec: float = HARVEST_NEAREST_TOLERANCE_SEC,
+    exclude_ts: set[float] | None = None,
+) -> tuple[float, Path] | None:
+    """Return (timestamp, path) for the closest on-disk JPEG within tolerance.
+
+    Used when exact-ts extract is impossible (e.g. YouTube local file missing)
+    but the indexer already wrote nearby frames. Callers must retarget
+    ``frame_ts`` / ``preview_url`` to the returned timestamp — ``cache_only``
+    GETs refuse nearest-neighbour substitution.
+    """
+    fid = (drive_file_id or "").strip()
+    if not fid:
+        return None
+    frames_dir = Path(thumbnail_dir) / "video" / fid
+    if not frames_dir.is_dir():
+        return None
+    excluded = {round(float(x), 3) for x in (exclude_ts or set())}
+    best: Path | None = None
+    best_ts = 0.0
+    best_dist = float("inf")
+    for p in frames_dir.glob("*.jpg"):
+        try:
+            cand = float(p.stem)
+        except ValueError:
+            continue
+        if round(cand, 3) in excluded:
+            continue
+        if not p.is_file() or p.stat().st_size <= 0:
+            continue
+        dist = abs(cand - float(ts))
+        if dist < best_dist:
+            best_dist = dist
+            best = p
+            best_ts = cand
+    if best is None or best_dist > float(nearest_tolerance_sec):
+        return None
+    return round(best_ts, 3), best
 
 
 def list_cached_timestamps_in_span(
@@ -1465,14 +1549,29 @@ async def polish_slides_instagram_frames(
             range(len(candidates)),
             key=lambda i: candidates[i].front_face,
         )
-        if (
-            candidates[best_face_i].front_face >= 0.35
+        # Hard rule: prefer any center-facing person when one exists.
+        if candidates[best_face_i].front_face >= 0.22:
+            ranked_order = [best_face_i] + [
+                i for i in ranked_order if i != best_face_i
+            ]
+        elif (
+            candidates[best_face_i].front_face >= 0.18
             and candidates[best_face_i].front_face
-            > candidates[ranked_order[0]].front_face + 0.15
+            > candidates[ranked_order[0]].front_face + 0.08
         ):
             ranked_order = [best_face_i] + [
                 i for i in ranked_order if i != best_face_i
             ]
+        # Prefer any usable single-face portrait over near-zero face scores
+        # (audience / torso) even when Gemini ranked the weak frame first.
+        usable_faces = [
+            i for i in ranked_order if candidates[i].front_face >= 0.18
+        ]
+        if usable_faces and candidates[ranked_order[0]].front_face < 0.15:
+            ranked_order = usable_faces + [
+                i for i in ranked_order if i not in usable_faces
+            ]
+        # Still fall back to Gemini/quality order when no face signal exists.
         choice = next(
             (
                 i

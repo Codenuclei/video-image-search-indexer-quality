@@ -1,4 +1,4 @@
-from app.workers.index_errors import friendly_index_error_message
+from app.workers.index_errors import friendly_index_error_message, is_transient_network_error
 
 
 def test_friendly_infailed_sql_transaction():
@@ -22,3 +22,14 @@ def test_friendly_deadlock():
     out = friendly_index_error_message(RuntimeError("deadlock detected DETAIL: Process 1"))
     assert "deadlock" in out.lower()
     assert len(out) < 200
+
+
+def test_readerror_is_transient_and_friendly():
+    class ReadError(Exception):
+        pass
+
+    exc = ReadError()  # str(exc) is empty — matches prod httpx.ReadError
+    assert is_transient_network_error(exc)
+    out = friendly_index_error_message(exc)
+    assert "download" in out.lower() or "retry" in out.lower()
+    assert out != "ReadError"

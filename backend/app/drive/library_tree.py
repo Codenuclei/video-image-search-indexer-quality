@@ -33,10 +33,15 @@ class LibraryFolderNode:
     captioned_count: int = 0
     embedded_count: int = 0
     pending_count: int = 0
+    processed_count: int = 0
+    processing_count: int = 0
     error_count: int = 0
     skipped_count: int = 0
     archived_count: int = 0
     indexing_paused: bool = False
+    # Top skip / error reason keys accumulated for this folder subtree.
+    skip_reasons: dict[str, int] = field(default_factory=dict)
+    error_reasons: dict[str, int] = field(default_factory=dict)
     folders: dict[str, LibraryFolderNode] = field(default_factory=dict)
     files: list[LibraryFileItem] = field(default_factory=list)
 
@@ -73,12 +78,18 @@ def build_library_tree(
 
     for df in drive_files:
         path_parts = [p for p in df.path.replace("\\", "/").split("/") if p]
-        is_folder_marker = df.mime_type == "application/vnd.google-apps.folder" or (
-            (df.error_message or "") == "folder_marker"
+        from app.drive.library_filters import is_apple_junk_row, is_folder_marker_row
+
+        is_folder_marker = is_folder_marker_row(
+            mime_type=df.mime_type, error_message=df.error_message
         )
+        # Apple junk never appears in library tree / counts / file lists.
+        if is_apple_junk_row(name=df.name, error_message=df.error_message):
+            continue
 
         if is_folder_marker:
             # Path is the folder itself — ensure the node exists even with zero files.
+            # Markers are never added to file_count or file lists.
             node = root
             for i, part in enumerate(path_parts):
                 key = part.lower()
@@ -144,12 +155,36 @@ def build_library_tree(
                 ancestor.embedded_count += 1
             if item.status == "pending":
                 ancestor.pending_count += 1
+            if item.status == "processed":
+                ancestor.processed_count += 1
+            if item.status == "processing":
+                ancestor.processing_count += 1
             if item.status == "error":
                 ancestor.error_count += 1
             if item.status == "skipped":
                 ancestor.skipped_count += 1
             if item.status == "archived":
                 ancestor.archived_count += 1
+
+        # Reason tallies (only on the leaf folder — roll up below).
+        from app.workers.requeue_failed import normalize_error_bucket, normalize_skip_reason
+
+        if item.status == "skipped":
+            key = normalize_skip_reason(item.error_message)
+            node.skip_reasons[key] = node.skip_reasons.get(key, 0) + 1
+        elif item.status == "error":
+            key = normalize_error_bucket(item.error_message)
+            node.error_reasons[key] = node.error_reasons.get(key, 0) + 1
+
+    def _rollup_reasons(n: LibraryFolderNode) -> None:
+        for child in n.folders.values():
+            _rollup_reasons(child)
+            for k, v in child.skip_reasons.items():
+                n.skip_reasons[k] = n.skip_reasons.get(k, 0) + v
+            for k, v in child.error_reasons.items():
+                n.error_reasons[k] = n.error_reasons.get(k, 0) + v
+
+    _rollup_reasons(root)
 
     pending = sum(
         1 for f in all_files
@@ -158,10 +193,16 @@ def build_library_tree(
     errors = sum(1 for f in all_files if f.status == "error")
     # Caption gaps only on already-indexed images — do NOT use (images - captioned),
     # which double-counts every still-pending image into "Needs work".
+    from app.drive.content_hash import DUPLICATE_CONTENT_PREFIX
+
     missing_captions = sum(
         1
         for f in all_files
-        if f.is_image and f.status == "processed" and not f.has_caption
+        if f.is_image
+        and f.status == "processed"
+        and not f.has_caption
+        # Content twins are already searchable via the canonical file — not caption gaps.
+        and not (f.error_message or "").startswith(DUPLICATE_CONTENT_PREFIX)
     )
     summary = {
         "total_files": len(all_files),
@@ -170,6 +211,8 @@ def build_library_tree(
         "captioned": sum(1 for f in all_files if f.is_image and f.has_caption),
         "embedded": sum(1 for f in all_files if f.is_image and f.has_embedding),
         "pending": pending,
+        "processed": sum(1 for f in all_files if f.status == "processed"),
+        "processing": sum(1 for f in all_files if f.status == "processing"),
         "errors": errors,
         "skipped": sum(1 for f in all_files if f.status == "skipped"),
         "archived": sum(1 for f in all_files if f.status == "archived"),
@@ -187,6 +230,8 @@ def build_library_tree(
 
 
 def folder_node_to_dict(node: LibraryFolderNode) -> dict:
+    top_skips = sorted(node.skip_reasons.items(), key=lambda kv: -kv[1])[:8]
+    top_errors = sorted(node.error_reasons.items(), key=lambda kv: -kv[1])[:8]
     return {
         "name": node.name,
         "path": node.path,
@@ -195,10 +240,14 @@ def folder_node_to_dict(node: LibraryFolderNode) -> dict:
         "captioned_count": node.captioned_count,
         "embedded_count": node.embedded_count,
         "pending_count": node.pending_count,
+        "processed_count": node.processed_count,
+        "processing_count": node.processing_count,
         "error_count": node.error_count,
         "skipped_count": node.skipped_count,
         "archived_count": node.archived_count,
         "indexing_paused": node.indexing_paused,
+        "top_skip_reasons": [{"reason": k, "count": v} for k, v in top_skips],
+        "top_error_reasons": [{"reason": k, "count": v} for k, v in top_errors],
         "folders": [folder_node_to_dict(child) for child in sorted(node.folders.values(), key=lambda n: n.name.lower())],
         "files": [
             {

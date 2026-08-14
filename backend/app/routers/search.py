@@ -294,26 +294,8 @@ async def search(
     )
     gemini_files: list = []
 
-    file_search_on = get_runtime_settings().gemini_file_search_search_enabled
-    skip_gemini = (
-        not file_search_on
-        or (
-            not effective_persons
-            and needs_strict_relevance_filter(query)
-            and has_strong_filename_match(query, local_files)
-        )
-    )
-
-    if needs_semantic_search(visual_query or query, primary_person, len(local_files)) and not skip_gemini:
-        try:
-            gemini_files = await _gemini_files(
-                session,
-                visual_query,
-                primary_person,
-                relevance_query=visual_query or query,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Gemini semantic search failed, falling back to local: %s", exc)
+    # Google File Search retired — image RAG is local Qdrant (visual + captions).
+    # Keep the merge path with an empty gemini_files list for API shape stability.
 
     files = merge_person_scene_results(
         local_files,
@@ -373,8 +355,17 @@ async def search(
             role_ctx=role_ctx,
         )
 
+    # Strict name/path filter was built for filename/local hits. Do NOT apply it
+    # to scored vector/caption hits — that wiped semantic RAG results for
+    # conceptual queries (e.g. "purpose") after File Search removal. Old File
+    # Search path kept hits whose citation/snippet matched; scored Qdrant hits
+    # are the local equivalent.
     if needs_strict_relevance_filter(query) and not effective_persons and not role_context_active(role_ctx):
-        files = [f for f in files if text_matches_query(f.name, f.path, query=query)]
+        files = [
+            f
+            for f in files
+            if f.score is not None or text_matches_query(f.name, f.path, query=query)
+        ]
 
     if role_context_active(role_ctx) and not (action_query and not effective_persons):
         files = [

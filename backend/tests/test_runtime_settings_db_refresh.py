@@ -28,6 +28,9 @@ def _runtime(**overrides: object) -> RuntimeSettings:
         search_use_captions=True,
         search_rerank_enabled=False,
         go_indexer_enabled=False,
+        carousel_llm_provider="auto",
+        claude_model="claude-sonnet-4-5-20250929",
+        openrouter_model="anthropic/claude-sonnet-4",
     )
     for key, value in overrides.items():
         setattr(base, key, value)
@@ -51,6 +54,8 @@ async def test_refresh_runtime_settings_from_db_updates_memory_cache():
     row.search_use_captions = True
     row.search_rerank_enabled = False
     row.go_indexer_enabled = False
+    row.carousel_llm_provider = "openrouter"
+    row.openrouter_model = "google/gemini-2.5-pro"
 
     session = AsyncMock()
     session.get = AsyncMock(return_value=row)
@@ -58,6 +63,8 @@ async def test_refresh_runtime_settings_from_db_updates_memory_cache():
     runtime = await refresh_runtime_settings_from_db(session)
     assert runtime.auto_index_enabled is True
     assert runtime.auto_index_interval_seconds == 45
+    assert runtime.carousel_llm_provider == "openrouter"
+    assert runtime.openrouter_model == "google/gemini-2.5-pro"
     assert get_runtime_settings().auto_index_enabled is True
 
 

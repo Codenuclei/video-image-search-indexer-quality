@@ -37,41 +37,13 @@ def cosine_similarity(a: list[float], b: list[float]) -> float:
 
 
 async def _queue_gemini_refresh_for_faces(session: AsyncSession, face_ids: list[int]) -> None:
-    """After manual naming, re-upload affected Drive files so Gemini gets person_name metadata."""
-    if not face_ids:
-        return
-    from app.db.models import Media
-
-    await session.execute(
-        update(DriveFile)
-        .where(
-            DriveFile.id.in_(
-                select(Media.drive_file_id)
-                .join(Face, Face.media_id == Media.id)
-                .where(Face.id.in_(face_ids))
-                .distinct()
-            )
-        )
-        .values(status=DriveFileStatus.PENDING, gemini_document_name=None)
-    )
+    """No-op: local Qdrant RAG — never re-pend PROCESSED files after person naming."""
+    del session, face_ids
 
 
 async def _queue_gemini_refresh_for_person(session: AsyncSession, person_id: int) -> None:
-    """Re-queue Drive files linked to a person without loading every face id into memory."""
-    from app.db.models import Media
-
-    await session.execute(
-        update(DriveFile)
-        .where(
-            DriveFile.id.in_(
-                select(Media.drive_file_id)
-                .join(Face, Face.media_id == Media.id)
-                .where(Face.person_id == person_id)
-                .distinct()
-            )
-        )
-        .values(status=DriveFileStatus.PENDING, gemini_document_name=None)
-    )
+    """No-op: local Qdrant RAG — never re-pend PROCESSED files after person rename."""
+    del session, person_id
 
 
 async def refresh_gemini_for_person_background(person_id: int) -> None:

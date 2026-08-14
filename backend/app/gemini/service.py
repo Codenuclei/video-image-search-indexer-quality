@@ -38,12 +38,20 @@ _CLARIFYING_MARKERS = (
 
 
 class GeminiFileSearchService:
-    """Managed multimodal RAG via Gemini File Search stores."""
+    """Gemini helpers used by indexing/search.
+
+    Google File Search *stores* are retired — upload/search/store methods are
+    no-ops. VLM ``describe_image`` still uses generateContent. Local RAG lives
+    in Qdrant (frames / images / captions / transcripts).
+    """
 
     def __init__(self, settings: Settings | None = None) -> None:
         self._settings = settings or get_settings()
         self._client = None
         self._store_name: str | None = None
+
+    def _file_search_disabled(self) -> bool:
+        return bool(getattr(self._settings, "gemini_file_search_disabled", True))
 
     def _client_or_raise(self):
         if not self._settings.gemini_api_key:
@@ -55,6 +63,8 @@ class GeminiFileSearchService:
         return self._client
 
     def ensure_store(self) -> str:
+        if self._file_search_disabled():
+            raise RuntimeError("Gemini File Search is disabled — use local Qdrant RAG")
         if self._store_name:
             return self._store_name
 
@@ -78,7 +88,7 @@ class GeminiFileSearchService:
         return store.name
 
     def delete_document(self, document_name: str | None) -> None:
-        if not document_name:
+        if not document_name or self._file_search_disabled():
             return
         client = self._client_or_raise()
         try:
@@ -88,11 +98,10 @@ class GeminiFileSearchService:
             logger.warning("Could not delete Gemini document %s: %s", document_name, exc)
 
     def purge_store(self) -> dict[str, object]:
-        """Delete the entire File Search store to reclaim its storage quota.
-
-        The store is recreated lazily on the next upload, so only fresh
-        (PDF/doc) content repopulates it.
-        """
+        """Delete the entire File Search store to reclaim its storage quota."""
+        if self._file_search_disabled():
+            # Still allow one-shot purge of leftover Google stores when explicitly called.
+            pass
         client = self._client_or_raise()
         display_name = self._settings.gemini_file_search_store_display_name
         deleted: list[str] = []
@@ -118,6 +127,12 @@ class GeminiFileSearchService:
         person_names: list[str] | None = None,
         extra_metadata: dict[str, str] | None = None,
     ) -> str | None:
+        if self._file_search_disabled():
+            logger.debug(
+                "Skipping Gemini File Search upload for %s (local Qdrant RAG only)",
+                display_name,
+            )
+            return None
         from app.gemini.rate_limit import gemini_upload_slot, retry_on_rate_limit
 
         client = self._client_or_raise()
@@ -171,6 +186,8 @@ class GeminiFileSearchService:
         return document_name
 
     def search(self, query: str, person_name: str | None = None) -> SearchResult:
+        if self._file_search_disabled():
+            return SearchResult(answer="", citations=[])
         user_query = query.strip()
         retrieval_query = self._retrieval_query(user_query)
         try:
@@ -185,6 +202,8 @@ class GeminiFileSearchService:
 
     def search_video_frames(self, query: str, person_name: str | None = None) -> list[SearchCitation]:
         """Retrieve indexed video keyframes (metadata content_kind=video_frame)."""
+        if self._file_search_disabled():
+            return []
         retrieval_query = (
             f"Find video frames showing: {query.strip()}. "
             "Only cite indexed video frame images with visible scenes matching the query."

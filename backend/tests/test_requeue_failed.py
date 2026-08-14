@@ -264,3 +264,58 @@ async def test_retry_by_reason_resume_paused(db_session: AsyncSession) -> None:
     assert p1 is not None and p1.status == DriveFileStatus.PENDING
     assert p2 is not None and p2.status == DriveFileStatus.SKIPPED
     assert pause_row is None
+
+
+@pytest.mark.parametrize(
+    "msg,bucket",
+    [
+        ("[Errno 28] No space left on device", "enospc"),
+        ("index_stall: processing exceeded 900s", "index_stall"),
+    ],
+)
+def test_normalize_error_bucket_basic(msg: str, bucket: str) -> None:
+    from app.workers.requeue_failed import normalize_error_bucket
+
+    assert normalize_error_bucket(msg) == bucket
+
+
+@requires_postgres
+@pytest.mark.asyncio
+async def test_requeue_errored_by_bucket_enospc(db_session: AsyncSession) -> None:
+    from app.workers.requeue_failed import requeue_errored_by_bucket
+
+    db_session.add(
+        DriveFile(
+            id="err-disk",
+            name="big.jpg",
+            mime_type="image/jpeg",
+            path="/photos/big.jpg",
+            status=DriveFileStatus.ERROR,
+            error_message="[Errno 28] No space left on device",
+        )
+    )
+    db_session.add(
+        DriveFile(
+            id="err-other",
+            name="other.jpg",
+            mime_type="image/jpeg",
+            path="/photos/other.jpg",
+            status=DriveFileStatus.ERROR,
+            error_message="index_stall: processing exceeded 900s",
+        )
+    )
+    await db_session.commit()
+
+    result = await requeue_errored_by_bucket(db_session, "enospc")
+    await db_session.commit()
+    assert result["action"] == "requeue"
+    assert result["requeued"] == 1
+
+    disk = await db_session.get(DriveFile, "err-disk")
+    other = await db_session.get(DriveFile, "err-other")
+    assert disk is not None and disk.status == DriveFileStatus.PENDING
+    assert other is not None and other.status == DriveFileStatus.ERROR
+
+    blocked = await requeue_errored_by_bucket(db_session, "duplicate_content")
+    assert blocked["action"] == "unsupported"
+    assert blocked["requeued"] == 0

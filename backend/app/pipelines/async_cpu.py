@@ -19,6 +19,19 @@ async def run_cpu_bound(fn: Callable[..., T], *args, **kwargs) -> T:
     return await loop.run_in_executor(pool, _run)
 
 
+async def run_gemini_embed_io(fn: Callable[..., T], *args, **kwargs) -> T:
+    """Run Gemini embed I/O on the dedicated embed thread pool (not the CPU pool)."""
+    from app.concurrency.pools import gemini_embed_thread_pool
+
+    loop = asyncio.get_running_loop()
+    pool = gemini_embed_thread_pool()
+
+    def _run() -> T:
+        return fn(*args, **kwargs)
+
+    return await loop.run_in_executor(pool, _run)
+
+
 async def run_cpu_bound_many(
     jobs: list[tuple[Callable[..., T], tuple, dict]],
     *,

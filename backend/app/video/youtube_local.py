@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.db.models import DriveFile, DriveFileStatus
+from app.storage import ensure_disk_space
 from app.video.youtube_cache import video_cache_path
 from app.video.youtube_download import download_youtube_video_sync
 from app.video.youtube_registry import fetch_youtube_metadata, youtube_drive_id
@@ -70,13 +71,28 @@ async def ensure_youtube_video_local(
         title=meta.title,
     )
     dest.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(local_path, dest)
+    local_size = os.path.getsize(local_path)
+    same_filesystem = os.stat(local_path).st_dev == os.stat(dest.parent).st_dev
+    ensure_disk_space(dest, 0 if same_filesystem else local_size)
+    partial = dest.with_suffix(dest.suffix + ".partial")
     try:
+        shutil.move(local_path, partial)
+        os.replace(partial, dest)
+    except Exception:
+        try:
+            Path(local_path).unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+    finally:
+        if partial.exists():
+            partial.unlink(missing_ok=True)
         parent = Path(local_path).parent
-        if parent.is_dir() and not any(parent.iterdir()):
-            parent.rmdir()
-    except OSError:
-        pass
+        try:
+            if parent.is_dir() and not any(parent.iterdir()):
+                parent.rmdir()
+        except OSError:
+            pass
 
     drive_file.name = filename if filename else drive_file.name
     drive_file.mime_type = "video/webm" if dest.suffix == ".webm" else "video/mp4"

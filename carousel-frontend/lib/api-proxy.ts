@@ -64,7 +64,28 @@ export async function proxyToBackend(
     if (!HOP_BY_HOP.has(key.toLowerCase())) outHeaders.set(key, value);
   });
 
-  // Buffer so we never stream a decompressed body under a stale content-encoding.
+  const contentType = upstream.headers.get("content-type")?.toLowerCase() ?? "";
+  const streamBody =
+    method === "GET" &&
+    upstream.body !== null &&
+    (upstream.status === 206 ||
+      contentType.startsWith("video/") ||
+      contentType === "application/octet-stream");
+
+  // Video and byte-range responses must retain backpressure end-to-end. Since
+  // Accept-Encoding is identity, the upstream stream can be passed through
+  // without buffering or stale compression metadata.
+  if (streamBody) {
+    const contentLength = upstream.headers.get("content-length");
+    if (contentLength) outHeaders.set("content-length", contentLength);
+    return new NextResponse(upstream.body, {
+      status: upstream.status,
+      statusText: upstream.statusText,
+      headers: outHeaders,
+    });
+  }
+
+  // Preserve the existing buffered JSON/error behavior.
   const body = await upstream.arrayBuffer();
   return new NextResponse(body, {
     status: upstream.status,

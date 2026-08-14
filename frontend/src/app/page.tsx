@@ -54,33 +54,48 @@ export default function DashboardPage() {
 
   const load = useCallback(async () => {
     try {
-      const [status, skips, folderRes, conflictRes] = await Promise.all([
-        apiClient.indexStatus(),
-        apiClient.skipStats().catch(() => null),
-        apiClient.indexedFolders().catch(() => ({ folders: [], total: 0 })),
-        apiClient.indexConflicts("pending").catch(() => ({ items: [], total: 0, offset: 0, limit: 50 })),
-      ]);
+      // Hot path: status only. Folders/conflicts are slower-changing — avoid
+      // spamming Postgres on every poll tick when a few tabs are open.
+      const status = await apiClient.indexStatus();
       setIndexStatus(status);
-      setSkipStats(skips);
-      setFolders(folderRes.folders ?? []);
-      setConflicts(conflictRes.items ?? []);
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load dashboard");
     }
   }, []);
 
+  const loadSecondary = useCallback(async () => {
+    try {
+      const [skips, folderRes, conflictRes] = await Promise.all([
+        apiClient.skipStats().catch(() => null),
+        apiClient.indexedFolders().catch(() => ({ folders: [], total: 0 })),
+        apiClient.indexConflicts("pending").catch(() => ({ items: [], total: 0, offset: 0, limit: 50 })),
+      ]);
+      setSkipStats(skips);
+      setFolders(folderRes.folders ?? []);
+      setConflicts(conflictRes.items ?? []);
+    } catch {
+      /* secondary — ignore */
+    }
+  }, []);
+
   useEffect(() => {
-    load();
-    const t = setInterval(load, 5000);
-    return () => clearInterval(t);
-  }, [load]);
+    void load();
+    void loadSecondary();
+    const hot = setInterval(() => void load(), 10000);
+    const cold = setInterval(() => void loadSecondary(), 30000);
+    return () => {
+      clearInterval(hot);
+      clearInterval(cold);
+    };
+  }, [load, loadSecondary]);
 
   async function requestRetryAll(reason: string) {
     setRetryingReason(reason);
     try {
       await apiClient.retrySkippedByReason(reason);
       await load();
+      await loadSecondary();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Retry failed");
     } finally {
@@ -93,6 +108,7 @@ export default function DashboardPage() {
     try {
       await apiClient.resolveIndexConflict(id, action);
       await load();
+      await loadSecondary();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not resolve conflict");
     } finally {

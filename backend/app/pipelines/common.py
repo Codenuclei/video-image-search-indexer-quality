@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import Settings, get_settings
 from app.db.models import Media
 from app.drive.client import DriveConnectorClient
+from app.storage import ensure_disk_space
 
 from app.pipelines.image_formats import (
     RAW_EXTENSIONS,
@@ -104,8 +105,15 @@ def save_face_thumbnail(face_id: int, jpeg_bytes: bytes, settings: Settings) -> 
         return None
     os.makedirs(settings.thumbnail_dir, exist_ok=True)
     path = os.path.join(settings.thumbnail_dir, f"{face_id}.jpg")
-    with open(path, "wb") as fh:
-        fh.write(jpeg_bytes)
+    partial = f"{path}.partial"
+    ensure_disk_space(path, len(jpeg_bytes))
+    try:
+        with open(partial, "wb") as fh:
+            fh.write(jpeg_bytes)
+        os.replace(partial, path)
+    finally:
+        if os.path.exists(partial):
+            os.remove(partial)
     return path
 
 
@@ -115,8 +123,15 @@ def save_body_crop_thumbnail(face_id: int, jpeg_bytes: bytes, settings: Settings
         return None
     os.makedirs(settings.thumbnail_dir, exist_ok=True)
     path = os.path.join(settings.thumbnail_dir, f"body_{face_id}.jpg")
-    with open(path, "wb") as fh:
-        fh.write(jpeg_bytes)
+    partial = f"{path}.partial"
+    ensure_disk_space(path, len(jpeg_bytes))
+    try:
+        with open(partial, "wb") as fh:
+            fh.write(jpeg_bytes)
+        os.replace(partial, path)
+    finally:
+        if os.path.exists(partial):
+            os.remove(partial)
     return path
 
 
@@ -139,13 +154,32 @@ async def file_has_media(session: AsyncSession, drive_file_id: str) -> bool:
 
 async def download_to_memory(client: DriveConnectorClient, file_id: str) -> bytes:
     from app.drive.rate_limit import drive_download_slot
+    from app.workers.index_errors import is_transient_network_error
 
-    async with drive_download_slot():
-        chunks: list[bytes] = []
-        async with client.stream_file_content(file_id) as response:
-            async for chunk in response.aiter_bytes(chunk_size=1024 * 256):
-                chunks.append(chunk)
-        return b"".join(chunks)
+    last_exc: BaseException | None = None
+    for attempt in range(1, 4):
+        try:
+            async with drive_download_slot():
+                chunks: list[bytes] = []
+                async with client.stream_file_content(file_id) as response:
+                    async for chunk in response.aiter_bytes(chunk_size=1024 * 256):
+                        chunks.append(chunk)
+                return b"".join(chunks)
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            if not is_transient_network_error(exc) or attempt >= 3:
+                raise
+            logger.warning(
+                "Drive download-to-memory retry %d/3 file_id=%s err=%s",
+                attempt,
+                file_id[:12],
+                type(exc).__name__,
+            )
+            import asyncio
+
+            await asyncio.sleep(min(8.0, 0.5 * (2 ** (attempt - 1))))
+    assert last_exc is not None
+    raise last_exc
 
 
 _plugins_registered = False
@@ -394,17 +428,51 @@ async def download_to_temp_file(
     file_id: str,
     settings: Settings,
     suffix: str = "",
+    *,
+    expected_size: int | None = None,
 ) -> AsyncIterator[str]:
+    """Stream Drive bytes to a temp file. Retries transient httpx ReadError/ConnectError."""
     from app.drive.rate_limit import drive_download_slot
+    from app.workers.index_errors import is_transient_network_error
 
     os.makedirs(settings.temp_dir, exist_ok=True)
+    ensure_disk_space(settings.temp_dir, expected_size or 0)
     fd, path = tempfile.mkstemp(dir=settings.temp_dir, prefix=f"{file_id}_", suffix=suffix)
+    os.close(fd)
+    last_exc: BaseException | None = None
     try:
-        async with drive_download_slot():
-            with os.fdopen(fd, "wb") as fh:
-                async with client.stream_file_content(file_id) as response:
-                    async for chunk in response.aiter_bytes(chunk_size=1024 * 256):
-                        fh.write(chunk)
+        for attempt in range(1, 4):
+            try:
+                ensure_disk_space(path, expected_size or 0)
+                with open(path, "wb") as fh:
+                    async with drive_download_slot():
+                        async with client.stream_file_content(file_id) as response:
+                            async for chunk in response.aiter_bytes(chunk_size=1024 * 256):
+                                ensure_disk_space(path, len(chunk))
+                                fh.write(chunk)
+                last_exc = None
+                break
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                # Truncate partial download before retry.
+                try:
+                    with open(path, "wb"):
+                        pass
+                except OSError:
+                    pass
+                if not is_transient_network_error(exc) or attempt >= 3:
+                    raise
+                logger.warning(
+                    "Drive download retry %d/3 file_id=%s err=%s",
+                    attempt,
+                    file_id[:12],
+                    type(exc).__name__,
+                )
+                import asyncio
+
+                await asyncio.sleep(min(8.0, 0.5 * (2 ** (attempt - 1))))
+        if last_exc is not None:
+            raise last_exc
         yield path
     finally:
         if os.path.exists(path):

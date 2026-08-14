@@ -57,22 +57,30 @@ async def search_video_moments(
     if person_name:
         face_thumbnail_path = await _best_face_thumbnail(session, person_name)
 
-    # Gemini Embedding 2 (via Qdrant) handles visual video search.
-    # Transcript keyword search + face-timestamp moments run in parallel.
+    # Local RAG: Qdrant frame embeddings + transcript vectors + SQL/regex transcripts.
     transcript_task = asyncio.create_task(_transcript_moments(session, search_text, person_name, folder_path))
     regex_transcript_task = asyncio.create_task(
         _regex_transcript_moments(session, search_text, person_name, folder_path)
     )
-    gemini_task     = asyncio.create_task(_gemini_moments(session, search_text, person_name, folder_path))
-    face_task       = asyncio.create_task(_face_moments(session, person_name, folder_path)) if person_name else None
+    vector_transcript_task = asyncio.create_task(
+        _vector_transcript_moments(session, search_text, person_name, folder_path)
+    )
+    gemini_task = asyncio.create_task(_gemini_moments(session, search_text, person_name, folder_path))
+    face_task = asyncio.create_task(_face_moments(session, person_name, folder_path)) if person_name else None
 
     if face_task:
-        transcript_hits, regex_transcript_hits, gemini_hits, face_hits = await asyncio.gather(
-            transcript_task, regex_transcript_task, gemini_task, face_task
+        transcript_hits, regex_transcript_hits, vector_transcript_hits, gemini_hits, face_hits = (
+            await asyncio.gather(
+                transcript_task,
+                regex_transcript_task,
+                vector_transcript_task,
+                gemini_task,
+                face_task,
+            )
         )
     else:
-        transcript_hits, regex_transcript_hits, gemini_hits = await asyncio.gather(
-            transcript_task, regex_transcript_task, gemini_task
+        transcript_hits, regex_transcript_hits, vector_transcript_hits, gemini_hits = await asyncio.gather(
+            transcript_task, regex_transcript_task, vector_transcript_task, gemini_task
         )
         face_hits = []
 
@@ -101,8 +109,10 @@ async def search_video_moments(
     merged: list[SearchMoment] = []
     seen: set[tuple[str, float]] = set()
 
-    # Regex transcript hits on top (fast, no rerank), then face, Gemini, legacy transcript
-    for moment in regex_transcript_hits + face_hits + gemini_hits + transcript_hits:
+    # Regex + vector transcript hits first, then face, visual frames, legacy keyword transcript
+    for moment in (
+        regex_transcript_hits + vector_transcript_hits + face_hits + gemini_hits + transcript_hits
+    ):
         key = (moment.drive_file_id, round(moment.timestamp_sec, 2))
         if key in seen:
             continue
@@ -178,6 +188,17 @@ def _filter_certain_moments(
                 kept.append(moment)
             continue
 
+        if match_type == "transcript_vector":
+            if score < settings.gemini_transcript_min_score:
+                continue
+            if action_query and moment.snippet:
+                if not caption_matches_action(moment.snippet, keywords):
+                    continue
+                if caption_contradicts_action(moment.snippet, query):
+                    continue
+            kept.append(moment)
+            continue
+
         if match_type == "transcript":
             if score < 0.5:
                 continue
@@ -209,12 +230,13 @@ def _moment_priority_key(moment: SearchMoment) -> tuple[int, float]:
     """Transcript hits first, then score within each tier."""
     priority = {
         "transcript_regex": 0,
-        "transcript": 1,
-        "svs_transcript": 2,
-        "face_detected": 3,
-        "gemini_visual": 4,
-        "svs_visual": 5,
-    }.get(moment.match_type, 6)
+        "transcript_vector": 1,
+        "transcript": 2,
+        "svs_transcript": 3,
+        "face_detected": 4,
+        "gemini_visual": 5,
+        "svs_visual": 6,
+    }.get(moment.match_type, 7)
     if moment.match_type.startswith("svs_transcript"):
         priority = 2
     if moment.match_type.startswith("svs_visual"):
@@ -335,6 +357,65 @@ async def _regex_transcript_moments(
 
     moments.sort(key=lambda m: -(m.score or 0))
     logger.info("Regex transcript search: %d moment(s) for query %r", len(moments), query)
+    return moments
+
+
+async def _vector_transcript_moments(
+    session: AsyncSession,
+    query: str,
+    person_name: str | None,
+    folder_path: str | None = None,
+) -> list[SearchMoment]:
+    """Local Qdrant text→text transcript RAG (replaces Gemini File Search)."""
+    settings = get_settings()
+    if not settings.gemini_api_key:
+        return []
+
+    from app.qdrant.video_transcripts import search_transcripts_sync
+
+    try:
+        vec = await asyncio.to_thread(embed_text_sync, query)
+        hits = await asyncio.to_thread(
+            search_transcripts_sync,
+            vec,
+            limit=settings.gemini_video_result_limit,
+            min_score=settings.gemini_transcript_min_score,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Local transcript vector search failed (query=%r): %s", query, exc)
+        return []
+
+    moments: list[SearchMoment] = []
+    for hit in hits:
+        drive_file_id = hit.get("drive_file_id")
+        if not drive_file_id:
+            continue
+        drive_file: DriveFile | None = await session.get(DriveFile, drive_file_id)
+        if drive_file is None:
+            continue
+        if folder_path and folder_path.strip() and folder_path.strip() != "/":
+            fp = folder_path.strip().rstrip("/")
+            if not (drive_file.path.startswith(fp + "/") or drive_file.path == fp):
+                continue
+        person_names = await person_names_for_drive_file(session, drive_file_id)
+        hay = (hit.get("text") or "").lower()
+        if person_name and not _person_matches(person_name, person_names, hay):
+            continue
+        ts = float(hit.get("start_sec") or 0.0)
+        moments.append(
+            _build_moment(
+                drive_file,
+                timestamp_sec=ts,
+                end_timestamp_sec=hit.get("end_sec"),
+                match_type="transcript_vector",
+                snippet=(hit.get("text") or "")[:240] or None,
+                person_names=person_names,
+                score=float(hit.get("score") or 0.0),
+            )
+        )
+
+    moments.sort(key=lambda m: -(m.score or 0))
+    logger.info("Local transcript RAG: %d moment(s) for query %r", len(moments), query)
     return moments
 
 

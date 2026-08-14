@@ -105,10 +105,9 @@ async def get_video_frame(
 
     Priority:
     1. Pre-extracted frame on disk (cached from pipeline or previous on-demand call)
-    2. On-demand extraction via ffmpeg directly from Google Drive (cached for future calls)
-    3. 404 if Drive is unreachable or ffmpeg fails
-
-    Pass download=1 to force Content-Disposition: attachment (browser save).
+    2. On-demand extraction from local video cache (Drive/YouTube/upload) when present
+    3. On-demand extraction via ffmpeg streaming from Google Drive (requires OAuth)
+    4. 404/401 if unreachable
     """
     settings = get_settings()
     frames_dir = Path(settings.thumbnail_dir) / "video" / drive_file_id
@@ -159,11 +158,32 @@ async def get_video_frame(
     if seg and seg.frame_path and Path(seg.frame_path).is_file():
         return _respond(Path(seg.frame_path))
 
-    # 4. On-demand extraction via ffmpeg ← Google Drive API stream (last resort)
+    # 4. On-demand extraction (local cache first; live Drive stream last)
     frames_dir.mkdir(parents=True, exist_ok=True)
     ok = await _extract_frame_on_demand(drive_file_id, ts, out_path, settings, session)
     if ok and out_path.is_file():
         return _respond(out_path)
+
+    from sqlalchemy import select as sa_select
+
+    from app.db.models import DriveUser
+    from app.video.youtube_cache import video_cache_path
+
+    drive_file = await session.get(DriveFile, drive_file_id)
+    has_local = bool(
+        drive_file is not None and video_cache_path(settings, drive_file).is_file()
+    )
+    drive_user = (
+        await session.execute(sa_select(DriveUser).limit(1))
+    ).scalar_one_or_none()
+    if drive_file is not None and not has_local and drive_user is None:
+        raise HTTPException(
+            status_code=401,
+            detail=(
+                "Reconnect Google Drive to extract frames for this video "
+                "(not cached locally)."
+            ),
+        )
 
     raise HTTPException(status_code=404, detail="Frame not available")
 
@@ -177,35 +197,40 @@ async def _extract_frame_on_demand(
 ) -> bool:
     """
     Ask ffmpeg to seek to *ts* and save one JPEG frame.
-    YouTube library files use the shared volume; Drive files stream via OAuth.
+
+    Prefer local video cache (Drive, YouTube, upload) so generation keeps working
+    after Drive OAuth disconnect. Live Drive API streaming is a last resort and
+    requires a connected account.
     """
     from app.db.models import DriveFile
     from app.video.youtube_cache import video_cache_path
     from app.video.youtube_registry import is_youtube_source
 
     drive_file = await session.get(DriveFile, drive_file_id)
-    if drive_file is not None and is_youtube_source(drive_file):
+    if drive_file is not None:
         src = video_cache_path(settings, drive_file)
-        if not src.is_file():
+        if src.is_file():
+            cmd = [
+                "ffmpeg", "-y",
+                "-ss", str(ts),
+                "-i", str(src),
+                "-frames:v", "1",
+                "-q:v", "3",
+                str(out_path),
+            ]
+
+            def _run_local() -> bool:
+                try:
+                    result = subprocess.run(cmd, capture_output=True, timeout=120)
+                    return result.returncode == 0
+                except (subprocess.TimeoutExpired, FileNotFoundError):
+                    return False
+
+            return await asyncio.to_thread(_run_local)
+
+        if is_youtube_source(drive_file):
             logger.warning("Frame on-demand: YouTube local file missing for %s", drive_file_id)
             return False
-        cmd = [
-            "ffmpeg", "-y",
-            "-ss", str(ts),
-            "-i", str(src),
-            "-frames:v", "1",
-            "-q:v", "3",
-            str(out_path),
-        ]
-
-        def _run_local() -> bool:
-            try:
-                result = subprocess.run(cmd, capture_output=True, timeout=120)
-                return result.returncode == 0
-            except (subprocess.TimeoutExpired, FileNotFoundError):
-                return False
-
-        return await asyncio.to_thread(_run_local)
 
     from datetime import datetime, timedelta, timezone
 
@@ -214,12 +239,15 @@ async def _extract_frame_on_demand(
     from app.db.models import DriveUser
     from app.drive.google_client import _do_token_refresh
 
-    # Get a valid access token from the stored DriveUser
+    # Live Drive stream — requires OAuth (uncached Drive bytes only).
     user: DriveUser | None = (
         await session.execute(sa_select(DriveUser).limit(1))
     ).scalar_one_or_none()
     if user is None:
-        logger.warning("Frame on-demand: no Drive account connected")
+        logger.warning(
+            "Frame on-demand: no local cache and no Drive account connected for %s",
+            drive_file_id,
+        )
         return False
 
     now = datetime.now(tz=timezone.utc)

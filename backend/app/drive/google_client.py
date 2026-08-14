@@ -259,7 +259,12 @@ class DriveDirectClient:
     # ── file streaming ────────────────────────────────────────────────────────
 
     @asynccontextmanager
-    async def stream_file_content(self, file_id: str) -> AsyncIterator[httpx.Response]:
+    async def stream_file_content(
+        self,
+        file_id: str,
+        *,
+        range_header: str | None = None,
+    ) -> AsyncIterator[httpx.Response]:
         """
         Stream a file's bytes from Drive.
         Google-native files (Docs/Sheets/Slides) are exported to a plain format.
@@ -267,6 +272,8 @@ class DriveDirectClient:
         """
         access_token = await self._get_access_token()
         headers = {"Authorization": f"Bearer {access_token}"}
+        if range_header:
+            headers["Range"] = range_header
 
         async with httpx.AsyncClient(timeout=self._settings.drive_connector_timeout_seconds) as client:
             # Fetch metadata to check if it's a Google-native format
@@ -287,7 +294,11 @@ class DriveDirectClient:
                 params = {"alt": "media", "supportsAllDrives": "true"}
 
             async with client.stream("GET", url, params=params, headers=headers) as response:
-                if response.status_code >= 400:
+                # A ranged preview must preserve Drive's 416 response and
+                # Content-Range header instead of translating it to a 502.
+                if response.status_code >= 400 and not (
+                    range_header and response.status_code == 416
+                ):
                     body = await response.aread()
                     raise DriveDirectError(
                         f"Drive API error {response.status_code} for file {file_id}: "

@@ -48,6 +48,175 @@ _TOPIC_CHUNK_OVERLAP_CUES = 6
 _LLM_REQUEST_TIMEOUT_MS = 180_000
 
 
+def _loads_json_array(text: str) -> list[Any]:
+    """Parse a JSON array from model text (tolerates markdown fences)."""
+    m = re.search(r"\[[\s\S]*\]", text or "")
+    if not m:
+        return []
+    try:
+        raw = json.loads(m.group())
+    except json.JSONDecodeError:
+        return []
+    return raw if isinstance(raw, list) else []
+
+
+def _llm_has_any_key(
+    *,
+    api_key: str | None = None,
+    claude_api_key: str | None = None,
+    openrouter_api_key: str | None = None,
+    openrouter_model: str = "",
+) -> bool:
+    or_ready = bool((openrouter_api_key or "").strip() and (openrouter_model or "").strip())
+    return bool(
+        or_ready
+        or (claude_api_key or "").strip()
+        or (api_key or "").strip()
+    )
+
+
+async def _llm_complete_json(
+    *,
+    prompt: str,
+    system: str = (
+        "You are an expert short-form video editor and Instagram carousel copywriter. "
+        "Return ONLY valid JSON."
+    ),
+    temperature: float = 0.3,
+    max_tokens: int = 4096,
+    api_key: str | None = None,
+    model: str = "",
+    claude_api_key: str | None = None,
+    claude_model: str = "",
+    provider: str = "auto",
+    openrouter_api_key: str | None = None,
+    openrouter_model: str = "",
+    openrouter_base_url: str = "",
+) -> tuple[str, str]:
+    """Return ``(raw_text, provider)`` with OpenRouter / Claude / Gemini selection.
+
+    ``provider``:
+    - ``auto``: Claude (key) → OpenRouter → Gemini
+    - ``openrouter``: OpenRouter first, then Claude → Gemini on failure
+    - ``claude``: Anthropic Messages API only (no OpenRouter, no Gemini)
+    - ``gemini``: Gemini only
+    """
+    import asyncio
+
+    from app.llm.carousel_llm import DEFAULT_CLAUDE_MODEL, normalize_carousel_llm_provider
+
+    pref = normalize_carousel_llm_provider(provider)
+    or_key = (openrouter_api_key or "").strip()
+    or_model = (openrouter_model or "").strip()
+    or_base = (openrouter_base_url or "").strip() or "https://openrouter.ai/api/v1"
+    claude_key = (claude_api_key or "").strip()
+    gemini_key = (api_key or "").strip()
+
+    errors: list[str] = []
+
+    async def try_openrouter() -> tuple[str, str]:
+        from app.llm.openrouter import complete_json
+
+        text = await complete_json(
+            prompt,
+            model=or_model,
+            api_key=or_key,
+            base_url=or_base,
+            system=system,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        return text.strip(), "openrouter"
+
+    async def try_claude() -> tuple[str, str]:
+        from anthropic import Anthropic
+
+        def generate_claude() -> str:
+            client = Anthropic(api_key=claude_key)
+            response = client.messages.create(
+                model=(claude_model or DEFAULT_CLAUDE_MODEL).strip(),
+                max_tokens=max_tokens,
+                temperature=temperature,
+                system=system,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            return "".join(
+                block.text
+                for block in response.content
+                if getattr(block, "type", "") == "text"
+            )
+
+        return (await asyncio.to_thread(generate_claude)).strip(), "claude"
+
+    async def try_gemini() -> tuple[str, str]:
+        from google import genai
+        from google.genai import types
+
+        client = genai.Client(
+            api_key=gemini_key,
+            http_options=types.HttpOptions(timeout=_LLM_REQUEST_TIMEOUT_MS),
+        )
+        resp = await asyncio.to_thread(
+            client.models.generate_content,
+            model=model,
+            contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
+            config=types.GenerateContentConfig(
+                temperature=temperature,
+                response_mime_type="application/json",
+            ),
+        )
+        return (resp.text or "").strip(), "gemini"
+
+    order: list[str] = []
+    if pref == "auto":
+        if claude_key:
+            order.append("claude")
+        if or_key and or_model:
+            order.append("openrouter")
+        if gemini_key:
+            order.append("gemini")
+    elif pref == "openrouter":
+        order.append("openrouter")
+        if claude_key:
+            order.append("claude")
+        if gemini_key:
+            order.append("gemini")
+    elif pref == "claude":
+        # User chose Claude-direct: Anthropic only (picker can still switch providers).
+        order.append("claude")
+    elif pref == "gemini":
+        order.append("gemini")
+
+    runners = {
+        "openrouter": try_openrouter,
+        "claude": try_claude,
+        "gemini": try_gemini,
+    }
+    ready = {
+        "openrouter": bool(or_key and or_model),
+        "claude": bool(claude_key),
+        "gemini": bool(gemini_key),
+    }
+
+    for name in order:
+        if not ready.get(name):
+            if pref != "auto" and name == pref:
+                errors.append(f"{name} not configured")
+            continue
+        try:
+            return await runners[name]()
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{name}: {str(exc)[:160]}")
+            logger.warning(
+                "Carousel LLM provider %s failed (%s) — trying next",
+                name,
+                str(exc)[:160],
+            )
+
+    detail = "; ".join(errors) if errors else "none configured"
+    raise RuntimeError(f"No carousel LLM provider succeeded ({detail})")
+
+
 def snap_themes_to_cues(
     themes: list[dict[str, Any]],
     cues: list[tuple[float, float | None, str]],
@@ -93,6 +262,10 @@ async def build_harmonized_themes(
     model: str,
     claude_api_key: str | None = None,
     claude_model: str = "",
+    provider: str = "auto",
+    openrouter_api_key: str | None = None,
+    openrouter_model: str = "",
+    openrouter_base_url: str = "",
 ) -> tuple[list[dict[str, Any]], str, str | None]:
     """Return normal narrative themes (search_entity is ignored — no reframing)."""
     del search_entity  # presence checks live in the router; themes stay video-native
@@ -101,24 +274,39 @@ async def build_harmonized_themes(
         return [], "empty", "No transcript cues for this video"
 
     warning: str | None = None
-    if claude_api_key or api_key:
+    if _llm_has_any_key(
+        api_key=api_key,
+        claude_api_key=claude_api_key,
+        openrouter_api_key=openrouter_api_key,
+        openrouter_model=openrouter_model,
+    ):
         try:
-            if claude_api_key:
-                themes = await _claude_themes(
-                    transcript=transcript,
-                    video_name=video_name,
-                    api_key=claude_api_key,
-                    model=claude_model or "claude-sonnet-4-20250514",
-                )
-                llm_source = "claude"
-            else:
-                themes = await _llm_themes(
-                    transcript=transcript,
-                    video_name=video_name,
-                    api_key=api_key or "",
-                    model=model,
-                )
-                llm_source = "llm"
+            prompt = (
+                "You segment a video transcript into distinct narrative themes for a social carousel studio.\n"
+                f"Video: {video_name or '(untitled)'}\n"
+                "Hard rules:\n"
+                "- Start each theme at a logical context boundary, never mid-sentence.\n"
+                "- Titles must be concise, specific, complete English phrases.\n"
+                "- Summaries should explain the viewer-relevant idea, not merely repeat words.\n"
+                "- Use 3–8 chronological, non-overlapping themes with no duplicate angles.\n"
+                "Return ONLY a JSON array. Each object must contain theme_id, title, start_sec, end_sec, summary.\n\n"
+                f"Transcript:\n{transcript}"
+            )
+            text, llm_source = await _llm_complete_json(
+                prompt=prompt,
+                system="You are an expert short-form video editor and narrative copywriter. Return ONLY valid JSON.",
+                temperature=0.3,
+                max_tokens=1800,
+                api_key=api_key,
+                model=model,
+                claude_api_key=claude_api_key,
+                claude_model=claude_model or "claude-sonnet-4-20250514",
+                provider=provider,
+                openrouter_api_key=openrouter_api_key,
+                openrouter_model=openrouter_model,
+                openrouter_base_url=openrouter_base_url,
+            )
+            themes = _parse_themes_json(text)
             if themes:
                 themes = snap_themes_to_cues(themes, cues)
                 for t in themes:
@@ -129,7 +317,7 @@ async def build_harmonized_themes(
             logger.warning("carousel theme LLM failed: %s", exc)
             warning = str(exc)[:160]
     else:
-        warning = "Claude/Gemini unavailable — using transcript buckets"
+        warning = "Claude/Gemini/OpenRouter unavailable — using transcript buckets"
 
     fallback = fallback_topics_from_cues(cues, max_topics=6)
     themes = []
@@ -328,9 +516,25 @@ async def extract_hooks_and_topics_async(
     search_entity: str | None = None,
     api_key: str | None = None,
     model: str = "",
+    claude_api_key: str | None = None,
+    claude_model: str = "",
+    provider: str = "auto",
+    openrouter_api_key: str | None = None,
+    openrouter_model: str = "",
+    openrouter_base_url: str = "",
     english_cues: list[tuple[float, float | None, str]] | None = None,
 ) -> dict[str, Any]:
-    """Topics → subtopics → hooks (one topic at a time), with English preference."""
+    """Topics → subtopics → hooks (one topic at a time), with English preference.
+
+    Prefers Claude when ``claude_api_key`` is set; otherwise Gemini via ``api_key``.
+    """
+    has_llm = _llm_has_any_key(
+        api_key=api_key,
+        claude_api_key=claude_api_key,
+        openrouter_api_key=openrouter_api_key,
+        openrouter_model=openrouter_model,
+    )
+    llm_prefers_claude = bool((claude_api_key or "").strip())
     # Prefer a parallel English track when the indexed window is non-English.
     window_indexed = _cues_in_range(cues, start_sec, end_sec)
     use_english_track = bool(english_cues) and (
@@ -394,19 +598,33 @@ async def extract_hooks_and_topics_async(
     topic_tree: list[dict[str, Any]] = []
     topic_source = "none"
     chunks_used = 0
-    if api_key and window:
+    llm_provider_used = "none"
+    if has_llm and window:
         try:
-            topic_tree, chunks_used = await _llm_topic_tree_from_cues(
+            topic_tree, chunks_used, llm_provider_used = await _llm_topic_tree_from_cues(
                 cues=window,
                 theme_title=theme_title,
                 theme_summary=theme_summary,
                 search_entity=search_entity,
                 api_key=api_key,
                 model=model,
+                claude_api_key=claude_api_key,
+                claude_model=claude_model,
+                provider=provider,
+                openrouter_api_key=openrouter_api_key,
+                openrouter_model=openrouter_model,
+                openrouter_base_url=openrouter_base_url,
                 theme_start=float(start_sec or 0),
                 theme_end=end_sec,
             )
-            topic_source = "llm_chunked" if chunks_used > 1 else "llm"
+            if llm_provider_used == "claude":
+                topic_source = "claude_chunked" if chunks_used > 1 else "claude"
+            elif llm_provider_used == "openrouter":
+                topic_source = "openrouter_chunked" if chunks_used > 1 else "openrouter"
+            elif llm_provider_used == "gemini":
+                topic_source = "llm_chunked" if chunks_used > 1 else "llm"
+            else:
+                topic_source = "none"
         except Exception as exc:  # noqa: BLE001
             logger.warning("topic tree generation failed: %s", exc)
             topic_tree = []
@@ -450,7 +668,7 @@ async def extract_hooks_and_topics_async(
                     )
                 node["subtopics"] = subs
             topic_source = "fallback_cues"
-        elif api_key and full_transcript.strip():
+        elif has_llm and full_transcript.strip():
             try:
                 flat = await _llm_topics_from_theme(
                     theme_title=theme_title,
@@ -459,13 +677,21 @@ async def extract_hooks_and_topics_async(
                     search_entity=search_entity,
                     api_key=api_key,
                     model=model,
+                    claude_api_key=claude_api_key,
+                    claude_model=claude_model,
+                    provider=provider,
+                    openrouter_api_key=openrouter_api_key,
+                    openrouter_model=openrouter_model,
+                    openrouter_base_url=openrouter_base_url,
                     theme_start=float(start_sec or 0),
                     theme_end=end_sec,
                     hooks=base.get("hooks") or [],
                     stitched=stitched,
                 ) or []
                 topic_tree = _flat_topics_to_tree(flat)
-                topic_source = "llm_flat"
+                # Flat path still prefers Claude then Gemini inside _llm_complete_json.
+                topic_source = "claude_flat" if llm_prefers_claude else "llm_flat"
+                llm_provider_used = "claude" if llm_prefers_claude else "gemini"
             except Exception as exc:  # noqa: BLE001
                 logger.warning("theme topic generation failed: %s", exc)
 
@@ -499,6 +725,14 @@ async def extract_hooks_and_topics_async(
             before,
             len(topic_tree),
         )
+
+    # Every path above (LLM chunks, flat fallback, heuristic cues) must land on
+    # one clean chronological, non-overlapping timeline before hooks are crafted.
+    topic_tree = _normalize_topic_chronology(
+        topic_tree,
+        span_start=float(start_sec or 0),
+        span_end=end_sec,
+    )
 
     # Hooks: craft for ONE singular topic at a time (no cross-topic reuse).
     cue_corpus = [str(t or "") for _s, _e, t in window if (t or "").strip()]
@@ -538,7 +772,7 @@ async def extract_hooks_and_topics_async(
             h["topic_id"] = topic.get("id")
             h["topic_text"] = topic.get("text")
         crafted: list[dict[str, Any]] | None = None
-        if api_key:
+        if has_llm:
             try:
                 crafted = await _llm_hooks_for_singular_topic(
                     hooks=candidates,
@@ -549,6 +783,12 @@ async def extract_hooks_and_topics_async(
                     used_angles=used_angles,
                     api_key=api_key,
                     model=model,
+                    claude_api_key=claude_api_key,
+                    claude_model=claude_model,
+                    provider=provider,
+                    openrouter_api_key=openrouter_api_key,
+                    openrouter_model=openrouter_model,
+                    openrouter_base_url=openrouter_base_url,
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("per-topic hook craft failed for %s: %s", topic.get("id"), exc)
@@ -613,7 +853,7 @@ async def extract_hooks_and_topics_async(
             base["hooks"] = _swap_hooks_with_english_cues(base["hooks"], english_cues)
         if base.get("hooks"):
             crafted_all: list[dict[str, Any]] | None = None
-            if api_key:
+            if has_llm:
                 try:
                     crafted_all = await _llm_craft_hooks(
                         hooks=base["hooks"],
@@ -621,6 +861,12 @@ async def extract_hooks_and_topics_async(
                         theme_summary=theme_summary,
                         api_key=api_key,
                         model=model,
+                        claude_api_key=claude_api_key,
+                        claude_model=claude_model,
+                        provider=provider,
+                        openrouter_api_key=openrouter_api_key,
+                        openrouter_model=openrouter_model,
+                        openrouter_base_url=openrouter_base_url,
                     )
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("hook analysis failed, using heuristic craft: %s", exc)
@@ -679,6 +925,16 @@ async def extract_hooks_and_topics_async(
         "transcript_chars": cue_chars,
         "chunks_used": chunks_used,
         "topic_source": topic_source,
+        "llm_provider": (
+            llm_provider_used
+            if llm_provider_used != "none"
+            else (
+                "claude"
+                if llm_prefers_claude and has_llm
+                else ("gemini" if has_llm else "none")
+            )
+        ),
+        "claude_preferred": llm_prefers_claude,
         "topic_tree_count": len(base["topic_tree"]),
         "flat_topic_count": len(base["topics"]),
         "hook_count": len(base["hooks"]),
@@ -702,19 +958,20 @@ async def _llm_craft_hooks(
     hooks: list[dict[str, Any]],
     theme_title: str,
     theme_summary: str,
-    api_key: str,
-    model: str,
+    api_key: str | None = None,
+    model: str = "",
+    claude_api_key: str | None = None,
+    claude_model: str = "",
+    provider: str = "auto",
+    openrouter_api_key: str | None = None,
+    openrouter_model: str = "",
+    openrouter_base_url: str = "",
 ) -> list[dict[str, Any]]:
     """Rewrite spoken windows into punchy carousel hook lines (keep time spans).
 
     Display text is analysed/crafted from the transcript — never a verbatim cue dump.
     start_sec / end_sec stay aligned to the original spoken span for frame selection.
     """
-    import asyncio
-
-    from google import genai
-    from google.genai import types
-
     if not hooks:
         return []
 
@@ -740,6 +997,10 @@ async def _llm_craft_hooks(
         "- Prefer natural English; translate meaning if spoken line is Hindi/Hinglish/other.\n"
         "- Keep the true claim/energy of what was said — sharpen for Instagram, do not invent facts.\n"
         "- Hooks must be DISTINCT from each other (no near-paraphrase twins).\n"
+        "- NEVER reuse the same stock opener across hooks. Ban boilerplate like "
+        "\"The hidden pattern behind…\", \"What most people miss about…\", "
+        "\"The real reason why…\" stamped on every line — each hook needs its own shape "
+        "and concrete nouns from THAT spoken window.\n"
         "- Return one hook per input index; keep the same order.\n"
         f"Theme: {theme_title}\n"
         f"Theme summary: {theme_summary}\n"
@@ -747,21 +1008,21 @@ async def _llm_craft_hooks(
         '{"i": number, "hook": "crafted English hook"}.\n\n'
         f"Spoken windows:\n{json.dumps(payload, ensure_ascii=False)}"
     )
-    client = genai.Client(
+    text, _provider = await _llm_complete_json(
+        prompt=prompt,
+        temperature=0.45,
+        max_tokens=2200,
         api_key=api_key,
-        http_options=types.HttpOptions(timeout=_LLM_REQUEST_TIMEOUT_MS),
-    )
-    resp = await asyncio.to_thread(
-        client.models.generate_content,
         model=model,
-        contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
-        config=types.GenerateContentConfig(
-            temperature=0.45,
-            response_mime_type="application/json",
-        ),
+        claude_api_key=claude_api_key,
+        claude_model=claude_model,
+        provider=provider,
+        openrouter_api_key=openrouter_api_key,
+        openrouter_model=openrouter_model,
+        openrouter_base_url=openrouter_base_url,
     )
-    raw = json.loads((resp.text or "").strip() or "[]")
-    if not isinstance(raw, list):
+    raw = _loads_json_array(text)
+    if not raw:
         return []
 
     by_i: dict[int, str] = {}
@@ -808,23 +1069,33 @@ def heuristic_craft_hooks(
     """Local punchy rewrite when Gemini craft is unavailable — never ship raw cue dumps."""
     out: list[dict[str, Any]] = []
     corpus = [str(h.get("text") or "") for h in hooks if isinstance(h, dict)]
-    for h in hooks:
+    used: set[str] = set()
+    for i, h in enumerate(hooks):
         row = dict(h)
         spoken = str(row.get("text") or "").strip()
         if not spoken:
             continue
         crafted = _heuristic_hook_line(spoken, theme_title=theme_title)
-        if not crafted or is_verbatim_transcript_leak(crafted, [spoken, *corpus]):
-            crafted = _force_non_verbatim_hook(spoken, theme_title=theme_title)
+        if (
+            not crafted
+            or is_verbatim_transcript_leak(crafted, [spoken, *corpus])
+            or _hook_opening_collision(crafted, used)
+        ):
+            crafted = _force_non_verbatim_hook(
+                spoken, theme_title=theme_title, used=used, salt=i
+            )
         # Last resort still non-verbatim by construction.
-        if not crafted:
-            crafted = _force_non_verbatim_hook(spoken, theme_title=theme_title or "the talk")
+        if not crafted or _hook_opening_collision(crafted, used):
+            crafted = _force_non_verbatim_hook(
+                spoken, theme_title=theme_title or "the talk", used=used, salt=i + 17
+            )
         row["original_text"] = row.get("original_text") or spoken
         row["text"] = crafted
         row["verbatim"] = False
         row["analysed"] = True
         row["contextual"] = True
         out.append(row)
+        used.add(" ".join(crafted.lower().split()))
     guarded, _stats = enforce_non_verbatim_hooks(out, corpus, theme_title=theme_title)
     return guarded
 
@@ -916,29 +1187,125 @@ def is_verbatim_transcript_leak(
     return False
 
 
-def _force_non_verbatim_hook(spoken: str, *, theme_title: str = "") -> str:
-    """Aggressively rewrite a spoken window into a non-verbatim carousel claim."""
+def _force_non_verbatim_hook(
+    spoken: str,
+    *,
+    theme_title: str = "",
+    used: set[str] | None = None,
+    salt: int = 0,
+) -> str:
+    """Aggressively rewrite a spoken window into a non-verbatim carousel claim.
+
+    Must stay unique across a batch: never stamp the same stock opener
+    (e.g. "The hidden pattern behind …") onto every hook.
+    """
     spoken = " ".join((spoken or "").split()).strip()
     theme_bit = (theme_title or "this story").strip()[:48] or "this story"
     base = _heuristic_hook_line(spoken, theme_title=theme_title)
-    if base and not is_verbatim_transcript_leak(base, [spoken]):
+    if (
+        base
+        and not is_verbatim_transcript_leak(base, [spoken])
+        and not _hook_opening_collision(base, used)
+    ):
         return base
-    # Pull at most 2 content words so we never reassemble the cue.
+
     stop = {
         "the", "and", "for", "with", "that", "this", "from", "have", "been",
         "they", "their", "about", "into", "every", "company", "largest",
+        "what", "when", "where", "which", "while", "would", "could", "should",
+        "there", "these", "those", "because", "through", "after", "before",
+        "people", "really", "actually", "something", "everything", "things",
     }
     words = [
         w for w in re.findall(r"[A-Za-z][A-Za-z0-9']+", spoken)
         if len(w) > 3 and w.lower() not in stop
-    ][:2]
-    if words:
-        spark = " / ".join(words)
-        candidate = f"The hidden pattern behind {spark}"
-        if not is_verbatim_transcript_leak(candidate, [spoken]):
-            return candidate[:280]
-    # Guaranteed divergence from any cue (theme-framed, no spoken tokens required).
-    return f"What most people miss about {theme_bit}"[:280]
+    ]
+    # Prefer distinctive mid/late content words so adjacent cues diverge.
+    if len(words) > 4:
+        mid = max(0, len(words) // 3)
+        words = words[mid : mid + 4] or words[:4]
+    else:
+        words = words[:4]
+
+    spark = " ".join(words[:3]).strip() if words else theme_bit
+    spark_short = " ".join(words[:2]).strip() if words else theme_bit
+    lead = (words[0] if words else theme_bit).rstrip(".,;:")
+
+    # Rotate templates by content so each spoken window gets a different shape.
+    templates = [
+        f"Why {spark_short} still surprises founders",
+        f"{lead} is the part nobody prices in",
+        f"The real bet behind {spark_short}",
+        f"Stop ignoring {spark_short}",
+        f"What {spark_short} quietly proves",
+        f"{spark_short} — and why it compounds",
+        f"How {spark_short} flipped the script",
+        f"The uncomfortable truth about {spark_short}",
+        f"{lead} isn't the headline — it's the lever",
+        f"Inside the {spark_short} moment",
+        f"Most miss this about {spark_short}",
+        f"Where {spark_short} actually wins",
+    ]
+    # Stable but varied pick from spoken content (+ salt for retries).
+    seed = sum(ord(c) for c in (spoken.lower()[:80] or theme_bit)) + int(salt or 0)
+    ordered = [templates[(seed + i) % len(templates)] for i in range(len(templates))]
+    # Theme-only fallbacks last (still unique via salt).
+    ordered.extend(
+        [
+            f"The angle on {theme_bit} that sticks",
+            f"What {theme_bit} gets wrong — and right",
+            f"A sharper take on {theme_bit}",
+        ]
+    )
+
+    for candidate in ordered:
+        candidate = " ".join(candidate.split()).strip()[:280]
+        if not candidate:
+            continue
+        if is_verbatim_transcript_leak(candidate, [spoken]):
+            continue
+        if _hook_opening_collision(candidate, used):
+            continue
+        return candidate
+
+    # Guaranteed unique divergence even if every template collided.
+    suffix = abs(seed) % 97
+    return f"A sharper take on {theme_bit} (#{suffix})"[:280]
+
+
+def _banned_stock_opener(text: str) -> bool:
+    """True for known boilerplate openers that stamped every hook identically."""
+    head = " ".join((text or "").lower().split()[:4])
+    banned = (
+        "the hidden pattern behind",
+        "what most people miss",
+        "the real reason why",
+        "the surprising truth about",
+    )
+    return any(head.startswith(b) or b in " ".join((text or "").lower().split()[:6]) for b in banned)
+
+
+def _hook_opening_collision(text: str, used: set[str] | None) -> bool:
+    """True when this hook shares a stock opening / near-duplicate with ``used``."""
+    if _banned_stock_opener(text):
+        return True
+    if not used:
+        return False
+    norm = " ".join((text or "").lower().split())
+    if not norm:
+        return True
+    if norm in used:
+        return True
+    # Same first 3–4 words = same boilerplate opener stamped on many hooks.
+    head = " ".join(norm.split()[:4])
+    for other in used:
+        other_head = " ".join(other.split()[:4])
+        if head and head == other_head:
+            return True
+        # Near-duplicate full lines
+        if norm == other:
+            return True
+    return False
 
 
 def enforce_non_verbatim_hooks(
@@ -949,8 +1316,15 @@ def enforce_non_verbatim_hooks(
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
     """Reject or rewrite hooks that leak transcript verbatim (LLM + heuristic paths)."""
     kept: list[dict[str, Any]] = []
-    stats = {"checked": 0, "rejected_verbatim": 0, "rewritten": 0, "dropped": 0}
+    stats = {
+        "checked": 0,
+        "rejected_verbatim": 0,
+        "rewritten": 0,
+        "dropped": 0,
+        "deduped_openings": 0,
+    }
     corpus = [c for c in corpus_texts if (c or "").strip()]
+    used_norms: set[str] = set()
     for h in hooks:
         if not isinstance(h, dict):
             continue
@@ -961,24 +1335,56 @@ def enforce_non_verbatim_hooks(
         if spoken and spoken != text:
             local_corpus.append(spoken)
 
+        row = dict(h)
         if text and not is_verbatim_transcript_leak(text, local_corpus):
-            row = dict(h)
+            if _hook_opening_collision(text, used_norms):
+                # Distinct topic hooks must not share the same stock opener.
+                stats["deduped_openings"] += 1
+                source = spoken or text
+                rewritten = None
+                for salt in range(0, 8):
+                    cand = _force_non_verbatim_hook(
+                        source, theme_title=theme_title, used=used_norms, salt=salt
+                    )
+                    if cand and not _hook_opening_collision(cand, used_norms):
+                        rewritten = cand
+                        break
+                if rewritten:
+                    row["original_text"] = source
+                    row["text"] = rewritten
+                    row["verbatim_guard"] = "opening_deduped"
+                    text = rewritten
+                else:
+                    stats["dropped"] += 1
+                    continue
             row["verbatim"] = False
             row["analysed"] = True
             kept.append(row)
+            used_norms.add(" ".join(text.lower().split()))
             continue
 
         stats["rejected_verbatim"] += 1
         source = spoken or text
-        rewritten = _force_non_verbatim_hook(source, theme_title=theme_title)
-        if rewritten and not is_verbatim_transcript_leak(rewritten, local_corpus + [source]):
-            row = dict(h)
+        rewritten = None
+        for salt in range(0, 8):
+            cand = _force_non_verbatim_hook(
+                source, theme_title=theme_title, used=used_norms, salt=salt
+            )
+            if (
+                cand
+                and not is_verbatim_transcript_leak(cand, local_corpus + [source])
+                and not _hook_opening_collision(cand, used_norms)
+            ):
+                rewritten = cand
+                break
+        if rewritten:
             row["original_text"] = source
             row["text"] = rewritten
             row["verbatim"] = False
             row["analysed"] = True
             row["verbatim_guard"] = "rewritten"
             kept.append(row)
+            used_norms.add(" ".join(rewritten.lower().split()))
             stats["rewritten"] += 1
             logger.info("verbatim guard rewrote hook: %r → %r", text[:70], rewritten[:70])
         else:
@@ -1548,6 +1954,71 @@ def _merge_topic_trees(parts: list[list[dict[str, Any]]]) -> list[dict[str, Any]
     return kept
 
 
+def _normalize_topic_chronology(
+    topics: list[dict[str, Any]],
+    *,
+    span_start: float = 0.0,
+    span_end: float | None = None,
+) -> list[dict[str, Any]]:
+    """Force topics (and their subtopics) into one clean, sequential, non-overlapping timeline.
+
+    Every topic gets exactly one real chronological window — no enveloping
+    multi-range spans and no missing/incomplete end times — so the UI can show
+    a simple, trustworthy timeline instead of siblings that appear to overlap.
+    """
+    if not topics:
+        return topics
+    ordered = sorted(
+        (t for t in topics if isinstance(t, dict)),
+        key=lambda t: float(_as_float(t.get("start_sec")) or 0.0),
+    )
+    n = len(ordered)
+    for i, t in enumerate(ordered):
+        t.pop("time_ranges", None)
+        start = float(_as_float(t.get("start_sec")) or 0.0)
+        start = max(start, span_start)
+        next_start = (
+            float(_as_float(ordered[i + 1].get("start_sec")) or start)
+            if i + 1 < n
+            else None
+        )
+        end = _as_float(t.get("end_sec"))
+        if end is None or end <= start:
+            end = next_start if next_start is not None else (
+                span_end if span_end is not None else start + 20.0
+            )
+        if next_start is not None and end > next_start:
+            end = next_start
+        if end <= start:
+            end = start + 1.0
+        t["start_sec"] = start
+        t["end_sec"] = end
+
+        subs_raw = t.get("subtopics")
+        subs = sorted(
+            (s for s in subs_raw if isinstance(s, dict)) if isinstance(subs_raw, list) else [],
+            key=lambda s: float(_as_float(s.get("start_sec")) or start),
+        )
+        m = len(subs)
+        for j, s in enumerate(subs):
+            s_start = max(start, min(float(_as_float(s.get("start_sec")) or start), end))
+            s_next = (
+                max(start, min(float(_as_float(subs[j + 1].get("start_sec")) or s_start), end))
+                if j + 1 < m
+                else end
+            )
+            s_end = _as_float(s.get("end_sec"))
+            if s_end is None or s_end <= s_start:
+                s_end = s_next
+            s_end = min(float(s_end), end)
+            if s_end <= s_start:
+                s_end = min(end, s_start + 1.0)
+            s["start_sec"] = s_start
+            s["end_sec"] = s_end
+        t["subtopics"] = subs
+    return ordered
+
+
 def _condense_transcript_outline(
     cues: list[tuple[float, float | None, str]],
     *,
@@ -1614,19 +2085,20 @@ async def _llm_synthesize_global_topics(
     theme_title: str,
     theme_summary: str,
     search_entity: str | None,
-    api_key: str,
-    model: str,
+    api_key: str | None = None,
+    model: str = "",
+    claude_api_key: str | None = None,
+    claude_model: str = "",
+    provider: str = "auto",
+    openrouter_api_key: str | None = None,
+    openrouter_model: str = "",
+    openrouter_base_url: str = "",
     theme_start: float,
     theme_end: float | None,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], str]:
     """Global pass: turn fragmentary chunk topics into cohesive transcript-spanning threads."""
-    import asyncio
-
-    from google import genai
-    from google.genai import types
-
     if not outline.strip() or not candidates:
-        return candidates
+        return candidates, "none"
 
     cand_payload = []
     for c in candidates[:40]:
@@ -1679,25 +2151,25 @@ async def _llm_synthesize_global_topics(
         f"Candidate local topics:\n{json.dumps(cand_payload, ensure_ascii=False)}\n\n"
         f"Condensed full-talk outline (READ FOR GLOBAL ARC):\n{outline}"
     )
-    client = genai.Client(
+    text, provider = await _llm_complete_json(
+        prompt=prompt,
+        temperature=0.3,
+        max_tokens=4096,
         api_key=api_key,
-        http_options=types.HttpOptions(timeout=_LLM_REQUEST_TIMEOUT_MS),
-    )
-    resp = await asyncio.to_thread(
-        client.models.generate_content,
         model=model,
-        contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
-        config=types.GenerateContentConfig(
-            temperature=0.3,
-            response_mime_type="application/json",
-        ),
+        claude_api_key=claude_api_key,
+        claude_model=claude_model,
+        provider=provider,
+        openrouter_api_key=openrouter_api_key,
+        openrouter_model=openrouter_model,
+        openrouter_base_url=openrouter_base_url,
     )
     synthesized = _parse_topic_tree_json(
-        (resp.text or "").strip(),
+        text,
         theme_start=theme_start,
         theme_end=theme_end,
     )
-    return synthesized if synthesized else candidates
+    return (synthesized if synthesized else candidates), provider
 
 
 async def _llm_topic_tree_from_cues(
@@ -1706,16 +2178,27 @@ async def _llm_topic_tree_from_cues(
     theme_title: str,
     theme_summary: str,
     search_entity: str | None,
-    api_key: str,
-    model: str,
+    api_key: str | None = None,
+    model: str = "",
+    claude_api_key: str | None = None,
+    claude_model: str = "",
+    provider: str = "auto",
+    openrouter_api_key: str | None = None,
+    openrouter_model: str = "",
+    openrouter_base_url: str = "",
     theme_start: float = 0.0,
     theme_end: float | None = None,
-) -> tuple[list[dict[str, Any]], int]:
-    """Chunk-read the talk, then globally synthesize cohesive spanning topics."""
+) -> tuple[list[dict[str, Any]], int, str]:
+    """Chunk-read the talk, then globally synthesize cohesive spanning topics.
+
+    Returns ``(topics, chunks_used, provider)`` where provider is ``claude``,
+    ``gemini``, or ``none``.
+    """
     chunks = _chunk_cues_for_topics(cues)
     if not chunks:
-        return [], 0
+        return [], 0, "none"
     parts: list[list[dict[str, Any]]] = []
+    providers: list[str] = []
     for idx, chunk in enumerate(chunks):
         transcript = compact_transcript(chunk, max_chars=_TOPIC_CHUNK_CHARS + 2_000)
         c_start = float(chunk[0][0])
@@ -1731,13 +2214,19 @@ async def _llm_topic_tree_from_cues(
             c_end,
         )
         try:
-            part = await _llm_topic_tree_from_theme(
+            part, used_provider = await _llm_topic_tree_from_theme(
                 theme_title=theme_title,
                 theme_summary=theme_summary,
                 transcript=transcript,
                 search_entity=search_entity,
                 api_key=api_key,
                 model=model,
+                claude_api_key=claude_api_key,
+                claude_model=claude_model,
+                provider=provider,
+                openrouter_api_key=openrouter_api_key,
+                openrouter_model=openrouter_model,
+                openrouter_base_url=openrouter_base_url,
                 theme_start=c_start,
                 theme_end=c_end,
                 chunk_index=idx,
@@ -1751,34 +2240,28 @@ async def _llm_topic_tree_from_cues(
             continue
         if part:
             parts.append(part)
+            if used_provider:
+                providers.append(used_provider)
     if not parts:
-        return [], len(chunks)
+        return [], len(chunks), "none"
 
     candidates = parts[0] if len(parts) == 1 else _merge_topic_trees(parts)
-    outline = _condense_transcript_outline(cues)
-    try:
-        synthesized = await _llm_synthesize_global_topics(
-            candidates=candidates,
-            outline=outline,
-            theme_title=theme_title,
-            theme_summary=theme_summary,
-            search_entity=search_entity,
-            api_key=api_key,
-            model=model,
-            theme_start=theme_start,
-            theme_end=theme_end,
-        )
-        if synthesized:
-            logger.info(
-                "global topic synthesis: candidates=%d → cohesive=%d (outline_chars=%d)",
-                len(candidates),
-                len(synthesized),
-                len(outline),
-            )
-            return synthesized[:_MAX_TOPICS], len(chunks)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("global topic synthesis failed, using chunk merge: %s", exc)
-    return candidates[:_MAX_TOPICS], len(chunks)
+    if "openrouter" in providers:
+        used = "openrouter"
+    elif "claude" in providers:
+        used = "claude"
+    else:
+        used = providers[-1] if providers else "none"
+    # No global "cohesive thread" re-synthesis: that pass enveloped each topic's
+    # start/end across every non-contiguous recurrence, which made sibling topics
+    # look like they overlapped in time. Chunk-level candidates are already
+    # chronological and single-span; normalize just clips real overlaps/gaps.
+    normalized = _normalize_topic_chronology(
+        candidates[:_MAX_TOPICS],
+        span_start=theme_start,
+        span_end=theme_end,
+    )
+    return normalized, len(chunks), used
 
 
 async def _llm_topic_tree_from_theme(
@@ -1787,19 +2270,20 @@ async def _llm_topic_tree_from_theme(
     theme_summary: str,
     transcript: str,
     search_entity: str | None,
-    api_key: str,
-    model: str,
+    api_key: str | None = None,
+    model: str = "",
+    claude_api_key: str | None = None,
+    claude_model: str = "",
+    provider: str = "auto",
+    openrouter_api_key: str | None = None,
+    openrouter_model: str = "",
+    openrouter_base_url: str = "",
     theme_start: float = 0.0,
     theme_end: float | None = None,
     chunk_index: int = 0,
     chunk_count: int = 1,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], str]:
     """Infer cohesive topic clusters (+ optional subtopics) from one transcript chunk."""
-    import asyncio
-
-    from google import genai
-    from google.genai import types
-
     entity = (search_entity or "").strip()
     chunk_note = (
         f"This is chunk {chunk_index + 1} of {chunk_count} of the same talk. "
@@ -1838,23 +2322,26 @@ async def _llm_topic_tree_from_theme(
         '"subtopics":[{"title":"...","start_sec":0,"end_sec":5,"explanation":"..."}]}\n\n'
         f"Timed transcript (READ ALL OF IT):\n{transcript}"
     )
-    client = genai.Client(
+    text, provider = await _llm_complete_json(
+        prompt=prompt,
+        temperature=0.35,
+        max_tokens=4096,
         api_key=api_key,
-        http_options=types.HttpOptions(timeout=_LLM_REQUEST_TIMEOUT_MS),
-    )
-    resp = await asyncio.to_thread(
-        client.models.generate_content,
         model=model,
-        contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
-        config=types.GenerateContentConfig(
-            temperature=0.35,
-            response_mime_type="application/json",
-        ),
+        claude_api_key=claude_api_key,
+        claude_model=claude_model,
+        provider=provider,
+        openrouter_api_key=openrouter_api_key,
+        openrouter_model=openrouter_model,
+        openrouter_base_url=openrouter_base_url,
     )
-    return _parse_topic_tree_json(
-        (resp.text or "").strip(),
-        theme_start=theme_start,
-        theme_end=theme_end,
+    return (
+        _parse_topic_tree_json(
+            text,
+            theme_start=theme_start,
+            theme_end=theme_end,
+        ),
+        provider,
     )
 
 
@@ -2310,15 +2797,16 @@ async def _llm_hooks_for_singular_topic(
     theme_title: str,
     theme_summary: str,
     used_angles: list[str],
-    api_key: str,
-    model: str,
+    api_key: str | None = None,
+    model: str = "",
+    claude_api_key: str | None = None,
+    claude_model: str = "",
+    provider: str = "auto",
+    openrouter_api_key: str | None = None,
+    openrouter_model: str = "",
+    openrouter_base_url: str = "",
 ) -> list[dict[str, Any]]:
     """Craft Instagram hooks for ONE topic only — never reuse prior topics' angles."""
-    import asyncio
-
-    from google import genai
-    from google.genai import types
-
     payload = []
     for i, h in enumerate(hooks):
         payload.append(
@@ -2350,21 +2838,21 @@ async def _llm_hooks_for_singular_topic(
         'Return ONLY JSON array: {"i": number, "hook": "crafted English hook"}.\n\n'
         f"Spoken windows:\n{json.dumps(payload, ensure_ascii=False)}"
     )
-    client = genai.Client(
+    text, _provider = await _llm_complete_json(
+        prompt=prompt,
+        temperature=0.45,
+        max_tokens=1800,
         api_key=api_key,
-        http_options=types.HttpOptions(timeout=_LLM_REQUEST_TIMEOUT_MS),
-    )
-    resp = await asyncio.to_thread(
-        client.models.generate_content,
         model=model,
-        contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
-        config=types.GenerateContentConfig(
-            temperature=0.45,
-            response_mime_type="application/json",
-        ),
+        claude_api_key=claude_api_key,
+        claude_model=claude_model,
+        provider=provider,
+        openrouter_api_key=openrouter_api_key,
+        openrouter_model=openrouter_model,
+        openrouter_base_url=openrouter_base_url,
     )
-    raw = json.loads((resp.text or "").strip() or "[]")
-    if not isinstance(raw, list):
+    raw = _loads_json_array(text)
+    if not raw:
         return []
     by_i: dict[int, str] = {}
     for row in raw:
@@ -2412,18 +2900,19 @@ async def _llm_topics_from_theme(
     theme_summary: str,
     transcript: str,
     search_entity: str | None,
-    api_key: str,
-    model: str,
+    api_key: str | None = None,
+    model: str = "",
+    claude_api_key: str | None = None,
+    claude_model: str = "",
+    provider: str = "auto",
+    openrouter_api_key: str | None = None,
+    openrouter_model: str = "",
+    openrouter_base_url: str = "",
     theme_start: float = 0.0,
     theme_end: float | None = None,
     hooks: list[dict[str, Any]] | None = None,
     stitched: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    import asyncio
-
-    from google import genai
-    from google.genai import types
-
     entity = (search_entity or "").strip()
     prompt = (
         "You carefully READ the timed transcript and infer COHESIVE TOPICS — real thematic "
@@ -2443,21 +2932,21 @@ async def _llm_topics_from_theme(
         "Return ONLY a JSON array of strings.\n\n"
         f"Theme transcript (READ IT):\n{transcript[:_TOPIC_CHUNK_CHARS]}"
     )
-    client = genai.Client(
+    text, _provider = await _llm_complete_json(
+        prompt=prompt,
+        temperature=0.4,
+        max_tokens=1800,
         api_key=api_key,
-        http_options=types.HttpOptions(timeout=_LLM_REQUEST_TIMEOUT_MS),
-    )
-    resp = await asyncio.to_thread(
-        client.models.generate_content,
         model=model,
-        contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
-        config=types.GenerateContentConfig(
-            temperature=0.4,
-            response_mime_type="application/json",
-        ),
+        claude_api_key=claude_api_key,
+        claude_model=claude_model,
+        provider=provider,
+        openrouter_api_key=openrouter_api_key,
+        openrouter_model=openrouter_model,
+        openrouter_base_url=openrouter_base_url,
     )
-    raw = json.loads((resp.text or "").strip() or "[]")
-    if not isinstance(raw, list):
+    raw = _loads_json_array(text)
+    if not raw:
         return []
     labels: list[str] = []
     seen: set[str] = set()
@@ -2917,3 +3406,267 @@ def merge_preview_windows(
             rows.append(row)
     rows.sort(key=lambda r: float(r.get("start_sec") or 0))
     return rows[:limit]
+
+
+def _normalize_highlight_indices(text: str, raw_indices: Any, raw_words: Any) -> tuple[list[int], list[str]]:
+    """Return validated 0-based word indices + matching words for yellow highlights."""
+    words = [w for w in re.split(r"\s+", (text or "").strip()) if w]
+    n = len(words)
+    indices: list[int] = []
+    if isinstance(raw_indices, list):
+        for v in raw_indices:
+            try:
+                i = int(v)
+            except (TypeError, ValueError):
+                continue
+            if 0 <= i < n and i not in indices:
+                indices.append(i)
+    if not indices and isinstance(raw_words, list):
+        lowered = [w.lower().strip(".,!?;:\"'()[]") for w in words]
+        for rw in raw_words:
+            token = str(rw or "").lower().strip(".,!?;:\"'()[]")
+            if not token:
+                continue
+            for i, w in enumerate(lowered):
+                if w == token and i not in indices:
+                    indices.append(i)
+                    break
+    # Instagram style: highlight 1–4 punchy words, never the whole line.
+    if len(indices) > 4:
+        indices = indices[:4]
+    if not indices and n >= 2:
+        # Heuristic fallback: emphasize a mid content word (skip tiny function words).
+        stop = {
+            "a", "an", "the", "and", "or", "to", "of", "in", "on", "for", "with",
+            "is", "are", "was", "were", "be", "it", "this", "that", "you", "your",
+            "we", "our", "i", "my", "from", "as", "at", "by", "not", "but",
+        }
+        for i, w in enumerate(words):
+            core = w.lower().strip(".,!?;:\"'()[]")
+            if len(core) >= 4 and core not in stop:
+                indices = [i]
+                break
+    highlight_words = [words[i] for i in indices if 0 <= i < n]
+    return indices, highlight_words
+
+
+def _heuristic_highlight_for_line(text: str) -> tuple[str, list[int], list[str]]:
+    cleaned = " ".join((text or "").split()).strip()
+    if not cleaned:
+        return "", [], []
+    indices, words = _normalize_highlight_indices(cleaned, None, None)
+    return cleaned[:220], indices, words
+
+
+async def polish_slides_instagram_copy(
+    slides: list[dict[str, Any]],
+    *,
+    hook_goal: str = "",
+    intent: str = "",
+    api_key: str | None = None,
+    model: str = "",
+    claude_api_key: str | None = None,
+    claude_model: str = "",
+    provider: str = "auto",
+    openrouter_api_key: str | None = None,
+    openrouter_model: str = "",
+    openrouter_base_url: str = "",
+) -> tuple[list[dict[str, Any]], str]:
+    """Polish slide one-liners for IG + attach yellow word highlight indices.
+
+    Prefers Claude when configured. Returns ``(slides, provider)``.
+    On failure, keeps original lines and applies heuristic highlights so the
+    UI never drops yellow emphasis entirely.
+    """
+    if not slides:
+        return slides, "none"
+
+    payload = []
+    for i, slide in enumerate(slides):
+        raw = str(
+            slide.get("transcript_text")
+            or slide.get("hook_line")
+            or slide.get("caption")
+            or slide.get("snippet")
+            or ""
+        ).strip()
+        payload.append({"i": i, "text": raw[:400]})
+
+    has_llm = _llm_has_any_key(
+        api_key=api_key,
+        claude_api_key=claude_api_key,
+        openrouter_api_key=openrouter_api_key,
+        openrouter_model=openrouter_model,
+    )
+    used_provider = "heuristic"
+    parsed_rows: list[dict[str, Any]] = []
+
+    if has_llm:
+        prompt = (
+            "You finalize Instagram carousel slide HIGHLIGHTS for a vertical 9:16 post.\n"
+            "CRITICAL: Do NOT rewrite, paraphrase, or invent slide text.\n"
+            "Each slide text MUST stay the exact spoken/transcript seed words "
+            "(punctuation/casing tweaks only are allowed).\n"
+            "Style: white sans-serif captions with a FEW words in bright yellow.\n"
+            "Rules for EACH slide:\n"
+            "- Return the SAME words as the input text (exact transcript)\n"
+            "- Pick 1–3 words to highlight in yellow (key nouns/verbs/names/numbers)\n"
+            "- highlight = 0-based word indices into the returned text after whitespace split\n"
+            "- Never highlight every word; never return empty highlight\n"
+            f"Hook goal: {(hook_goal or '').strip()[:240] or '(none)'}\n"
+            f"Intent: {(intent or '').strip()[:240] or '(none)'}\n"
+            "Return ONLY JSON:\n"
+            '{"slides":[{"i":0,"text":"...","highlight":[1,2],"highlight_words":["AI","crisis"]}]}\n\n'
+            f"Input slides JSON:\n{json.dumps(payload, ensure_ascii=False)}"
+        )
+        try:
+            text, used_provider = await _llm_complete_json(
+                prompt=prompt,
+                system=(
+                    "You are an expert Instagram carousel copywriter. "
+                    "Return ONLY valid JSON. Yellow highlights must be sparse and punchy."
+                ),
+                temperature=0.35,
+                max_tokens=3500,
+                api_key=api_key,
+                model=model,
+                claude_api_key=claude_api_key,
+                claude_model=claude_model or "claude-sonnet-4-5-20250929",
+                provider=provider,
+                openrouter_api_key=openrouter_api_key,
+                openrouter_model=openrouter_model,
+                openrouter_base_url=openrouter_base_url,
+            )
+            m = re.search(r"\{[\s\S]*\}", text or "")
+            data = json.loads(m.group() if m else text or "{}")
+            rows = data.get("slides") if isinstance(data, dict) else None
+            if isinstance(rows, list):
+                parsed_rows = [r for r in rows if isinstance(r, dict)]
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("instagram copy polish failed (%s): %s", used_provider, str(exc)[:180])
+            used_provider = "heuristic"
+            parsed_rows = []
+
+    by_i = {
+        int(r["i"]): r
+        for r in parsed_rows
+        if r.get("i") is not None
+        and str(r.get("i")).lstrip("-").isdigit()
+    }
+
+    def _norm_words(text: str) -> list[str]:
+        return [
+            w.lower().strip(".,!?;:\"'()[]")
+            for w in re.split(r"\s+", (text or "").strip())
+            if w
+        ]
+
+    def _is_exact_or_subset(candidate: str, seed: str) -> bool:
+        """True when candidate is the seed (or a contiguous subset of seed words)."""
+        c = _norm_words(candidate)
+        s = _norm_words(seed)
+        if not c or not s:
+            return False
+        if c == s:
+            return True
+        # Allow punctuation/casing-only edits: same tokens.
+        if " ".join(c) == " ".join(s):
+            return True
+        # Contiguous subset of seed (trim only) — never invented tokens.
+        if len(c) <= len(s):
+            joined_s = " ".join(s)
+            joined_c = " ".join(c)
+            if joined_c in joined_s:
+                return True
+        return False
+
+    out: list[dict[str, Any]] = []
+    for i, slide in enumerate(slides):
+        item = dict(slide)
+        seed = str(
+            item.get("transcript_text")
+            or item.get("hook_line")
+            or item.get("caption")
+            or item.get("snippet")
+            or ""
+        ).strip()
+        row = by_i.get(i) or {}
+        polished = " ".join(str(row.get("text") or seed).split()).strip()[:220]
+        slide_provider = used_provider
+        # Hard rule: never ship invented copy — fall back to exact seed.
+        if seed and polished and not _is_exact_or_subset(polished, seed):
+            polished = seed
+            slide_provider = (
+                f"{used_provider}+transcript_locked"
+                if used_provider != "heuristic"
+                else "heuristic"
+            )
+        if not polished:
+            polished, indices, hl_words = _heuristic_highlight_for_line(seed)
+        else:
+            indices, hl_words = _normalize_highlight_indices(
+                polished,
+                row.get("highlight") or row.get("highlights"),
+                row.get("highlight_words") or row.get("yellow_words"),
+            )
+            if not indices:
+                _, indices, hl_words = _heuristic_highlight_for_line(polished)
+        # Keep original for audit; UI prefers polished display fields.
+        if seed and seed != polished:
+            item.setdefault("original_text", seed[:400])
+        item["hook_line"] = polished
+        item["transcript_text"] = polished
+        item["caption"] = polished
+        item["snippet"] = polished
+        item["highlight"] = indices
+        item["highlight_words"] = hl_words
+        item["copy_source"] = slide_provider
+        out.append(item)
+    return out, used_provider
+
+
+async def finalize_carousels_instagram_copy(
+    carousels: list[dict[str, Any]],
+    *,
+    intent: str = "",
+    api_key: str | None = None,
+    model: str = "",
+    claude_api_key: str | None = None,
+    claude_model: str = "",
+    provider: str = "auto",
+    openrouter_api_key: str | None = None,
+    openrouter_model: str = "",
+    openrouter_base_url: str = "",
+) -> tuple[list[dict[str, Any]], str]:
+    """Polish every carousel's slides (Claude-preferred) and return provider used."""
+    if not carousels:
+        return carousels, "none"
+    provider_used = "none"
+    out: list[dict[str, Any]] = []
+    for car in carousels:
+        item = dict(car)
+        slides = list(item.get("slides") or [])
+        hook_goal = str(item.get("hook_goal") or (item.get("hooks") or [""])[0] or "")
+        polished, used = await polish_slides_instagram_copy(
+            slides,
+            hook_goal=hook_goal,
+            intent=intent,
+            api_key=api_key,
+            model=model,
+            claude_api_key=claude_api_key,
+            claude_model=claude_model,
+            provider=provider,
+            openrouter_api_key=openrouter_api_key,
+            openrouter_model=openrouter_model,
+            openrouter_base_url=openrouter_base_url,
+        )
+        item["slides"] = polished
+        item["slide_count"] = len(polished)
+        item["copy_source"] = used
+        provider_used = used if provider_used == "none" else provider_used
+        if used == "openrouter":
+            provider_used = "openrouter"
+        elif used == "claude":
+            provider_used = "claude"
+        out.append(item)
+    return out, provider_used

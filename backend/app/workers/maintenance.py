@@ -21,7 +21,6 @@ from app.drive.indexing_pause import (
 )
 from app.pipelines.decode_recovery import apply_decode_failure
 from app.qdrant.image_captions import (
-    delete_caption_sync,
     existing_caption_ids_sync,
     valid_caption_ids_sync,
 )
@@ -39,6 +38,8 @@ _last_embed_run_at: datetime | None = None
 _last_caption_done = 0
 _last_embed_done = 0
 _last_invalid_captions_removed = 0
+# Persist across maintenance ticks so one undecodable cache file cannot spin forever.
+_embed_skip_ids: set[str] = set()
 
 
 async def _processed_image_ids(*, exclude_paused: bool = True) -> list[str]:
@@ -118,19 +119,19 @@ async def run_caption_backfill(worker: IndexingWorker, *, max_batches: int | Non
         _caption_running = True
 
     done = 0
-    removed = 0
     try:
         missing, invalid = await caption_recaption_ids()
         todo = missing + invalid
         if not todo:
             return 0
 
-        for fid in invalid:
-            await asyncio.to_thread(delete_caption_sync, fid)
-            removed += 1
-        _last_invalid_captions_removed = removed
-        if removed:
-            logger.info("Caption backfill: removed %d invalid/stub caption(s)", removed)
+        # Upsert-by-id overwrites invalid captions; avoid delete-then-gap.
+        _last_invalid_captions_removed = 0
+        if invalid:
+            logger.info(
+                "Caption backfill: will upsert over %d invalid/stub caption(s)",
+                len(invalid),
+            )
 
         batch_size = settings.image_caption_batch_size
         batch_parallel = max(1, settings.image_caption_batch_parallel)
@@ -148,14 +149,24 @@ async def run_caption_backfill(worker: IndexingWorker, *, max_batches: int | Non
             batch_parallel,
         )
         dl_workers = effective_cpu_workers(settings.cpu_thread_pool_size)
-        dl_sem = asyncio.Semaphore(max(4, dl_workers))
+        # Stay under SQLAlchemy pool while Gemini caption batches run in parallel.
+        prepare_slots = max(4, min(dl_workers * 2 if dl_workers else 16, batch_parallel, 16))
+        dl_sem = asyncio.Semaphore(prepare_slots)
 
         session_factory = get_session_factory()
 
         async def _mark_corrupt_skipped(fid: str, error: str) -> None:
+            # Permanent library: never demote PROCESSED → SKIPPED on backfill decode failure.
             async with session_factory() as session:
                 row = await session.get(DriveFile, fid)
                 if row is None:
+                    return
+                if row.status == DriveFileStatus.PROCESSED:
+                    logger.warning(
+                        "Caption backfill decode failed for PROCESSED %s — leaving status: %s",
+                        fid,
+                        error[:200],
+                    )
                     return
                 apply_decode_failure(row, error)
                 if row.status != DriveFileStatus.SKIPPED:
@@ -225,8 +236,57 @@ async def run_caption_backfill(worker: IndexingWorker, *, max_batches: int | Non
         _caption_running = False
 
 
+async def _drive_connected() -> bool:
+    """True when a DriveUser row exists (OAuth connected)."""
+    from app.db.models import DriveUser
+
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        row = (
+            await session.execute(select(DriveUser.id).limit(1))
+        ).scalar_one_or_none()
+        return row is not None
+
+
+async def _order_ids_cached_first(ids: list[str]) -> tuple[list[str], list[str]]:
+    """Split ids into (on_disk_cache, needs_download) preserving relative order."""
+    if not ids:
+        return [], []
+    from app.drive.media_cache import resolve_cache_path
+
+    settings = get_settings()
+    session_factory = get_session_factory()
+    cached: list[str] = []
+    uncached: list[str] = []
+    # Chunk to keep select payloads bounded.
+    for i in range(0, len(ids), 500):
+        chunk = ids[i : i + 500]
+        async with session_factory() as session:
+            rows = (
+                await session.execute(select(DriveFile).where(DriveFile.id.in_(chunk)))
+            ).scalars().all()
+        by_id = {r.id: r for r in rows}
+        for fid in chunk:
+            row = by_id.get(fid)
+            if row is not None and resolve_cache_path(settings, row) is not None:
+                cached.append(fid)
+            else:
+                uncached.append(fid)
+    return cached, uncached
+
+
 async def run_embedding_backfill(worker: IndexingWorker, *, max_items: int | None = None) -> int:
-    """Embed processed images missing Qdrant visual vectors."""
+    """Embed processed images missing Qdrant visual vectors.
+
+    Uses ``batchEmbedContents`` in waves of ``batch_size × parallel`` concurrent
+    calls (default 5 × 20 → ~50 img/s when Gemini latency is ~2s/batch).
+
+    ``max_items=None`` drains the full backlog in successive waves (POST
+    ``/backfill/image-embeddings``). Maintenance passes a bounded ``max_items``.
+
+    Prefers on-disk media cache. When Drive OAuth is disconnected, only cached
+    files are embedded (download would fail).
+    """
     global _embed_running, _last_embed_run_at, _last_embed_done
 
     settings = get_settings()
@@ -243,66 +303,90 @@ async def run_embedding_backfill(worker: IndexingWorker, *, max_items: int | Non
 
     done = 0
     try:
-        all_ids = await _processed_image_ids()
-        if not all_ids:
-            return 0
-
-        already = await asyncio.to_thread(existing_image_ids_sync, all_ids)
-        todo = [fid for fid in all_ids if fid not in already]
-        if not todo:
-            return 0
-
-        if max_items is not None:
-            todo = todo[:max_items]
-
         batch_size = max(1, settings.image_embed_batch_size)
         parallel = max(1, settings.image_embed_backfill_parallel)
-        # Cap work this tick: parallel batches × batch size × maintenance ticks factor.
-        if max_items is None:
-            max_items = parallel * batch_size
-        todo = todo[:max_items]
+        wave_size = parallel * batch_size
+        remaining_cap = max_items  # None = drain all waves
+        drive_ok = await _drive_connected()
+        if not drive_ok:
+            logger.warning(
+                "Embedding backfill: Drive OAuth disconnected — "
+                "only embedding images already on media_cache (~50/s target still applies)"
+            )
 
         session_factory = get_session_factory()
-        logger.info(
-            "Embedding backfill: %d image(s) this tick — "
-            "%d per batchEmbedContents × up to %d parallel (max-edge=%d)",
-            len(todo),
-            batch_size,
-            parallel,
-            settings.image_embed_max_edge,
-        )
         embed_sem = asyncio.Semaphore(parallel)
+        # Prepare must stay under the SQLAlchemy pool (30+20).
         dl_workers = effective_cpu_workers(settings.cpu_thread_pool_size)
-        dl_sem = asyncio.Semaphore(max(4, dl_workers))
+        prepare_slots = max(8, min(parallel * 2, dl_workers * 2 if dl_workers else 24, 24))
+        dl_sem = asyncio.Semaphore(prepare_slots)
 
         async def _mark_corrupt_skipped(fid: str, error: str) -> None:
             async with session_factory() as session:
                 row = await session.get(DriveFile, fid)
-                if row is not None:
-                    apply_decode_failure(row, str(error))
-                    if row.status != DriveFileStatus.SKIPPED:
-                        row.status = DriveFileStatus.SKIPPED
-                        row.error_message = f"{CORRUPT_SKIPPED_PREFIX} {str(error)[:500]}"
-                    await session.commit()
+                if row is None:
+                    return
+                if row.status == DriveFileStatus.PROCESSED:
+                    logger.warning(
+                        "Embed backfill decode failed for PROCESSED %s — leaving status: %s",
+                        fid,
+                        str(error)[:200],
+                    )
+                    return
+                apply_decode_failure(row, str(error))
+                if row.status != DriveFileStatus.SKIPPED:
+                    row.status = DriveFileStatus.SKIPPED
+                    row.error_message = f"{CORRUPT_SKIPPED_PREFIX} {str(error)[:500]}"
+                await session.commit()
 
         async def _prepare(fid: str) -> tuple[str, bytes] | None:
             async with dl_sem:
                 try:
+                    from app.drive.media_cache import (
+                        ensure_media_cached,
+                        read_cached_bytes,
+                        resolve_cache_path,
+                    )
+
                     async with session_factory() as session:
                         row = await session.get(DriveFile, fid)
+                        if row is None:
+                            _embed_skip_ids.add(fid)
+                            return None
                         file_name = row.name if row else ""
-                    raw = await download_to_memory(worker._client, fid)  # noqa: SLF001
+                        cache_path = resolve_cache_path(settings, row)
+                        if cache_path is None:
+                            if not drive_ok:
+                                return None
+                            cache_path = await ensure_media_cached(
+                                worker._client, row, settings  # noqa: SLF001
+                            )
+                            await session.commit()
+                    raw = await run_cpu_bound(read_cached_bytes, cache_path)
+                    from app.gemini.video_embeddings import _downscale_jpeg_bytes
+
+                    # Fast path: already JPEG — skip cv2 decode/re-encode.
+                    lower = (file_name or cache_path.name).lower()
+                    if lower.endswith((".jpg", ".jpeg")) and raw:
+                        jpeg = await run_cpu_bound(_downscale_jpeg_bytes, raw)
+                        return fid, jpeg
                     image_bgr = await run_cpu_bound(decode_image_bgr, raw, file_name=file_name)
                     ok, buf = cv2.imencode(".jpg", image_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
                     if not ok:
+                        _embed_skip_ids.add(fid)
                         return None
-                    return fid, buf.tobytes()
+                    jpeg = await run_cpu_bound(_downscale_jpeg_bytes, buf.tobytes())
+                    return fid, jpeg
                 except Exception as exc:  # noqa: BLE001
-                    await _mark_corrupt_skipped(fid, str(exc))
-                    logger.warning("Embedding backfill skipped corrupt file %s", fid)
+                    _embed_skip_ids.add(fid)
+                    msg = str(exc)
+                    # Transient pool / Drive auth — do not spam as "corrupt".
+                    if "QueuePool" in msg or "No Google Drive account" in msg:
+                        logger.debug("Embedding backfill defer %s: %s", fid, msg[:160])
+                        return None
+                    await _mark_corrupt_skipped(fid, msg)
+                    logger.warning("Embedding backfill skipped file %s: %s", fid, msg[:160])
                     return None
-
-        chunks = [todo[i : i + batch_size] for i in range(0, len(todo), batch_size)]
 
         async def _embed_batch(ids: list[str]) -> int:
             async with embed_sem:
@@ -312,12 +396,77 @@ async def run_embedding_backfill(worker: IndexingWorker, *, max_items: int | Non
                     return 0
                 return await index_image_embeddings_batch(items)
 
-        results = await asyncio.gather(*[_embed_batch(chunk) for chunk in chunks])
-        done = sum(results)
+        wave_n = 0
+        empty_waves = 0
+        while True:
+            if remaining_cap is not None and remaining_cap <= 0:
+                break
+
+            all_ids = await _processed_image_ids()
+            if not all_ids:
+                break
+            already = await asyncio.to_thread(existing_image_ids_sync, all_ids)
+            candidates = [
+                fid for fid in all_ids if fid not in already and fid not in _embed_skip_ids
+            ]
+            if not candidates:
+                break
+
+            cached, uncached = await _order_ids_cached_first(candidates)
+            # Cached first keeps Gemini fed without Drive; uncached only if OAuth ok.
+            ordered = cached + (uncached if drive_ok else [])
+            if not ordered:
+                logger.warning(
+                    "Embedding backfill: %d missing vector(s) need Drive download "
+                    "but OAuth is disconnected — stopping (reconnect Drive to continue)",
+                    len(uncached),
+                )
+                break
+
+            take = wave_size
+            if remaining_cap is not None:
+                take = min(take, remaining_cap)
+            todo = ordered[:take]
+            wave_n += 1
+            logger.info(
+                "Embedding backfill wave %d: %d image(s) "
+                "(%d cached-available in backlog) — "
+                "%d per batchEmbedContents × %d parallel (~50/s target)",
+                wave_n,
+                len(todo),
+                len(cached),
+                batch_size,
+                parallel,
+            )
+
+            chunks = [todo[i : i + batch_size] for i in range(0, len(todo), batch_size)]
+            t0 = datetime.now(tz=timezone.utc)
+            results = await asyncio.gather(*[_embed_batch(chunk) for chunk in chunks])
+            wave_done = sum(results)
+            elapsed = max(0.001, (datetime.now(tz=timezone.utc) - t0).total_seconds())
+            rps = wave_done / elapsed
+            done += wave_done
+            if remaining_cap is not None:
+                remaining_cap -= len(todo)
+            logger.info(
+                "Embedding backfill wave %d complete: %d image(s) in %.1fs (%.1f/s)",
+                wave_n,
+                wave_done,
+                elapsed,
+                rps,
+            )
+            if wave_done == 0:
+                empty_waves += 1
+                if empty_waves >= 3:
+                    break
+            else:
+                empty_waves = 0
+            if max_items is not None and remaining_cap is not None and remaining_cap <= 0:
+                break
 
         _last_embed_run_at = datetime.now(tz=timezone.utc)
         _last_embed_done = done
-        logger.info("Embedding backfill run complete: %d image(s)", done)
+        logger.info("Embedding backfill run complete: %d image(s) across %d wave(s)", done, wave_n)
         return done
     finally:
         _embed_running = False
@@ -338,19 +487,21 @@ async def maintenance_tick(worker: IndexingWorker) -> None:
     batches_per_tick = max(1, settings.maintenance_batches_per_tick)
     caption_batches = max(batches_per_tick, max(1, settings.image_caption_batch_parallel))
 
-    missing_caps = await count_missing_captions()
-    if missing_caps > 0 and not _caption_running:
-        logger.info("Maintenance: %d image(s) need captions — starting backfill", missing_caps)
-        await run_caption_backfill(worker, max_batches=caption_batches)
-
     missing_embed = await count_missing_embeddings()
     if missing_embed > 0 and not _embed_running:
-        # One full wave of concurrent batchEmbedContents (batch × parallel).
-        embed_limit = settings.image_embed_backfill_parallel * max(
-            1, settings.image_embed_batch_size
+        # Prefer draining embeddings; multi-wave so we keep Gemini busy (~50/s target).
+        embed_limit = (
+            settings.image_embed_backfill_parallel
+            * max(1, settings.image_embed_batch_size)
+            * max(1, batches_per_tick)
         )
         logger.info("Maintenance: %d image(s) need embeddings — starting backfill", missing_embed)
         await run_embedding_backfill(worker, max_items=embed_limit)
+
+    missing_caps = await count_missing_captions()
+    if missing_caps > 0 and not _caption_running and not _embed_running:
+        logger.info("Maintenance: %d image(s) need captions — starting backfill", missing_caps)
+        await run_caption_backfill(worker, max_batches=caption_batches)
 
 
 def schedule_maintenance_tick(worker: IndexingWorker) -> None:

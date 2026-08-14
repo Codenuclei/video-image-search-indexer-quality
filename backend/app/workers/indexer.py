@@ -17,12 +17,9 @@ from app.drive.cleanup import remove_drive_file, restore_processed_when_media_ex
 from app.drive.content_hash import APPLEDOUBLE_SKIP_PREFIX, is_macos_junk_name
 from app.drive.schemas import ConnectorFile
 from app.gemini.service import GeminiFileSearchService, get_gemini_service
-from app.gemini.tags import person_names_for_drive_file
 from app.pipelines.common import (
     INDEXABLE_IMAGE_TYPES,
     INDEXABLE_VIDEO_TYPES,
-    download_image_for_upload,
-    download_to_temp_file,
     file_has_media,
     infer_image_mime,
     is_image_mime,
@@ -40,7 +37,14 @@ from app.drive.indexing_pause import (
 from app.drive.indexing_pause import file_under_folder, normalize_folder_path
 from app.db.deadlock import is_deadlock_error, is_transient_db_error, retry_on_deadlock
 from app.runtime_settings import get_runtime_settings
-from app.workers.index_errors import friendly_index_error_message
+from app.workers.index_batch import (
+    IndexStatusBatcher,
+    StatusWrite,
+    bulk_claim_file_ids,
+    bulk_claim_files,
+)
+from app.workers.embed_queue import ImageEmbedQueue
+from app.workers.index_errors import friendly_index_error_message, is_transient_network_error
 from app.workers.requeue_failed import requeue_failed_files
 from app.workers.claim_order import claim_window, pending_order_by
 
@@ -119,16 +123,16 @@ def _record_index_failure(drive_file: DriveFile, exc: Exception) -> None:
     msg = friendly_index_error_message(exc, max_len=500)
     if is_decode_failure_error(raw):
         apply_decode_failure(drive_file, raw)
-    elif is_transient_db_error(exc):
-        # Don't leave files stuck in ERROR forever for lock/abort fallout —
-        # auto-index will pick them up again.
+    elif is_transient_db_error(exc) or is_transient_network_error(exc):
+        # Don't leave files stuck in ERROR forever for lock/abort / flaky download
+        # fallout — auto-index will pick them up again.
         drive_file.status = DriveFileStatus.PENDING
         drive_file.error_message = None
         logger.warning(
             "index_requeue_transient file_id=%s mime=%s err=%s",
             drive_file.id,
             drive_file.mime_type,
-            raw[:200],
+            raw[:200] or type(exc).__name__,
         )
     else:
         drive_file.status = DriveFileStatus.ERROR
@@ -138,11 +142,11 @@ def _record_index_failure(drive_file: DriveFile, exc: Exception) -> None:
             drive_file.id,
             drive_file.mime_type,
             drive_file.size,
-            raw[:200],
+            raw[:200] or type(exc).__name__,
         )
 
 class IndexingWorker:
-    """Syncs Drive files and uploads supported media into a Gemini File Search store."""
+    """Syncs Drive files and indexes media into local Qdrant RAG (+ faces in Postgres)."""
 
     def __init__(
         self,
@@ -166,7 +170,17 @@ class IndexingWorker:
         self._carousel_started_at: dict[str, float] = {}
         self._carousel_semaphore = asyncio.Semaphore(2)
         self._carousel_drain_lock = asyncio.Lock()
-
+        # Cap concurrent DB sessions held during download/face/embed work.
+        self._db_sem = asyncio.Semaphore(max(1, self._settings.index_db_max_concurrent))
+        # Buffer PROCESSED/ERROR/PENDING finals → one UPDATE every N files.
+        self._status_batcher = IndexStatusBatcher(
+            session_factory,
+            batch_size=max(1, self._settings.index_status_batch_size),
+        )
+        self._embed_queue = ImageEmbedQueue(
+            status_batcher=self._status_batcher,
+            settings=self._settings,
+        )
     @property
     def active_video_count(self) -> int:
         self._prune_video_tasks()
@@ -216,12 +230,13 @@ class IndexingWorker:
         return max_parallel
 
     async def _occupied_image_ids(self, session: AsyncSession) -> set[str]:
-        """Only in-flight image tasks count as occupied.
+        """In-flight image tasks on this worker.
 
-        Orphaned PROCESSING rows (no live task, e.g. after restart) must not block
-        new claims — they are adopted or re-queued in ensure_parallel_image_indexing.
+        Claim is serialized with LOCK_IMAGE_INDEX_CLAIM, so local tasks are the
+        right occupancy signal. Unflushed status-batch rows stay PROCESSING in
+        DB until the 100-row write — they must not block new claims.
         """
-        del session  # signature kept for call-site symmetry with video path
+        del session
         return set(self._image_tasks.keys())
 
     def _start_image_task(self, file_id: str) -> None:
@@ -261,10 +276,36 @@ class IndexingWorker:
 
     async def ensure_parallel_image_indexing(self) -> int:
         """Start background image index jobs up to image_index_max_parallel."""
-        self._prune_image_tasks()
-        max_parallel = self._image_max_parallel()
-        started = 0
+        from app.db.advisory_locks import LOCK_IMAGE_INDEX_CLAIM, advisory_lock
+        from app.storage import indexing_disk_ready
 
+        self._prune_image_tasks()
+        # Phase 0: do not admit new downloads when the volume is near full.
+        if not indexing_disk_ready(
+            self._settings.media_cache_dir,
+            high_water_bytes=self._settings.index_disk_high_water_bytes,
+        ):
+            logger.warning(
+                "image_index_paused_disk_low path=%s high_water_bytes=%s",
+                self._settings.media_cache_dir,
+                self._settings.index_disk_high_water_bytes,
+            )
+            return 0
+
+        max_parallel = self._image_max_parallel()
+
+        async with advisory_lock(
+            LOCK_IMAGE_INDEX_CLAIM, name="image_index_claim", blocking=False
+        ) as got:
+            if not got:
+                return 0
+            return await self._ensure_parallel_image_indexing_locked(
+                max_parallel=max_parallel, started=0
+            )
+
+    async def _ensure_parallel_image_indexing_locked(
+        self, *, max_parallel: int, started: int
+    ) -> int:
         # Adopt orphaned PROCESSING images (restart / lost task) before claiming PENDING.
         # Never steal files the Go canary currently owns (fresh heartbeat + open claims).
         from app.workers.go_indexer_state import go_claimed_ids, go_is_alive
@@ -286,16 +327,31 @@ class IndexingWorker:
             )
             adopt_ids: list[str] = []
             requeue_ids: list[str] = []
+            now = datetime.now(timezone.utc)
+            # Short grace only — long stalls left slots empty after deploys/restarts
+            # while orphans sat PROCESSING and weren't in _image_tasks.
+            stall_sec = 45.0
+            awaiting_flush = self._status_batcher.pending_ids | self._embed_queue.pending_ids
             for drive_file in processing:
                 if not is_image_mime(drive_file.mime_type, drive_file.name):
                     continue
                 if drive_file.id in self._image_tasks:
+                    continue
+                if drive_file.id in awaiting_flush:
+                    # Finished work; status will land in the next 100-row write.
                     continue
                 if drive_file.id in go_owned:
                     continue
                 if is_file_indexing_paused(drive_file.path, paused_paths):
                     requeue_ids.append(drive_file.id)
                     continue
+                # Only adopt truly stalled orphans — avoid racing a just-finished
+                # job whose task map entry was already popped.
+                synced = drive_file.last_synced_at
+                if synced is not None:
+                    age = (now - synced).total_seconds()
+                    if age < stall_sec:
+                        continue
                 if len(self._image_tasks) + len(adopt_ids) >= max_parallel:
                     requeue_ids.append(drive_file.id)
                     continue
@@ -324,6 +380,8 @@ class IndexingWorker:
 
         async with self._session_factory() as session:
             occupied = await self._occupied_image_ids(session)
+            # Also count tasks we just adopted that may not be committed yet.
+            occupied |= set(self._image_tasks.keys())
             slots = max_parallel - len(occupied)
             if slots <= 0:
                 return started
@@ -362,10 +420,7 @@ class IndexingWorker:
                 if not is_image_mime(drive_file.mime_type, drive_file.name):
                     continue
                 if is_macos_junk_name(drive_file.name):
-                    drive_file.status = DriveFileStatus.SKIPPED
-                    drive_file.error_message = (
-                        f"{APPLEDOUBLE_SKIP_PREFIX} macOS resource fork / Finder metadata"
-                    )
+                    await session.delete(drive_file)
                     dirty = True
                     continue
                 if (drive_file.decode_attempts or 0) >= decode_max_attempts():
@@ -388,12 +443,15 @@ class IndexingWorker:
                         _log_skip(drive_file, skip_key)
                         dirty = True
                         continue
-                drive_file.status = DriveFileStatus.PROCESSING
-                drive_file.last_synced_at = datetime.now(timezone.utc)
                 claimed_ids.append(drive_file.id)
                 occupied.add(drive_file.id)
-                dirty = True
 
+            # ONE write: claim every selected id (up to slots) as PROCESSING.
+            if claimed_ids:
+                claimed_ids = await bulk_claim_file_ids(session, claimed_ids)
+                n = len(claimed_ids)
+                dirty = True
+                logger.info("bulk_claim_images count=%d rowcount=%d", len(claimed_ids), n)
             if dirty:
                 await session.commit()
 
@@ -436,42 +494,134 @@ class IndexingWorker:
 
         async def _attempt() -> None:
             nonlocal file_name
-            async with self._session_factory() as session:
-                drive_file = await session.get(DriveFile, file_id)
-                if drive_file is None:
-                    return
-                file_name = drive_file.name
-                if drive_file.status != DriveFileStatus.PROCESSING:
-                    drive_file.status = DriveFileStatus.PROCESSING
-                await self._index_non_video_file(session, drive_file, gemini)
-                await session.commit()
-                logger.info("Image index complete: %s (%s)", file_name, file_id)
+            final_status = DriveFileStatus.PROCESSED
+            final_error: str | None = None
+            # Cap concurrent DB sessions — never open one session per parallel job.
+            async with self._db_sem:
+                async with self._session_factory() as session:
+                    drive_file = await session.get(DriveFile, file_id)
+                    if drive_file is None:
+                        return
+                    file_name = drive_file.name
+                    if drive_file.status != DriveFileStatus.PROCESSING:
+                        drive_file.status = DriveFileStatus.PROCESSING
+                    await self._index_non_video_file(session, drive_file, gemini)
+                    final_status = drive_file.status
+                    final_error = drive_file.error_message
+                    # Faces/media commit now; drive_files.status waits for the
+                    # 100-row status batcher (one UPDATE, not per-file).
+                    if final_status in (
+                        DriveFileStatus.PROCESSED,
+                        DriveFileStatus.SKIPPED,
+                    ):
+                        drive_file.status = DriveFileStatus.PROCESSING
+                        drive_file.error_message = None
+                    await session.commit()
+
+            # Faces/media done → batch embed (cache-first), then 100-row status write.
+            # When face_jobs_enabled, InsightFace is async on dfi-face-worker; do not
+            # embed/finalize yet (face worker pushes embed after detect).
+            from app.drive.content_hash import DUPLICATE_CONTENT_PREFIX
+
+            if final_status == DriveFileStatus.SKIPPED:
+                await self._status_batcher.enqueue(
+                    StatusWrite(
+                        file_id=file_id,
+                        status=DriveFileStatus.SKIPPED,
+                        error_message=final_error,
+                        clear_gemini_document=True,
+                        bump_synced_at=True,
+                    )
+                )
+            elif (
+                final_status == DriveFileStatus.PROCESSED
+                and (final_error or "").startswith(DUPLICATE_CONTENT_PREFIX)
+            ):
+                # Content twin already search-ready — finalize complete, skip embed.
+                await self._status_batcher.enqueue(
+                    StatusWrite(
+                        file_id=file_id,
+                        status=DriveFileStatus.PROCESSED,
+                        error_message=final_error,
+                        clear_gemini_document=True,
+                        bump_synced_at=True,
+                    )
+                )
+            elif final_status == DriveFileStatus.ERROR:
+                await self._status_batcher.enqueue(
+                    StatusWrite(
+                        file_id=file_id,
+                        status=DriveFileStatus.ERROR,
+                        error_message=final_error,
+                        clear_gemini_document=True,
+                        bump_synced_at=True,
+                        unlink_drive_cache=True,
+                    )
+                )
+            elif self._settings.face_jobs_enabled and final_status == DriveFileStatus.PROCESSED:
+                logger.info(
+                    "Image prepare complete (face job queued): %s (%s)",
+                    file_name,
+                    file_id,
+                )
+            else:
+                if self._settings.gemini_api_key:
+                    await self._embed_queue.push(file_id)
+                else:
+                    await self._status_batcher.enqueue(
+                        StatusWrite(
+                            file_id=file_id,
+                            status=DriveFileStatus.PROCESSED,
+                            error_message=None,
+                            clear_gemini_document=True,
+                            bump_synced_at=True,
+                            unlink_drive_cache=True,
+                        )
+                    )
+            logger.info("Image index complete: %s (%s)", file_name, file_id)
 
         try:
             await retry_on_deadlock(_attempt, label=f"image index {file_id[:8]}")
         except Exception as exc:  # noqa: BLE001
             logger.exception("Parallel image index failed for %s (%s)", file_id, file_name)
-            async with self._session_factory() as error_session:
-                failed = await error_session.get(DriveFile, file_id)
-                if failed is not None:
-                    is_missing = (
-                        isinstance(exc, (DriveConnectorError, DriveDirectError))
-                        and "404" in str(exc)
+            is_missing = (
+                isinstance(exc, (DriveConnectorError, DriveDirectError))
+                and "404" in str(exc)
+            )
+            if is_missing:
+                async with self._db_sem:
+                    async with self._session_factory() as error_session:
+                        failed = await error_session.get(DriveFile, file_id)
+                        if failed is not None:
+                            await remove_drive_file(
+                                error_session,
+                                failed,
+                                gemini=gemini,
+                                reason="Drive 404 during image index",
+                            )
+                            await error_session.commit()
+            elif is_transient_db_error(exc) or is_transient_network_error(exc):
+                await self._status_batcher.enqueue(
+                    StatusWrite(
+                        file_id=file_id,
+                        status=DriveFileStatus.PENDING,
+                        error_message=None,
                     )
-                    if is_missing:
-                        await remove_drive_file(
-                            error_session,
-                            failed,
-                            gemini=gemini,
-                            reason="Drive 404 during image index",
-                        )
-                    elif is_transient_db_error(exc):
-                        failed.status = DriveFileStatus.PENDING
-                        failed.error_message = None
-                        logger.warning("Re-queued %s after transient DB error", file_id)
-                    else:
-                        _record_index_failure(failed, exc)
-                    await error_session.commit()
+                )
+                logger.warning(
+                    "Re-queued %s after transient error (%s)",
+                    file_id,
+                    type(exc).__name__,
+                )
+            else:
+                await self._status_batcher.enqueue(
+                    StatusWrite(
+                        file_id=file_id,
+                        status=DriveFileStatus.ERROR,
+                        error_message=friendly_index_error_message(exc, max_len=500),
+                        unlink_drive_cache=True,
+                    )
+                )
         finally:
             self._image_tasks.pop(file_id, None)
             self._image_started_at.pop(file_id, None)
@@ -484,11 +634,100 @@ class IndexingWorker:
             name=f"video-index-{file_id[:8]}",
         )
 
+    async def prioritize_video_index(self, file_id: str) -> bool:
+        """Claim and start one PENDING/PROCESSING video immediately (carousel fast path).
+
+        Used when /test or /carousel uploads or indexes a video that must finish
+        before the user can continue — bypasses size-ordered backlog starvation.
+        May briefly exceed video_index_max_parallel.
+        """
+        fid = (file_id or "").strip()
+        if not fid:
+            return False
+        if not self._settings.video_indexing_enabled:
+            return False
+        from app.db.advisory_locks import (
+            LOCK_VIDEO_INDEX_CLAIM,
+            try_acquire_advisory_lock,
+        )
+
+        claim_lock = await try_acquire_advisory_lock(
+            LOCK_VIDEO_INDEX_CLAIM, name="video_index_claim"
+        )
+        if claim_lock is None:
+            return fid in self._video_tasks
+        try:
+            return await self._prioritize_video_index_locked(fid)
+        finally:
+            await claim_lock.release()
+
+    async def _prioritize_video_index_locked(self, fid: str) -> bool:
+        """Schedule a priority video while the global video-claim lock is held."""
+        self._prune_video_tasks()
+        if fid in self._video_tasks:
+            return True
+
+        async with self._session_factory() as session:
+            drive_file = await session.get(DriveFile, fid)
+            if drive_file is None:
+                return False
+            if not is_video_mime(drive_file.mime_type):
+                return False
+            if drive_file.status == DriveFileStatus.PROCESSED:
+                return True
+            if drive_file.status == DriveFileStatus.PROCESSING:
+                await session.commit()
+                self._start_video_task(fid)
+                logger.info("Prioritized adopt PROCESSING video index for %s", fid)
+                return True
+            if drive_file.status != DriveFileStatus.PENDING:
+                return False
+            n = await bulk_claim_files(session, [fid])
+            await session.commit()
+            if not n:
+                # Race: another worker claimed it — adopt if now PROCESSING.
+                refreshed = drive_file
+                await session.refresh(refreshed)
+                if refreshed is None or refreshed.status not in (
+                    DriveFileStatus.PROCESSING,
+                    DriveFileStatus.PROCESSED,
+                ):
+                    return False
+                if refreshed.status == DriveFileStatus.PROCESSED:
+                    return True
+
+        self._start_video_task(fid)
+        logger.info("Prioritized carousel video index for %s", fid)
+        return True
+
     async def ensure_parallel_video_indexing(self) -> int:
         """
         Start background index jobs for pending videos up to video_index_max_parallel.
         Adopts orphaned PROCESSING videos, then claims other PENDING videos.
         """
+        from app.db.advisory_locks import LOCK_VIDEO_INDEX_CLAIM, advisory_lock
+        from app.storage import indexing_disk_ready
+
+        if not indexing_disk_ready(
+            self._settings.video_cache_dir,
+            high_water_bytes=self._settings.index_disk_high_water_bytes,
+        ):
+            logger.warning(
+                "video_index_paused_disk_low path=%s high_water_bytes=%s",
+                self._settings.video_cache_dir,
+                self._settings.index_disk_high_water_bytes,
+            )
+            return 0
+
+        async with advisory_lock(
+            LOCK_VIDEO_INDEX_CLAIM, name="video_index_claim", blocking=False
+        ) as got:
+            if not got:
+                return 0
+            return await self._ensure_parallel_video_indexing_locked()
+
+    async def _ensure_parallel_video_indexing_locked(self) -> int:
+        """Fill video slots while the cross-process claim lock is held."""
         self._prune_video_tasks()
         await self.release_stalled_processing()
         if not self._settings.video_indexing_enabled:
@@ -565,21 +804,20 @@ class IndexingWorker:
                 if not is_video_mime(drive_file.mime_type):
                     continue
                 if is_macos_junk_name(drive_file.name):
-                    drive_file.status = DriveFileStatus.SKIPPED
-                    drive_file.error_message = (
-                        f"{APPLEDOUBLE_SKIP_PREFIX} macOS resource fork / Finder metadata"
-                    )
+                    await session.delete(drive_file)
                     continue
                 if is_file_indexing_paused(drive_file.path, paused_paths):
                     continue
                 if drive_file.id in occupied:
                     continue
-                drive_file.status = DriveFileStatus.PROCESSING
-                drive_file.last_synced_at = datetime.now(timezone.utc)
                 claimed_ids.append(drive_file.id)
                 occupied.add(drive_file.id)
 
-            # Commit junk skips even when no video slots were claimed.
+            if claimed_ids:
+                claimed_ids = await bulk_claim_file_ids(session, claimed_ids)
+                n = len(claimed_ids)
+                logger.info("bulk_claim_videos count=%d rowcount=%d", len(claimed_ids), n)
+            # Commit junk skips + bulk claim in one transaction.
             await session.commit()
 
         for file_id in claimed_ids:
@@ -638,8 +876,20 @@ class IndexingWorker:
 
     async def _run_video_index_job(self, file_id: str) -> None:
         """Same video pipeline as sequential indexing, isolated session per file."""
+        from app.db.advisory_locks import try_acquire_advisory_lock, video_index_lock_key
+
         gemini = get_gemini_service()
         file_name = file_id
+        execution_lock = await try_acquire_advisory_lock(
+            video_index_lock_key(file_id),
+            name=f"video_index:{file_id[:32]}",
+        )
+        if execution_lock is None:
+            logger.info("Video index already executing elsewhere; skipped duplicate: %s", file_id)
+            self._video_tasks.pop(file_id, None)
+            self._video_started_at.pop(file_id, None)
+            self._schedule_video_refill()
+            return
         try:
             async with self._session_factory() as session:
                 drive_file = await session.get(DriveFile, file_id)
@@ -669,6 +919,9 @@ class IndexingWorker:
                 drive_file.error_message = None
                 drive_file.gemini_document_name = result.gemini_document_name
                 drive_file.last_synced_at = datetime.now(timezone.utc)
+                from app.drive.media_cache import unlink_drive_source_cache
+
+                unlink_drive_source_cache(drive_file, self._settings)
                 await session.commit()
                 # Carousel generation is deliberately after the index commit and
                 # uses its own session so a slow/failed artifact can never hold
@@ -694,15 +947,23 @@ class IndexingWorker:
                             gemini=gemini,
                             reason="Drive 404 during video index",
                         )
-                    elif is_transient_db_error(exc):
+                    elif is_transient_db_error(exc) or is_transient_network_error(exc):
                         failed.status = DriveFileStatus.PENDING
                         failed.error_message = None
-                        logger.warning("Re-queued video %s after transient DB error", file_id)
+                        logger.warning(
+                            "Re-queued video %s after transient error (%s)",
+                            file_id,
+                            type(exc).__name__,
+                        )
                     else:
                         failed.status = DriveFileStatus.ERROR
                         failed.error_message = friendly_index_error_message(exc, max_len=500)
+                        from app.drive.media_cache import unlink_drive_source_cache
+
+                        unlink_drive_source_cache(failed, self._settings)
                     await error_session.commit()
         finally:
+            await execution_lock.release()
             self._video_tasks.pop(file_id, None)
             self._video_started_at.pop(file_id, None)
             self._schedule_video_refill()
@@ -969,6 +1230,7 @@ class IndexingWorker:
                 _carousel_pipeline_generate_impl,
                 _load_video_cues,
             )
+            from app.llm.carousel_llm import resolve_carousel_llm
             from app.search.carousel_pipeline import (
                 build_harmonized_themes,
                 extract_hooks_and_topics_async,
@@ -977,15 +1239,19 @@ class IndexingWorker:
             row, cues = await _load_video_cues(session, file_id)
             if row.status != DriveFileStatus.PROCESSED or len(cues) < 2:
                 raise RuntimeError("processed video has no usable transcript cues")
-            settings = self._settings
+            llm = resolve_carousel_llm()
             themes, _source, _warning = await build_harmonized_themes(
                 cues=cues,
                 video_name=row.name,
                 search_entity=None,
-                api_key=settings.gemini_api_key,
-                model=settings.gemini_model,
-                claude_api_key=settings.anthropic_api_key or settings.claude_api_key,
-                claude_model=settings.claude_model,
+                api_key=llm["api_key"],
+                model=llm["model"],
+                claude_api_key=llm["claude_api_key"],
+                claude_model=llm["claude_model"],
+                provider=llm["provider"],
+                openrouter_api_key=llm["openrouter_api_key"],
+                openrouter_model=llm["openrouter_model"],
+                openrouter_base_url=llm["openrouter_base_url"],
             )
             if not themes:
                 raise RuntimeError("could not derive default carousel themes")
@@ -993,8 +1259,8 @@ class IndexingWorker:
                 PipelineThemeSlice(
                     theme_id=str(t.get("theme_id") or f"theme_{i}"),
                     title=str(t.get("title") or "Theme"),
-                    start_sec=float(t.get("start_timestamp") or 0),
-                    end_sec=t.get("end_timestamp"),
+                    start_sec=float(t.get("start_sec") or t.get("start_timestamp") or 0),
+                    end_sec=t.get("end_sec") if t.get("end_sec") is not None else t.get("end_timestamp"),
                     summary=str(t.get("summary") or ""),
                 )
                 for i, t in enumerate(themes[:8])
@@ -1006,8 +1272,14 @@ class IndexingWorker:
                 theme_title=" -> ".join(t.title for t in theme_slices[:4]),
                 theme_summary=" ".join(t.summary for t in theme_slices[:4]),
                 search_entity=None,
-                api_key=settings.gemini_api_key,
-                model=settings.gemini_model,
+                api_key=llm["api_key"],
+                model=llm["model"],
+                claude_api_key=llm["claude_api_key"],
+                claude_model=llm["claude_model"],
+                provider=llm["provider"],
+                openrouter_api_key=llm["openrouter_api_key"],
+                openrouter_model=llm["openrouter_model"],
+                openrouter_base_url=llm["openrouter_base_url"],
                 english_cues=None,
             )
             hooks_raw = list(extracted.get("hooks") or [])
@@ -1108,6 +1380,24 @@ class IndexingWorker:
                     )
                     continue
                 task = self._video_tasks.get(drive_file.id)
+                if task is None or task.done():
+                    from app.db.advisory_locks import (
+                        try_acquire_advisory_lock,
+                        video_index_lock_key,
+                    )
+
+                    probe_lock = await try_acquire_advisory_lock(
+                        video_index_lock_key(drive_file.id),
+                        name=f"video_stall_probe:{drive_file.id[:24]}",
+                    )
+                    if probe_lock is None:
+                        logger.info(
+                            "video_slot_remote_active file_id=%s elapsed_sec=%.0f",
+                            drive_file.id,
+                            elapsed,
+                        )
+                        continue
+                    await probe_lock.release()
                 if task and not task.done():
                     task.cancel()
                 drive_file.status = DriveFileStatus.ERROR
@@ -1147,52 +1437,26 @@ class IndexingWorker:
             )
             if drive_file.status == DriveFileStatus.SKIPPED:
                 return
+            from app.drive.conflicts import is_duplicate_content_complete
 
-        person_names = await person_names_for_drive_file(session, file_id)
+            # Twin already indexed — keep PROCESSED + twin pointer; do not clear or re-embed.
+            if is_duplicate_content_complete(drive_file):
+                drive_file.status = DriveFileStatus.PROCESSED
+                drive_file.decode_attempts = 0
+                drive_file.last_synced_at = datetime.now(timezone.utc)
+                return
 
-        document_name = None
-        if is_image_mime(drive_file.mime_type, drive_file.name):
-            if self._settings.gemini_file_search_images_enabled:
-                async with download_image_for_upload(
-                    self._client,
-                    file_id,
-                    self._settings,
-                    mime_type=drive_file.mime_type,
-                    file_name=file_name,
-                ) as (local_path, upload_mime):
-                    document_name = await asyncio.to_thread(
-                        gemini.upload_file,
-                        local_path=local_path,
-                        display_name=file_name,
-                        drive_file_id=file_id,
-                        drive_path=drive_file.path,
-                        mime_type=upload_mime,
-                        person_names=person_names,
-                    )
-        else:
-            suffix = ""
-            if "." in file_name:
-                suffix = file_name[file_name.rindex(".") :]
-            async with download_to_temp_file(
-                self._client, file_id, self._settings, suffix=suffix
-            ) as local_path:
-                document_name = await asyncio.to_thread(
-                    gemini.upload_file,
-                    local_path=local_path,
-                    display_name=file_name,
-                    drive_file_id=file_id,
-                    drive_path=drive_file.path,
-                    mime_type=drive_file.mime_type,
-                    person_names=person_names,
-                )
-
-        if old_document and old_document != document_name:
+        # Images: process_image_file already wrote faces + Qdrant image/caption vectors.
+        # Non-image/non-video: skipped upstream as unsupported_mime.
+        # Never upload into Google File Search — local Qdrant RAG only.
+        if old_document:
+            # Best-effort clear of legacy Google doc id; delete is a no-op when disabled.
             await asyncio.to_thread(gemini.delete_document, old_document)
 
         drive_file.status = DriveFileStatus.PROCESSED
         drive_file.error_message = None
         drive_file.decode_attempts = 0
-        drive_file.gemini_document_name = document_name
+        drive_file.gemini_document_name = None
         drive_file.last_synced_at = datetime.now(timezone.utc)
 
     @property
@@ -1219,7 +1483,15 @@ class IndexingWorker:
                     continue
                 live_ids.add(entry.id)
                 if entry.is_folder or entry.mime_type == FOLDER_MIME:
+                    # Folder markers stay in DB for empty-dir tree nodes only —
+                    # never counted as files, never queued (see library_filters).
                     await self._upsert_folder_placeholder(session, entry)
+                    continue
+                # AppleDouble / .DS_Store: never insert, never queue, never count.
+                if is_macos_junk_name(entry.name):
+                    existing_junk = await session.get(DriveFile, entry.id)
+                    if existing_junk is not None:
+                        await session.delete(existing_junk)
                     continue
                 seen += 1
                 was_new = await self._upsert_drive_file(
@@ -1245,9 +1517,9 @@ class IndexingWorker:
                 logger.info("sync_file_list restored %d media-backed PROCESSED row(s)", restored)
             await session.commit()
 
-        # Soft-archive stale files under this sync root only. Never hard-delete
-        # Postgres media, Qdrant vectors, or thumbnails — and never touch rows
-        # from another previously indexed folder when the user re-selects a root.
+        # Permanent library: never soft-archive PROCESSED/SKIPPED rows when a
+        # listing omits them (folder switch / partial sync). Only demote
+        # incomplete queue rows (PENDING/PROCESSING/ERROR) that vanished.
         if not listing.truncated and live_ids and root_folder_id:
             try:
                 async with self._session_factory() as session:
@@ -1259,7 +1531,13 @@ class IndexingWorker:
                                     DriveFile.id.not_in(live_ids),
                                     DriveFile.source == "drive",
                                     DriveFile.root_folder_id == root_folder_id,
-                                    DriveFile.status != DriveFileStatus.ARCHIVED,
+                                    DriveFile.status.in_(
+                                        (
+                                            DriveFileStatus.PENDING,
+                                            DriveFileStatus.PROCESSING,
+                                            DriveFileStatus.ERROR,
+                                        )
+                                    ),
                                 )
                             )
                         ).scalars().all()
@@ -1268,7 +1546,7 @@ class IndexingWorker:
                         await remove_drive_file(
                             session,
                             drive_file,
-                            reason="stale under sync root (soft-archive)",
+                            reason="stale incomplete under sync root (soft-archive)",
                         )
                         removed += 1
                     if removed:
@@ -1335,12 +1613,14 @@ class IndexingWorker:
         algo = hash_info[0] if hash_info else None
         digest = hash_info[1] if hash_info else None
         junk = is_macos_junk_name(entry.name)
+        # Defense in depth — sync_file_list should already drop Apple junk.
+        if junk:
+            if existing is not None:
+                await session.delete(existing)
+            return False
 
         if existing is None:
-            if junk:
-                status = DriveFileStatus.SKIPPED
-                error_message = f"{APPLEDOUBLE_SKIP_PREFIX} macOS resource fork / Finder metadata"
-            elif paused:
+            if paused:
                 status = DriveFileStatus.SKIPPED
                 error_message = f"{INDEXING_PAUSED_PREFIX} indexing stopped for parent folder"
             else:
@@ -1361,7 +1641,7 @@ class IndexingWorker:
             )
             session.add(drive_file)
             await session.flush()
-            if not paused and not junk:
+            if not paused:
                 skip_key = await apply_dedupe_on_upsert(
                     session, drive_file, algo=algo, digest=digest
                 )
@@ -1387,10 +1667,6 @@ class IndexingWorker:
             existing.content_hash = digest
             existing.content_hash_algo = algo
         restored = restore_archived_drive_file(existing)
-        if junk:
-            existing.status = DriveFileStatus.SKIPPED
-            existing.error_message = f"{APPLEDOUBLE_SKIP_PREFIX} macOS resource fork / Finder metadata"
-            return False
         if paused and existing.status in (DriveFileStatus.PENDING, DriveFileStatus.ERROR):
             existing.status = DriveFileStatus.SKIPPED
             existing.error_message = f"{INDEXING_PAUSED_PREFIX} indexing stopped for parent folder"
@@ -1404,17 +1680,13 @@ class IndexingWorker:
             was_conflict_skip = prior_msg.startswith(DUPLICATE_CONTENT_PREFIX) or prior_msg.startswith(
                 NAME_CONFLICT_PREFIX
             )
-            # Re-queue completed files only when Drive content/mtime actually changed.
-            # Attaching a checksum for the first time on an unchanged PROCESSED file
-            # must NOT flip it back to PENDING (same-folder re-select / sync reuse).
+            # Permanent library: NEVER demote PROCESSED on Drive mtime/hash change.
+            # Indexing is add-if-missing only; operator retry/backfill is explicit.
             content_changed = changed or hash_changed
-            if content_changed and (
-                existing.status == DriveFileStatus.PROCESSED or was_conflict_skip or hash_changed
-            ):
-                if existing.status == DriveFileStatus.PROCESSED or was_conflict_skip:
-                    existing.status = DriveFileStatus.PENDING
-                    existing.error_message = None
-                    existing.gemini_document_name = None
+            if content_changed and was_conflict_skip and existing.status != DriveFileStatus.PROCESSED:
+                existing.status = DriveFileStatus.PENDING
+                existing.error_message = None
+                existing.gemini_document_name = None
                 existing.decode_attempts = 0
             skip_key = await apply_dedupe_on_upsert(
                 session,
@@ -1547,6 +1819,10 @@ class IndexingWorker:
             self.last_run_at = datetime.now(timezone.utc)
             return summary
         finally:
+            try:
+                await self._status_batcher.flush()
+            except Exception:  # noqa: BLE001
+                logger.exception("Final status batch flush failed")
             self._running = False
             # Kick caption/embed backfill as soon as the cycle flag clears.
             try:

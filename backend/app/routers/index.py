@@ -22,6 +22,7 @@ from app.schemas import (
     IndexRunResult,
     IndexStatus,
     ResolveConflictIn,
+    RetryErroredByBucketIn,
     RetrySkippedByReasonIn,
 )
 from app.workers.indexer import IndexingWorker
@@ -49,6 +50,16 @@ router = APIRouter(tags=["index"])
 
 
 async def _run_cycle(worker: IndexingWorker) -> None:
+    from app.config import get_settings
+
+    if not get_settings().run_indexer:
+        # API replica: discover new Drive files only; indexer service drains PENDING.
+        try:
+            seen = await worker.sync_file_list(cache_source="manual_api")
+            logger.info("Index trigger on API (RUN_INDEXER=false): synced %d file(s)", seen)
+        except Exception:  # noqa: BLE001
+            logger.exception("API-only Drive sync failed")
+        return
     await worker.run_cycle()
 
 
@@ -62,7 +73,7 @@ async def trigger_index(
     worker: IndexingWorker = Depends(get_indexing_worker),
     session: AsyncSession = Depends(get_db),
 ) -> IndexStatus:
-    """Triggers an indexing run (sync file list + process pending files) in the background."""
+    """Triggers Drive sync (+ index cycle when RUN_INDEXER=true) in the background."""
     if worker.is_running:
         raise HTTPException(status_code=409, detail="An indexing run is already in progress")
     background_tasks.add_task(_run_cycle, worker)
@@ -75,13 +86,33 @@ async def trigger_reindex(
     worker: IndexingWorker = Depends(get_indexing_worker),
     session: AsyncSession = Depends(get_db),
 ) -> IndexStatus:
-    """Re-upload indexed files to Gemini (keeps existing face tags)."""
+    """Backfill missing index artifacts only — never wipe PROCESSED media/faces.
+
+    Queues ERROR rows and PROCESSED/ERROR images that have no Media row.
+    Does not bulk-demote PROCESSED → PENDING (permanent library).
+    """
     if worker.is_running:
         raise HTTPException(status_code=409, detail="An indexing run is already in progress")
+
+    from app.db.models import Media
+    from sqlalchemy import exists
+
+    # Re-queue hard errors for another attempt.
     await session.execute(
         DriveFile.__table__.update()
-        .where(DriveFile.status.in_([DriveFileStatus.PROCESSED, DriveFileStatus.ERROR]))
-        .values(status=DriveFileStatus.PENDING, error_message=None, gemini_document_name=None)
+        .where(DriveFile.status == DriveFileStatus.ERROR)
+        .values(status=DriveFileStatus.PENDING, error_message=None)
+    )
+    # PROCESSED without media = incomplete first index; allow face/embed add-if-missing.
+    no_media = ~exists(select(Media.id).where(Media.drive_file_id == DriveFile.id))
+    await session.execute(
+        DriveFile.__table__.update()
+        .where(
+            DriveFile.status == DriveFileStatus.PROCESSED,
+            DriveFile.mime_type.like("image/%"),
+            no_media,
+        )
+        .values(status=DriveFileStatus.PENDING, error_message=None)
     )
     await session.commit()
     background_tasks.add_task(_run_cycle, worker)
@@ -363,7 +394,8 @@ async def caption_stats(session: AsyncSession = Depends(get_db)) -> dict[str, ob
 
 @router.get("/index/skip-stats")
 async def skip_stats(session: AsyncSession = Depends(get_db)) -> dict[str, object]:
-    """Aggregate skipped *media* by reason — folder markers are not skips."""
+    """Aggregate skipped *media* by reason — folder markers and Apple junk excluded."""
+    from app.drive.library_filters import sql_exclude_blocked_drive_files
     from app.workers.requeue_failed import normalize_skip_reason
 
     rows = (
@@ -371,8 +403,7 @@ async def skip_stats(session: AsyncSession = Depends(get_db)) -> dict[str, objec
             select(DriveFile.error_message, func.count())
             .where(
                 DriveFile.status == DriveFileStatus.SKIPPED,
-                # Folder placeholders are structural, not indexing outcomes.
-                DriveFile.error_message.is_distinct_from("folder_marker"),
+                sql_exclude_blocked_drive_files(DriveFile),
             )
             .group_by(DriveFile.error_message)
         )
@@ -381,14 +412,29 @@ async def skip_stats(session: AsyncSession = Depends(get_db)) -> dict[str, objec
     total = 0
     for msg, count in rows:
         n = int(count)
-        total += n
         key = normalize_skip_reason(msg)
+        # Never surface apple/folder markers even if a stale row slips past SQL.
+        if key in {"appledouble_junk", "folder_marker"}:
+            continue
+        total += n
         by_reason[key] = by_reason.get(key, 0) + n
     ranked = sorted(
         [{"reason": k, "count": v} for k, v in by_reason.items()],
         key=lambda x: -x["count"],
     )
     return {"total_skipped": total, "by_reason": ranked}
+
+
+@router.get("/index/drive-stats")
+async def index_drive_stats(session: AsyncSession = Depends(get_db)) -> dict[str, object]:
+    """Drive indexing outcomes: totals + per-folder processed/error/skip with top reasons.
+
+    Use this after (or during) a Drive index to see how many files are search-ready
+    versus errored/skipped, broken down by root and parent folder.
+    """
+    from app.drive.index_stats import build_drive_index_stats
+
+    return await build_drive_index_stats(session)
 
 
 @router.get("/index/folders")
@@ -583,6 +629,57 @@ async def index_errors(
     }
 
 
+@router.get("/index/error-stats")
+async def index_error_stats(session: AsyncSession = Depends(get_db)) -> dict[str, object]:
+    """Aggregate ERROR rows by normalize_error_bucket for selective retry UI."""
+    from app.workers.requeue_failed import normalize_error_bucket
+
+    rows = list(
+        (
+            await session.execute(
+                select(DriveFile.error_message).where(DriveFile.status == DriveFileStatus.ERROR)
+            )
+        ).scalars().all()
+    )
+    by_bucket: dict[str, int] = {}
+    for msg in rows:
+        key = normalize_error_bucket(msg)
+        by_bucket[key] = by_bucket.get(key, 0) + 1
+    ranked = sorted(
+        [{"bucket": k, "count": v} for k, v in by_bucket.items()],
+        key=lambda item: (-int(item["count"]), str(item["bucket"])),
+    )
+    return {"total_errors": len(rows), "by_bucket": ranked}
+
+
+@router.post("/index/errors/retry")
+async def retry_errored_by_bucket(
+    body: RetryErroredByBucketIn,
+    background_tasks: BackgroundTasks,
+    worker: IndexingWorker = Depends(get_indexing_worker),
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, object]:
+    """Re-queue ERROR rows for one bucket (never junk/dupe/structural buckets).
+
+    For ``enospc``, confirm disk headroom first — requeueing without free space
+    recreates the volume fill.
+    """
+    from app.workers.requeue_failed import requeue_errored_by_bucket as _retry
+
+    bucket = (body.bucket or "").strip()
+    if not bucket:
+        raise HTTPException(status_code=400, detail="bucket is required")
+
+    result = await _retry(session, bucket)
+    await session.commit()
+
+    requeued = int(result.get("requeued") or 0)
+    if requeued > 0 and not worker.is_running:
+        background_tasks.add_task(_run_cycle, worker)
+
+    return {"ok": True, **result}
+
+
 @router.get("/index", response_model=IndexStatus)
 async def index_status(
     worker: IndexingWorker = Depends(get_indexing_worker),
@@ -592,25 +689,16 @@ async def index_status(
 
 
 async def _build_index_status(worker: IndexingWorker, session: AsyncSession) -> IndexStatus:
-    stmt = select(DriveFile.status, func.count()).group_by(DriveFile.status)
+    from app.drive.library_filters import sql_exclude_blocked_drive_files
+
+    # Counts exclude folder markers + AppleDouble / .DS_Store junk entirely.
+    stmt = (
+        select(DriveFile.status, func.count())
+        .where(sql_exclude_blocked_drive_files(DriveFile))
+        .group_by(DriveFile.status)
+    )
     rows = (await session.execute(stmt)).all()
     counts = {status.value: count for status, count in rows}
-
-    # Folder markers use status=skipped but are not indexing skips — subtract them.
-    folder_markers = int(
-        (
-            await session.execute(
-                select(func.count())
-                .select_from(DriveFile)
-                .where(
-                    DriveFile.status == DriveFileStatus.SKIPPED,
-                    DriveFile.error_message == "folder_marker",
-                )
-            )
-        ).scalar_one()
-    )
-    if folder_markers and "skipped" in counts:
-        counts["skipped"] = max(0, int(counts["skipped"]) - folder_markers)
 
     processing_rows = list(
         (
@@ -636,7 +724,12 @@ async def _build_index_status(worker: IndexingWorker, session: AsyncSession) -> 
 
     pending_count = (
         await session.execute(
-            select(func.count()).select_from(DriveFile).where(DriveFile.status == DriveFileStatus.PENDING)
+            select(func.count())
+            .select_from(DriveFile)
+            .where(
+                DriveFile.status == DriveFileStatus.PENDING,
+                sql_exclude_blocked_drive_files(DriveFile),
+            )
         )
     ).scalar_one()
 

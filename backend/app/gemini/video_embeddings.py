@@ -14,8 +14,8 @@ from __future__ import annotations
 
 import base64
 import logging
+import threading
 import time
-from functools import lru_cache
 from pathlib import Path
 
 from app.gemini.rate_limit import gemini_embed_slot
@@ -24,14 +24,19 @@ logger = logging.getLogger(__name__)
 
 _DIM = 3072
 _MODEL = "gemini-embedding-2"
+_thread_local = threading.local()
 
 
-@lru_cache(maxsize=1)
 def _get_client():
+    """Per-thread Client — a process-global google-genai client serializes callers."""
     from google import genai
     from app.config import get_settings
 
-    return genai.Client(api_key=get_settings().gemini_api_key)
+    client = getattr(_thread_local, "client", None)
+    if client is None:
+        client = genai.Client(api_key=get_settings().gemini_api_key)
+        _thread_local.client = client
+    return client
 
 
 def _embed_with_retry(contents, task_type: str) -> list[float]:
@@ -66,13 +71,12 @@ def _embed_with_retry(contents, task_type: str) -> list[float]:
     raise RuntimeError("Gemini embed failed after 8 retries")
 
 
-def _jpeg_bytes_for_embed(jpeg_path: str | Path, *, max_edge: int | None = None) -> bytes:
-    """Read JPEG bytes, optionally downscaling longest edge (production ~1024)."""
+def _downscale_jpeg_bytes(data: bytes, *, max_edge: int | None = None) -> bytes:
+    """Optionally downscale longest edge (production ~1024)."""
     from app.config import get_settings
 
-    data = Path(jpeg_path).read_bytes()
     edge = max_edge if max_edge is not None else get_settings().image_embed_max_edge
-    if edge <= 0:
+    if edge <= 0 or not data:
         return data
     try:
         import io
@@ -89,8 +93,14 @@ def _jpeg_bytes_for_embed(jpeg_path: str | Path, *, max_edge: int | None = None)
         img.save(out, format="JPEG", quality=85)
         return out.getvalue()
     except Exception as exc:  # noqa: BLE001
-        logger.warning("Embed downscale failed for %s: %s", jpeg_path, exc)
+        logger.warning("Embed downscale failed: %s", exc)
         return data
+
+
+def _jpeg_bytes_for_embed(jpeg_path: str | Path, *, max_edge: int | None = None) -> bytes:
+    """Read JPEG bytes, optionally downscaling longest edge (production ~1024)."""
+    data = Path(jpeg_path).read_bytes()
+    return _downscale_jpeg_bytes(data, max_edge=max_edge)
 
 
 def embed_frame_sync(jpeg_path: str) -> list[float]:
@@ -107,19 +117,32 @@ def embed_frame_sync(jpeg_path: str) -> list[float]:
 
 
 def embed_frames_batch_sync(jpeg_paths: list[str]) -> list[list[float]]:
-    """Embed multiple JPEGs in one ``embed_content`` → batchEmbedContents call.
+    """Embed multiple JPEGs in one ``embed_content`` → batchEmbedContents call."""
+    if not jpeg_paths:
+        return []
+    payloads = [_jpeg_bytes_for_embed(path) for path in jpeg_paths]
+    return embed_frames_batch_bytes_sync(payloads)
 
-    Returns one 3072-dim vector per path (same order).
+
+def embed_frames_batch_bytes_sync(
+    jpeg_payloads: list[bytes],
+    *,
+    downscale: bool = True,
+) -> list[list[float]]:
+    """Embed in-memory JPEGs via one batchEmbedContents call (no temp files).
+
+    Pass ``downscale=False`` when callers already resized (critical on 1-vCPU hosts:
+    parallel PIL inside the embed pool collapses ~50/s → ~5/s).
     """
     from google.genai import types
     from google.genai.types import EmbedContentConfig
 
-    if not jpeg_paths:
+    if not jpeg_payloads:
         return []
 
     contents = []
-    for path in jpeg_paths:
-        data = _jpeg_bytes_for_embed(path)
+    for raw in jpeg_payloads:
+        data = _downscale_jpeg_bytes(raw) if downscale else raw
         b64 = base64.b64encode(data).decode("ascii")
         contents.append(
             types.Content(
@@ -142,9 +165,9 @@ def embed_frames_batch_sync(jpeg_paths: list[str]) -> list[list[float]]:
                     ),
                 )
             emb = list(result.embeddings or [])
-            if len(emb) != len(jpeg_paths):
+            if len(emb) != len(jpeg_payloads):
                 raise RuntimeError(
-                    f"batch embed returned {len(emb)} vectors for {len(jpeg_paths)} images"
+                    f"batch embed returned {len(emb)} vectors for {len(jpeg_payloads)} images"
                 )
             return [list(e.values or []) for e in emb]
         except Exception as exc:  # noqa: BLE001

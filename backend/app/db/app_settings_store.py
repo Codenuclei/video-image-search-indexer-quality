@@ -14,6 +14,7 @@ from app.runtime_settings import (
 
 def _defaults_from_env() -> RuntimeSettings:
     s = get_settings()
+    has_claude = bool((s.anthropic_api_key or s.claude_api_key or "").strip())
     return RuntimeSettings(
         auto_index_enabled=s.auto_index_enabled,
         auto_index_interval_seconds=max(30, s.auto_index_interval_seconds),
@@ -26,10 +27,24 @@ def _defaults_from_env() -> RuntimeSettings:
         search_use_captions=s.search_use_captions,
         search_rerank_enabled=s.search_rerank_enabled,
         go_indexer_enabled=getattr(s, "go_indexer_enabled", False),
+        carousel_llm_provider="claude" if has_claude else "auto",
+        openrouter_model=(s.openrouter_model or "anthropic/claude-sonnet-4").strip(),
+        claude_model=(s.claude_model or "claude-sonnet-4-5-20250929").strip(),
     )
 
 
 def _row_to_runtime(row: AppSettings) -> RuntimeSettings:
+    s = get_settings()
+    provider = getattr(row, "carousel_llm_provider", None) or "auto"
+    or_model = (getattr(row, "openrouter_model", None) or "").strip() or (
+        s.openrouter_model or "anthropic/claude-sonnet-4"
+    ).strip()
+    claude_model = (getattr(row, "claude_model", None) or "").strip() or (
+        s.claude_model or "claude-sonnet-4-5-20250929"
+    ).strip()
+    raw = (provider or "auto").strip().lower()
+    if raw not in {"auto", "openrouter", "claude", "gemini"}:
+        raw = "auto"
     return RuntimeSettings(
         auto_index_enabled=row.auto_index_enabled,
         auto_index_interval_seconds=max(30, row.auto_index_interval_seconds),
@@ -42,6 +57,9 @@ def _row_to_runtime(row: AppSettings) -> RuntimeSettings:
         search_use_captions=row.search_use_captions,
         search_rerank_enabled=row.search_rerank_enabled,
         go_indexer_enabled=getattr(row, "go_indexer_enabled", False),
+        carousel_llm_provider=raw,
+        openrouter_model=or_model,
+        claude_model=claude_model,
     )
 
 
@@ -57,6 +75,9 @@ def _apply_runtime_to_row(row: AppSettings, runtime: RuntimeSettings) -> None:
     row.search_use_captions = runtime.search_use_captions
     row.search_rerank_enabled = runtime.search_rerank_enabled
     row.go_indexer_enabled = runtime.go_indexer_enabled
+    row.carousel_llm_provider = runtime.carousel_llm_provider
+    row.openrouter_model = runtime.openrouter_model
+    row.claude_model = runtime.claude_model
 
 
 async def load_runtime_settings_from_db(session_factory: async_sessionmaker[AsyncSession]) -> RuntimeSettings:

@@ -1,0 +1,565 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Architecture Bottleneck Report</title>
+  <style>
+    :root {
+      --ink: #18212f;
+      --muted: #5c6878;
+      --line: #d7dde5;
+      --soft: #f3f6f9;
+      --blue: #174ea6;
+      --blue-soft: #e9f1ff;
+      --red: #a61b29;
+      --red-soft: #fff0f1;
+      --amber: #815500;
+      --amber-soft: #fff7df;
+      --green: #146c43;
+      --green-soft: #eaf7f0;
+      --white: #fff;
+    }
+    * { box-sizing: border-box; }
+    html { font-size: 10pt; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--white);
+      font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+      line-height: 1.42;
+    }
+    @page {
+      size: A4;
+      margin: 17mm 15mm 18mm;
+      @top-left {
+        content: "ARCHITECTURE BOTTLENECK REPORT";
+        color: #6b7480;
+        font-size: 7.5pt;
+        letter-spacing: .08em;
+      }
+      @top-right {
+        content: "13 AUGUST 2026";
+        color: #6b7480;
+        font-size: 7.5pt;
+      }
+      @bottom-left {
+        content: "Video / Image Search Indexer";
+        color: #6b7480;
+        font-size: 7.5pt;
+      }
+      @bottom-right {
+        content: "PAGE " counter(page) " OF " counter(pages);
+        color: #6b7480;
+        font-size: 7.5pt;
+      }
+    }
+    @media screen {
+      body { background: #e9edf2; padding: 24px; }
+      main { max-width: 210mm; margin: auto; background: white; padding: 17mm 15mm; }
+    }
+    h1, h2, h3, p { margin-top: 0; }
+    h1 { font-size: 27pt; line-height: 1.06; letter-spacing: -.025em; margin-bottom: 6mm; }
+    h2 {
+      font-size: 16pt;
+      line-height: 1.15;
+      color: var(--blue);
+      margin: 0 0 4mm;
+      break-after: avoid;
+    }
+    h3 { font-size: 11pt; margin: 4mm 0 2mm; break-after: avoid; }
+    p { margin-bottom: 3mm; }
+    ul, ol { margin: 0 0 3.5mm 5mm; padding-left: 4mm; }
+    li { margin-bottom: 1.2mm; }
+    strong { font-weight: 700; }
+    code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 8.5pt;
+      overflow-wrap: anywhere;
+    }
+    .cover {
+      min-height: 245mm;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      break-after: page;
+    }
+    .eyebrow {
+      color: var(--blue);
+      font-size: 9pt;
+      font-weight: 750;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      margin-bottom: 8mm;
+    }
+    .lede { font-size: 14pt; line-height: 1.35; max-width: 155mm; color: #2d3948; }
+    .cover-rule { height: 3px; width: 45mm; background: var(--blue); margin: 10mm 0; }
+    .meta {
+      display: grid;
+      grid-template-columns: 32mm 1fr;
+      gap: 2mm 5mm;
+      border-top: 1px solid var(--line);
+      padding-top: 6mm;
+      color: var(--muted);
+    }
+    .meta b { color: var(--ink); }
+    .page { break-before: page; }
+    .section { margin-bottom: 7mm; }
+    .callout {
+      border-left: 4px solid var(--blue);
+      background: var(--blue-soft);
+      padding: 4mm 5mm;
+      margin: 4mm 0 6mm;
+      break-inside: avoid;
+    }
+    .callout.danger { border-color: var(--red); background: var(--red-soft); }
+    .callout.warn { border-color: #c28400; background: var(--amber-soft); }
+    .callout.good { border-color: var(--green); background: var(--green-soft); }
+    .kpis {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 3mm;
+      margin: 5mm 0;
+    }
+    .kpi { border-top: 2px solid var(--blue); padding-top: 3mm; break-inside: avoid; }
+    .kpi .value { font-size: 18pt; font-weight: 760; line-height: 1.05; }
+    .kpi .label { font-size: 8pt; color: var(--muted); margin-top: 1.5mm; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 3mm 0 5mm;
+      font-size: 8.4pt;
+      break-inside: auto;
+    }
+    thead { display: table-header-group; }
+    tr { break-inside: avoid; }
+    th {
+      text-align: left;
+      color: var(--white);
+      background: #334154;
+      padding: 2.4mm;
+      font-weight: 650;
+    }
+    td { padding: 2.3mm; border-bottom: 1px solid var(--line); vertical-align: top; }
+    tbody tr:nth-child(even) td { background: var(--soft); }
+    td.num, th.num { text-align: right; white-space: nowrap; }
+    .sev {
+      display: inline-block;
+      border-radius: 20px;
+      padding: .6mm 2mm;
+      font-size: 7.2pt;
+      font-weight: 750;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+    .critical { color: var(--red); background: var(--red-soft); }
+    .high { color: var(--amber); background: var(--amber-soft); }
+    .medium { color: var(--blue); background: var(--blue-soft); }
+    .diagram {
+      border: 1px solid var(--line);
+      background: #fbfcfe;
+      padding: 5mm;
+      margin: 4mm 0 6mm;
+      break-inside: avoid;
+    }
+    .diagram-title {
+      color: var(--muted);
+      font-size: 7.4pt;
+      font-weight: 700;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      margin-bottom: 4mm;
+    }
+    .flow { display: flex; align-items: stretch; justify-content: center; gap: 2.2mm; }
+    .flow.vertical { flex-direction: column; align-items: center; }
+    .node {
+      border: 1px solid #9aa8b8;
+      background: var(--white);
+      border-radius: 3px;
+      padding: 2.6mm 3mm;
+      text-align: center;
+      min-width: 28mm;
+      font-size: 8.2pt;
+      line-height: 1.25;
+    }
+    .node.primary { background: var(--blue-soft); border-color: #6f98d5; font-weight: 700; }
+    .node.risk { background: var(--red-soft); border-color: #d38790; }
+    .node.good { background: var(--green-soft); border-color: #74ad91; }
+    .node.wide { min-width: 55mm; }
+    .arrow { align-self: center; color: var(--blue); font-size: 16pt; font-weight: 700; line-height: 1; }
+    .arrow.down { transform: rotate(90deg); }
+    .split {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 5mm;
+      margin: 4mm 0 6mm;
+    }
+    .panel { border: 1px solid var(--line); padding: 4mm; break-inside: avoid; }
+    .panel h3 { margin-top: 0; color: var(--blue); }
+    .rank-item {
+      display: grid;
+      grid-template-columns: 9mm 1fr 22mm;
+      gap: 3mm;
+      align-items: start;
+      padding: 3mm 0;
+      border-bottom: 1px solid var(--line);
+      break-inside: avoid;
+    }
+    .rank { font-size: 16pt; color: var(--blue); font-weight: 750; line-height: 1; }
+    .rank-item p { margin: 1mm 0 0; color: var(--muted); font-size: 8.5pt; }
+    .path {
+      display: block;
+      color: #3c4a5a;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 7.5pt;
+      margin-top: 1mm;
+      overflow-wrap: anywhere;
+    }
+    .bar-row {
+      display: grid;
+      grid-template-columns: 42mm 1fr 18mm;
+      gap: 3mm;
+      align-items: center;
+      margin: 2mm 0;
+      font-size: 8.4pt;
+    }
+    .bar-track { height: 6mm; background: #e7ebf0; }
+    .bar { height: 100%; background: var(--blue); }
+    .bar.red { background: var(--red); }
+    .bar.green { background: var(--green); }
+    .bar.amber { background: #b87800; }
+    .small { color: var(--muted); font-size: 8pt; }
+    .roadmap { position: relative; padding-left: 8mm; }
+    .phase { border-left: 2px solid var(--blue); padding: 0 0 6mm 6mm; break-inside: avoid; }
+    .phase:last-child { padding-bottom: 0; }
+    .phase::before {
+      content: "";
+      position: absolute;
+      left: 6.45mm;
+      width: 3.2mm;
+      height: 3.2mm;
+      border-radius: 50%;
+      background: var(--blue);
+      margin-top: 1mm;
+    }
+    .phase h3 { margin: 0 0 1.5mm; }
+    .phase p { margin: 0; color: var(--muted); }
+    .source-note { font-size: 7.4pt; color: var(--muted); margin-top: 3mm; }
+    .no-break { break-inside: avoid; }
+  </style>
+</head>
+<body>
+<main>
+  <section class="cover">
+    <div>
+      <div class="eyebrow">Production architecture review</div>
+      <h1>Architecture<br>Bottleneck Report</h1>
+      <div class="cover-rule"></div>
+      <p class="lede">Storage lifecycle, media streaming, retry behavior, and API/indexer isolation for the Video/Image Search Indexer and Carousel Studio.</p>
+      <div class="kpis" style="margin-top:18mm">
+        <div class="kpi"><div class="value">83.135</div><div class="label">GiB apparent in /app/data/videos</div></div>
+        <div class="kpi"><div class="value">1,353</div><div class="label">physical files audited</div></div>
+        <div class="kpi"><div class="value">77.848</div><div class="label">GiB in Drive ERROR + PROCESSED classes, before safety gates</div></div>
+        <div class="kpi"><div class="value">2×</div><div class="label">full-body buffering points on uncached preview</div></div>
+      </div>
+    </div>
+    <div>
+      <div class="callout warn"><strong>Interpretation boundary.</strong> Production findings are distinguished from locally implemented, uncommitted code. Nothing in this report claims a fix has been deployed.</div>
+      <div class="meta">
+        <b>Audit date</b><span>13 August 2026</span>
+        <b>Source of truth</b><span>Current working tree + confirmed production audit facts</span>
+        <b>Primary action</b><span>Land Range streaming before processed Drive cache eviction</span>
+        <b>Companion</b><span>docs/architecture-bottleneck-report.md</span>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Executive summary</h2>
+    <p>The binding constraint is storage lifecycle and data-plane design, not model throughput. Production has already shown a Media shadowing regression and <strong>ENOSPC</strong>. Failed work can be requeued, amplifying downloads and writes while the volume is constrained.</p>
+    <div class="callout danger"><strong>Critical dependency:</strong> processed Drive media is not safe to evict until video previews support end-to-end HTTP Range streaming. Today, an uncached preview is assembled in backend memory and then buffered again by the Next.js proxy.</div>
+    <h3>Recommended sequence</h3>
+    <ol>
+      <li>Stop disk growth and capacity-driven retry amplification; create a complete manifest.</li>
+      <li>Implement and canary Range streaming through Drive, FastAPI, Next.js, and the browser.</li>
+      <li>Reclaim processed Drive media, then conditionally reclaim failed Drive files after remote-access and quiescence checks.</li>
+      <li>Split API and indexer into separate Railway services with shared Postgres and Qdrant.</li>
+      <li>Operate against explicit storage, latency, queue, retry, and consistency targets.</li>
+    </ol>
+    <h2 style="margin-top:8mm">Current Railway topology</h2>
+    <div class="diagram">
+      <div class="diagram-title">Production-confirmed service layout</div>
+      <div class="flow">
+        <div class="node">Indexer UI</div><div class="arrow">→</div>
+        <div class="node primary wide">Backend / API + Indexer<br><small>combined failure domain</small></div><div class="arrow">←</div>
+        <div class="node">Carousel<br>Next.js proxy</div>
+      </div>
+      <div class="flow" style="margin-top:4mm">
+        <div class="node">Connector / Drive</div><div class="arrow">←</div>
+        <div class="node">Postgres</div><div class="arrow">←</div>
+        <div class="node primary">Backend</div><div class="arrow">→</div>
+        <div class="node">Qdrant</div><div class="arrow">→</div>
+        <div class="node risk">Volume<br>/app/data</div>
+      </div>
+    </div>
+    <p class="small">FastAPI serves all routes and starts auto-index, maintenance, and backup loops in one lifespan. The current tree has a <code>RUN_INDEXER</code> gate and a documented split, but the split is not production-confirmed.</p>
+  </section>
+
+  <section class="page">
+    <h2>Ranked bottlenecks</h2>
+    <div class="rank-item">
+      <div class="rank">1</div>
+      <div><strong>Persistent-volume exhaustion and unsafe cache lifecycle</strong><p>83.135 GiB, 1,353 files, confirmed ENOSPC, no production-confirmed capacity policy.</p><span class="path">backend/app/drive/media_cache.py · backend/app/storage.py · backend/app/video/youtube_cache.py</span></div>
+      <span class="sev critical">Critical</span>
+    </div>
+    <div class="rank-item">
+      <div class="rank">2</div>
+      <div><strong>Full-body media buffering blocks safe eviction</strong><p>Backend joins all Drive chunks; Next proxy calls arrayBuffer. Memory and transferred bytes scale with object size.</p><span class="path">backend/app/routers/drive.py:412–460 · backend/app/pipelines/common.py:155–163 · carousel-frontend/lib/api-proxy.ts:31–73</span></div>
+      <span class="sev critical">Critical</span>
+    </div>
+    <div class="rank-item">
+      <div class="rank">3</div>
+      <div><strong>API and indexing share a failure domain</strong><p>Interactive routes compete with auto-index, maintenance, backup, Drive reads, DB slots, and volume I/O.</p><span class="path">backend/app/main.py:60–242 · backend/app/workers/indexer.py:148–183 · docs/indexer-service.md</span></div>
+      <span class="sev high">High</span>
+    </div>
+    <div class="rank-item">
+      <div class="rank">4</div>
+      <div><strong>Retry amplification under persistent failures</strong><p>Runtime toggles can requeue ERROR/SKIPPED rows each tick; capacity failures need a circuit breaker, not immediate re-entry.</p><span class="path">backend/app/workers/auto_indexer.py:49–70 · backend/app/workers/requeue_failed.py:71–150</span></div>
+      <span class="sev high">High</span>
+    </div>
+    <div class="rank-item">
+      <div class="rank">5</div>
+      <div><strong>Logical Media and physical cache can diverge</strong><p>Status, Media relation, active ownership, cache path, source identity, and file bytes must be reconciled together.</p><span class="path">backend/app/pipelines/common.py:143–147 · backend/app/drive/cleanup.py · backend/app/drive/media_cache.py:53–80</span></div>
+      <span class="sev high">High</span>
+    </div>
+    <div class="rank-item">
+      <div class="rank">6</div>
+      <div><strong>Static concurrency magnifies dependency contention</strong><p>Parallelism helps only below saturation; disk headroom and dependency latency should govern admission.</p><span class="path">backend/app/workers/indexer.py · backend/app/workers/index_batch.py · backend/app/workers/embed_queue.py</span></div>
+      <span class="sev medium">Medium</span>
+    </div>
+    <div class="rank-item">
+      <div class="rank">7</div>
+      <div><strong>Carousel orchestration remains backend-heavy</strong><p>LLM, extraction, frame selection, and preview traffic share the same backend; remount storms required local serialization.</p><span class="path">backend/app/routers/carousel_script.py · backend/app/search/carousel_pipeline.py</span></div>
+      <span class="sev medium">Medium</span>
+    </div>
+  </section>
+
+  <section class="page">
+    <h2>Confirmed production cache inventory</h2>
+    <div class="kpis">
+      <div class="kpi"><div class="value">84G</div><div class="label">du -sh filesystem view</div></div>
+      <div class="kpi"><div class="value">41.415</div><div class="label">GiB Drive ERROR / no Media</div></div>
+      <div class="kpi"><div class="value">36.433</div><div class="label">GiB Drive PROCESSED / Media</div></div>
+      <div class="kpi"><div class="value">18.349</div><div class="label">GiB duplicate case variants, overlapping totals</div></div>
+    </div>
+    <div class="bar-row"><span>Drive ERROR / no Media</span><div class="bar-track"><div class="bar red" style="width:49.82%"></div></div><strong>41.415</strong></div>
+    <div class="bar-row"><span>Drive PROCESSED / Media</span><div class="bar-track"><div class="bar" style="width:43.83%"></div></div><strong>36.433</strong></div>
+    <div class="bar-row"><span>YouTube PROCESSED</span><div class="bar-track"><div class="bar green" style="width:4.42%"></div></div><strong>3.671</strong></div>
+    <div class="bar-row"><span>Drive SKIPPED / Media</span><div class="bar-track"><div class="bar amber" style="width:1.67%"></div></div><strong>1.387</strong></div>
+    <div class="bar-row"><span>Unknown / orphan</span><div class="bar-track"><div class="bar amber" style="width:.28%;min-width:2px"></div></div><strong>0.229</strong></div>
+    <p class="source-note">GiB apparent. Source: confirmed production audit. Bar widths are category share of 83.135 GiB.</p>
+    <table>
+      <thead><tr><th>Category</th><th class="num">GiB</th><th class="num">Files</th><th class="num">IDs</th><th>Disposition</th></tr></thead>
+      <tbody>
+        <tr><td>Drive ERROR / no Media</td><td class="num">41.415</td><td class="num">1,024</td><td class="num">—</td><td>Conditional only</td></tr>
+        <tr><td>Drive PROCESSED / Media</td><td class="num">36.433</td><td class="num">307</td><td class="num">182</td><td>After Range streaming</td></tr>
+        <tr><td>YouTube PROCESSED / Media</td><td class="num">3.671</td><td class="num">7</td><td class="num">7</td><td><strong>KEEP</strong></td></tr>
+        <tr><td>Drive SKIPPED / Media</td><td class="num">1.387</td><td class="num">4</td><td class="num">—</td><td>Protect pending review</td></tr>
+        <tr><td>Unknown / orphan</td><td class="num">0.229</td><td class="num">2</td><td class="num">—</td><td><strong>KEEP</strong> pending review</td></tr>
+        <tr><td><strong>Total</strong></td><td class="num"><strong>83.135</strong></td><td class="num"><strong>1,353</strong></td><td class="num">mixed</td><td>Audit baseline</td></tr>
+      </tbody>
+    </table>
+    <div class="callout warn"><strong>Do not double-count:</strong> the 18.349 GiB duplicate case-variant estimate overlaps the categories above. It is not additional to 83.135 GiB.</div>
+  </section>
+
+  <section class="page">
+    <h2>Safe retention policy</h2>
+    <div class="split">
+      <div class="panel">
+        <h3>KEEP</h3>
+        <ul>
+          <li>Upload-origin media</li>
+          <li>YouTube media</li>
+          <li>Unknown/orphan pending review</li>
+          <li>Any actively owned file</li>
+          <li>Drive SKIPPED/Media pending classification</li>
+        </ul>
+      </div>
+      <div class="panel">
+        <h3>Eligible only after Range</h3>
+        <ul>
+          <li>Drive PROCESSED with valid Media</li>
+          <li>Backend returns bounded <code>206</code></li>
+          <li>Next proxy streams</li>
+          <li>Browser seek tests pass</li>
+          <li>Rollback path is available</li>
+        </ul>
+      </div>
+    </div>
+    <div class="panel">
+      <h3>Conditional after remote-access verification and quiescence</h3>
+      <p>Drive ERROR/no-Media cache may be removed only after the Drive object is proven readable, active/retry ownership is absent, the queue is paused or quiescent, and a rollback-quality manifest records identity, path, size, status, Media count, and deletion reason.</p>
+    </div>
+    <h2 style="margin-top:8mm">Failure mechanism</h2>
+    <div class="diagram">
+      <div class="diagram-title">Confirmed production failure loop</div>
+      <div class="flow">
+        <div class="node risk">Media shadowing<br>regression</div><div class="arrow">→</div>
+        <div class="node">Appears incomplete<br>or failed</div><div class="arrow">→</div>
+        <div class="node">Retry / requeue</div><div class="arrow">→</div>
+        <div class="node">Download + writes</div><div class="arrow">→</div>
+        <div class="node risk">ENOSPC</div>
+      </div>
+      <div class="callout danger" style="margin-bottom:0"><strong>Break the loop:</strong> capacity failures open a disk circuit; they do not immediately return to PENDING.</div>
+    </div>
+    <h3>Required controls</h3>
+    <ul>
+      <li>Classify disk-reserve and ENOSPC failures as capacity-blocked.</li>
+      <li>Pause new durable cache writes and automatic retry while blocked.</li>
+      <li>Preserve original logical relationships until replacement commits.</li>
+      <li>Reconcile physical files before requeue.</li>
+      <li>Resume only after free-space and protected-category checks pass.</li>
+    </ul>
+  </section>
+
+  <section class="page">
+    <h2>Indexing pipeline</h2>
+    <div class="diagram">
+      <div class="diagram-title">Current logical flow</div>
+      <div class="flow"><div class="node">Drive push /<br>fallback sync</div><div class="arrow">→</div><div class="node primary">DriveFile upsert<br>and claim</div><div class="arrow">→</div><div class="node">Image or video<br>pipeline</div><div class="arrow">→</div><div class="node">Postgres +<br>Qdrant</div></div>
+      <div class="flow" style="margin-top:4mm"><div class="node">Cache / decode</div><div class="arrow">→</div><div class="node">Faces, captions,<br>segments, frames</div><div class="arrow">→</div><div class="node">Embed queue</div><div class="arrow">→</div><div class="node primary">Batched final<br>status</div></div>
+    </div>
+    <p>The local working tree adds durable image cache use, status batching, an embed queue, claim ordering, recovery gates, and disk checks. These are <strong>locally implemented/uncommitted</strong>; production activation is not assumed.</p>
+    <h2 style="margin-top:8mm">Media streaming target</h2>
+    <div class="diagram">
+      <div class="diagram-title">End-to-end bounded range path</div>
+      <div class="flow">
+        <div class="node">Browser<br><code>Range</code></div><div class="arrow">→</div>
+        <div class="node good">Next proxy<br>stream, no buffer</div><div class="arrow">→</div>
+        <div class="node good">FastAPI<br>validate range</div><div class="arrow">→</div>
+        <div class="node">Local file or<br>Drive byte span</div>
+      </div>
+      <div class="flow" style="margin-top:4mm">
+        <div class="node wide primary"><code>206 · Content-Range · Content-Length · Accept-Ranges</code></div>
+      </div>
+    </div>
+    <div class="callout"><strong>Acceptance:</strong> a 1 MiB range transfers no more than 1.1 MiB plus protocol overhead at each application hop and does not allocate the complete object.</div>
+  </section>
+
+  <section class="page">
+    <h2>Current versus target service split</h2>
+    <div class="split">
+      <div class="panel">
+        <h3>Current production</h3>
+        <div class="flow vertical">
+          <div class="node">Users / UIs</div><div class="arrow down">→</div>
+          <div class="node risk wide">Backend API + Indexer<br>one failure domain</div><div class="arrow down">→</div>
+          <div class="node">Postgres · Qdrant · Drive · Volume</div>
+        </div>
+      </div>
+      <div class="panel">
+        <h3>Target</h3>
+        <div class="flow vertical">
+          <div class="node">Users / UIs</div><div class="arrow down">→</div>
+          <div class="node good wide">API service<br><code>RUN_INDEXER=false</code></div><div class="arrow down">↕</div>
+          <div class="node">Shared Postgres + Qdrant</div><div class="arrow down">↕</div>
+          <div class="node primary wide">Indexer · 1 replica<br><code>RUN_INDEXER=true</code></div>
+        </div>
+      </div>
+    </div>
+    <p>The same image can serve both roles. The split isolates CPU, memory, process restarts, and DB pool policy. Volume semantics require an explicit decision: shared mount support, indexer-only write cache, or remote/object-storage serving.</p>
+    <div class="callout warn"><strong>Cutover caveat:</strong> the repository documents the split in <code>docs/indexer-service.md</code>. That is deployment guidance, not evidence that production is already split.</div>
+    <h2 style="margin-top:8mm">Carousel pipeline</h2>
+    <div class="diagram">
+      <div class="diagram-title">Interactive generation flow</div>
+      <div class="flow">
+        <div class="node">Topic + source</div><div class="arrow">→</div>
+        <div class="node">Transcript +<br>moments</div><div class="arrow">→</div>
+        <div class="node">Hook / script<br>LLM</div><div class="arrow">→</div>
+        <div class="node">Frame rank<br>and capture</div><div class="arrow">→</div>
+        <div class="node primary">Compose +<br>export</div>
+      </div>
+    </div>
+    <p>Target controls are persisted idempotency, explicit job status/cancellation, bounded stage concurrency, cached intermediate metadata, Range-based media, and per-stage latency/error metrics.</p>
+  </section>
+
+  <section class="page">
+    <h2>Metrics and acceptance targets</h2>
+    <table>
+      <thead><tr><th>Area</th><th>Target</th><th>Operational meaning</th></tr></thead>
+      <tbody>
+        <tr><td>Volume use</td><td>Alert 70%; restrict 80%; circuit 85%</td><td>Capacity becomes an admission-control signal.</td></tr>
+        <tr><td>Free space</td><td>max(10 GiB, 15%) before large writes</td><td>Preserve recovery and temp-file headroom.</td></tr>
+        <tr><td>Reconciliation</td><td>100% files classified</td><td>Unknown files are never auto-deleted.</td></tr>
+        <tr><td>Range</td><td>1 MiB request ≤1.1 MiB per app hop</td><td>No hidden full-body buffering.</td></tr>
+        <tr><td>Seek p95</td><td>&lt;2s cached; &lt;4s remote Drive</td><td>Measured under healthy dependencies.</td></tr>
+        <tr><td>Search API p95</td><td>&lt;750ms; &lt;1% 5xx / 15m</td><td>Excludes explicitly long LLM generation.</td></tr>
+        <tr><td>Disk retries</td><td>0 redownloads while circuit open</td><td>Persistent capacity failure cannot amplify.</td></tr>
+        <tr><td>Queue</td><td>depth, age, rate, failures visible</td><td>Backlog and saturation are diagnosable.</td></tr>
+        <tr><td>Consistency</td><td>PROCESSED has required artifacts</td><td>Exceptions are visible and reconcilable.</td></tr>
+        <tr><td>Isolation</td><td>Indexer restart leaves API running</td><td>Independent Railway failure domains.</td></tr>
+      </tbody>
+    </table>
+    <h3>Streaming protocol checks</h3>
+    <ul>
+      <li>Valid single ranges return <code>206 Partial Content</code>.</li>
+      <li>Unsatisfiable ranges return <code>416</code>.</li>
+      <li><code>HEAD</code>, MIME, length, ETag/version, and range headers are coherent.</li>
+      <li>Proxy preserves status and headers and streams the body.</li>
+      <li>Cancellation releases remote and local resources promptly.</li>
+    </ul>
+    <h3>Data-lifecycle checks</h3>
+    <ul>
+      <li>Dry-run and applied manifests reconcile within concurrent-write tolerances.</li>
+      <li>Eviction never removes Media metadata or Qdrant vectors.</li>
+      <li>Case-variant deduplication uses hash or stable Drive identity.</li>
+    </ul>
+  </section>
+
+  <section class="page">
+    <h2>Phased remediation roadmap</h2>
+    <div class="roadmap">
+      <div class="phase"><h3>Phase 0 — contain and observe</h3><p>Pause capacity retries and nonessential indexing; snapshot Postgres; build manifest; protect uploads, YouTube, unknown, active, and unreviewed skipped media. Exit on stable free space and complete classification.</p></div>
+      <div class="phase"><h3>Phase 1 — fix media delivery</h3><p>Add backend and Drive range reads; stream Next responses; test HEAD/206/416, seeking, cancellation, and memory. Canary a large video. Exit only when bounded-byte targets pass.</p></div>
+      <div class="phase"><h3>Phase 2 — reclaim safely</h3><p>Dry-run processed Drive eviction; delete in small stoppable batches; verify seek after each batch. Handle ERROR/no-Media only after remote-read and quiescence checks.</p></div>
+      <div class="phase"><h3>Phase 3 — isolate API and indexing</h3><p>Deploy API with <code>RUN_INDEXER=false</code> and one indexer replica with <code>RUN_INDEXER=true</code>. Verify leader ownership, shared stores, independent restarts, and API SLOs under load.</p></div>
+      <div class="phase"><h3>Phase 4 — harden lifecycle</h3><p>Add high/low watermarks, persisted retry scheduling, resource circuits, daily reconciliation, idempotent carousel jobs, and restore/outage/full-volume exercises.</p></div>
+    </div>
+    <div class="callout good"><strong>Potential ceiling, not a promise:</strong> Drive ERROR + Drive PROCESSED categories total 77.848 GiB. Actual reclaim must subtract protected, active, non-reproducible, and verification-failed files.</div>
+    <h3>Decision log</h3>
+    <ul>
+      <li>Do not delete processed Drive cache before Range streaming.</li>
+      <li>Keep upload, YouTube, unknown, active, and pending-review media.</li>
+      <li>Treat failed Drive cleanup as conditional.</li>
+      <li>Do not add duplicate-case bytes to category totals.</li>
+      <li>Do not represent local safeguards as deployed.</li>
+      <li>Start with one indexer replica.</li>
+    </ul>
+  </section>
+
+  <section class="page">
+    <h2>Evidence appendix</h2>
+    <table>
+      <thead><tr><th>Concern</th><th>Primary source paths</th></tr></thead>
+      <tbody>
+        <tr><td>Lifecycle / topology</td><td><code>backend/app/main.py</code><br><code>backend/app/config.py</code><br><code>docs/indexer-service.md</code></td></tr>
+        <tr><td>Worker / retry</td><td><code>backend/app/workers/auto_indexer.py</code><br><code>backend/app/workers/indexer.py</code><br><code>backend/app/workers/requeue_failed.py</code></td></tr>
+        <tr><td>Cache / disk</td><td><code>backend/app/drive/media_cache.py</code><br><code>backend/app/storage.py</code><br><code>backend/app/video/youtube_cache.py</code></td></tr>
+        <tr><td>Media state</td><td><code>backend/app/pipelines/common.py</code><br><code>backend/app/drive/cleanup.py</code><br><code>backend/app/db/models.py</code></td></tr>
+        <tr><td>Streaming</td><td><code>backend/app/routers/drive.py:412–500</code><br><code>carousel-frontend/lib/api-proxy.ts:31–73</code></td></tr>
+        <tr><td>Index pipeline</td><td><code>backend/app/pipelines/image.py</code><br><code>backend/app/pipelines/video.py</code><br><code>backend/app/workers/embed_queue.py</code></td></tr>
+        <tr><td>Vectors</td><td><code>backend/app/qdrant/client.py</code><br><code>backend/app/qdrant/video_transcripts.py</code></td></tr>
+        <tr><td>Carousel</td><td><code>backend/app/routers/carousel_script.py</code><br><code>backend/app/search/carousel_pipeline.py</code><br><code>carousel-frontend/lib/browser-frame-capture.ts</code></td></tr>
+      </tbody>
+    </table>
+    <h2 style="margin-top:8mm">Reproducible generation</h2>
+    <div class="callout"><code>node scripts/render-architecture-report.mjs</code></div>
+    <p>The renderer uses the Playwright package and an already-installed local Chromium, loads this file from the local filesystem with no page JavaScript or network dependency, applies deterministic A4 settings, and writes:</p>
+    <p><code>docs/artifacts/architecture-bottleneck-report.pdf</code></p>
+    <p>The HTML has no external fonts, scripts, images, CDN references, or network dependency. All diagrams are print-safe HTML/CSS.</p>
+    <div class="callout warn"><strong>Limitation:</strong> category sizes and incident facts are a point-in-time production audit. This report does not live-query Railway and does not claim post-audit drift is zero.</div>
+  </section>
+</main>
+</body>
+</html>

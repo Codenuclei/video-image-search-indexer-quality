@@ -2,6 +2,58 @@
 from __future__ import annotations
 
 
+def is_transient_network_error(exc: BaseException) -> bool:
+    """True for Drive/httpx transport failures that should requeue, not hard-ERROR.
+
+    ``httpx.ReadError`` (often str()'d as just ``ReadError``) is a mid-stream
+    disconnect while downloading — especially large videos. Same class of
+    flake as ConnectError / TimeoutException.
+    """
+    try:
+        import httpx
+
+        if isinstance(
+            exc,
+            (
+                httpx.TransportError,
+                httpx.TimeoutException,
+                httpx.ReadError,
+                httpx.ConnectError,
+                httpx.RemoteProtocolError,
+                httpx.WriteError,
+                httpx.PoolTimeout,
+            ),
+        ):
+            return True
+    except ImportError:
+        pass
+
+    name = type(exc).__name__.lower()
+    raw = str(exc).strip().lower()
+    if name in {
+        "readerror",
+        "connecterror",
+        "timeoutexception",
+        "connecttimeoutexception",
+        "readtimeoutexception",
+        "remoteprotocolerror",
+        "writeerror",
+        "networkerror",
+    }:
+        return True
+    return any(
+        token in raw
+        for token in (
+            "connection reset",
+            "connection refused",
+            "connection aborted",
+            "broken pipe",
+            "server disconnected",
+            "remoteprotocolerror",
+        )
+    )
+
+
 def friendly_index_error_message(exc: BaseException, *, max_len: int = 500) -> str:
     """
     Prefer a short readable message over SQLAlchemy/asyncpg stack walls.
@@ -10,6 +62,9 @@ def friendly_index_error_message(exc: BaseException, *, max_len: int = 500) -> s
     raw = str(exc).strip() or type(exc).__name__
     lower = raw.lower()
     name = type(exc).__name__
+
+    if is_transient_network_error(exc) or name in {"ReadError", "ConnectError", "RemoteProtocolError"}:
+        return "Temporary download interruption (network ReadError). Retry this file."
 
     if (
         "infailedsqltransaction" in lower

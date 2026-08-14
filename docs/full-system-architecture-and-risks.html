@@ -1,0 +1,1252 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Full System Architecture and Risk Review</title>
+<style>
+:root{--ink:#162132;--muted:#5a6676;--line:#d6dde6;--soft:#f4f7fa;--blue:#174e9b;--blue2:#eaf2ff;--red:#9f2432;--red2:#fff0f1;--amber:#835800;--amber2:#fff6dc;--green:#176641;--green2:#eaf7f0;--white:#fff}
+*{box-sizing:border-box}html{font-size:8.7pt}body{margin:0;color:var(--ink);font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;line-height:1.38;background:#fff}
+@page{size:A4;margin:15mm 14mm 17mm;@top-left{content:"FULL SYSTEM ARCHITECTURE & RISK REVIEW";font-size:7pt;color:#6a7481;letter-spacing:.06em}@top-right{content:"14 AUGUST 2026";font-size:7pt;color:#6a7481}@bottom-left{content:"Video / Image Search Indexer";font-size:7pt;color:#6a7481}@bottom-right{content:"PAGE " counter(page) " OF " counter(pages);font-size:7pt;color:#6a7481}}
+main{max-width:182mm;margin:auto}.cover{min-height:260mm;display:flex;flex-direction:column;justify-content:space-between;break-after:page}.eyebrow{font-weight:750;letter-spacing:.14em;text-transform:uppercase;color:var(--blue);font-size:9pt;margin-top:20mm}.cover h1{font-size:30pt;line-height:1.04;letter-spacing:-.03em;max-width:160mm;margin:8mm 0 6mm}.lede{font-size:14pt;color:#344154;max-width:158mm}.rule{width:48mm;height:3px;background:var(--blue);margin:8mm 0}.facts{display:grid;grid-template-columns:repeat(4,1fr);gap:4mm;margin:16mm 0}.fact{border-top:2px solid var(--blue);padding-top:3mm}.fact b{font-size:18pt;display:block}.fact span{font-size:7.5pt;color:var(--muted)}.scope{border-left:4px solid var(--amber);background:var(--amber2);padding:4mm}.critical{border-left:5px solid var(--red);background:var(--red2);padding:4mm 5mm;margin:6mm 0 0;color:var(--red)}.critical b{display:block;letter-spacing:.08em;text-transform:uppercase;margin-bottom:1.5mm;font-size:9pt}.critical p{margin:0;color:var(--ink);font-size:9pt}.meta{display:grid;grid-template-columns:35mm 1fr;gap:2mm 4mm;border-top:1px solid var(--line);padding-top:5mm;color:var(--muted)}
+h1,h2,h3,h4,p{margin-top:0}h1{font-size:24pt}h2{font-size:15pt;color:var(--blue);margin:6mm 0 3mm;break-after:avoid}h2:not(:first-child){break-before:page}h3{font-size:10.5pt;margin:4mm 0 2mm;break-after:avoid}h4{font-size:9pt;margin:3mm 0 1.5mm}p{margin-bottom:2.5mm}ul,ol{margin:0 0 3mm 5mm;padding-left:4mm}li{margin-bottom:.8mm}code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:7.8pt;overflow-wrap:anywhere}
+table{width:100%;border-collapse:collapse;margin:3mm 0 5mm;font-size:7.4pt}thead{display:table-header-group}tr{break-inside:avoid}th{background:#35445a;color:#fff;text-align:left;padding:2mm}td{padding:1.8mm 2mm;border-bottom:1px solid var(--line);vertical-align:top}tbody tr:nth-child(even) td{background:var(--soft)}
+.risk-title{border-top:2px solid var(--line);padding-top:3mm;color:var(--ink);break-before:auto}.risk-title+ p{border-left:3px solid var(--blue);padding-left:3mm}.risk-title,.risk-title+p,.risk-title+p+p{break-inside:avoid}.critical-title{color:var(--red);border-top:3px solid var(--red);padding-top:3mm}.critical-title+p{border-left:4px solid var(--red);background:var(--red2);padding:3mm}
+.text-diagram,.code-block{background:var(--soft);border:1px solid var(--line);padding:4mm;margin:3mm 0 5mm;break-inside:avoid}.text-diagram pre,.code-block{font:7.4pt/1.35 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;margin:0}
+.page{break-before:page}.atlas h2{break-before:auto}.section-lede{font-size:10pt;color:var(--muted)}.diagram{border:1px solid var(--line);padding:4mm;margin:4mm 0 6mm;break-inside:avoid;background:#fbfcfe}.diagram-head{display:flex;justify-content:space-between;gap:5mm;border-bottom:1px solid var(--line);padding-bottom:2mm;margin-bottom:4mm}.diagram-head strong{color:var(--blue);font-size:10pt}.diagram-head span{color:var(--muted);font-size:7pt;text-align:right}.flow{display:flex;align-items:stretch;justify-content:center;gap:2mm;margin:3mm 0}.node{border:1px solid #9aa8b8;background:#fff;border-radius:3px;padding:2.5mm;text-align:center;min-width:25mm;font-size:7.5pt;line-height:1.2}.node.primary,.zone.primary{background:var(--blue2);border-color:#6d96cc;font-weight:700}.node.external,.zone.external{background:var(--amber2);border-color:#c7a14c}.node.risk{background:var(--red2);border-color:#cc8992}.arrow{align-self:center;color:var(--blue);font-size:15pt;font-weight:700}.zones{display:grid;grid-template-columns:repeat(4,1fr);gap:3mm}.zone{border:1px dashed #8b98a8;padding:4mm;text-align:center}.zone small,.compare small{display:block;color:var(--muted);margin-top:2mm}.boundary-note,.reconcile,.rail{margin-top:3mm;padding:2.5mm;text-align:center;background:var(--blue2);font-size:7.4pt}.rail.danger{background:var(--red2);color:var(--red)}.sources,.branches{display:flex;justify-content:center;gap:3mm;flex-wrap:wrap}.sources .node,.branches .node{min-width:28mm}.consistency{display:grid;grid-template-columns:1fr 30mm 1fr 1fr;gap:3mm;align-items:center}.outbox{text-align:center;color:var(--blue);font-weight:700}.outbox span{display:block;font-size:7pt;color:var(--muted)}.compare{display:grid;grid-template-columns:1fr 1fr;gap:6mm}.compare>div{border-left:3px solid var(--line);padding-left:3mm}
+@media screen{body{background:#edf1f5;padding:24px}main{background:#fff;padding:15mm 14mm}}
+</style>
+</head>
+<body><main>
+<section class="cover">
+  <div>
+    <div class="eyebrow">Standalone architecture and system-design review</div>
+    <h1>Full System Architecture<br>and Risk Review</h1>
+    <div class="rule"></div>
+    <p class="lede">From Google OAuth and permanent media ingestion through hybrid search, carousel generation, storage lifecycle, consistency, and disaster recovery. Issues are ranked by maximum system-performance impact and classified as primary bottlenecks or child issues.</p>
+    <div class="facts">
+      <div class="fact"><b>77.107 GiB</b><span>free after leftover cleanup</span></div>
+      <div class="fact"><b>12</b><span>primary performance bottlenecks</span></div>
+      <div class="fact"><b>26</b><span>child issues of those bottlenecks</span></div>
+      <div class="fact"><b>21</b><span>video files remaining (keep set)</span></div>
+    </div>
+    <div class="critical"><b>Critical warning — leftover downloads must auto-clean</b><p>Drive ERROR/no-Media caches, processed Drive caches after Media exists, and failed partials filled the volume and caused ENOSPC. Manual cleanup is not enough. The indexer must unlink leftovers in the success and ERROR paths. Keep upload, YouTube, active PROCESSING, and unknown/orphan files. This is a required control of bottleneck #1, not a child footnote.</p></div>
+  </div>
+  <div>
+    <div class="scope"><strong>Evidence boundary.</strong> Production facts are from the 14 August 2026 07:16 UTC read-only re-check plus the prior audit. No deploy, settings change, cache delete, or DB mutation was performed for this report. Auto-clean is required and is not yet implemented in the indexer paths.</div>
+    <div class="meta"><b>Review date</b><span>14 August 2026</span><b>System</b><span>Video/Image Search Indexer + Carousel Studio</span><b>Generated from</b><span>docs/full-system-architecture-and-risks.md</span><b>Rendering</b><span>Offline local Chromium · A4 · tagged PDF</span></div>
+  </div>
+</section>
+
+<section class="page atlas">
+  <h2>Visual system atlas</h2>
+  <p class="section-lede">Twelve views connect service topology, trust, data flow, consistency, retention, recovery, and the performance bottleneck → child map. Blue nodes are application-controlled; amber nodes are external or capacity-sensitive; red nodes are explicit failure boundaries.</p>
+  
+  <article class="diagram">
+    <div class="diagram-head"><strong>1 · Complete topology</strong><span>current production-confirmed service shape</span></div>
+    <div class="flow"><div class="node ">Indexer UI</div><div class="arrow">→</div><div class="node primary">Backend<br>API + indexer</div><div class="arrow">→</div><div class="node ">Postgres</div><div class="arrow">↔</div><div class="node ">Qdrant</div></div><div class="flow"><div class="node ">Carousel<br>Next.js</div><div class="arrow">→</div><div class="node primary">Backend</div><div class="arrow">↔</div><div class="node risk">Volume<br>/app/data</div><div class="arrow">↔</div><div class="node external">Google + LLMs</div></div>
+  </article>
+  
+  <article class="diagram">
+    <div class="diagram-head"><strong>2 · Trust boundaries</strong><span>credentials, content, and derived intelligence</span></div>
+    <div class="zones">
+      <div class="zone"><b>User/browser</b><small>queries · previews · Picker token · edits</small></div>
+      <div class="zone primary"><b>Application trust</b><small>frontends · API · workers · policy enforcement</small></div>
+      <div class="zone"><b>Data trust</b><small>Postgres tokens/metadata · Qdrant vectors · media bytes</small></div>
+      <div class="zone external"><b>Provider trust</b><small>Google · Gemini · Claude · OpenRouter · YouTube</small></div>
+    </div><div class="boundary-note">Every crossing needs identity, least privilege, provenance, retention, and audit controls.</div>
+  </article>
+</section>
+
+<section class="page atlas">
+  
+  <article class="diagram">
+    <div class="diagram-head"><strong>3 · Google Drive sync and index flow</strong><span>OAuth through permanent library</span></div>
+    <div class="flow"><div class="node external">OAuth + Picker</div><div class="arrow">→</div><div class="node ">DriveUser +<br>IndexedFolder</div><div class="arrow">→</div><div class="node ">Push / fallback sync</div><div class="arrow">→</div><div class="node primary">DriveFile inventory</div></div><div class="flow"><div class="node ">Claim + lease</div><div class="arrow">→</div><div class="node ">Image / video stage</div><div class="arrow">→</div><div class="node ">Media + vectors</div><div class="arrow">→</div><div class="node primary">Permanent library</div></div>
+  </article>
+  
+  <article class="diagram">
+    <div class="diagram-head"><strong>4 · Image pipeline</strong><span>durable bytes to multimodal retrieval</span></div>
+    <div class="flow"><div class="node ">Cache + disk gate</div><div class="arrow">→</div><div class="node risk">Decode / InsightFace</div><div class="arrow">→</div><div class="node ">Faces · body · thumbs</div><div class="arrow">→</div><div class="node external">Caption + embed</div><div class="arrow">→</div><div class="node primary">Qdrant + status</div></div>
+  </article>
+  
+  <article class="diagram">
+    <div class="diagram-head"><strong>5 · Video pipeline</strong><span>Drive, uploads, and retained YouTube converge</span></div>
+    <div class="sources"><div class="node ">Drive<br>reproducible</div><div class="node risk">Upload<br>app-owned</div><div class="node risk">YouTube<br>retained</div></div><div class="flow"><div class="node ">Local media / stream</div><div class="arrow">→</div><div class="node ">Captions / ASR</div><div class="arrow">→</div><div class="node risk">ffmpeg frames</div><div class="arrow">→</div><div class="node external">VLM + face + embed</div><div class="arrow">→</div><div class="node primary">Segments + vectors</div></div>
+  </article>
+</section>
+
+<section class="page atlas">
+  
+  <article class="diagram">
+    <div class="diagram-head"><strong>6 · Search and RAG</strong><span>hybrid retrieval and evidence-aware ranking</span></div>
+    <div class="flow"><div class="node ">Query + context</div><div class="arrow">→</div><div class="node external">Expand + embed</div><div class="arrow">→</div><div class="node primary">Parallel retrieval</div></div><div class="branches"><div class="node ">image vectors</div><div class="node ">caption vectors</div><div class="node ">frame vectors</div><div class="node ">transcript vectors</div><div class="node ">SQL / regex</div><div class="node ">faces</div></div><div class="flow"><div class="node ">Fuse + dedupe</div><div class="arrow">→</div><div class="node external">threshold / rerank</div><div class="arrow">→</div><div class="node primary">grounded results</div></div>
+  </article>
+  
+  <article class="diagram">
+    <div class="diagram-head"><strong>7 · Carousel and run-wide LLM flow</strong><span>one immutable provider/model route per run</span></div>
+    <div class="flow"><div class="node ">Video + transcript</div><div class="arrow">→</div><div class="node ">Themes</div><div class="arrow">→</div><div class="node ">Topics + hooks</div><div class="arrow">→</div><div class="node ">Copy</div><div class="arrow">→</div><div class="node ">Frames</div><div class="arrow">→</div><div class="node primary">Finalize</div></div><div class="rail">provider + model + transcript hash + prompt/algorithm version → generation provenance/cache key</div>
+  </article>
+</section>
+
+<section class="page atlas">
+  
+  <article class="diagram">
+    <div class="diagram-head"><strong>8 · Data consistency flow</strong><span>Postgres authority with derived asynchronous indexes</span></div>
+    <div class="consistency">
+      <div class="node primary">Postgres<br>source + workflow</div>
+      <div class="outbox">transactional outbox<br><span>target</span></div>
+      <div class="node ">Qdrant<br>derived vectors</div>
+      <div class="node ">Media store<br>bytes + artifacts</div>
+    </div>
+    <div class="reconcile">daily reconciler: expected artifact version ↔ vector payload ↔ media checksum ↔ active lease</div>
+  </article>
+  
+  <article class="diagram">
+    <div class="diagram-head"><strong>9 · Current versus target execution</strong><span>separate failure domains and durable work</span></div>
+    <div class="compare">
+      <div><b>Current</b><div class="flow"><div class="node risk">API + indexer + maintenance</div><div class="arrow">→</div><div class="node ">local queues</div></div><small>shared CPU, DB, disk, process lifetime</small></div>
+      <div><b>Target</b><div class="flow"><div class="node primary">API</div><div class="arrow">→</div><div class="node ">durable queue</div><div class="arrow">→</div><div class="node primary">worker pools</div></div><small>leases, fencing, independent scaling and restart</small></div>
+    </div>
+  </article>
+</section>
+
+<section class="page atlas">
+  
+  <article class="diagram">
+    <div class="diagram-head"><strong>10 · Media retention lifecycle</strong><span>source-aware policy, never filename-only deletion</span></div>
+    <div class="flow"><div class="node ">Discover / upload</div><div class="arrow">→</div><div class="node ">Classify source</div><div class="arrow">→</div><div class="node ">Active lease?</div><div class="arrow">→</div><div class="node ">Reproducible?</div><div class="arrow">→</div><div class="node ">Backup + policy</div></div><div class="branches"><div class="node ">KEEP<br>upload / YouTube</div><div class="node primary">AUTO-UNLINK<br>Drive processed + Media</div><div class="node risk">AUTO-UNLINK<br>Drive ERROR / no-Media</div><div class="node external">KEEP<br>PROCESSING / orphan</div></div><div class="rail danger">CRITICAL: leftover Drive downloads must auto-clean after index. Manual cleanup is not a control. These leftovers filled the volume and caused ENOSPC.</div>
+  </article>
+  
+  <article class="diagram">
+    <div class="diagram-head"><strong>11 · Failure containment and recovery</strong><span>break amplification before replay</span></div>
+    <div class="flow"><div class="node risk">Detect + classify</div><div class="arrow">→</div><div class="node ">Close resource circuit</div><div class="arrow">→</div><div class="node ">Persist error / lease</div><div class="arrow">→</div><div class="node ">Reconcile</div><div class="arrow">→</div><div class="node ">Canary replay</div><div class="arrow">→</div><div class="node primary">Reopen</div></div><div class="rail danger">ENOSPC/auth/quota are not generic transient retries. Preserve source relations and isolate unaffected reads.</div>
+  </article>
+</section>
+
+<section class="page atlas">
+  
+  <article class="diagram">
+    <div class="diagram-head"><strong>12 · Performance bottleneck → child map</strong><span>ranked by what saturates first under load</span></div>
+    <div class="zones">
+      <div class="zone risk"><b>Disk volume</b><small>retry storms · partials · upload/YouTube · health hide</small></div>
+      <div class="zone risk"><b>API + indexer process</b><small>CPU into API latency · health lie · startup 503</small></div>
+      <div class="zone risk"><b>Process-local queues</b><small>status-batch lag · claim races · sync LLM · no DLQ</small></div>
+      <div class="zone external"><b>LLM quota</b><small>timeouts · spend suspension · cache waste · /test</small></div>
+    </div>
+    <div class="zones" style="margin-top:3mm">
+      <div class="zone"><b>DB pool</b><small>over-admit vs 5+5 connections</small></div>
+      <div class="zone"><b>Media buffering</b><small>Next proxy · deploy drift · missing range tests</small></div>
+      <div class="zone"><b>PG / Qdrant gap</b><small>orphan vectors · timestamps · relevance</small></div>
+      <div class="zone"><b>Volume durability</b><small>backup co-fail · irreplaceable sources</small></div>
+    </div>
+    <div class="rail danger">CRITICAL required control on #1: auto-unlink leftover Drive downloads after PROCESSED+Media and after ERROR/no-Media. 12 bottlenecks · 26 children.</div>
+  </article>
+</section>
+<h1>Full System Architecture and Risk Review</h1>
+<p><strong>System:</strong> Video/Image Search Indexer, Permanent Media Library, and Carousel Studio <strong>Review date:</strong> 14 August 2026 <strong>Evidence basis:</strong> current local working tree plus a read-only production re-check at 14 August 2026 07:16 UTC (health, index, settings, volume, <code>/app/data/videos</code>, proof video). No production mutation, deployment, settings change, cache delete, or DB write was performed for this report. <strong>Deployment boundary:</strong> local code is not assumed deployed except where the re-check independently confirms a live fact.</p>
+<h2>1. Executive view</h2>
+<h3>1.1 Business and system goals</h3>
+<p>The system turns long-lived media from Google Drive, local uploads, and retained YouTube sources into a searchable visual and transcript library. It supports five product outcomes:</p>
+<ol>
+<li>connect a Drive account and choose an indexing root without destroying prior library work;</li>
+<li>ingest images and videos into searchable metadata, face, caption, transcript, frame, and vector representations;</li>
+<li>search across people, actions, scenes, spoken text, and folder context;</li>
+<li>convert grounded video moments into Instagram carousel themes, topics, hooks, copy, and image selections; and</li>
+<li>keep processed assets reproducible and reviewable while controlling storage, provider quota, and operational risk.</li>
+</ol>
+<p>The immediate production constraint is storage and failure-domain coupling. The original incident filled the volume with leftover source downloads: <strong>83.135 GiB across 1,353 cached video files</strong>, <strong>4,799 errors</strong>, and sampled <strong>ENOSPC</strong>. Manual cleanups then removed <strong>127 case-variant duplicates</strong>, <strong>182 processed Drive caches</strong>, and <strong>1,023 Drive ERROR/no-Media leftovers (41.391 GiB)</strong>. The 14 August 2026 07:16 UTC read-only re-check shows those deletions still holding: <strong><code>/app/data</code> 77.107 GiB free (15.6% used)</strong>, <strong>21 files / 4.617 GiB remaining</strong> in <code>/app/data/videos</code>, <strong>0 leftover processed-Drive caches</strong>, <strong>0 leftover ERROR/no-Media caches</strong>, <strong>0 partials</strong>. API <code>/health</code> is <strong>200</strong> and <code>/health/detail</code> reports DB, Drive, and Qdrant ok. Auto-index is <strong>enabled</strong>; <code>reindex_errored_files</code> and <code>reindex_skipped_files</code> remain <strong>false</strong>. Health is still a process-liveness check, not a disk-readiness gate.</p>
+<h3 class="critical-title">CRITICAL WARNING — leftover source downloads must AUTO-CLEAN</h3>
+<p><strong>CRITICAL:</strong> leftover Drive source downloads (ERROR/no-Media, processed Drive caches after Media exists, and failed partials) filled the volume and caused <strong>ENOSPC</strong>. Manual cleanup is not enough. The indexer must <strong>unlink leftovers in the success and ERROR paths</strong> so this cannot recur. This is a <strong>required control of bottleneck #1</strong> (unbounded volume), not a child footnote of #13.</p>
+<ul>
+<li><strong>After successful index (Media committed):</strong> the Drive source cache is leftover and must auto-delete. Drive remains the source of truth; Range streaming exists. Search, preview, frames, and carousel do not need the local Drive download once Media is committed.</li>
+<li><strong>After failed index with no Media:</strong> the leftover download is leftover and must auto-delete. A retry re-downloads from Drive.</li>
+<li><strong>KEEP:</strong> upload (the only copy), YouTube (re-download is unreliable), active <strong>PROCESSING</strong>, and unknown/orphan files until classified.</li>
+<li>Do not wait for another operator pass. If the success and ERROR paths leave bytes on <code>/app/data/videos</code>, the next index burst will refill the volume.</li>
+</ul>
+<h3>Production snapshot (read-only, 14 August 2026 07:16 UTC)</h3>
+<table><thead><tr>
+<th>Check</th>
+<th>Live value</th>
+</tr></thead><tbody>
+<tr>
+<td>Volume <code>/app/data</code></td>
+<td>91.361 GiB total · 14.238 used · <strong>77.107 GiB free</strong> (15.6% used)</td>
+</tr>
+<tr>
+<td><code>/app/data/videos</code></td>
+<td><strong>21 files · 4.617 GiB</strong> · 0 partials · 0 leftover processed-Drive · 0 leftover ERROR/no-Media</td>
+</tr>
+<tr>
+<td>Index counts</td>
+<td>processed 1,656 · error 4,798 · processing 1 · skipped 3,088 API / 3,503 DB · archived 3 · pending 0</td>
+</tr>
+<tr>
+<td>Media / Qdrant</td>
+<td>Media 1,698 · video frames 11,384 · images 728 · captions 1,461</td>
+</tr>
+<tr>
+<td>Settings</td>
+<td><code>auto_index_enabled=true</code> · <code>reindex_errored_files=false</code> · <code>reindex_skipped_files=false</code> · interval 30s</td>
+</tr>
+<tr>
+<td>Proof <code>11bY89L94ctjD-mH3lo6Yb-fzLRfK3dDs</code></td>
+<td><strong>PROCESSING</strong> · no Media · 300 frames · 24.78 MiB cache present · <code>error_message</code> null · claimed 06:42:01 UTC</td>
+</tr>
+<tr>
+<td>Health</td>
+<td><code>/health</code> 200 · <code>/health/detail</code> DB/Drive/Qdrant ok · indexer <code>is_running=true</code> on the proof video</td>
+</tr>
+<tr>
+<td>Prior cleanups still holding</td>
+<td>127 case-variant dups · 182 processed Drive caches · 1,023 ERROR/no-Media</td>
+</tr>
+<tr>
+<td>Remaining keep set</td>
+<td>YouTube 7 (3.671 GiB) · SKIPPED 11 · PROCESSING 1 · orphan/unknown 2</td>
+</tr>
+</tbody></table>
+<h3>1.2 Evidence and confidence labels</h3>
+<ul>
+<li><strong>PROD-CONFIRMED:</strong> observed in the 14 August 2026 07:16 UTC read-only re-check and the prior production audit: current free space and remaining keep-set files; prior leftover counts (127 / 182 / 1,023); ENOSPC samples; API health 200 during blocked indexing; current auto-index on and errored/skipped requeue off.</li>
+<li><strong>CODE-CONFIRMED:</strong> directly visible in the current working tree.</li>
+<li><strong>LOCAL-ONLY:</strong> implemented in the uncommitted working tree but not proven deployed.</li>
+<li><strong>ARCHITECTURAL RISK:</strong> a credible failure mode inferred from design; not a claimed incident.</li>
+<li><strong>GOVERNANCE RISK:</strong> privacy, retention, or control concern; not a legal conclusion.</li>
+</ul>
+<p>Section 5 ranks every issue by <strong>maximum system-performance impact</strong> (throughput, latency, availability under load, disk, CPU, DB, LLM, queues), not by security or governance severity. Each item is a <strong>Bottleneck</strong> (the constraint that saturates first) or a <strong>Child issue</strong> (consequence, amplifier, or secondary defect of a parent bottleneck).</p>
+<h3>1.3 Deployed and external context</h3>
+<p>Production-confirmed Railway topology consists of a combined backend/API+indexer service, an Indexer UI, a Carousel Next.js service, a Drive connector/direct-client boundary, Postgres, Qdrant, and a persistent <code>/app/data</code> volume. External providers include Google OAuth, Drive API, Picker API, Gemini embeddings/VLM, optional Anthropic Claude, OpenRouter-routed models, and YouTube/yt-dlp. The working tree documents an optional same-image <code>dfi-indexer</code> split, but there is no evidence in this task that the split is deployed.</p>
+<h3>1.4 Current topology</h3>
+<div class="text-diagram"><pre>Users ──&gt; Indexer UI ─┐
+                      ├──&gt; Railway backend: API + indexer + maintenance + backup
+Users ──&gt; Carousel ───┘              │          │          │
+          Next proxy                 │          │          └── /app/data volume
+                                     │          └── Qdrant
+                                     └── Postgres
+                                          │
+                         Google OAuth / Drive / Picker
+                         Gemini / Claude / OpenRouter / YouTube</pre></div>
+<h3>1.5 Target topology</h3>
+<div class="text-diagram"><pre>Users -&gt; Frontends -&gt; API service (stateless admission, search, auth, streaming)
+                           │
+                           ├── Postgres system of record
+                           ├── Qdrant derived vector indexes
+                           └── Durable distributed job queue
+                                      │
+                         ┌────────────┴────────────┐
+                         v                         v
+                 Index worker pool        Carousel worker pool
+                         │                         │
+                         └──── object/media store ┘
+                              lifecycle + replicas</pre></div>
+<p>Target properties are independent API/indexer scaling, persisted jobs with leases and idempotency, object storage or an explicitly shared media tier, reconciliation between Postgres and Qdrant, bounded provider budgets, and tested backup/restore. A one-replica indexer is the safe first split because the local status batcher and process-local queue assume a single owner.</p>
+<h3>1.6 Trust boundaries and data ownership</h3>
+<table><thead><tr>
+<th>Boundary</th>
+<th>Sensitive material crossing</th>
+<th>Current owner</th>
+<th>Required control</th>
+</tr></thead><tbody>
+<tr>
+<td>Browser ↔ Indexer/Carousel</td>
+<td>queries, folder choice, previews, generated copy</td>
+<td>Frontends/backend</td>
+<td>user authentication, CSRF/session policy, route authorization</td>
+</tr>
+<tr>
+<td>Browser ↔ Google Picker</td>
+<td>Drive access token, browser API key, selected folder</td>
+<td>Google + browser</td>
+<td>strict referrers, OAuth state integrity, least scopes</td>
+</tr>
+<tr>
+<td>Backend ↔ Google</td>
+<td>refresh/access tokens, Drive bytes, profile email</td>
+<td>Postgres/backend</td>
+<td>encryption, token rotation/revocation, audit trail</td>
+</tr>
+<tr>
+<td>Backend ↔ LLM providers</td>
+<td>captions, transcript excerpts, images/frames, prompts</td>
+<td>provider APIs</td>
+<td>minimization, routing policy, cost and retention controls</td>
+</tr>
+<tr>
+<td>Backend ↔ Postgres</td>
+<td>source identity, statuses, tokens, derived metadata</td>
+<td>Postgres</td>
+<td>authoritative transactions, backups, tenancy fields</td>
+</tr>
+<tr>
+<td>Backend ↔ Qdrant</td>
+<td>vectors and payload identifiers</td>
+<td>Qdrant</td>
+<td>derived-index versioning and reconciliation</td>
+</tr>
+<tr>
+<td>Services ↔ volume</td>
+<td>uploads, YouTube files, Drive cache, frames, refs, backups</td>
+<td>persistent volume</td>
+<td>category retention, quotas, manifests, restore plan</td>
+</tr>
+</tbody></table>
+<p>OAuth tokens are stored in <code>drive_users</code> and are the most sensitive credentials persisted by the application. Postgres is authoritative for source identity, status, Media relationships, transcript rows, carousel saves, and runtime settings. Qdrant is a rebuildable but operationally necessary derived index. Drive is authoritative for remote Drive source bytes; the application becomes authoritative for local uploads, retained YouTube copies, generated references, and any source no longer reproducible externally.</p>
+<h2>2. Complete topology and responsibilities</h2>
+<h3>2.1 Railway services</h3>
+<ul>
+<li><strong>Backend/API + indexer (production-confirmed combined):</strong> FastAPI routes, deferred schema boot, OAuth, Drive listing and preview, search, carousel orchestration, auto-index loop, maintenance, and backups (<code>backend/app/main.py</code>).</li>
+<li><strong>Indexer UI:</strong> account/folder selection, library/status, search, and operator controls (<code>frontend/src/app</code>).</li>
+<li><strong>Carousel:</strong> main <code>/carousel</code> studio plus a substantial <code>/test</code> surface, using same-origin route handlers and <code>carousel-frontend/lib/api-proxy.ts</code>.</li>
+<li><strong>Optional indexer target:</strong> same backend image with <code>RUN_INDEXER=true</code>, one worker/replica; API uses <code>RUN_INDEXER=false</code> (<code>docs/indexer-service.md</code>).</li>
+<li><strong>Data services:</strong> Postgres and Qdrant; exact Railway plans, replicas, and region placement were not supplied.</li>
+<li><strong>Persistent volume:</strong> <code>/app/data</code> categories include videos, durable media cache, thumbnails, frames, temporary/partial files, references, and backups.</li>
+</ul>
+<h3>2.2 Internal backend modules</h3>
+<table><thead><tr>
+<th>Area</th>
+<th>Primary modules</th>
+<th>Responsibility</th>
+</tr></thead><tbody>
+<tr>
+<td>lifecycle</td>
+<td><code>main.py</code>, <code>db/schema.py</code>, <code>runtime_settings.py</code></td>
+<td>startup schema, settings, leader election, health</td>
+</tr>
+<tr>
+<td>Drive</td>
+<td><code>drive/google_client.py</code>, <code>routers/drive_oauth.py</code>, <code>routers/drive.py</code></td>
+<td>OAuth, folder traversal, tokens, sync, stream/download</td>
+</tr>
+<tr>
+<td>ingestion</td>
+<td><code>workers/indexer.py</code>, <code>pipelines/image.py</code>, <code>pipelines/video.py</code></td>
+<td>claims, media decode, face/frame/transcript extraction</td>
+</tr>
+<tr>
+<td>storage</td>
+<td><code>drive/media_cache.py</code>, <code>storage.py</code>, <code>video/youtube_cache.py</code></td>
+<td>durable paths, free-space guard, atomic publication</td>
+</tr>
+<tr>
+<td>vectors/search</td>
+<td><code>qdrant/*</code>, <code>search/moments.py</code>, <code>matching/service.py</code></td>
+<td>vector upserts, fusion, ranking, face matching</td>
+</tr>
+<tr>
+<td>carousel</td>
+<td><code>routers/carousel_script.py</code>, <code>search/carousel_pipeline.py</code>, <code>search/carousel_frame_select.py</code></td>
+<td>themes through final image selection</td>
+</tr>
+<tr>
+<td>LLM</td>
+<td><code>llm/carousel_llm.py</code>, <code>llm/openrouter.py</code>, <code>gemini/*</code></td>
+<td>run routing, model resolution, embeddings, VLM/rerank</td>
+</tr>
+<tr>
+<td>operations</td>
+<td><code>workers/maintenance.py</code>, <code>workers/backup.py</code>, <code>scripts/cache_audit_cleanup.py</code></td>
+<td>backfill, recovery, backup, cache audit</td>
+</tr>
+</tbody></table>
+<h2>3. End-to-end flows</h2>
+<h3>3.1 Google OAuth and folder selection</h3>
+<ol>
+<li>Browser requests <code>GET /auth/google</code> with an optional <code>return_to</code>.</li>
+<li>Backend allowlists the return origin and sends an Authorization Code request for <code>drive.readonly</code>, OpenID, email, and profile.</li>
+<li>Google redirects to <code>/auth/google/callback</code>; backend exchanges the code without PKCE, fetches profile, and upserts one <code>DriveUser</code>.</li>
+<li>Access/refresh tokens and expiry are stored in Postgres.</li>
+<li>Browser calls <code>/api/drive-token</code>; backend refreshes near expiry and returns an access token, Picker API key, and project app ID to the browser.</li>
+<li>Picker returns a folder; <code>/api/save-folder</code> verifies/resolves shortcuts, updates the selected folder, appends <code>IndexedFolder</code> history, and conditionally schedules sync.</li>
+<li>Re-selecting a known folder reuses existing indexed data rather than wiping it.</li>
+</ol>
+<p><strong>Control observations:</strong> <code>return_to</code> has an origin allowlist in local code. OAuth <code>state</code> carries a URL rather than a server-bound nonce and the flow explicitly has no PKCE. <code>DriveUser</code> queries use <code>LIMIT 1</code>, so the active connection is effectively shared/global rather than request-tenant scoped.</p>
+<h3>3.2 Drive sync and permanent library</h3>
+<ol>
+<li>Leader startup seeds an in-memory file-list cache, persists listing state, and attempts Drive push-channel registration.</li>
+<li>Push notifications trigger refresh; a six-hour default fallback full sync remains available.</li>
+<li>The direct client breadth-first traverses folders in bounded waves, paginating 200 children and capping at 100,000 files.</li>
+<li><code>DriveFile</code> rows are upserted with source identity, path, size, content hash, folder root, and status.</li>
+<li>Local permanence logic treats indexed history as additive and uses <code>ARCHIVED</code>/detach semantics without implying deletion of vectors or media.</li>
+<li>Auto-index, if enabled in runtime settings, claims pending work and sends it to image/video paths.</li>
+</ol>
+<p><strong>Ownership:</strong> Drive listing is a remote observation; <code>DriveFile</code> is the internal inventory. The current local design intentionally preserves processed assets when a folder changes or a source disappears.</p>
+<h3>3.3 Image pipeline</h3>
+<div class="text-diagram"><pre>Drive/upload row -&gt; atomic claim -&gt; durable cache/free-space gate -&gt; decode
+ -&gt; InsightFace detection -&gt; face/body metadata + thumbnails in Postgres/volume
+ -&gt; image/caption embedding -&gt; Qdrant -&gt; batched final status in Postgres
+ -&gt; maintenance caption/embed/re-id backfills</pre></div>
+<p>The worker uses bounded task sets, a DB semaphore, durable cache helpers, CPU offload, and an in-process <code>ImageEmbedQueue</code>. Embedding failures can still finalize a file as PROCESSED and rely on maintenance backfill, creating a deliberate temporary consistency gap. InsightFace defaults to CPU and 512-dimensional ArcFace vectors remain in Postgres; image and caption vectors are in Qdrant.</p>
+<h3>3.4 Video pipelines</h3>
+<p><strong>Drive:</strong> claim row; ensure local video/cache as required; extract captions or ASR; sample frames with ffmpeg; run optional VLM enrichment and face detection; store <code>VideoSegment</code>, frame/face assets, and Qdrant frame/transcript vectors; finalize status.</p>
+<p><strong>Local upload:</strong> <code>/search/carousel/upload</code> writes up to 2 GiB to a temporary volume path, atomically publishes under an <code>upload:</code> ID, creates a <code>DriveFile(source="upload")</code>, then schedules priority indexing. This source is not reproducible from Drive and must be retained/backed up.</p>
+<p><strong>YouTube:</strong> <code>/youtube/videos</code> registers URLs/IDs. Background work can download a local retained copy, ingest captions, and create a <code>DriveFile(source="youtube")</code>. The audit confirms <strong>3.671 GiB retained</strong>. Cookies and upstream availability are runtime dependencies, but retained local bytes are the stable product source.</p>
+<p><strong>Timestamp chain:</strong> captions/VTT/ASR and sampled frames create segment start/end times. Qdrant transcript point IDs are based on file ID and start time. Search and carousel later use those timestamps for frame URLs and grounding, so timebase drift is a correctness risk.</p>
+<h3>3.5 Range-aware playback and Carousel proxy</h3>
+<p>The production audit and old report established full-body buffering in the then-observed path. The current local tree is materially different and must not be described as deployed:</p>
+<ul>
+<li><code>DriveDirectClient.stream_file_content</code> accepts <code>Range</code> and passes it to Drive.</li>
+<li><code>/files/{id}/preview</code> returns a <code>StreamingResponse</code>, preserving status, content range/length, ETag, and last-modified for uncached Drive objects.</li>
+<li>cached video uses <code>FileResponse</code>.</li>
+<li><code>carousel-frontend/lib/api-proxy.ts</code> passes through GET bodies for <code>206</code>, video, and octet-stream responses, while non-media responses and request bodies still use <code>arrayBuffer</code>.</li>
+</ul>
+<p>Required production proof is a bounded byte-range canary through browser → Next → FastAPI → Drive with <code>206</code>, coherent headers, seek/cancel behavior, and RSS/network measurements. The separate <code>/download</code> endpoint still calls <code>download_to_memory</code> for non-YouTube Drive downloads in local code.</p>
+<h3>3.6 Search, RAG, and ranking</h3>
+<ol>
+<li>Parse query, person, folder, source, and action intent.</li>
+<li>Expand/normalize text and produce Gemini embedding vectors.</li>
+<li>Search image vectors, image-caption vectors, video-frame vectors, transcript vectors, SQL/regex transcript rows, and face relationships.</li>
+<li>Run branches concurrently, deduplicate by <code>(file, timestamp)</code>, apply score thresholds and action contradiction checks.</li>
+<li>Optionally use Gemini caption filtering/reranking and folder context.</li>
+<li>Return ranked images and moments with source identifiers, snippets, preview URLs, and timestamps.</li>
+</ol>
+<p>This is hybrid retrieval rather than a single atomic index. Relevance depends on embedding model/version, Qdrant payload correctness, transcript timing, thresholds in <code>config.py</code>, runtime toggles in Postgres, and LLM reranker availability.</p>
+<h3>3.7 Carousel themes → topics/hooks → copy → images → finalize</h3>
+<div class="text-diagram"><pre>video selection -&gt; transcript readiness/prerun
+ -&gt; themes (cached by transcript hash + effective provider/model)
+ -&gt; per-theme extract -&gt; topics/hooks and timed evidence
+ -&gt; one carousel per selected hook/topic -&gt; transcript guard
+ -&gt; copy generation/regeneration -&gt; frame candidates
+ -&gt; grouped image ranking + user edits -&gt; select-images/finalize
+ -&gt; autosave, feedback, references, export</pre></div>
+<p>Postgres advisory locks and row lock tokens coordinate expensive stages across workers; process-local locks are fast paths only. Generated saves carry <code>kind</code>, <code>theme_key</code>, model, transcript hash, input hash, layout, copy and algorithm versions, and JSON payload. The transcript guard snaps invented slide text back to indexed transcript evidence before image selection.</p>
+<h3>3.8 Run-wide LLM routing and cache keys</h3>
+<p>The local <code>resolve_carousel_llm</code> builds an immutable per-request pack from explicit request values plus runtime/env defaults. Effective providers are Claude direct, OpenRouter, or Gemini. <code>carousel_llm_cache_id</code> includes provider and effective model; theme and extract lookups compare the exact cache identity and transcript hash. This reduces model-mismatch reuse, but cache identity does not visibly include every prompt/template, decoding, policy, locale, or ranking-version input. The target cache key is a versioned canonical hash of provider, model revision, prompt/template version, transcript/content hash, generation parameters, locale, algorithm version, and policy flags.</p>
+<h3>3.9 Maintenance, backfill, and recovery</h3>
+<ul>
+<li>startup retries schema/settings initialization and recovers stuck PROCESSING/transaction errors;</li>
+<li>a Postgres advisory lock elects one background leader;</li>
+<li>maintenance backfills captions, embeddings, re-identification, and cleanup work;</li>
+<li>stale carousel locks and orphaned processing are reclaimed;</li>
+<li>backup loop writes Postgres/Qdrant and carousel/deep-dive archives to the configured backup directory;</li>
+<li>local cache tooling can audit categories, dry-run, quarantine, and clean;</li>
+<li>status and vector gaps depend on periodic reconciliation/backfill.</li>
+</ul>
+<p>Recovery is useful but startup-coupled: failed schema work can make all non-health routes return 503, while liveness remains green.</p>
+<h3>3.10 Deployment and configuration lifecycle</h3>
+<p>Build/deploy definitions exist per Railway service. Environment settings load through Pydantic and <code>.env</code>; mutable product/runtime toggles load from the singleton <code>app_settings</code> row. Startup runs <code>ensure_schema</code>, then loads runtime settings, then elects a leader. The Carousel README documents both <code>railway up</code> and source redeploy paths. Without a single release provenance field, manual CLI builds can diverge from Git commits and from one another. Target lifecycle: immutable image digest, migration job before rollout, release record containing Git SHA/config schema, environment validation, canary, and rollback to a known digest.</p>
+<h2>4. Data architecture</h2>
+<h3>4.1 Postgres entities and roles</h3>
+<ul>
+<li><strong>Identity/config:</strong> <code>DriveUser</code>, <code>IndexedFolder</code>, <code>AppSettings</code>, <code>FolderContext</code>, <code>IndexingFolderPause</code>.</li>
+<li><strong>Inventory/lifecycle:</strong> <code>DriveFile</code>, <code>FileIndexConflict</code>, status/error/decode/cache/archive fields.</li>
+<li><strong>Media graph:</strong> <code>Media</code>, <code>Face</code>, <code>FaceEmbedding</code>, <code>FaceCluster</code>, <code>Person</code>, <code>Recognition</code>, <code>BodySignature</code>, <code>FaceWebMatch</code>, <code>OcrPage</code>, <code>VideoSegment</code>.</li>
+<li><strong>Carousel:</strong> <code>CarouselGenerationSave</code>, <code>CarouselItemFeedback</code>, <code>CarouselItemReference</code>, and row-level carousel lock fields on <code>DriveFile</code>.</li>
+</ul>
+<p>Postgres should remain the authoritative catalog and workflow ledger. A status must not be interpreted as proof that all volume and Qdrant artifacts exist.</p>
+<h3>4.2 Qdrant collections and consistency boundaries</h3>
+<p>Configured collections include <code>dfi_video_frames</code>, <code>dfi_images</code>, <code>dfi_image_captions</code>, and <code>dfi_video_transcripts</code>. Writes occur outside the Postgres transaction. Point IDs derive from stable source IDs and, for transcript points, rounded timestamps. Qdrant is eventually consistent with Postgres; any “PROCESSED” decision therefore needs an artifact manifest/version or reconciliation exception.</p>
+<h3>4.3 Volume categories and retention</h3>
+<table><thead><tr>
+<th>Category</th>
+<th>Reproducibility</th>
+<th>Policy</th>
+</tr></thead><tbody>
+<tr>
+<td>upload source video</td>
+<td>app is source of truth</td>
+<td>KEEP; back up and replicate</td>
+</tr>
+<tr>
+<td>retained YouTube source</td>
+<td>upstream may disappear/change</td>
+<td>KEEP; 3.671 GiB confirmed</td>
+</tr>
+<tr>
+<td>Drive processed cache</td>
+<td>reproducible while access persists</td>
+<td>evict only after production Range proof</td>
+</tr>
+<tr>
+<td>Drive ERROR/no-Media</td>
+<td>uncertain/possibly redundant</td>
+<td>conditional after remote access, quiescence, manifest</td>
+</tr>
+<tr>
+<td>thumbnails/frames</td>
+<td>derived but expensive</td>
+<td>lifecycle by parent/version; rebuildable</td>
+</tr>
+<tr>
+<td>reference uploads</td>
+<td>user-authored input</td>
+<td>KEEP unless explicit deletion policy</td>
+</tr>
+<tr>
+<td>temp/partial</td>
+<td>transient</td>
+<td>quarantine/delete after owner lease + TTL</td>
+</tr>
+<tr>
+<td>backups</td>
+<td>recovery material</td>
+<td>separate failure domain; tested retention</td>
+</tr>
+</tbody></table>
+<h3>4.4 Source-of-truth matrix</h3>
+<table><thead><tr>
+<th>Datum</th>
+<th>Source of truth</th>
+<th>Derived copies</th>
+<th>Consistency rule</th>
+</tr></thead><tbody>
+<tr>
+<td>Drive bytes</td>
+<td>Google Drive</td>
+<td>volume cache</td>
+<td>ETag/version/hash when available</td>
+</tr>
+<tr>
+<td>upload bytes</td>
+<td>app media store</td>
+<td>processing cache</td>
+<td>never delete without backup/policy</td>
+</tr>
+<tr>
+<td>YouTube retained bytes</td>
+<td>app media store after capture</td>
+<td>frames/transcript</td>
+<td>retain independently of upstream</td>
+</tr>
+<tr>
+<td>file identity/status</td>
+<td>Postgres <code>DriveFile</code></td>
+<td>UI caches</td>
+<td>transactional state machine</td>
+</tr>
+<tr>
+<td>media relationships/timestamps</td>
+<td>Postgres</td>
+<td>Qdrant payload</td>
+<td>reconcile by file/media/version</td>
+</tr>
+<tr>
+<td>vectors</td>
+<td>Qdrant/pgvector by class</td>
+<td>none</td>
+<td>rebuild from versioned source artifacts</td>
+</tr>
+<tr>
+<td>OAuth tokens</td>
+<td>Postgres</td>
+<td>process memory/browser access token</td>
+<td>tenant scope, expiry, revoke/rotate</td>
+</tr>
+<tr>
+<td>runtime settings</td>
+<td>Postgres singleton + env fallback</td>
+<td>process cache</td>
+<td>expose effective config revision</td>
+</tr>
+<tr>
+<td>generated carousel</td>
+<td>Postgres save payload</td>
+<td>browser state/export</td>
+<td>key by full generation provenance</td>
+</tr>
+</tbody></table>
+<h3>4.5 Lifecycle and deletion rules</h3>
+<p>Deletion must be source-based, not filename-based. A reconciler joins source type, source availability, <code>DriveFile</code>/<code>Media</code>, vector version, active lease, cache path, size/hash, and backup status. Every deletion run writes a dry-run manifest, requires category policy approval, uses bounded batches, stops on mismatches, and emits a post-run manifest. <code>ARCHIVED</code> and Drive disconnect do not imply deletion.</p>
+<h2>5. Performance ranking and bottleneck classification</h2>
+<p>Severity in this section is <strong>maximum system-performance impact</strong>: how hard the issue hits throughput, latency, availability under load, and saturation of disk, CPU, database connections, LLM quota, and queues. Security, privacy, and maintainability items stay in the register but rank lower unless they admit unbounded work or collapse a live resource.</p>
+<p><strong>Bottleneck:</strong> a primary constraint that limits system performance or capacity — the resource or control plane that saturates first. <strong>Child issue:</strong> a consequence, amplifier, or secondary defect of a parent bottleneck. Example: a retry storm is a child of a full volume plus auto-requeue; status-batch visibility lag is a child of process-local queues.</p>
+<p>Twelve items are primary bottlenecks. The other twenty-six are children. Worst performance impact is first.</p>
+<h3>5.1 Ordered performance register</h3>
+<table><thead><tr>
+<th>Rank</th>
+<th>Class</th>
+<th>Issue</th>
+<th>Saturates / amplifies</th>
+<th>Parent bottleneck(s)</th>
+<th>Perf band</th>
+</tr></thead><tbody>
+<tr>
+<td>1</td>
+<td><strong>Bottleneck</strong></td>
+<td>Full/unbounded persistent volume</td>
+<td>Disk (ENOSPC)</td>
+<td>—</td>
+<td>Critical</td>
+</tr>
+<tr>
+<td>2</td>
+<td><strong>Bottleneck</strong></td>
+<td>API/indexer colocation</td>
+<td>Shared process CPU, RSS, event loop</td>
+<td>—</td>
+<td>Critical</td>
+</tr>
+<tr>
+<td>3</td>
+<td><strong>Bottleneck</strong></td>
+<td>CPU/InsightFace/ffmpeg contention</td>
+<td>CPU and memory bandwidth</td>
+<td>— (amplified by #2)</td>
+<td>Critical</td>
+</tr>
+<tr>
+<td>4</td>
+<td><strong>Bottleneck</strong></td>
+<td>DB pool and concurrency saturation</td>
+<td>Postgres connections</td>
+<td>—</td>
+<td>Critical</td>
+</tr>
+<tr>
+<td>5</td>
+<td><strong>Bottleneck</strong></td>
+<td>No durable distributed job queue</td>
+<td>Admission, leases, backpressure</td>
+<td>—</td>
+<td>Critical</td>
+</tr>
+<tr>
+<td>6</td>
+<td><strong>Bottleneck</strong></td>
+<td>LLM quota contention</td>
+<td>Gemini/Claude/OpenRouter quota</td>
+<td>—</td>
+<td>Critical</td>
+</tr>
+<tr>
+<td>7</td>
+<td>Child</td>
+<td>Retry storms</td>
+<td>Disk, Drive, DB, LLM, queues</td>
+<td>#1 volume + #5 queue</td>
+<td>High</td>
+</tr>
+<tr>
+<td>8</td>
+<td><strong>Bottleneck</strong></td>
+<td>Drive preview/download buffering</td>
+<td>Memory, egress, event loop</td>
+<td>—</td>
+<td>High</td>
+</tr>
+<tr>
+<td>9</td>
+<td>Child</td>
+<td>Next proxy buffering/version drift</td>
+<td>Carousel hop memory/timeouts</td>
+<td>#8 media buffering</td>
+<td>High</td>
+</tr>
+<tr>
+<td>10</td>
+<td>Child</td>
+<td>Long synchronous LLM requests</td>
+<td>Worker slots, proxy time, duplicate spend</td>
+<td>#5 queue + #6 LLM</td>
+<td>High</td>
+</tr>
+<tr>
+<td>11</td>
+<td>Child</td>
+<td>Status batch visibility lag</td>
+<td>Operator/recovery truth</td>
+<td>#5 queue</td>
+<td>High</td>
+</tr>
+<tr>
+<td>12</td>
+<td>Child</td>
+<td>Video claim races and orphan ownership</td>
+<td>Duplicate ffmpeg/Drive/LLM</td>
+<td>#5 queue</td>
+<td>High</td>
+</tr>
+<tr>
+<td>13</td>
+<td>Child</td>
+<td>Partial-file and cache cleanup lifecycle</td>
+<td>Disk headroom and unsafe deletes</td>
+<td>#1 volume</td>
+<td>High</td>
+</tr>
+<tr>
+<td>14</td>
+<td><strong>Bottleneck</strong></td>
+<td>Drive listing scale</td>
+<td>Memory, Drive quota, event loop</td>
+<td>—</td>
+<td>High</td>
+</tr>
+<tr>
+<td>15</td>
+<td><strong>Bottleneck</strong></td>
+<td>Postgres/Qdrant non-transactional consistency</td>
+<td>Searchable capacity and rework</td>
+<td>—</td>
+<td>High</td>
+</tr>
+<tr>
+<td>16</td>
+<td>Child</td>
+<td>Stale/orphan vectors</td>
+<td>Qdrant scan cost and wrong hits</td>
+<td>#15 consistency</td>
+<td>High</td>
+</tr>
+<tr>
+<td>17</td>
+<td>Child</td>
+<td>Health semantics hide blocked indexing</td>
+<td>Ops and rollout decisions</td>
+<td>#1 volume + #2 colocation</td>
+<td>High</td>
+</tr>
+<tr>
+<td>18</td>
+<td>Child</td>
+<td>Schema migration/startup coupling</td>
+<td>All non-health routes on boot</td>
+<td>#2 colocation</td>
+<td>High</td>
+</tr>
+<tr>
+<td>19</td>
+<td><strong>Bottleneck</strong></td>
+<td>External provider outage/fallback</td>
+<td>External dependency availability</td>
+<td>—</td>
+<td>Medium-high</td>
+</tr>
+<tr>
+<td>20</td>
+<td>Child</td>
+<td>Cost/egress/model-spend controls</td>
+<td>Provider suspension = capacity loss</td>
+<td>#6 LLM + #7 retries</td>
+<td>Medium-high</td>
+</tr>
+<tr>
+<td>21</td>
+<td>Child</td>
+<td>Observability gaps</td>
+<td>Delayed detection of every saturator</td>
+<td>#1–#6, #8, #14, #15</td>
+<td>Medium-high</td>
+</tr>
+<tr>
+<td>22</td>
+<td>Child</td>
+<td>Capacity planning and SLO absence</td>
+<td>Recurring saturation</td>
+<td>#1–#6 (meta)</td>
+<td>Medium-high</td>
+</tr>
+<tr>
+<td>23</td>
+<td><strong>Bottleneck</strong></td>
+<td>Single-volume/single-region durability</td>
+<td>Availability after volume/region loss</td>
+<td>—</td>
+<td>Medium-high</td>
+</tr>
+<tr>
+<td>24</td>
+<td>Child</td>
+<td>Backup/restore and DR uncertainty</td>
+<td>Recovery of metadata and media</td>
+<td>#23 durability</td>
+<td>Medium-high</td>
+</tr>
+<tr>
+<td>25</td>
+<td>Child</td>
+<td>Upload/YouTube retention dependency</td>
+<td>Irreplaceable bytes on the saturating volume</td>
+<td>#1 volume + #23 durability</td>
+<td>Medium-high</td>
+</tr>
+<tr>
+<td>26</td>
+<td>Child</td>
+<td>LLM cache poisoning/model mismatch</td>
+<td>Wasted quota and duplicate generation</td>
+<td>#6 LLM</td>
+<td>Medium-high</td>
+</tr>
+<tr>
+<td>27</td>
+<td>Child</td>
+<td>Secrets/config/runtime-settings drift</td>
+<td>Mis-tuned concurrency and routing</td>
+<td>#2, #4, #6</td>
+<td>Medium-high</td>
+</tr>
+<tr>
+<td>28</td>
+<td><strong>Bottleneck</strong></td>
+<td>OAuth refresh/token lifecycle</td>
+<td>Drive-path availability</td>
+<td>—</td>
+<td>Medium-high</td>
+</tr>
+<tr>
+<td>29</td>
+<td>Child</td>
+<td><code>railway up</code> versus Git deployment drift</td>
+<td>Can ship the buffering/old media path</td>
+<td>#8 + #9</td>
+<td>Medium</td>
+</tr>
+<tr>
+<td>30</td>
+<td>Child</td>
+<td>Transcript grounding/timestamp correctness</td>
+<td>Wrong frames and rework</td>
+<td>#15 consistency</td>
+<td>Medium</td>
+</tr>
+<tr>
+<td>31</td>
+<td>Child</td>
+<td>Public <code>/test</code> and admin-like surface</td>
+<td>Unbounded costly admission if exposed</td>
+<td>#6 LLM + #20 spend</td>
+<td>Medium</td>
+</tr>
+<tr>
+<td>32</td>
+<td>Child</td>
+<td>Shared Drive account / tenant isolation</td>
+<td>One Drive identity and quota</td>
+<td>#14 listing + #28 OAuth</td>
+<td>Medium</td>
+</tr>
+<tr>
+<td>33</td>
+<td>Child</td>
+<td>Data privacy/PII/face biometric governance</td>
+<td>Not a live capacity constraint</td>
+<td>— (governance)</td>
+<td>Medium</td>
+</tr>
+<tr>
+<td>34</td>
+<td>Child</td>
+<td>Google Picker referrer/config coupling</td>
+<td>Onboarding, not throughput</td>
+<td>#28 OAuth + #27 config</td>
+<td>Medium</td>
+</tr>
+<tr>
+<td>35</td>
+<td>Child</td>
+<td>Monolithic backend and Carousel files</td>
+<td>Change risk to performance paths</td>
+<td>#22 capacity model</td>
+<td>Medium</td>
+</tr>
+<tr>
+<td>36</td>
+<td>Child</td>
+<td>Duplicated main versus <code>/test</code> UI</td>
+<td>Divergent controls on costly routes</td>
+<td>#31 <code>/test</code></td>
+<td>Medium</td>
+</tr>
+<tr>
+<td>37</td>
+<td>Child</td>
+<td>Weak frontend test coverage</td>
+<td>Missed buffering/range regressions</td>
+<td>#8 + #9</td>
+<td>Medium</td>
+</tr>
+<tr>
+<td>38</td>
+<td>Child</td>
+<td>Search relevance regression detection</td>
+<td>Quality, not a saturating resource</td>
+<td>#15 + #6 + #22</td>
+<td>Medium</td>
+</tr>
+</tbody></table>
+<h3>5.2 Parent → child groups</h3>
+<div class="text-diagram"><pre>#1 DISK volume ── REQUIRED: auto-unlink leftover Drive downloads
+                             ├─► #7 retry storms
+                             ├─► #13 missing auto-clean implementation
+                             ├─► #25 upload/YouTube compete for same mount
+                             └─► #17 health hides blocked writes
+
+#2 COLOCATION ───────────────► #17 health 200 while indexer blocked
+                             ├─► #18 schema/startup 503 with green liveness
+                             └─► #27 mis-tuned shared concurrency
+                             (amplifies #3 CPU into API latency)
+
+#3 CPU / InsightFace / ffmpeg  (primary compute saturator; no exclusive child)
+
+#4 DB POOL ──────────────────► #27 config that over-admits vs pool size
+
+#5 PROCESS-LOCAL QUEUE ──────► #11 status-batch visibility lag
+                             ├─► #12 claim races / orphan rework
+                             ├─► #10 long sync LLM (no persisted job)
+                             └─► #7 retry storms (no DLQ / budget)
+
+#6 LLM QUOTA ────────────────► #10 long sync LLM / proxy timeout
+                             ├─► #20 spend → provider suspension
+                             ├─► #26 cache mismatch wastes quota
+                             └─► #31 /test unbounded generation if exposed
+
+#8 MEDIA BUFFERING ──────────► #9 Next proxy buffering
+                             ├─► #29 railway up can ship the old path
+                             └─► #37 missing range/proxy tests
+
+#14 DRIVE LISTING ───────────► #32 single DriveUser / shared quota
+
+#15 PG / QDRANT CONSISTENCY ─► #16 stale/orphan vectors
+                             ├─► #30 timestamp / grounding rework
+                             └─► #38 relevance regressions
+
+#19 PROVIDER OUTAGE ─────────  (availability of OAuth, embed, carousel)
+
+#23 VOLUME DURABILITY ───────► #24 backup/DR co-failure
+                             └─► #25 irreplaceable upload/YouTube loss
+
+#28 OAUTH LIFECYCLE ─────────► #34 Picker/referrer break
+                             └─► #32 shared token/tenant
+
+Meta amplifiers: #21 observability and #22 SLO/capacity model sit under every primary bottleneck.
+#33 privacy has no capacity parent. #35/#36 are change-risk children of #22/#31.</pre></div>
+<table><thead><tr>
+<th>Parent bottleneck</th>
+<th>Child issues</th>
+</tr></thead><tbody>
+<tr>
+<td>#1 Full/unbounded volume</td>
+<td><strong>Required control: auto-unlink leftover Drive downloads after index.</strong> Children: #7 retry storms; #13 missing auto-clean implementation; #17 health hide; #25 upload/YouTube on same mount</td>
+</tr>
+<tr>
+<td>#2 API/indexer colocation</td>
+<td>#17 health hide; #18 schema/startup coupling; #27 config drift; amplifies #3 into API latency</td>
+</tr>
+<tr>
+<td>#3 CPU/InsightFace/ffmpeg</td>
+<td>none exclusive; saturates workers and, with #2, the API event loop</td>
+</tr>
+<tr>
+<td>#4 DB pool saturation</td>
+<td>#27 config that admits more jobs than connections</td>
+</tr>
+<tr>
+<td>#5 No durable job queue</td>
+<td>#7 retry storms; #10 long sync LLM; #11 status-batch lag; #12 claim races</td>
+</tr>
+<tr>
+<td>#6 LLM quota contention</td>
+<td>#10 long sync LLM; #20 spend/suspension; #26 cache waste; #31 <code>/test</code> admission</td>
+</tr>
+<tr>
+<td>#8 Drive preview/download buffering</td>
+<td>#9 Next proxy; #29 deploy drift; #37 weak frontend tests</td>
+</tr>
+<tr>
+<td>#14 Drive listing scale</td>
+<td>#32 shared Drive identity/quota</td>
+</tr>
+<tr>
+<td>#15 Postgres/Qdrant consistency</td>
+<td>#16 orphan vectors; #30 timestamp correctness; #38 relevance detection</td>
+</tr>
+<tr>
+<td>#19 Provider outage/fallback</td>
+<td>no exclusive child; collapses embed/sync/carousel capacity</td>
+</tr>
+<tr>
+<td>#23 Single-volume durability</td>
+<td>#24 backup/DR uncertainty; #25 upload/YouTube retention</td>
+</tr>
+<tr>
+<td>#28 OAuth token lifecycle</td>
+<td>#32 shared tenant token; #34 Picker config</td>
+</tr>
+</tbody></table>
+<h3>5.3 Ranked issue register</h3>
+<p>Evidence uses file paths for code facts and explicit labels for audit facts. Class and parent fields are the performance taxonomy; they do not replace the evidence labels.</p>
+<h3 class="risk-title">1. Critical bottleneck — full/unbounded persistent volume</h3>
+<p><strong>Class:</strong> Bottleneck. <strong>Saturates:</strong> disk. <strong>Children:</strong> #7, #13, #17, #25. <strong>Likelihood:</strong> High. <strong>Blast radius:</strong> all ingestion, uploads, frames, backups, and any service sharing the mount. <strong>Evidence:</strong> PROD-CONFIRMED original fill 83.135 GiB/1,353 files and ENOSPC; leftover classes that caused it were Drive ERROR/no-Media, processed Drive caches after Media, case-variant dups, and failed partials. Manual reclaim held at re-check: <strong>77.107 GiB free</strong>, <strong>21 keep-set files / 4.617 GiB</strong>, 0 leftover processed-Drive, 0 leftover ERROR/no-Media. CODE-CONFIRMED the indexer still has no success/ERROR unlink of Drive source cache (<code>pipelines/video.py</code>, <code>storage.py</code>, <code>media_cache.py</code>, <code>cache_audit_cleanup.py</code> is operator-only). <strong>Failure mode:</strong> leftover downloads accumulate until writes fail; retries create more I/O; logical/physical state diverges. Throughput of the ingest plane falls to zero while the volume is full. <strong>Required control:</strong> auto-unlink Drive leftovers after Media commit and after ERROR with no Media. Manual cleanup is not a control. <strong>Detection:</strong> used/free bytes and inodes by category, leftover Drive-cache count after terminal status, write-rejection count, oldest partial, growth slope. <strong>Short term:</strong> implement indexer unlink on PROCESSED+Media and ERROR/no-Media; keep <code>reindex_errored_files</code> false until that ships; enforce 70/80/85% thresholds. <strong>Target:</strong> lifecycle-managed object/media tier with quotas, protected categories, high/low-water eviction, and replicas.</p>
+<h3 class="risk-title">2. Critical bottleneck — API/indexer colocation</h3>
+<p><strong>Class:</strong> Bottleneck. <strong>Saturates:</strong> shared process CPU, RSS, event loop, DB slots, and disk I/O. <strong>Children:</strong> #17, #18, #27. Amplifies #3. <strong>Likelihood:</strong> High. <strong>Blast radius:</strong> all interactive APIs and background processing. <strong>Evidence:</strong> PROD-CONFIRMED API health 200 while indexing was blocked. CODE-CONFIRMED <code>backend/app/main.py</code> starts API, auto-index, maintenance, and backup; <code>docs/indexer-service.md</code> is optional. <strong>Failure mode:</strong> CPU, memory, DB, Drive slots, and disk contention degrade API while liveness stays green. <strong>Detection:</strong> per-role CPU/RSS/event-loop lag, API latency under index load, dependency readiness. <strong>Short term:</strong> use <code>RUN_INDEXER</code> role gate after reviewed deployment plan; cap worker concurrency. <strong>Target:</strong> independent API/indexer/carousel workers linked by durable queue and shared data contracts.</p>
+<h3 class="risk-title">3. Critical bottleneck — CPU/InsightFace/ffmpeg contention</h3>
+<p><strong>Class:</strong> Bottleneck. <strong>Saturates:</strong> CPU and memory bandwidth during video bursts. <strong>Amplified by:</strong> #2. <strong>Children:</strong> none exclusive. <strong>Likelihood:</strong> High during video bursts. <strong>Blast radius:</strong> event loop, search latency, throughput. <strong>Evidence:</strong> CPUExecutionProvider and ffmpeg/frame settings in <code>config.py</code>; CPU helpers and worker semaphores. <strong>Failure mode:</strong> oversubscription and memory bandwidth saturation create nonlinear latency. After an API/indexer split this remains the worker-pool saturator. <strong>Detection:</strong> CPU steal/load, run queue, ffmpeg count, stage p95, event-loop lag. <strong>Short term:</strong> cap concurrent CPU stages and separate API process resources. <strong>Target:</strong> resource-class worker pools with cgroup limits, autoscaling, and benchmark-derived concurrency.</p>
+<h3 class="risk-title">4. Critical bottleneck — DB pool and concurrency saturation</h3>
+<p><strong>Class:</strong> Bottleneck. <strong>Saturates:</strong> Postgres connections. <strong>Children:</strong> #27. <strong>Likelihood:</strong> High under load. <strong>Blast radius:</strong> status truth, OAuth, search, indexing. <strong>Evidence:</strong> <code>backend/app/config.py</code> records prior 46-job/pool≈24 timeout behavior and configures image 40, DB 24, pool 5+5 per worker. <strong>Failure mode:</strong> pool timeout causes false failures and retry amplification; admin connections are starved. <strong>Detection:</strong> checked-out/waiters/timeouts, transaction age, lock/deadlock rate, connections by service. <strong>Short term:</strong> set explicit per-service connection budgets and reduce admission concurrency. <strong>Target:</strong> pooler plus short transactions, queue-based backpressure, and load-tested budgets.</p>
+<h3 class="risk-title">5. Critical bottleneck — no durable distributed job queue</h3>
+<p><strong>Class:</strong> Bottleneck. <strong>Saturates:</strong> admission, ownership, and backpressure. <strong>Children:</strong> #7, #10, #11, #12. <strong>Likelihood:</strong> High on restart/scale. <strong>Blast radius:</strong> image embeddings, status flushes, user-triggered generations. <strong>Evidence:</strong> <code>backend/app/workers/embed_queue.py</code> uses <code>asyncio.Queue</code>; <code>worker</code> tracks process tasks; status batching has single-owner guidance. <strong>Failure mode:</strong> queued work disappears on restart, duplicates across replicas, or remains PROCESSING until recovery. Without a queue, admission cannot protect disk, CPU, DB, or LLM. <strong>Detection:</strong> compare claimed rows with active leases; queue depth/age; orphan recoveries per restart. <strong>Short term:</strong> keep one indexer replica, persist claim timestamps/attempts, drain on shutdown. <strong>Target:</strong> Postgres-backed or managed queue with leases, visibility timeout, idempotency, DLQ, and replay.</p>
+<h3 class="risk-title">6. Critical bottleneck — LLM quota contention</h3>
+<p><strong>Class:</strong> Bottleneck. <strong>Saturates:</strong> Gemini, Claude, and OpenRouter quota. <strong>Children:</strong> #10, #20, #26, #31. <strong>Likelihood:</strong> High. <strong>Blast radius:</strong> indexing captions, search rerank, carousel generation. <strong>Evidence:</strong> shared Gemini semaphore families and high configured parallelism in <code>config.py</code>; Claude/OpenRouter routes share product demand. <strong>Failure mode:</strong> background backfill consumes quota needed for interactive generation; rate-limit retries compound latency. <strong>Detection:</strong> requests/tokens/cost and 429s by provider/model/workload, queue wait, fallback use. <strong>Short term:</strong> reserve interactive quota and pause backfill on 429/latency thresholds. <strong>Target:</strong> provider gateway with workload budgets, priorities, spend caps, and model fallback policy.</p>
+<h3 class="risk-title">7. High child — retry storms</h3>
+<p><strong>Class:</strong> Child issue. <strong>Parents:</strong> #1 volume (ENOSPC + auto-requeue) and #5 queue (no DLQ or retry budget). <strong>Likelihood:</strong> High during deterministic provider/capacity failure. <strong>Blast radius:</strong> Drive, disk, DB, Qdrant, LLM quotas. <strong>Evidence:</strong> PROD-CONFIRMED containment disabled auto-index/requeue; <code>auto_indexer.py</code>, <code>requeue_failed.py</code>, and transcript Qdrant upsert retries. <strong>Failure mode:</strong> unchanged errors repeatedly download/process and increase backlog/cost. This is the amplifier that turns a full volume into 4,799 errors. <strong>Detection:</strong> attempts by error class, retry rate, next-attempt age, repeated byte count. <strong>Short term:</strong> circuit-break ENOSPC/auth/quota classes; bounded exponential backoff with jitter. <strong>Target:</strong> centralized retry policy, budget, DLQ, operator replay, and dependency-aware admission.</p>
+<h3 class="risk-title">8. High bottleneck — Drive preview and download buffering</h3>
+<p><strong>Class:</strong> Bottleneck. <strong>Saturates:</strong> memory, egress, and the event loop on the media path. <strong>Children:</strong> #9, #29, #37. <strong>Likelihood:</strong> Medium until production proof. <strong>Blast radius:</strong> memory, egress, seek experience, cache-eviction safety. <strong>Evidence:</strong> LOCAL-ONLY Range stream in <code>routers/drive.py</code> and <code>drive/google_client.py</code>; <code>/download</code> still calls <code>download_to_memory</code>. <strong>Failure mode:</strong> a route or deployment version buffers a full large file, causing RSS spikes/timeouts. <strong>Detection:</strong> bytes requested vs transferred, response status, RSS delta, cancellation latency. <strong>Short term:</strong> integration-test preview and download separately; block processed-cache eviction until canary passes. <strong>Target:</strong> one shared bounded-range/stream abstraction with HEAD, 206, 416, cancellation, and memory limits.</p>
+<h3 class="risk-title">9. High child — Next proxy buffering/version drift</h3>
+<p><strong>Class:</strong> Child issue. <strong>Parent:</strong> #8 media buffering (same memory/timeout class on the Carousel hop). <strong>Likelihood:</strong> Medium. <strong>Blast radius:</strong> Carousel playback and long API calls. <strong>Evidence:</strong> LOCAL-ONLY media streaming branch in <code>carousel-frontend/lib/api-proxy.ts</code>; JSON and request bodies remain buffered; production version unverified. <strong>Failure mode:</strong> stale deployment buffers videos or strips headers; long responses exceed platform limits. <strong>Detection:</strong> deployed SHA, response header conformance, proxy RSS, upstream/downstream byte counts. <strong>Short term:</strong> add route tests and verify deployed artifact digest. <strong>Target:</strong> streaming reverse proxy with explicit body limits, timeout classes, and release provenance.</p>
+<h3 class="risk-title">10. High child — long synchronous LLM request/proxy timeout</h3>
+<p><strong>Class:</strong> Child issue. <strong>Parents:</strong> #5 queue (no persisted async job) and #6 LLM (long provider calls). <strong>Likelihood:</strong> High for large transcripts. <strong>Blast radius:</strong> Carousel UX, duplicate spend, backend workers. <strong>Evidence:</strong> route handler comments around long upstream waits and many synchronous carousel endpoints. <strong>Failure mode:</strong> client/proxy disconnects while provider call continues; user retries duplicate work and hold worker slots. <strong>Detection:</strong> end-to-end stage latency, disconnect/cancel count, duplicate input hashes. <strong>Short term:</strong> idempotency keys and persisted status for long stages; explicit timeout classes. <strong>Target:</strong> asynchronous generation jobs, progress events, cancellation, resumable results.</p>
+<h3 class="risk-title">11. High child — status batch visibility lag</h3>
+<p><strong>Class:</strong> Child issue. <strong>Parent:</strong> #5 process-local queues (<code>IndexStatusBatcher</code>). <strong>Likelihood:</strong> High by design. <strong>Blast radius:</strong> UI/operators and recovery decisions. <strong>Evidence:</strong> <code>INDEX_STATUS_BATCH_SIZE=100</code>, <code>IndexStatusBatcher</code>, and docs single-owner note. <strong>Failure mode:</strong> completed work appears PROCESSING; restart loses pending status writes and triggers adoption/rework. <strong>Detection:</strong> batch queue depth/oldest age, stage-complete vs status-final lag. <strong>Short term:</strong> time-based flush in addition to size; flush on shutdown. <strong>Target:</strong> durable event/outbox and materialized status projection.</p>
+<h3 class="risk-title">12. High child — video claim races and orphan ownership</h3>
+<p><strong>Class:</strong> Child issue. <strong>Parent:</strong> #5 no durable queue lease or fencing token. <strong>Likelihood:</strong> Medium. <strong>Blast radius:</strong> duplicate ffmpeg/Drive/LLM work and status corruption. <strong>Evidence:</strong> advisory claim/execution locks and orphan adoption in <code>backend/app/workers/indexer.py</code>; stale thresholds in <code>config.py</code>. <strong>Failure mode:</strong> worker death or lease ambiguity causes duplicate adoption or long stuck PROCESSING rows. <strong>Detection:</strong> duplicate active source IDs, lock wait, claim age, recovery count. <strong>Short term:</strong> one indexer replica; expose owner token/heartbeat; require compare-and-set finalization. <strong>Target:</strong> durable queue lease and fencing token on every side effect.</p>
+<h3 class="risk-title">13. High child — partial-file and cache cleanup lifecycle</h3>
+<p><strong>Class:</strong> Child issue. <strong>Parent:</strong> #1 unbounded volume. This is the missing implementation of #1’s required auto-clean control, not a separate policy debate. <strong>Likelihood:</strong> High. <strong>Blast radius:</strong> disk headroom and cache correctness. <strong>Evidence:</strong> PROD-CONFIRMED leftovers that filled the volume were later removed only by operator jobs (127 case-variant dups, 182 processed Drive caches, 1,023 ERROR/no-Media). Re-check: those classes are now 0 on disk, but the indexer still does not unlink on success/ERROR. Temporary/partial/atomic paths remain in media/upload code. <strong>Failure mode:</strong> terminal index leaves Drive bytes behind; crashes leave partials; a later cleanup can delete active/KEEP files if it is filename-based. <strong>Detection:</strong> leftover Drive-cache count after PROCESSED+Media or ERROR/no-Media; partial age/owner; duplicate hash groups. <strong>Short term:</strong> unlink Drive leftovers in the indexer success and ERROR paths; quarantine partials by TTL only after lease checks; never delete upload/YouTube/PROCESSING/orphan in those paths. <strong>Target:</strong> object-store multipart lifecycle plus reconciler with ownership/fencing.</p>
+<h3 class="risk-title">14. High bottleneck — Drive listing scale</h3>
+<p><strong>Class:</strong> Bottleneck. <strong>Saturates:</strong> process memory, Drive API quota, and event-loop time during sync. <strong>Children:</strong> #32. <strong>Likelihood:</strong> Medium-high. <strong>Blast radius:</strong> sync freshness and API/event-loop capacity. <strong>Evidence:</strong> breadth-first in-memory results, 100,000 cap, 200-page size, fallback full sync in <code>drive/google_client.py</code>. <strong>Failure mode:</strong> long scans, memory growth, API quota pressure, truncated library. <strong>Detection:</strong> folders/files/pages, duration, quota, truncation, change lag. <strong>Short term:</strong> surface truncation prominently and avoid unnecessary full scans. <strong>Target:</strong> Drive Changes API cursor, incremental checkpoints, partitioned inventory reconciliation.</p>
+<h3 class="risk-title">15. High bottleneck — Postgres/Qdrant non-transactional consistency</h3>
+<p><strong>Class:</strong> Bottleneck. <strong>Saturates:</strong> effective searchable capacity and forces rework. <strong>Children:</strong> #16, #30, #38. <strong>Likelihood:</strong> High over time. <strong>Blast radius:</strong> missing/incorrect search and false PROCESSED status. <strong>Evidence:</strong> separate commits/upserts across <code>pipelines/*</code>, <code>qdrant/*</code>, and <code>embed_queue.py</code>; embed failure may still finalize PROCESSED. <strong>Failure mode:</strong> DB commits without vectors or vectors survive changed/deleted rows. “Processed” count overstates throughput. <strong>Detection:</strong> artifact completeness reconciliation by file/version; orphan vector scans. <strong>Short term:</strong> mark <code>vector_state</code>/version and backfill gaps; do not equate status with completeness. <strong>Target:</strong> transactional outbox, idempotent vector consumer, and reconciler.</p>
+<h3 class="risk-title">16. High child — stale/orphan vectors</h3>
+<p><strong>Class:</strong> Child issue. <strong>Parent:</strong> #15 non-transactional Postgres/Qdrant writes. <strong>Likelihood:</strong> High with archive/reindex/model changes. <strong>Blast radius:</strong> search quality and privacy deletion guarantees. <strong>Evidence:</strong> archived rows explicitly retain vectors; point IDs encode source/timestamp but not model version; no complete delete path shown. <strong>Failure mode:</strong> old embeddings remain queryable or collide with regenerated timestamps. Extra Qdrant scan cost follows. <strong>Detection:</strong> Qdrant payload IDs absent from Postgres; version distribution; delete verification. <strong>Short term:</strong> filter on active/current version and run dry-run orphan reports. <strong>Target:</strong> versioned collections/aliases, tombstone consumer, and deletion attestations.</p>
+<h3 class="risk-title">17. High child — health semantics hide blocked indexing</h3>
+<p><strong>Class:</strong> Child issue. <strong>Parents:</strong> #1 volume (writes blocked) and #2 colocation (liveness is process-local). <strong>Likelihood:</strong> Confirmed. <strong>Blast radius:</strong> operations and automated rollout decisions. <strong>Evidence:</strong> PROD-CONFIRMED API health 200 while indexing blocked; <code>main.py</code> deliberately keeps <code>/health</code> dependency-free and provides <code>/health/detail</code>. <strong>Failure mode:</strong> platform sees healthy process while job plane is capacity-blocked or dependencies are down. <strong>Detection:</strong> separate liveness, readiness, and worker-health/job-progress signals. <strong>Short term:</strong> alert on detailed readiness and queue progress, not <code>/health</code> alone. <strong>Target:</strong> role-specific health endpoints and deployment gates tied to readiness plus SLO burn.</p>
+<h3 class="risk-title">18. High child — schema migration/startup coupling</h3>
+<p><strong>Class:</strong> Child issue. <strong>Parent:</strong> #2 colocation (same process boot is the migration engine). <strong>Likelihood:</strong> Medium. <strong>Blast radius:</strong> all non-health routes and every replica starting concurrently. <strong>Evidence:</strong> <code>main.py</code> runs <code>ensure_schema</code> with retries during deferred boot; <code>/health</code> bypasses readiness. <strong>Failure mode:</strong> DDL contention or failure leaves green liveness but 503 application; startup code becomes migration engine. <strong>Detection:</strong> migration version/duration/lock wait, boot readiness, schema failure count. <strong>Short term:</strong> expose readiness separately and ensure one migration owner. <strong>Target:</strong> explicit pre-deploy migrations with backward-compatible expand/contract rollout.</p>
+<h3 class="risk-title">19. Medium-high bottleneck — external provider outage/fallback behavior</h3>
+<p><strong>Class:</strong> Bottleneck. <strong>Saturates:</strong> availability of OAuth, sync, embeddings, rerank, carousel, and YouTube. <strong>Children:</strong> none exclusive. <strong>Likelihood:</strong> Medium. <strong>Blast radius:</strong> OAuth, sync, embeddings, rerank, carousel, YouTube ingestion. <strong>Evidence:</strong> direct dependencies in config and clients; some local fallbacks exist, but no end-to-end outage matrix. <strong>Failure mode:</strong> cascading retries, partial artifacts, or silent quality downgrade. <strong>Detection:</strong> provider SLI, circuit state, fallback rate and result-quality marker. <strong>Short term:</strong> document stage behavior for 401/403/429/5xx/timeouts and fail fast by class. <strong>Target:</strong> dependency isolation, cached/degraded modes, provider abstraction, recovery queues.</p>
+<h3 class="risk-title">20. Medium-high child — cost/egress/model-spend controls</h3>
+<p><strong>Class:</strong> Child issue. <strong>Parents:</strong> #6 LLM quota and #7 retry storms. <strong>Likelihood:</strong> High. <strong>Blast radius:</strong> budget and provider suspension. <strong>Evidence:</strong> high LLM concurrency, repeated image/frame work, remote previews; no supplied spend caps. <strong>Failure mode:</strong> retries/backfills or unauthenticated routes create runaway provider and egress cost; suspension removes LLM capacity. <strong>Detection:</strong> tokens/images/bytes and cost per workload/tenant/source. <strong>Short term:</strong> daily caps, anomaly alerts, backfill budgets, cache-hit reporting. <strong>Target:</strong> admission budget service, per-workload quotas, cost-aware routing and chargeback.</p>
+<h3 class="risk-title">21. Medium-high child — observability gaps</h3>
+<p><strong>Class:</strong> Child issue. <strong>Parents:</strong> all primary bottlenecks (#1–#6, #8, #14, #15); this is the missing detection plane. <strong>Likelihood:</strong> High. <strong>Blast radius:</strong> delayed diagnosis across all incidents. <strong>Evidence:</strong> logging and detail health exist, but no supplied metrics backend/dashboards for queue depth, disk, or pool saturation. <strong>Failure mode:</strong> liveness remains green while capacity or dependencies block work. <strong>Detection:</strong> this issue is the missing detection plane itself. <strong>Short term:</strong> export disk, queue, pool, provider, stage, and consistency metrics with alerts. <strong>Target:</strong> service-level telemetry, traces with job/source IDs, dashboards and actionable alerts.</p>
+<h3 class="risk-title">22. Medium-high child — capacity planning and SLO absence</h3>
+<p><strong>Class:</strong> Child issue. <strong>Parents:</strong> #1–#6 (meta). Without a model, every saturator recurs. <strong>Likelihood:</strong> High. <strong>Blast radius:</strong> every scaling and readiness decision. <strong>Evidence:</strong> configuration comments contain ad hoc throughput observations; no supplied formal SLO/capacity model. <strong>Failure mode:</strong> concurrency is tuned to peak rate instead of bottleneck headroom; incidents recur. <strong>Detection:</strong> demand, service time, utilization, queue age and headroom forecasts. <strong>Short term:</strong> baseline current rates and define initial SLOs below. <strong>Target:</strong> quarterly load tests and capacity model per resource/provider.</p>
+<h3 class="risk-title">23. Medium-high bottleneck — single-volume/single-region durability</h3>
+<p><strong>Class:</strong> Bottleneck. <strong>Saturates:</strong> availability after volume or region loss, not live ingest rate. <strong>Children:</strong> #24, #25. <strong>Likelihood:</strong> Medium. <strong>Blast radius:</strong> non-reproducible uploads, YouTube copies, refs, and co-located backups. <strong>Evidence:</strong> configured paths in <code>backend/app/config.py</code>; retained source design in upload/YouTube routes; no supplied cross-region replica evidence. <strong>Failure mode:</strong> volume or region loss permanently removes app-owned sources and backups. Ranked below live-path saturators because it does not limit throughput until failure. <strong>Detection:</strong> replication status, restore-point age, object counts/checksums by category. <strong>Short term:</strong> inventory irreplaceable categories and copy to an independent backup destination. <strong>Target:</strong> multi-AZ object storage, versioning, lifecycle rules, and tested cross-region restore.</p>
+<h3 class="risk-title">24. Medium-high child — backup/restore and DR uncertainty</h3>
+<p><strong>Class:</strong> Child issue. <strong>Parent:</strong> #23 single-volume/single-region durability (backups share the failure domain). <strong>Likelihood:</strong> Medium. <strong>Blast radius:</strong> complete metadata/vector/library recovery. <strong>Evidence:</strong> <code>backend/app/workers/backup.py</code> and <code>backup_dir</code> exist, but no supplied restore drill, RPO/RTO, or off-volume proof. <strong>Failure mode:</strong> backups are incomplete, co-fail with volume, or cannot recreate Postgres↔Qdrant consistency. <strong>Detection:</strong> last successful backup, offsite copy, checksum, quarterly restore result. <strong>Short term:</strong> document scope and perform isolated restore rehearsal. <strong>Target:</strong> defined RPO/RTO, automated PITR/snapshots, vector rebuild plan, and audited restore drills.</p>
+<h3 class="risk-title">25. Medium-high child — upload/YouTube retention dependency</h3>
+<p><strong>Class:</strong> Child issue. <strong>Parents:</strong> #1 volume (same mount) and #23 durability (app is source of truth). <strong>Likelihood:</strong> Medium. <strong>Blast radius:</strong> irreplaceable source media and generated carousels. <strong>Evidence:</strong> <code>source="upload"</code> writes to volume; YouTube retained local path and cookies; 3.671 GiB confirmed. <strong>Failure mode:</strong> cleanup treats app-owned sources like reproducible Drive cache or upstream disappears. <strong>Detection:</strong> source category bytes, backup status, source availability. <strong>Short term:</strong> mark upload/YouTube as protected in cleanup code and manifests. <strong>Target:</strong> immutable source bucket with checksums, replication, explicit user retention policy.</p>
+<h3 class="risk-title">26. Medium-high child — LLM cache poisoning/model/config mismatch</h3>
+<p><strong>Class:</strong> Child issue. <strong>Parent:</strong> #6 LLM quota (wasted tokens and duplicate generation). <strong>Likelihood:</strong> Medium. <strong>Blast radius:</strong> all reused themes/hooks/copy for a video. <strong>Evidence:</strong> LOCAL-ONLY provider:model cache ID and transcript hash; save fields include some versions but not every prompt/parameter/policy input. <strong>Failure mode:</strong> result generated under old prompt/config is served as current or malicious/corrupt payload persists. <strong>Detection:</strong> provenance completeness, schema validation, cache-hit quality sampling. <strong>Short term:</strong> include prompt/algorithm versions and validate payload shape. <strong>Target:</strong> canonical signed provenance hash, immutable cache entries, scoped invalidation.</p>
+<h3 class="risk-title">27. Medium-high child — secrets/config/runtime-settings drift</h3>
+<p><strong>Class:</strong> Child issue. <strong>Parents:</strong> #2 colocation, #4 DB pool, and #6 LLM (replicas can over-admit). <strong>Likelihood:</strong> High. <strong>Blast radius:</strong> routing, costs, OAuth, concurrency, retention. <strong>Evidence:</strong> Pydantic env settings plus mutable singleton <code>AppSettings</code>, process cache, and local <code>.env</code> examples. <strong>Failure mode:</strong> replicas use different effective values; UI selection changes behavior without traceable release. <strong>Detection:</strong> sanitized effective-config hash per replica, settings revision, drift alert. <strong>Short term:</strong> publish non-secret effective configuration and revision; define precedence. <strong>Target:</strong> versioned config service/schema, audited changes, immutable release defaults, secret manager.</p>
+<h3 class="risk-title">28. Medium-high bottleneck — OAuth refresh/token lifecycle</h3>
+<p><strong>Class:</strong> Bottleneck. <strong>Saturates:</strong> Drive-path availability (sync, preview, listing). <strong>Children:</strong> #32, #34. <strong>Likelihood:</strong> Medium. <strong>Blast radius:</strong> all Drive reads and Picker access. <strong>Evidence:</strong> plaintext token columns in <code>db/models.py</code>; refresh in multiple endpoints/client methods; no PKCE noted in <code>drive_oauth.py</code>. <strong>Failure mode:</strong> revoked/missing refresh token halts sync; concurrent refresh races; token exposure broadens access. Ranked below live compute/disk because it is an availability gate for Drive, not the first saturator under load. <strong>Detection:</strong> refresh failures by reason, token age, reconnect rate, audit access. <strong>Short term:</strong> centralize refresh with locking and redact logs; review encryption and revocation. <strong>Target:</strong> encrypted credential vault, per-tenant token records, PKCE/nonce-bound state, rotation and audit.</p>
+<h3 class="risk-title">29. Medium child — <code>railway up</code> versus Git deployment drift</h3>
+<p><strong>Class:</strong> Child issue. <strong>Parents:</strong> #8 and #9 (can ship the buffering or pre-stream media path). <strong>Likelihood:</strong> Medium. <strong>Blast radius:</strong> every local-only safeguard and rollback. <strong>Evidence:</strong> Carousel README documents <code>railway up</code> and source redeploy; no supplied deployed SHA/digest evidence. <strong>Failure mode:</strong> production runs an unreviewed local tree or service versions diverge. <strong>Detection:</strong> <code>/version</code> with Git SHA/image digest; release inventory across services. <strong>Short term:</strong> stop untracked CLI deploys; record digest before any future change. <strong>Target:</strong> CI-built immutable artifacts, Git-protected promotion, signed provenance, one-click digest rollback.</p>
+<h3 class="risk-title">30. Medium child — transcript grounding/timestamp correctness</h3>
+<p><strong>Class:</strong> Child issue. <strong>Parent:</strong> #15 consistency (timebase and artifact versions are not transactional). <strong>Likelihood:</strong> Medium. <strong>Blast radius:</strong> search results, frame picks, and factual carousel copy. <strong>Evidence:</strong> <code>VideoSegment</code>, Qdrant timestamp payloads, transcript guard, VTT/ASR/YouTube sources. <strong>Failure mode:</strong> offsets drift across containers/captions; correct text maps to wrong image; guard preserves wrong cue. Forces rework rather than saturating a resource first. <strong>Detection:</strong> sampled alignment error, cue/frame checks, timestamp monotonicity and duration bounds. <strong>Short term:</strong> store transcript source/timebase and reject invalid ranges. <strong>Target:</strong> normalized media timeline with provenance, confidence, automated alignment regression set.</p>
+<h3 class="risk-title">31. Medium child — public <code>/test</code> and admin-like surface/auth boundaries</h3>
+<p><strong>Class:</strong> Child issue. <strong>Parents:</strong> #6 LLM and #20 spend (unbounded admission of costly work if reachable). <strong>Likelihood:</strong> Medium, exposure unverified. <strong>Blast radius:</strong> settings, indexing, uploads, generation cost, data access. <strong>Evidence:</strong> CODE-CONFIRMED <code>/test</code> pages and broad backend routers; no global auth middleware visible in <code>main.py</code>. This report does <strong>not</strong> claim public Internet reachability. <strong>Failure mode:</strong> if externally reachable, unauthenticated users may invoke costly or mutating operations. <strong>Detection:</strong> route inventory with ingress/auth policy; anonymous integration tests; access logs. <strong>Short term:</strong> confirm Railway ingress and gate <code>/test</code>, settings, retries, deletes, uploads, and index controls. <strong>Target:</strong> centralized authentication/RBAC, CSRF protection, environment-specific route registration.</p>
+<h3 class="risk-title">32. Medium child — shared Drive account / tenant isolation</h3>
+<p><strong>Class:</strong> Child issue. <strong>Parents:</strong> #14 Drive listing and #28 OAuth (one <code>DriveUser</code> is one quota and token). <strong>Likelihood:</strong> High if multiple users are exposed. <strong>Blast radius:</strong> cross-user folder, token, and library access. <strong>Evidence:</strong> repeated <code>select(DriveUser).limit(1)</code> and no request user/tenant foreign key in core entities. <strong>Failure mode:</strong> any user sees or mutates the globally connected account and permanent library. Performance effect is a single Drive identity/quota, not a separate saturator. <strong>Detection:</strong> account identity per request, cross-user access tests, route authorization logs. <strong>Short term:</strong> treat deployment as single-tenant and restrict network/user access explicitly. <strong>Target:</strong> authenticated tenant/user IDs on all resources, row-level authorization, tenant-scoped vectors/objects.</p>
+<h3 class="risk-title">33. Medium child — data privacy/PII/face biometric governance</h3>
+<p><strong>Class:</strong> Child issue. <strong>Parent:</strong> none — governance, not a live capacity constraint. <strong>Likelihood:</strong> High as a governance concern. <strong>Blast radius:</strong> people represented in media and operators. <strong>Evidence:</strong> emails/tokens, face embeddings, body signatures, person labels, thumbnails, reverse-web match records in <code>db/models.py</code>. <strong>Failure mode:</strong> over-retention, unauthorized identification, difficult deletion/export, provider disclosure. Does not saturate disk/CPU/DB/LLM/queues by itself. <strong>Detection:</strong> data inventory, access audit, retention/deletion verification, provider data-flow register. <strong>Short term:</strong> document purpose, access, retention, and deletion; disable optional identification features unless approved. <strong>Target:</strong> privacy-by-design controls, consent/purpose boundaries, encryption, scoped roles, deletion workflow. This is not a legal conclusion.</p>
+<h3 class="risk-title">34. Medium child — Google Picker referrer/config coupling</h3>
+<p><strong>Class:</strong> Child issue. <strong>Parents:</strong> #28 OAuth and #27 config drift. <strong>Likelihood:</strong> Medium. <strong>Blast radius:</strong> folder onboarding. <strong>Evidence:</strong> <code>/api/drive-token</code> returns browser key/app ID and explicitly depends on Drive/Picker APIs and referrer restrictions. <strong>Failure mode:</strong> domain/config change breaks Picker while OAuth remains connected. Onboarding availability, not ingest throughput. <strong>Detection:</strong> Picker launch/select success by origin, key restriction errors. <strong>Short term:</strong> preflight configured origin/app ID and document allowed domains. <strong>Target:</strong> environment-specific OAuth/Picker config tested during release.</p>
+<h3 class="risk-title">35. Medium child — monolithic backend and Carousel files</h3>
+<p><strong>Class:</strong> Child issue. <strong>Parent:</strong> #22 capacity/SLO model (change risk on the performance path). <strong>Likelihood:</strong> High for change defects. <strong>Blast radius:</strong> carousel and worker maintainability. <strong>Evidence:</strong> <code>routers/carousel_script.py</code> is thousands of lines; <code>workers/indexer.py</code> and Carousel pages combine many stages. <strong>Failure mode:</strong> hidden coupling, slow review, broad regression surface. <strong>Detection:</strong> file churn, defect concentration, cycle dependencies, test duration. <strong>Short term:</strong> freeze new responsibilities and extract pure stage contracts. <strong>Target:</strong> bounded modules/services for ingestion, retrieval, generation, and media delivery.</p>
+<h3 class="risk-title">36. Medium child — duplicated main versus <code>/test</code> UI logic</h3>
+<p><strong>Class:</strong> Child issue. <strong>Parent:</strong> #31 <code>/test</code> surface. <strong>Likelihood:</strong> High. <strong>Blast radius:</strong> inconsistent behavior and security controls. <strong>Evidence:</strong> main Carousel page plus multiple <code>/test</code> pages/components and separate API helper modules. <strong>Failure mode:</strong> fixes land in one UI path; test surface becomes de facto production with different defaults. <strong>Detection:</strong> route/component duplication map and parity tests. <strong>Short term:</strong> label/gate <code>/test</code> and share core hooks/components. <strong>Target:</strong> one domain package and feature flags, with test routes as thin harnesses.</p>
+<h3 class="risk-title">37. Medium child — weak frontend test coverage</h3>
+<p><strong>Class:</strong> Child issue. <strong>Parents:</strong> #8 and #9 (range/proxy regressions escape). <strong>Likelihood:</strong> Medium-high. <strong>Blast radius:</strong> proxy, OAuth, picker, studio state, and playback. <strong>Evidence:</strong> repository tests are backend-heavy; no supplied comprehensive browser suite for current and <code>/test</code> flows. <strong>Failure mode:</strong> deployment passes build but breaks range headers, state transitions, or origin config. <strong>Detection:</strong> coverage and critical-journey pass rate. <strong>Short term:</strong> add smoke tests for OAuth return, folder select, search, range seek, and carousel run. <strong>Target:</strong> contract + browser tests in CI against immutable preview environment.</p>
+<h3 class="risk-title">38. Medium child — search relevance regression detection</h3>
+<p><strong>Class:</strong> Child issue. <strong>Parents:</strong> #15 consistency, #6 LLM rerank, and #22 missing quality SLOs. <strong>Likelihood:</strong> High as models/thresholds change. <strong>Blast radius:</strong> user trust and carousel grounding. <strong>Evidence:</strong> many configurable thresholds, fusion weights, rerank toggles, model choices, and source branches. <strong>Failure mode:</strong> latency improves while recall/precision silently declines; one modality dominates. Not a saturating resource. <strong>Detection:</strong> labeled query set, nDCG/Recall@K, grounded-moment accuracy, no-result and reformulation rates. <strong>Short term:</strong> capture a representative golden set and pin model/config provenance. <strong>Target:</strong> offline eval gates plus online quality monitoring and rollback.</p>
+<h2>6. Failure containment and recovery design</h2>
+<div class="text-diagram"><pre>signal: disk/auth/quota/provider/DB/vector failure
+  -&gt; classify deterministic vs transient
+  -&gt; close admission circuit for affected resource class
+  -&gt; persist job lease/error/next-attempt; do not erase source relation
+  -&gt; preserve or quarantine partial artifacts with owner metadata
+  -&gt; continue unaffected API/search paths in degraded mode
+  -&gt; reconcile Postgres + Qdrant + media manifest
+  -&gt; operator approves bounded replay
+  -&gt; canary, observe, then reopen circuit</pre></div>
+<p>Containment boundaries should be resource-specific: Drive outage must not disable search over retained assets; Gemini quota must not block local previews; Qdrant outage must not corrupt Postgres; disk pressure must reject new durable writes before it prevents reads; Carousel provider failure must leave a persisted resumable job.</p>
+<h2>7. Roadmap and operating model</h2>
+<h3>Immediate containment (0–48 hours)</h3>
+<ul>
+<li><strong>Ship auto-clean of leftover Drive downloads</strong> in the indexer success and ERROR paths. This is the required control for bottleneck #1. Manual cleanup already held (77.107 GiB free; 21 keep-set files) but will not prevent the next fill.</li>
+<li>Keep <code>reindex_errored_files</code> and <code>reindex_skipped_files</code> disabled until auto-unlink ships. Auto-index may stay on for PENDING-only work.</li>
+<li>Freeze operator deletions outside a signed manifest; protect upload, YouTube, unknown/orphan, active PROCESSING, skipped-with-Media, and references.</li>
+<li>Capture Postgres backup, Qdrant inventory, volume file manifest, deployed service SHAs/digests, and effective config.</li>
+<li>Add disk bytes/inodes, leftover Drive-cache count after terminal status, queue age, DB pool, provider 429, and index-progress alerts.</li>
+<li>Verify the keep set remains YouTube 7 / SKIPPED 11 / PROCESSING 1 / orphan 2; do not reclean those classes.</li>
+</ul>
+<p><strong>Acceptance:</strong> indexer unlinks Drive leftovers on PROCESSED+Media and ERROR/no-Media; 24 hours without unplanned cache growth; 100% of current files classified; latest backup independently restorable at least to inventory level.</p>
+<h3>One week</h3>
+<ul>
+<li>Production-canary end-to-end Range for cached and uncached Drive video, including Next proxy, seek, cancel, 206/416, and RSS.</li>
+<li>Fix/stream the non-YouTube download path or set an explicit size limit.</li>
+<li>Create role-specific readiness/worker health and a release <code>/version</code>.</li>
+<li>Add time-based status flush and durable claim/attempt fields.</li>
+<li>Restrict/gate <code>/test</code> and admin-like mutating routes based on verified ingress.</li>
+</ul>
+<p><strong>Acceptance:</strong> 1 MiB range transfers ≤1.1 MiB per app hop; API p95 unaffected by a controlled index run; no anonymous mutation in external ingress test.</p>
+<h3>30 days</h3>
+<ul>
+<li>Split API and one-replica indexer using immutable same-image digest and explicit connection budgets.</li>
+<li>Introduce transactional outbox and durable job queue for embeddings/index/generation.</li>
+<li>Reconcile Postgres↔Qdrant↔volume daily and version all vector artifacts.</li>
+<li>Move irreplaceable uploads/YouTube/refs and backups to independent object storage.</li>
+<li>Establish labeled search and transcript/frame alignment evaluation sets.</li>
+</ul>
+<p><strong>Acceptance:</strong> indexer restart does not restart API; zero lost acknowledged jobs in restart test; 100% PROCESSED rows have current artifact manifest or visible exception; restore drill meets provisional RPO/RTO.</p>
+<h3>90 days</h3>
+<ul>
+<li>Resource-class worker pools and autoscaling; provider gateway with priorities and budgets.</li>
+<li>Incremental Drive Changes-based inventory and tenant-scoped auth/data model if multi-user access is intended.</li>
+<li>Expand/contract migration pipeline, CI browser/contract/load tests, and signed deployment provenance.</li>
+<li>Cross-region recovery, quarterly game days, privacy/retention control implementation.</li>
+</ul>
+<p><strong>Acceptance:</strong> all suggested SLOs measured for 30 days; capacity forecast maintains ≥30% headroom; tested region-loss and provider-outage runbooks; relevance release gate active.</p>
+<h2>8. Suggested SLOs and measurable gates</h2>
+<ul>
+<li><strong>API availability:</strong> 99.9% monthly for authenticated non-generation endpoints.</li>
+<li><strong>Search:</strong> p95 &lt;750 ms excluding explicit LLM stages; &lt;1% 5xx over 15 minutes.</li>
+<li><strong>Carousel jobs:</strong> 99% accepted jobs reach terminal state; p95 queue wait &lt;30 s; no duplicate billable run for same idempotency key.</li>
+<li><strong>Index freshness:</strong> 95% eligible new files searchable within 15 minutes under normal provider health.</li>
+<li><strong>Queue:</strong> oldest ready job &lt;5 minutes; zero unbounded retries; DLQ age &lt;24 hours.</li>
+<li><strong>Storage:</strong> alert 70%, stop nonessential writes 80%, hard gate 85%; preserve max(10 GiB, 15%) free.</li>
+<li><strong>Streaming:</strong> valid single-range 206; ≤10% byte overhead; seek p95 &lt;2 s cached/&lt;4 s Drive.</li>
+<li><strong>Consistency:</strong> ≥99.9% current artifact completeness; all exceptions identified and replayable.</li>
+<li><strong>Recovery:</strong> provisional RPO 24 h/RTO 4 h until business owners set stricter targets.</li>
+<li><strong>Quality:</strong> no release with &gt;5% relative drop in Recall@10/nDCG or grounded timestamp accuracy.</li>
+</ul>
+<h2>9. Production readiness checklist</h2>
+<ul>
+<li>☐ Immutable image digest and Git SHA visible for every service.</li>
+<li>☐ Explicit liveness, readiness, and worker progress checks.</li>
+<li>☐ API/indexer connection and CPU/memory budgets load-tested.</li>
+<li>☐ Durable queue, leases, fencing, idempotency, retry budget, and DLQ.</li>
+<li>☐ Range and proxy conformance tests pass on deployed canary.</li>
+<li>☐ Storage categories, quotas, retention, and deletion manifests active.</li>
+<li>☐ Upload/YouTube/reference sources replicated independently.</li>
+<li>☐ Postgres/Qdrant backup and restore drill completed.</li>
+<li>☐ Schema migration separated from normal replica startup.</li>
+<li>☐ OAuth state/PKCE/token encryption and tenant model reviewed.</li>
+<li>☐ <code>/test</code>, settings, index, retry, delete, upload, and feedback routes authorized.</li>
+<li>☐ Provider quotas, fallback, spend limits, and data handling documented.</li>
+<li>☐ Queue/disk/pool/provider/quality dashboards and alerts owned.</li>
+<li>☐ Search and carousel grounding regression suite gates release.</li>
+<li>☐ PII/face/body data access, retention, export, and deletion controls approved.</li>
+</ul>
+<h2>10. Incident response and rollback checklist</h2>
+<ol>
+<li>Identify failure class and freeze only affected admission/retry circuits.</li>
+<li>Record service digest/SHA, config revision, DB migration version, queue state, disk manifest, and provider status.</li>
+<li>Preserve logs and source artifacts; never “fix” capacity by deleting unknown files.</li>
+<li>Snapshot authoritative Postgres before state repair; snapshot/record Qdrant collection aliases.</li>
+<li>Roll back to a known image digest only if schema is backward-compatible; otherwise execute the documented database rollback/forward-fix.</li>
+<li>For ENOSPC: stop writers, reserve headroom, classify partials, reconcile, then delete only manifest-approved batches.</li>
+<li>For Qdrant inconsistency: remove the collection/alias from serving if necessary, replay outbox/rebuild, then compare counts/sample quality.</li>
+<li>For OAuth/provider failure: close that dependency circuit, retain jobs with next-attempt, and keep local search/preview available.</li>
+<li>Canary one job/file/query before reopening; monitor error rate, queue age, disk slope, cost, and quality.</li>
+<li>Publish timeline, impact, cause, permanent actions, and validation evidence.</li>
+</ol>
+<h2>11. Source-based cache deletion matrix</h2>
+<table><thead><tr>
+<th>Source/category</th>
+<th>Default</th>
+<th>Live on disk (07:16 UTC)</th>
+<th>Preconditions</th>
+<th>Rollback evidence</th>
+</tr></thead><tbody>
+<tr>
+<td>upload source</td>
+<td>KEEP</td>
+<td>0</td>
+<td>explicit user/admin retention action + independent backup</td>
+<td>checksum and restore copy</td>
+</tr>
+<tr>
+<td>YouTube retained</td>
+<td>KEEP</td>
+<td>7 files / 3.671 GiB</td>
+<td>explicit policy; dependent derivatives verified</td>
+<td>retained source checksum</td>
+</tr>
+<tr>
+<td>Drive PROCESSED/Media</td>
+<td><strong>AUTO-DELETE after Media</strong></td>
+<td>0 (182 previously removed)</td>
+<td>Media committed; Drive readable; Range available; no active lease</td>
+<td>manifest + source ID/ETag</td>
+</tr>
+<tr>
+<td>Drive ERROR/no-Media</td>
+<td><strong>AUTO-DELETE after ERROR</strong></td>
+<td>0 (1,023 / 41.391 GiB previously removed; 4,797 ERROR rows remain in DB)</td>
+<td>no Media; retries re-download from Drive</td>
+<td>manifest + dry-run reconciliation</td>
+</tr>
+<tr>
+<td>Drive SKIPPED</td>
+<td>KEEP until classified</td>
+<td>11 files</td>
+<td>reason reviewed and downstream use absent</td>
+<td>manifest</td>
+</tr>
+<tr>
+<td>Drive PROCESSING</td>
+<td>KEEP</td>
+<td>1 file (proof <code>11bY89L94ctjD…</code>, 24.78 MiB)</td>
+<td>wait for terminal status, then apply success/ERROR rule</td>
+<td>claim/lease record</td>
+</tr>
+<tr>
+<td>duplicate case variants</td>
+<td>verify only</td>
+<td>0 (127 previously removed)</td>
+<td>content/source identity and referenced canonical path</td>
+<td>pre/post cleanup manifest</td>
+</tr>
+<tr>
+<td>unknown/orphan</td>
+<td>KEEP/quarantine</td>
+<td>2 files</td>
+<td>classified by source/hash/ownership</td>
+<td>quarantine record</td>
+</tr>
+<tr>
+<td><code>.partial</code>/temp</td>
+<td>AUTO-DELETE after failed/abandoned job</td>
+<td>0</td>
+<td>no live lease; age exceeds max job+retry duration</td>
+<td>owner/age audit</td>
+</tr>
+<tr>
+<td>frames/thumbnails</td>
+<td>derived lifecycle</td>
+<td>keep with parent</td>
+<td>parent/current version exists or rebuild accepted</td>
+<td>parent/version manifest</td>
+</tr>
+<tr>
+<td>carousel reference uploads</td>
+<td>KEEP</td>
+<td>n/a</td>
+<td>explicit reference deletion and save dependency check</td>
+<td>save/reference audit</td>
+</tr>
+</tbody></table>
+<p>The prior <strong>36.433 GiB processed-Drive</strong> and <strong>41.415 GiB ERROR/no-Media</strong> envelopes were operator-reclaimed (182 and 1,023 files). They must not be added back to the current <strong>4.617 GiB</strong> keep set. The original <strong>83.135 GiB / 1,353 files</strong> figure is the incident fill, not the current inventory. Auto-clean in the indexer is now the required control so those leftover classes cannot refill the volume.</p>
+<h2>12. Evidence index and limitations</h2>
+<p>Primary code evidence:</p>
+<ul>
+<li><code>backend/app/main.py</code>, <code>config.py</code>, <code>runtime_settings.py</code></li>
+<li><code>backend/app/db/models.py</code>, <code>schema.py</code>, <code>advisory_locks.py</code>, <code>deadlock.py</code></li>
+<li><code>backend/app/drive/google_client.py</code>, <code>media_cache.py</code></li>
+<li><code>backend/app/routers/drive_oauth.py</code>, <code>drive.py</code>, <code>index.py</code>, <code>search.py</code>, <code>settings.py</code>, <code>youtube.py</code>, <code>carousel_script.py</code></li>
+<li><code>backend/app/pipelines/common.py</code>, <code>image.py</code>, <code>video.py</code></li>
+<li><code>backend/app/workers/indexer.py</code>, <code>auto_indexer.py</code>, <code>maintenance.py</code>, <code>embed_queue.py</code>, <code>index_batch.py</code></li>
+<li><code>backend/app/qdrant/*</code>, especially <code>video_transcripts.py</code></li>
+<li><code>backend/app/search/moments.py</code>, <code>carousel_pipeline.py</code>, <code>carousel_frame_select.py</code></li>
+<li><code>backend/app/llm/carousel_llm.py</code>, <code>openrouter.py</code></li>
+<li><code>carousel-frontend/lib/api-proxy.ts</code>, <code>browser-frame-capture.ts</code>, <code>app/carousel/page.tsx</code>, <code>app/test/*</code></li>
+<li><code>docs/indexer-service.md</code>, Railway JSON files, <code>.env</code> examples</li>
+</ul>
+<p>Limitations:</p>
+<ul>
+<li>This refresh queried production <strong>read-only</strong>: public <code>/health</code>, <code>/health/detail</code>, <code>/index</code>, plus Railway SSH SELECT/stat of disk, <code>/app/data/videos</code>, <code>app_settings</code>, <code>drive_files</code>/<code>media</code> counts, and the proof video. No settings write, cache delete, deploy, or DB mutation.</li>
+<li>Deployed image digests, backup destination, ingress policy, and region/plan metadata were not independently re-verified in this pass.</li>
+<li>Security/privacy items are architecture and governance risks, not claims of exploitation or legal noncompliance.</li>
+<li>Auto-clean of leftover Drive downloads is a required control described here; it is <strong>not</strong> implemented in the current indexer success/ERROR paths.</li>
+</ul>
+<h2>13. Reproducible rendering</h2>
+<p>From repository root:</p>
+<div class="text-diagram"><pre>node scripts/render-architecture-report.mjs \
+  docs/full-system-architecture-and-risks.html \
+  docs/artifacts/full-system-architecture-and-risks.pdf</pre></div>
+<p>The renderer blocks external requests, uses installed local Chromium through Playwright, prints deterministic A4 output, and retains the legacy no-argument command for the existing bottleneck report.</p>
+</main></body></html>

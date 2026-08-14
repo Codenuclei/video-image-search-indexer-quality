@@ -42,6 +42,128 @@
   -webkit-font-smoothing: antialiased;
 }
 
+/*
+ * Drive "Select videos" dialog — portaled to body with .carousel-studio for button
+ * tokens, but must NOT inherit transparent studio background over the dark overlay.
+ * Force a clean light dialog (white surface, dark text, soft borders).
+ */
+.carousel-studio.drive-select-modal,
+.drive-select-modal {
+  background: #ffffff !important;
+  color: #0f172a !important;
+  border-color: #e2e8f0 !important;
+  overflow: hidden;
+}
+
+.drive-select-modal__chrome {
+  background: #ffffff !important;
+  color: #0f172a;
+}
+
+.drive-select-modal__header {
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.drive-select-modal__footer {
+  border-top: 1px solid #e2e8f0;
+  background: #f8fafc !important;
+}
+
+.drive-select-modal__body {
+  background: #ffffff !important;
+}
+
+.drive-select-modal__filter {
+  background: #f8fafc !important;
+  color: #0f172a !important;
+  border-color: #e2e8f0 !important;
+}
+
+.drive-select-modal__filter:focus {
+  background: #ffffff !important;
+}
+
+.drive-select-modal__list {
+  background: #f8fafc !important;
+  border-color: #e2e8f0 !important;
+}
+
+.drive-select-modal__row {
+  background: transparent;
+  color: #0f172a;
+}
+
+.drive-select-modal__row:hover {
+  background: #ffffff !important;
+}
+
+.drive-select-modal__row.is-selected {
+  background: #ffffff !important;
+}
+
+/*
+ * Google Drive Picker (Change folder) — force a centered, on-screen dialog.
+ * Default Picker uses absolute coords that can land off-viewport / under nav
+ * when the page scrolls or ancestors clip overflow. Never leave a blank strip.
+ */
+.picker-dialog-bg {
+  position: fixed !important;
+  inset: 0 !important;
+  top: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  margin: 0 !important;
+  transform: none !important;
+  z-index: 29999 !important;
+  background: rgba(15, 23, 42, 0.45) !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+  pointer-events: auto !important;
+}
+
+.picker-dialog {
+  position: fixed !important;
+  top: 50% !important;
+  left: 50% !important;
+  right: auto !important;
+  bottom: auto !important;
+  /* Prefer translate centering; Picker may also set width/height inline */
+  transform: translate(-50%, -50%) !important;
+  margin: 0 !important;
+  z-index: 30000 !important;
+  max-width: min(1050px, calc(100vw - 1.5rem)) !important;
+  max-height: min(650px, calc(100vh - 1.5rem)) !important;
+  width: min(1050px, calc(100vw - 1.5rem)) !important;
+  height: min(650px, calc(100vh - 1.5rem)) !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+  pointer-events: auto !important;
+  overflow: hidden !important;
+  box-shadow: 0 20px 50px rgba(15, 23, 42, 0.35) !important;
+}
+
+.picker-dialog-content {
+  width: 100% !important;
+  height: 100% !important;
+  max-height: 100% !important;
+  overflow: hidden !important;
+}
+
+.picker-dialog iframe,
+.picker-frame {
+  display: block !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+  pointer-events: auto !important;
+  width: 100% !important;
+  height: 100% !important;
+  min-height: 420px !important;
+  border: 0 !important;
+}
+
 .carousel-studio ::selection {
   background: var(--studio-selected);
   color: var(--foreground);

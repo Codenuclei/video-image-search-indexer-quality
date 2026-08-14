@@ -18,9 +18,19 @@ class RuntimeSettings:
     search_use_captions: bool
     search_rerank_enabled: bool
     go_indexer_enabled: bool
+    carousel_llm_provider: str
+    openrouter_model: str
+    claude_model: str
 
 
 _runtime: RuntimeSettings | None = None
+
+_VALID_CAROUSEL_LLM_PROVIDERS = frozenset({"auto", "openrouter", "claude", "gemini"})
+
+
+def _normalize_provider(value: str | None) -> str:
+    raw = (value or "auto").strip().lower()
+    return raw if raw in _VALID_CAROUSEL_LLM_PROVIDERS else "auto"
 
 
 def _env_defaults() -> RuntimeSettings:
@@ -37,6 +47,12 @@ def _env_defaults() -> RuntimeSettings:
         search_use_captions=settings.search_use_captions,
         search_rerank_enabled=settings.search_rerank_enabled,
         go_indexer_enabled=settings.go_indexer_enabled,
+        # Default Claude-direct when Anthropic key is present; picker can override.
+        carousel_llm_provider="claude"
+        if (settings.anthropic_api_key or settings.claude_api_key or "").strip()
+        else "auto",
+        openrouter_model=(settings.openrouter_model or "anthropic/claude-sonnet-4").strip(),
+        claude_model=(settings.claude_model or "claude-sonnet-4-5-20250929").strip(),
     )
 
 
@@ -65,6 +81,9 @@ def update_runtime_settings(
     search_use_captions: bool | None = None,
     search_rerank_enabled: bool | None = None,
     go_indexer_enabled: bool | None = None,
+    carousel_llm_provider: str | None = None,
+    openrouter_model: str | None = None,
+    claude_model: str | None = None,
 ) -> RuntimeSettings:
     runtime = get_runtime_settings()
     if auto_index_enabled is not None:
@@ -89,4 +108,14 @@ def update_runtime_settings(
         runtime.search_rerank_enabled = search_rerank_enabled
     if go_indexer_enabled is not None:
         runtime.go_indexer_enabled = go_indexer_enabled
+    if carousel_llm_provider is not None:
+        runtime.carousel_llm_provider = _normalize_provider(carousel_llm_provider)
+    if openrouter_model is not None:
+        cleaned = openrouter_model.strip()
+        if cleaned:
+            runtime.openrouter_model = cleaned
+    if claude_model is not None:
+        cleaned = claude_model.strip()
+        if cleaned:
+            runtime.claude_model = cleaned
     return runtime

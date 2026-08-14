@@ -87,7 +87,8 @@ async def test_sync_file_list_upserts_files_and_folder_markers(db_session):
 
 @requires_postgres
 @pytest.mark.asyncio
-async def test_sync_file_list_marks_changed_processed_file_as_pending_again(db_session):
+async def test_sync_file_list_keeps_processed_on_mtime_change(db_session):
+    """Permanent library: Drive mtime change must not demote PROCESSED → PENDING."""
     old_time = datetime(2020, 1, 1, tzinfo=timezone.utc)
     existing = DriveFile(
         id="f1",
@@ -108,7 +109,8 @@ async def test_sync_file_list_marks_changed_processed_file_as_pending_again(db_s
     await worker.sync_file_list()
 
     refreshed = await db_session.get(DriveFile, "f1")
-    assert refreshed.status == DriveFileStatus.PENDING
+    assert refreshed.status == DriveFileStatus.PROCESSED
+    assert refreshed.modified_time == new_time
 
 
 @requires_postgres

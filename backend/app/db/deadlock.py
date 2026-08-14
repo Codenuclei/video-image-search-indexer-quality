@@ -43,9 +43,29 @@ def is_aborted_transaction_error(exc: BaseException) -> bool:
     return False
 
 
+def is_pool_timeout_error(exc: BaseException) -> bool:
+    """True when SQLAlchemy QueuePool is exhausted (too many concurrent DB checkouts)."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        name = type(current).__name__
+        msg = str(current).lower()
+        if name == "TimeoutError" and ("queuepool" in msg or "connection timed out" in msg):
+            return True
+        if "queuepool limit" in msg or "pool limit of size" in msg:
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
 def is_transient_db_error(exc: BaseException) -> bool:
-    """Deadlocks / aborted-txn fallout — safe to re-queue the file as PENDING."""
-    return is_deadlock_error(exc) or is_aborted_transaction_error(exc)
+    """Deadlocks / aborted-txn / pool exhaustion — safe to re-queue as PENDING."""
+    return (
+        is_deadlock_error(exc)
+        or is_aborted_transaction_error(exc)
+        or is_pool_timeout_error(exc)
+    )
 
 
 async def retry_on_deadlock(

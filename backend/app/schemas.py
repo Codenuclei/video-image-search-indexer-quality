@@ -91,11 +91,23 @@ class RetrySkippedByReasonIn(BaseModel):
     reason: str
 
 
+class RetryErroredByBucketIn(BaseModel):
+    """POST /index/errors/retry — requeue ERROR rows for one error bucket key."""
+
+    bucket: str
+
+
 class GoIndexerReportIn(BaseModel):
     files_ok: int = 0
     files_err: int = 0
     elapsed_ms: int = 0
     download_bytes: int = 0
+
+
+class CarouselLlmModelOption(BaseModel):
+    id: str
+    label: str
+    provider: str
 
 
 class SettingsOut(BaseModel):
@@ -112,6 +124,12 @@ class SettingsOut(BaseModel):
     search_use_captions: bool
     search_rerank_enabled: bool
     go_indexer_enabled: bool
+    carousel_llm_provider: str = "auto"
+    openrouter_model: str = "anthropic/claude-sonnet-4"
+    claude_model: str = "claude-sonnet-4-5-20250929"
+    openrouter_configured: bool = False
+    claude_configured: bool = False
+    carousel_llm_model_options: list[CarouselLlmModelOption] = []
 
 
 class SettingsUpdate(BaseModel):
@@ -126,6 +144,9 @@ class SettingsUpdate(BaseModel):
     search_use_captions: bool | None = None
     search_rerank_enabled: bool | None = None
     go_indexer_enabled: bool | None = None
+    carousel_llm_provider: str | None = None
+    openrouter_model: str | None = None
+    claude_model: str | None = None
 
 
 class FaceOut(BaseModel):

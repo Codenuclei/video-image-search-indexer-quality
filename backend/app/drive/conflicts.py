@@ -155,6 +155,35 @@ async def _upsert_conflict(
     return row
 
 
+def is_duplicate_content_complete(drive_file: DriveFile | None) -> bool:
+    """True when this row is a content-twin of an already-indexed file (not a real skip)."""
+    if drive_file is None:
+        return False
+    return (drive_file.error_message or "").startswith(DUPLICATE_CONTENT_PREFIX)
+
+
+async def promote_duplicate_content_skips(session: AsyncSession) -> int:
+    """Migrate legacy SKIPPED duplicate_content rows → PROCESSED (already indexed)."""
+    rows = list(
+        (
+            await session.execute(
+                select(DriveFile).where(
+                    DriveFile.status == DriveFileStatus.SKIPPED,
+                    DriveFile.error_message.like(f"{DUPLICATE_CONTENT_PREFIX}%"),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for row in rows:
+        row.status = DriveFileStatus.PROCESSED
+    if rows:
+        await session.flush()
+        logger.info("Promoted %d duplicate_content SKIPPED → PROCESSED", len(rows))
+    return len(rows)
+
+
 async def apply_dedupe_on_upsert(
     session: AsyncSession,
     drive_file: DriveFile,
@@ -165,9 +194,9 @@ async def apply_dedupe_on_upsert(
     """
     Apply content / name conflict rules for a newly discovered or updated file.
 
-    Returns a skip reason key when the file should not be indexed further:
-    - ``duplicate_content`` → autoskip (identical bytes already indexed)
-    - ``name_conflict`` → park pending Replace (same name, different content)
+    Returns a reason key when indexing should stop for this row:
+    - ``duplicate_content`` → mark PROCESSED (identical bytes already indexed; not a skip)
+    - ``name_conflict`` → park SKIPPED pending Replace (same name, different content)
     - ``None`` → proceed with normal indexing
     """
     if algo and digest:
@@ -178,7 +207,7 @@ async def apply_dedupe_on_upsert(
     if drive_file.status == DriveFileStatus.PROCESSED:
         return None
 
-    # Same content → autoskip (do not reindex). Record mergeable conflict when names differ.
+    # Same content → already search-ready via the twin. Mark complete, do not reindex.
     if drive_file.content_hash and drive_file.content_hash_algo:
         twin = await find_by_content_hash(
             session,
@@ -193,7 +222,7 @@ async def apply_dedupe_on_upsert(
                 f"{DUPLICATE_CONTENT_PREFIX} identical to {twin.id}"
                 + ("" if same_name else f" (also named {twin.name!r})")
             )
-            drive_file.status = DriveFileStatus.SKIPPED
+            drive_file.status = DriveFileStatus.PROCESSED
             drive_file.error_message = msg
             await _upsert_conflict(
                 session,
@@ -204,7 +233,7 @@ async def apply_dedupe_on_upsert(
                 message=msg,
             )
             logger.info(
-                "Autoskip duplicate content %s → matches %s (%s)",
+                "Complete duplicate content %s → matches %s (%s)",
                 drive_file.id[:12],
                 twin.id[:12],
                 kind,

@@ -314,7 +314,8 @@ async def index_image_embeddings_batch(items: list[tuple[str, bytes]]) -> int:
     ``items`` is ``(drive_file_id, jpeg_bytes)``. Splits into
     ``image_embed_batch_size`` chunks. Returns count upserted.
     """
-    from app.gemini.video_embeddings import embed_frames_batch_sync
+    from app.gemini.video_embeddings import embed_frames_batch_bytes_sync
+    from app.pipelines.async_cpu import run_gemini_embed_io
     from app.qdrant.images import upsert_image_sync
 
     settings = get_settings()
@@ -323,36 +324,32 @@ async def index_image_embeddings_batch(items: list[tuple[str, bytes]]) -> int:
 
     batch_size = max(1, settings.image_embed_batch_size)
     done = 0
-    os.makedirs(settings.temp_dir, exist_ok=True)
+
+    def _embed_chunk(payloads: list[bytes]) -> list[list[float]]:
+        # Prepare path already downscales — keep PIL off the Gemini I/O pool.
+        return embed_frames_batch_bytes_sync(payloads, downscale=False)
 
     for i in range(0, len(items), batch_size):
         chunk = items[i : i + batch_size]
-        paths: list[str] = []
-        ids: list[str] = []
+        ids = [fid for fid, _ in chunk]
+        payloads = [jpeg for _, jpeg in chunk]
         try:
-            for fid, jpeg in chunk:
-                fd, path = tempfile.mkstemp(suffix=".jpg", dir=settings.temp_dir)
-                os.close(fd)
-                with open(path, "wb") as fh:
-                    fh.write(jpeg)
-                paths.append(path)
-                ids.append(fid)
-            vectors = await asyncio.to_thread(embed_frames_batch_sync, paths)
-            for fid, vec in zip(ids, vectors):
+            vectors = await run_gemini_embed_io(_embed_chunk, payloads)
+
+            async def _upsert_one(fid: str, vec: list[float]) -> bool:
                 if not vec:
-                    continue
+                    return False
                 await asyncio.to_thread(upsert_image_sync, drive_file_id=fid, vector=vec)
-                done += 1
+                return True
+
+            results = await asyncio.gather(
+                *[_upsert_one(fid, vec) for fid, vec in zip(ids, vectors)]
+            )
+            done += sum(1 for ok in results if ok)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "Image batch embed failed for %d file(s): %s",
                 len(chunk),
                 exc,
             )
-        finally:
-            for path in paths:
-                try:
-                    os.remove(path)
-                except OSError:
-                    pass
     return done

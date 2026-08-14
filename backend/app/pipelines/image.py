@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 
-import cv2
 import numpy as np
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
@@ -15,7 +14,6 @@ from app.matching.service import assign_face
 from app.pipelines.async_cpu import run_cpu_bound
 from app.pipelines.common import clear_existing_media, decode_image_bgr, file_has_media, save_face_thumbnail
 from app.pipelines.dedup import LocalIdentityTracker, passes_quality_filter
-from app.search.images import index_image_embedding
 
 logger = logging.getLogger(__name__)
 
@@ -24,22 +22,26 @@ async def detect_faces_async(engine: FaceEngine, image_bgr: np.ndarray):
     return await run_cpu_bound(engine.detect_faces, image_bgr)
 
 
-async def process_image_file(
+async def prepare_image_media(
     session: AsyncSession,
     drive_file: DriveFile,
     client: DriveConnectorClient,
     settings: Settings | None = None,
-    engine: FaceEngine | None = None,
 ) -> Media | None:
+    """Cache + hash + dedupe + Media stub. Does not run InsightFace."""
     settings = settings or get_settings()
-    engine = engine or get_face_engine()
+
+    if await file_has_media(session, drive_file.id):
+        existing = await session.scalar(
+            select(Media).where(Media.drive_file_id == drive_file.id).limit(1)
+        )
+        return existing
 
     await clear_existing_media(session, drive_file.id)
 
     from app.drive.content_hash import sha256_bytes
     from app.drive.media_cache import ensure_media_cached, read_cached_bytes
 
-    # Durable cache copy (temp → atomic move) before face/embed work.
     cache_path = await ensure_media_cached(client, drive_file, settings)
     raw_bytes = await run_cpu_bound(read_cached_bytes, cache_path)
     if not drive_file.content_hash:
@@ -65,11 +67,40 @@ async def process_image_file(
         )
         return None
 
-    image_bgr = await run_cpu_bound(decode_image_bgr, raw_bytes, file_name=drive_file.name)
+    # Validate decode early so face workers do not claim corrupt jobs.
+    await run_cpu_bound(decode_image_bgr, raw_bytes, file_name=drive_file.name)
 
     media = Media(drive_file_id=drive_file.id, type=MediaType.IMAGE)
     session.add(media)
     await session.flush()
+    return media
+
+
+async def apply_faces_to_prepared_image(
+    session: AsyncSession,
+    drive_file: DriveFile,
+    media: Media,
+    *,
+    client: DriveConnectorClient,
+    settings: Settings | None = None,
+    engine: FaceEngine | None = None,
+) -> Media:
+    """Run InsightFace on an already-prepared Media row (cache must exist)."""
+    settings = settings or get_settings()
+    engine = engine or get_face_engine()
+
+    from app.drive.media_cache import ensure_media_cached, read_cached_bytes
+
+    # Skip if faces already exist (add-if-missing / retry).
+    existing_face = await session.scalar(
+        select(Face.id).where(Face.media_id == media.id).limit(1)
+    )
+    if existing_face is not None:
+        return media
+
+    cache_path = await ensure_media_cached(client, drive_file, settings)
+    raw_bytes = await run_cpu_bound(read_cached_bytes, cache_path)
+    image_bgr = await run_cpu_bound(decode_image_bgr, raw_bytes, file_name=drive_file.name)
 
     img_h, img_w = image_bgr.shape[:2]
     detections = await detect_faces_async(engine, image_bgr)
@@ -98,13 +129,37 @@ async def process_image_file(
         tracker.register(detection.embedding)
         await assign_face(session, face, detection.embedding)
 
-    # Embed full image for vector search (DeepImageSearch-style, via Gemini Embedding 2 + Qdrant)
-    if settings.gemini_api_key:
-        ok, buf = cv2.imencode(".jpg", image_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
-        if ok:
-            jpeg = buf.tobytes()
-            await index_image_embedding(jpeg, drive_file.id)
-            # Captions are generated in batched backfill (image_caption_batch_size × parallel).
-
     logger.info("Detected %d unique faces in %s", len(tracker._tracks), drive_file.name)
     return media
+
+
+async def process_image_file(
+    session: AsyncSession,
+    drive_file: DriveFile,
+    client: DriveConnectorClient,
+    settings: Settings | None = None,
+    engine: FaceEngine | None = None,
+) -> Media | None:
+    """Index one image: prepare Media, then faces (inline or enqueue face_job)."""
+    settings = settings or get_settings()
+    engine = engine or get_face_engine()
+
+    media = await prepare_image_media(session, drive_file, client, settings)
+    if media is None:
+        return None
+
+    if settings.face_jobs_enabled:
+        from app.workers.face_queue import enqueue_face_job
+
+        await enqueue_face_job(session, drive_file.id)
+        # Faces run on dfi-face-worker; keep DriveFile PROCESSING until face+embed.
+        return media
+
+    return await apply_faces_to_prepared_image(
+        session,
+        drive_file,
+        media,
+        client=client,
+        settings=settings,
+        engine=engine,
+    )

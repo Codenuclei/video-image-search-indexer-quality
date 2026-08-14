@@ -68,6 +68,21 @@ async def auto_index_loop(worker: IndexingWorker, stop_event: asyncio.Event) -> 
                     await worker.ensure_parallel_image_indexing()
                     summary = await worker.process_pending()
                     logger.info("Auto-index processing: %s", summary)
+                    # Flush status batch when full waves land; also drain leftovers
+                    # so UI does not sit on PROCESSING forever under 100.
+                    try:
+                        # Primary write path: batcher flushes every 100 enqueues.
+                        # Only force a flush here when a full batch is waiting, or
+                        # when slots are idle and leftovers would otherwise stall.
+                        batcher = worker._status_batcher
+                        if batcher.pending_count >= 100 or (
+                            batcher.pending_count > 0 and worker.active_image_count == 0
+                        ):
+                            n = await batcher.flush()
+                            if n:
+                                logger.info("Auto-index status batch flushed %d", n)
+                    except Exception:  # noqa: BLE001
+                        logger.exception("Auto-index status batch flush failed")
                 except Exception:  # noqa: BLE001
                     logger.exception("Auto-index processing failed")
 

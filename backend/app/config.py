@@ -19,6 +19,8 @@ class Settings(BaseSettings):
 
     # URL of the Next.js frontend — used to redirect after OAuth
     frontend_url: str = "http://localhost:3001"
+    # Carousel studio frontend — OAuth return_to allowlist + preferred base for /carousel|/test
+    carousel_frontend_url: str = "http://localhost:3002"
 
     # Comma-separated list of extra CORS origins (e.g. Railway frontend domain)
     allowed_origins: str = ""
@@ -33,30 +35,39 @@ class Settings(BaseSettings):
     # Optional Claude copy/theme writer; Gemini remains the image-ranking provider.
     anthropic_api_key: str = ""
     claude_api_key: str = ""
-    claude_model: str = "claude-sonnet-4-20250514"
+    claude_model: str = "claude-sonnet-4-5-20250929"
+    # OpenRouter (carousel LLM) — key is env-only; model/provider are runtime-editable.
+    openrouter_api_key: str = ""
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    openrouter_model: str = "anthropic/claude-sonnet-4"
     gemini_embedding_model: str = "models/gemini-embedding-2"
     gemini_file_search_store_display_name: str = "drive-connector-shared"
     gemini_upload_poll_seconds: float = 3.0
     gemini_upload_timeout_seconds: float = 600.0
     # Images are searched via Qdrant vector embeddings (Gemini Embedding 2).
-    # Uploading images to the Gemini File Search store is redundant and consumes
-    # the shared 10GB store quota, so it is disabled by default.
+    # Google File Search store is retired — local Qdrant RAG only (frames/images/captions/transcripts).
     gemini_file_search_images_enabled: bool = False
     gemini_file_search_search_enabled: bool = False
+    # Hard kill: never create/upload/query Google fileSearchStores (keep VLM/embed APIs).
+    gemini_file_search_disabled: bool = True
     # Parallel embed+Qdrant per query variant — off by default (can hurt quality under API load).
     search_parallel_variants_enabled: bool = False
     search_variant_max_parallel: int = 0   # 0 = auto (cpu cores); parallel variant embed+Qdrant
     search_llm_batch_parallel: int = 0     # 0 = auto; caption filter + rerank batch concurrency
     cpu_thread_pool_size: int = 0          # 0 = os.cpu_count()
-    # Concurrent image jobs (face detect + embed + Drive download). Matched to
-    # drive_download_max_concurrent so index slots don't outrun the Drive throttle.
-    # Folders Active / in-flight ≈ image + video slots (status=processing), not embed RPS.
-    # Default 46 + VIDEO_INDEX_MAX_PARALLEL(4) ≈ 50 Active when the queue is full.
-    # OPENBLAS/OMP must stay at 1 under WEB_CONCURRENCY=4 — do not raise worker count.
-    image_index_max_parallel: int = 46
+    # Concurrent image jobs must fit under one worker's DB pool
+    # (pool_size + max_overflow). 46 parallel jobs with pool≈24 caused mass
+    # QueuePool timeouts → fake "failed" spike. Keep ≤ ~half the pool.
+    # Keep low: high values + InsightFace/ONNX caused "can't start new thread".
+    image_index_max_parallel: int = 8
     # Shared Drive download concurrency (indexer + maintenance + preview).
     # Keep in lockstep with image slots so Active jobs are not download-starved.
-    drive_download_max_concurrent: int = 46
+    drive_download_max_concurrent: int = 8
+    # Cap simultaneous DB sessions held by image index jobs (download/face/embed).
+    # Status finals are batched separately — see index_status_batch_size.
+    index_db_max_concurrent: int = 8
+    # Flush PROCESSED/ERROR/PENDING status writes in one UPDATE every N files.
+    index_status_batch_size: int = 100
     # Parallel Drive folder children listings during recursive tree walk.
     drive_list_max_concurrent: int = 4
     # Optional Go sidecar canary (claim/download in Go, complete via Python ingest).
@@ -72,12 +83,29 @@ class Settings(BaseSettings):
     # Requeue/error PROCESSING videos stuck longer than this (seconds).
     video_index_stall_seconds: int = 900
 
+    # Dedicated indexer service sets RUN_INDEXER=true with WEB_CONCURRENCY=1.
+    # API-only replicas set RUN_INDEXER=false so search stays responsive.
+    # Default true keeps a single-service deploy indexing until the split.
+    run_indexer: bool = True
+    # When true, image indexer enqueues Postgres face_jobs instead of inline InsightFace.
+    # Pair with RUN_FACE_WORKER=true on volume-less dfi-face-worker replicas.
+    face_jobs_enabled: bool = False
+    # Face-only consumer (dfi-face-worker): claim face_jobs via SKIP LOCKED.
+    # Keep WEB_CONCURRENCY=1 and FACE_WORKER_CONCURRENCY=1 (sequential InsightFace lock).
+    run_face_worker: bool = False
+    face_worker_concurrency: int = 1
+    face_job_lease_seconds: int = 900
+    face_job_max_attempts: int = 3
+    # Stop claiming new index downloads when free space on media/video volume is below this.
+    index_disk_high_water_bytes: int = 2 * 1024 * 1024 * 1024
+
     # Image caption/embedding backfill throughput (maintenance loop).
     # Caption ~50/s: batch 10 × parallel ≈ 50*latency_s/10 (probe: ~13s → ~64).
-    # Embed ~50/s: batchEmbedContents batch 5 × parallel 20, max-edge 1024.
-    # Throughput lives in these async semaphores — NOT in more Gunicorn workers.
-    image_caption_batch_parallel: int = 64  # concurrent Gemini describe batches (semaphore)
-    image_embed_backfill_parallel: int = 20  # concurrent batchEmbedContents calls
+    # Embed ~50/s: batchEmbedContents batch 5 × parallel 20, max-edge 1024
+    # (≈2s/batch → 100 images / 2s = 50/s). Throughput is these semaphores —
+    # NOT more Gunicorn workers.
+    image_caption_batch_parallel: int = 8  # concurrent Gemini describe batches (semaphore)
+    image_embed_backfill_parallel: int = 20  # concurrent batchEmbedContents workers (~50/s)
     image_embed_batch_size: int = 5         # images per batchEmbedContents call
     image_embed_max_edge: int = 1024        # longest edge before embed (0 = no downscale)
     # Cap work per maintenance tick; keep >= caption/embed parallel or you starve RPS.
@@ -154,7 +182,7 @@ class Settings(BaseSettings):
     video_vlm_enrich: bool = True
     # Max videos at once. InsightFace/CPU lock → diminishing returns above ~3–4;
     # raise via VIDEO_INDEX_MAX_PARALLEL only if ffmpeg/Gemini headroom shows idle.
-    video_index_max_parallel: int = 4
+    video_index_max_parallel: int = 3
     # Local ASR fallback when YouTube/Drive captions are missing (carousel needs text).
     whisper_model_size: str = "base"
     whisper_fallback_enabled: bool = True
@@ -163,7 +191,7 @@ class Settings(BaseSettings):
     # Embedding 2: allow ~20 concurrent batchEmbedContents (batch=5 → ~50 img/s).
     # VLM: must be >= image_caption_batch_parallel or the caption semaphore is useless.
     gemini_embed_max_concurrent: int = 32
-    gemini_vlm_max_concurrent: int = 72
+    gemini_vlm_max_concurrent: int = 16
     gemini_upload_max_concurrent: int = 4
 
     # Legacy Fennec sidecar (disabled — use video_indexing_enabled instead)
@@ -184,9 +212,12 @@ class Settings(BaseSettings):
     qdrant_url: str = "http://127.0.0.1:6333"
     qdrant_collection: str = "dfi_video_frames"
     qdrant_images_collection: str = "dfi_images"
+    # Local transcript RAG (text→text) — replaces Gemini File Search for video speech.
+    qdrant_video_transcripts_collection: str = "dfi_video_transcripts"
     gemini_video_result_limit: int = 30   # Qdrant candidates before re-rank
     gemini_video_min_score: float = 0.25
     gemini_video_display_min_score: float = 0.32   # cosine threshold — lower = more recall
+    gemini_transcript_min_score: float = 0.35
     gemini_image_result_limit: int = 30
     gemini_image_min_score: float = 0.25
 
@@ -215,12 +246,13 @@ class Settings(BaseSettings):
     backup_retention_days: int = 14
     backup_interval_seconds: int = 86400
     # Async SQLAlchemy pool — must fit under Postgres max_connections (200).
-    # With WEB_CONCURRENCY=4: 4 × (5+5) = 40 < 200 (headroom for admin/pg_dump/other services).
-    # pool_size=2 was starving GET /index under concurrent workers (QueuePool timeout).
-    # Per-worker pool: ~50 concurrent index jobs on the background leader need headroom.
-    # WEB_CONCURRENCY=4 → 4×(15+9)=96 < 200 Postgres max (leave room for pg_dump).
-    db_pool_size: int = 15
-    db_max_overflow: int = 9
+    # Budget: WEB_CONCURRENCY × (pool_size + max_overflow) << max_connections.
+    # Prefer small pools + short-lived sessions over fat pools. UI poll storms and
+    # indexer jobs share the same workers; fat pools (15+9)×4 ≈ 96 look "safe" on
+    # paper but leave little room once drive-connector / pg_dump / admin connect.
+    # Default 5+5 with WEB_CONCURRENCY=4 → 40 reserved (reuse, don't hoard).
+    db_pool_size: int = 5
+    db_max_overflow: int = 5
     db_pool_timeout: float = 30.0
     # Qdrant REST client timeout (seconds); raise to avoid false connection errors under load.
     qdrant_timeout_seconds: float = 60.0

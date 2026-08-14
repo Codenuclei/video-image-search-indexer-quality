@@ -8,6 +8,7 @@ cross-process serialization for:
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
@@ -24,6 +25,16 @@ LOCK_BACKGROUND_LEADER = 0xDF100001
 LOCK_CAROUSEL_EXTRACT = 0xDF100002
 LOCK_CAROUSEL_THEMES = 0xDF100003
 LOCK_DRIVE_CACHE_REFRESH = 0xDF100004
+LOCK_IMAGE_INDEX_CLAIM = 0xDF100005
+LOCK_VIDEO_INDEX_CLAIM = 0xDF100006
+
+
+def video_index_lock_key(file_id: str) -> int:
+    """Stable per-video int64 key used to exclude duplicate execution."""
+    digest = hashlib.blake2b(
+        file_id.encode("utf-8"), digest_size=8, person=b"videoidx"
+    ).digest()
+    return int.from_bytes(digest, "big") & 0x7FFF_FFFF_FFFF_FFFF
 
 
 class AdvisoryLockHandle:

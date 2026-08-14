@@ -86,7 +86,7 @@ async def test_autoskip_duplicate_content(db_session: AsyncSession) -> None:
     await db_session.flush()
 
     assert reason == "duplicate_content"
-    assert incoming.status == DriveFileStatus.SKIPPED
+    assert incoming.status == DriveFileStatus.PROCESSED
     assert (incoming.error_message or "").startswith(DUPLICATE_CONTENT_PREFIX)
 
     conflict = (await db_session.execute(select(FileIndexConflict).limit(1))).scalar_one()
@@ -119,6 +119,7 @@ async def test_same_content_diff_name_autoskip_mergeable(db_session: AsyncSessio
     reason = await apply_dedupe_on_upsert(db_session, incoming, algo="md5", digest="cafebabe")
     await db_session.flush()
     assert reason == "duplicate_content"
+    assert incoming.status == DriveFileStatus.PROCESSED
 
     conflict = (await db_session.execute(select(FileIndexConflict).limit(1))).scalar_one()
     assert conflict.conflict_kind == KIND_SAME_CONTENT_DIFF_NAME

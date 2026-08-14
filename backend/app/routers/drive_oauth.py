@@ -15,10 +15,10 @@ import asyncio
 import logging
 import re
 from datetime import datetime, timedelta, timezone
-from urllib.parse import urlencode
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import httpx
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -48,10 +48,68 @@ _AUTH_URI = "https://accounts.google.com/o/oauth2/v2/auth"
 _USERINFO_URI = "https://www.googleapis.com/oauth2/v2/userinfo"
 
 
+def _oauth_allowed_origins(settings: Settings) -> set[str]:
+    origins: set[str] = set()
+    for raw in (
+        settings.frontend_url,
+        settings.carousel_frontend_url,
+        *(o.strip() for o in (settings.allowed_origins or "").split(",") if o.strip()),
+    ):
+        base = (raw or "").strip().rstrip("/")
+        if not base:
+            continue
+        parsed = urlparse(base if "://" in base else f"https://{base}")
+        if parsed.scheme in ("http", "https") and parsed.netloc:
+            origins.add(f"{parsed.scheme}://{parsed.netloc}".rstrip("/"))
+    return origins
+
+
+def _with_query(url: str, **extra: str) -> str:
+    parsed = urlparse(url)
+    q = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    q.update({k: v for k, v in extra.items() if v is not None})
+    return urlunparse(parsed._replace(query=urlencode(q), fragment=""))
+
+
+def resolve_oauth_return_url(settings: Settings, return_to: str | None) -> str:
+    """Validate return_to against FRONTEND_URL / CAROUSEL_FRONTEND_URL / ALLOWED_ORIGINS."""
+    default = f"{settings.frontend_url.rstrip('/')}/folders"
+    raw = (return_to or "").strip()
+    if not raw:
+        return default
+
+    allowed = _oauth_allowed_origins(settings)
+    if raw.startswith("/") and not raw.startswith("//"):
+        path = raw.split("?", 1)[0]
+        query = raw.split("?", 1)[1] if "?" in raw else ""
+        if path.startswith(("/carousel", "/test")):
+            base = (settings.carousel_frontend_url or settings.frontend_url).rstrip("/")
+        else:
+            base = settings.frontend_url.rstrip("/")
+        candidate = f"{base}{path}"
+        if query:
+            candidate = f"{candidate}?{query}"
+    else:
+        candidate = raw
+
+    parsed = urlparse(candidate)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return default
+    origin = f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
+    if origin not in allowed:
+        logger.warning("Rejected OAuth return_to origin %s (not allowlisted)", origin)
+        return default
+    # Only keep path + safe query from the candidate; drop fragments.
+    return urlunparse(parsed._replace(fragment=""))
+
+
 # ── OAuth flow ────────────────────────────────────────────────────────────────
 
 @router.get("/auth/google")
-async def auth_google(settings: Settings = Depends(get_settings)):
+async def auth_google(
+    return_to: str | None = Query(None, description="Post-OAuth redirect (allowlisted origin)"),
+    settings: Settings = Depends(get_settings),
+):
     """Start Google OAuth — redirects to Google's consent screen."""
     if not settings.google_client_id or not settings.google_client_secret:
         raise HTTPException(
@@ -66,6 +124,10 @@ async def auth_google(settings: Settings = Depends(get_settings)):
         "access_type": "offline",
         "prompt": "consent",
     }
+    # Pass validated absolute return URL through Google's opaque state.
+    resolved = resolve_oauth_return_url(settings, return_to)
+    if resolved:
+        params["state"] = resolved
     return RedirectResponse(f"{_AUTH_URI}?{urlencode(params)}")
 
 
@@ -80,14 +142,14 @@ async def auth_google_callback(
     state: str | None = None,
 ):
     """Exchange OAuth code for tokens, store them, redirect to frontend."""
-    frontend_url = settings.frontend_url.rstrip("/")
+    return_base = resolve_oauth_return_url(settings, state)
 
     if error:
         logger.warning("OAuth error from Google: %s", error)
-        return RedirectResponse(f"{frontend_url}/folders?error={error}")
+        return RedirectResponse(_with_query(return_base, error=error))
 
     if not code:
-        return RedirectResponse(f"{frontend_url}/folders?error=missing_code")
+        return RedirectResponse(_with_query(return_base, error="missing_code"))
 
     try:
         # Exchange code for tokens (plain Authorization Code — no PKCE)
@@ -140,12 +202,12 @@ async def auth_google_callback(
         logger.info("Google Drive connected for %s", email)
         if had_folder and not worker.is_running:
             background_tasks.add_task(_sync_after_folder_change, worker)
-        return RedirectResponse(f"{frontend_url}/folders?connected=1")
+        return RedirectResponse(_with_query(return_base, connected="1"))
 
     except Exception as exc:
         logger.exception("OAuth callback failed: %s", exc)
-        safe = str(exc)[:120].replace("&", "%26")
-        return RedirectResponse(f"{frontend_url}/folders?error=oauth_failed&detail={safe}")
+        safe = str(exc)[:120]
+        return RedirectResponse(_with_query(return_base, error="oauth_failed", detail=safe))
 
 
 # ── Session / status ──────────────────────────────────────────────────────────

@@ -57,6 +57,7 @@ async def _process_youtube_feed(
 
     session_factory = get_session_factory()
 
+    prioritized_ids: list[str] = []
     for video_id in video_ids:
         async with session_factory() as session:
             try:
@@ -80,6 +81,7 @@ async def _process_youtube_feed(
                 drive_file.status = DriveFileStatus.PENDING
                 drive_file.error_message = None
                 await session.commit()
+                prioritized_ids.append(drive_file.id)
                 logger.info(
                     "YouTube feed ready for pipeline: %s (local_download=%s)",
                     drive_file.name,
@@ -98,6 +100,11 @@ async def _process_youtube_feed(
                 logger.exception("YouTube feed failed for %s", video_id)
 
     try:
+        for fid in prioritized_ids:
+            try:
+                await worker.prioritize_video_index(fid)
+            except Exception:  # noqa: BLE001
+                logger.exception("Could not prioritize YouTube drive file %s", fid)
         await worker.ensure_parallel_video_indexing()
     except Exception:  # noqa: BLE001
         logger.exception("Could not start parallel video indexing after YouTube feed")

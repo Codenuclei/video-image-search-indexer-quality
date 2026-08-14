@@ -84,15 +84,19 @@ def _fail_if_qdrant_delete(*_a, **_k):
 @requires_postgres
 @pytest.mark.asyncio
 async def test_sync_soft_archives_stale_same_root_without_qdrant_delete(db_session):
-    """Stale files under the active root are soft-archived; vectors are not deleted."""
-    for fid, name in (("keep", "keep.jpg"), ("gone", "gone.jpg")):
+    """PROCESSED stale files stay PROCESSED; incomplete queue rows may soft-archive."""
+    for fid, name, status in (
+        ("keep", "keep.jpg", DriveFileStatus.PROCESSED),
+        ("gone", "gone.jpg", DriveFileStatus.PROCESSED),
+        ("pend-gone", "pend.jpg", DriveFileStatus.PENDING),
+    ):
         db_session.add(
             DriveFile(
                 id=fid,
                 name=name,
                 mime_type="image/jpeg",
                 path=f"/{name}",
-                status=DriveFileStatus.PROCESSED,
+                status=status,
                 root_folder_id="root-a",
                 last_synced_at=datetime.now(timezone.utc),
                 gemini_document_name=f"docs/{fid}",
@@ -100,7 +104,8 @@ async def test_sync_soft_archives_stale_same_root_without_qdrant_delete(db_sessi
             )
         )
         await db_session.flush()
-        db_session.add(Media(drive_file_id=fid, type=MediaType.IMAGE))
+        if status == DriveFileStatus.PROCESSED:
+            db_session.add(Media(drive_file_id=fid, type=MediaType.IMAGE))
     await db_session.commit()
 
     listing = _listing([_file("keep", "keep.jpg")])
@@ -117,11 +122,12 @@ async def test_sync_soft_archives_stale_same_root_without_qdrant_delete(db_sessi
 
     keep = await db_session.get(DriveFile, "keep")
     gone = await db_session.get(DriveFile, "gone")
+    pend = await db_session.get(DriveFile, "pend-gone")
     assert keep is not None and keep.status == DriveFileStatus.PROCESSED
     assert gone is not None
-    assert gone.status == DriveFileStatus.ARCHIVED
-    assert gone.archived_at is not None
-    # Media row retained
+    assert gone.status == DriveFileStatus.PROCESSED  # permanent library
+    assert pend is not None
+    assert pend.status == DriveFileStatus.ARCHIVED
     media = (
         await db_session.execute(select(Media).where(Media.drive_file_id == "gone"))
     ).scalar_one_or_none()

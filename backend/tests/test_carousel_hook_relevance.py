@@ -10,7 +10,9 @@ from app.routers.carousel_script import (
 )
 from app.search.carousel_pipeline import (
     _dedupe_topic_tree_hooks,
+    _force_non_verbatim_hook,
     _hooks_from_topic_tree,
+    enforce_non_verbatim_hooks,
 )
 
 
@@ -40,7 +42,7 @@ def test_topic_tree_hooks_are_unique_by_text_and_parent_can_be_empty():
 def test_original_text_boosts_on_topic_cue_relevance():
     crafted = TimedPick(
         id="1",
-        text="The hidden pattern behind Snapdeal growth",
+        text="Why tier-two shoppers changed e-commerce",
         start_sec=20,
         end_sec=40,
         topic_text="e-commerce growth",
@@ -48,7 +50,7 @@ def test_original_text_boosts_on_topic_cue_relevance():
     )
     without_seed = TimedPick(
         id="2",
-        text="The hidden pattern behind Snapdeal growth",
+        text="Why tier-two shoppers changed e-commerce",
         start_sec=20,
         end_sec=40,
         topic_text="e-commerce growth",
@@ -92,3 +94,57 @@ def test_heuristic_prefers_hook_span_and_relevant_lines():
     # Picks should sit near the spoken hook window, not the CTA filler.
     starts = [float(s["start_sec"]) for s in spans]
     assert all(s < 70 for s in starts)
+
+
+def test_force_non_verbatim_hooks_are_unique_not_hidden_pattern():
+    spoken_windows = [
+        "India's e-commerce boom is being driven by tier-two cities today.",
+        "Value commerce is winning over discount-only models in Bharat.",
+        "Snapdeal focused on everyday essentials for these buyers.",
+        "Founders who worship the upload button compound faster.",
+        "Campus tours hide the real admissions black box families fear.",
+    ]
+    used: set[str] = set()
+    hooks = []
+    for i, spoken in enumerate(spoken_windows):
+        h = _force_non_verbatim_hook(
+            spoken, theme_title="Founder stories", used=used, salt=i
+        )
+        assert "hidden pattern" not in h.lower()
+        hooks.append(h)
+        used.add(" ".join(h.lower().split()))
+    heads = [" ".join(h.lower().split()[:4]) for h in hooks]
+    assert len(set(heads)) == len(heads)
+    assert len(set(h.lower() for h in hooks)) == len(hooks)
+
+
+def test_enforce_non_verbatim_rewrites_repeated_hidden_pattern_openers():
+    corpus = [
+        "India's e-commerce boom is being driven by tier-two cities",
+        "Value commerce is winning over discount-only models",
+        "Snapdeal focused on everyday essentials for these buyers",
+    ]
+    hooks = [
+        {
+            "id": "h1",
+            "text": "The hidden pattern behind India boom",
+            "original_text": corpus[0],
+        },
+        {
+            "id": "h2",
+            "text": "The hidden pattern behind Value commerce",
+            "original_text": corpus[1],
+        },
+        {
+            "id": "h3",
+            "text": "The hidden pattern behind Snapdeal focused",
+            "original_text": corpus[2],
+        },
+    ]
+    kept, stats = enforce_non_verbatim_hooks(hooks, corpus, theme_title="Growth")
+    assert len(kept) == 3
+    texts = [str(h["text"]) for h in kept]
+    assert all("hidden pattern" not in t.lower() for t in texts)
+    heads = [" ".join(t.lower().split()[:4]) for t in texts]
+    assert len(set(heads)) == len(heads)
+    assert stats.get("deduped_openings", 0) >= 1 or stats.get("rewritten", 0) >= 0

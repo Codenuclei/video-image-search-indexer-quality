@@ -3,11 +3,13 @@ from __future__ import annotations
 import logging
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
 
 from app.config import Settings, get_settings
+from app.storage import ensure_disk_space
 
 logger = logging.getLogger(__name__)
 
@@ -153,6 +155,11 @@ def prepare_youtube_cookies_at_startup() -> None:
 
 def _rewrite_ytdlp_error(err: str, video_id: str) -> str:
     lower = err.lower()
+    if "no space left on device" in lower or "errno 28" in lower:
+        return (
+            f"retryable_disk_full: YouTube download for {video_id} ran out of disk space; "
+            "free disk space and retry"
+        )
     if any(m in lower for m in _BOT_CHECK_MARKERS) or "cookies" in lower and "bot" in lower:
         return (
             f"yt-dlp download failed for {video_id}: YouTube bot check / invalid cookies. "
@@ -174,6 +181,7 @@ def download_youtube_video_sync(video_id: str, *, title: str | None = None) -> t
 
     tmp_root = Path(settings.temp_dir) / "youtube_downloads"
     tmp_root.mkdir(parents=True, exist_ok=True)
+    ensure_disk_space(tmp_root)
 
     out_dir = tempfile.mkdtemp(prefix=f"yt-{video_id}-", dir=tmp_root)
     out_template = str(Path(out_dir) / f"%(title)s [{video_id}].%(ext)s")
@@ -194,16 +202,20 @@ def download_youtube_video_sync(video_id: str, *, title: str | None = None) -> t
         url,
     ]
     logger.info("Downloading YouTube video %s (cookies=%s)", video_id, cookies_file)
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
-    if proc.returncode != 0:
-        err = (proc.stderr or proc.stdout or "yt-dlp failed")[:2000]
-        raise RuntimeError(_rewrite_ytdlp_error(err, video_id))
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+        if proc.returncode != 0:
+            err = (proc.stderr or proc.stdout or "yt-dlp failed")[:2000]
+            raise RuntimeError(_rewrite_ytdlp_error(err, video_id))
 
-    candidates = list(Path(out_dir).glob(f"*[{video_id}].*"))
-    if not candidates:
-        candidates = list(Path(out_dir).glob("*"))
-    if not candidates:
-        raise RuntimeError(f"yt-dlp produced no output file for {video_id}")
+        candidates = list(Path(out_dir).glob(f"*[{video_id}].*"))
+        if not candidates:
+            candidates = list(Path(out_dir).glob("*"))
+        if not candidates:
+            raise RuntimeError(f"yt-dlp produced no output file for {video_id}")
+    except Exception:
+        shutil.rmtree(out_dir, ignore_errors=True)
+        raise
 
     local_path = str(candidates[0])
     ext = candidates[0].suffix.lstrip(".") or "webm"

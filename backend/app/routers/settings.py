@@ -9,15 +9,17 @@ from app.db.app_settings_store import (
     save_runtime_settings_to_db,
 )
 from app.db.session import get_db
+from app.llm.carousel_llm import carousel_llm_settings_public_live
 from app.runtime_settings import get_runtime_settings, update_runtime_settings
-from app.schemas import SettingsOut, SettingsUpdate
+from app.schemas import CarouselLlmModelOption, SettingsOut, SettingsUpdate
 
 router = APIRouter(prefix="/settings", tags=["settings"])
 
 
-def _settings_out() -> SettingsOut:
+async def _settings_out() -> SettingsOut:
     settings = get_settings()
     runtime = get_runtime_settings()
+    llm_pub = await carousel_llm_settings_public_live()
     return SettingsOut(
         gemini_model=settings.gemini_model,
         gemini_file_search_store_display_name=settings.gemini_file_search_store_display_name,
@@ -32,13 +34,30 @@ def _settings_out() -> SettingsOut:
         search_use_captions=runtime.search_use_captions,
         search_rerank_enabled=runtime.search_rerank_enabled,
         go_indexer_enabled=runtime.go_indexer_enabled,
+        carousel_llm_provider=llm_pub["carousel_llm_provider"],
+        openrouter_model=llm_pub["openrouter_model"],
+        claude_model=llm_pub["claude_model"],
+        openrouter_configured=llm_pub["openrouter_configured"],
+        claude_configured=llm_pub["claude_configured"],
+        carousel_llm_model_options=[
+            CarouselLlmModelOption(**opt) for opt in llm_pub["carousel_llm_model_options"]
+        ],
     )
 
 
 @router.get("", response_model=SettingsOut)
 async def read_settings(session: AsyncSession = Depends(get_db)) -> SettingsOut:
     await refresh_runtime_settings_from_db(session)
-    return _settings_out()
+    return await _settings_out()
+
+
+@router.get("/carousel-llm-models")
+async def read_carousel_llm_models(
+    session: AsyncSession = Depends(get_db),
+) -> dict:
+    """Live provider model picker + current selection (no API key)."""
+    await refresh_runtime_settings_from_db(session)
+    return await carousel_llm_settings_public_live()
 
 
 @router.put("", response_model=SettingsOut)
@@ -60,7 +79,10 @@ async def write_settings(
         search_use_captions=payload.search_use_captions,
         search_rerank_enabled=payload.search_rerank_enabled,
         go_indexer_enabled=payload.go_indexer_enabled,
+        carousel_llm_provider=payload.carousel_llm_provider,
+        openrouter_model=payload.openrouter_model,
+        claude_model=payload.claude_model,
     )
     await save_runtime_settings_to_db(session, runtime)
     await session.commit()
-    return _settings_out()
+    return await _settings_out()

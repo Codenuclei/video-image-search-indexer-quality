@@ -3,8 +3,9 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
-from fastapi.responses import FileResponse, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
+from fastapi.responses import FileResponse, Response, StreamingResponse
+from starlette.background import BackgroundTask
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -54,6 +55,20 @@ def _parse_drive_file_status(status: str | None) -> DriveFileStatus | None:
             detail=f"Invalid status {status!r}. Expected one of: "
             + ", ".join(s.value for s in DriveFileStatus),
         ) from exc
+
+
+def _live_drive_http_status(exc: BaseException) -> int:
+    """Map live-Drive auth failures to 401; other upstream failures stay 502."""
+    msg = str(exc).lower()
+    if (
+        "not connected" in msg
+        or "reconnect google drive" in msg
+        or "no google drive account" in msg
+        or "no refresh token" in msg
+        or "no drive folder selected" in msg
+    ):
+        return 401
+    return 502
 
 
 @router.get("/files", response_model=list[DriveFileOut])
@@ -365,9 +380,18 @@ async def retry_drive_file(
     session: AsyncSession = Depends(get_db),
     worker: IndexingWorker = Depends(get_indexing_worker),
 ) -> DriveFile:
+    from app.pipelines.common import file_has_media
+
     drive_file = await session.get(DriveFile, file_id)
     if drive_file is None:
         raise HTTPException(status_code=404, detail="File not found")
+
+    # Permanent library: PROCESSED with media is add-if-missing complete — no wipe/requeue.
+    if drive_file.status == DriveFileStatus.PROCESSED and await file_has_media(
+        session, drive_file.id
+    ):
+        await session.refresh(drive_file)
+        return drive_file
 
     if drive_file.gemini_document_name:
         gemini = get_gemini_service()
@@ -401,7 +425,11 @@ async def delete_drive_file(file_id: str, session: AsyncSession = Depends(get_db
 
 
 @router.get("/files/{file_id}/preview")
-async def preview_drive_file(file_id: str, session: AsyncSession = Depends(get_db)) -> Response:
+async def preview_drive_file(
+    file_id: str,
+    request: Request,
+    session: AsyncSession = Depends(get_db),
+) -> Response:
     """Return indexed file bytes for inline preview in the UI."""
     from app.config import get_settings
     from app.pipelines.common import is_video_mime
@@ -435,19 +463,33 @@ async def preview_drive_file(file_id: str, session: AsyncSession = Depends(get_d
         raise HTTPException(status_code=404, detail="YouTube local file not on volume yet")
 
     from app.db.session import get_session_factory
-    from app.drive.google_client import DriveDirectClient
 
     client = DriveDirectClient(session_factory=get_session_factory(), settings=settings)
+    range_header = request.headers.get("range")
+    stream_context = client.stream_file_content(file_id, range_header=range_header)
     try:
-        content = await download_to_memory(client, file_id)
+        upstream = await stream_context.__aenter__()
     except (DriveConnectorError, DriveDirectError) as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=_live_drive_http_status(exc),
+            detail=str(exc),
+        ) from exc
 
     media_type = drive_file.mime_type or "application/octet-stream"
-    return Response(
-        content=content,
+    headers = {
+        "Accept-Ranges": upstream.headers.get("accept-ranges", "bytes"),
+        "Content-Disposition": f'inline; filename="{drive_file.name}"',
+    }
+    for name in ("content-range", "content-length", "etag", "last-modified"):
+        value = upstream.headers.get(name)
+        if value:
+            headers[name] = value
+    return StreamingResponse(
+        upstream.aiter_raw(),
+        status_code=upstream.status_code,
         media_type=media_type,
-        headers={"Content-Disposition": f'inline; filename="{drive_file.name}"'},
+        headers=headers,
+        background=BackgroundTask(stream_context.__aexit__, None, None, None),
     )
 
 
@@ -462,27 +504,33 @@ async def download_drive_file(file_id: str, session: AsyncSession = Depends(get_
     if drive_file is None:
         raise HTTPException(status_code=404, detail="File not found")
 
+    settings = get_settings()
+    local_path = video_cache_path(settings, drive_file)
+    # Cache-first for all sources so disconnect does not block already-indexed media.
+    if local_path.is_file():
+        media_type = drive_file.mime_type or (
+            "video/webm" if is_youtube_source(drive_file) else "application/octet-stream"
+        )
+        return FileResponse(
+            local_path,
+            media_type=media_type,
+            filename=drive_file.name,
+            headers={"Content-Disposition": f'attachment; filename="{drive_file.name}"'},
+        )
+
     if is_youtube_source(drive_file):
-        settings = get_settings()
-        local_path = video_cache_path(settings, drive_file)
-        if local_path.is_file():
-            media_type = drive_file.mime_type or "video/webm"
-            return FileResponse(
-                local_path,
-                media_type=media_type,
-                filename=drive_file.name,
-                headers={"Content-Disposition": f'attachment; filename="{drive_file.name}"'},
-            )
         raise HTTPException(status_code=404, detail="YouTube local file not on volume yet")
 
     from app.db.session import get_session_factory
-    from app.drive.google_client import DriveDirectClient
 
-    client = DriveDirectClient(session_factory=get_session_factory(), settings=get_settings())
+    client = DriveDirectClient(session_factory=get_session_factory(), settings=settings)
     try:
         content = await download_to_memory(client, file_id)
     except (DriveConnectorError, DriveDirectError) as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=_live_drive_http_status(exc),
+            detail=str(exc),
+        ) from exc
 
     media_type = drive_file.mime_type or "application/octet-stream"
     return Response(
