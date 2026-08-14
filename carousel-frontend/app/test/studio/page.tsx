@@ -14,6 +14,7 @@ import {
   Check,
   Clapperboard,
   ImageIcon,
+  Loader2,
   Sparkles,
   Target,
   Upload,
@@ -1237,7 +1238,10 @@ function TestStudioInner() {
                 data-testid="test-continue-selection"
               >
                 {extractLoading ? (
-                  "Extracting topics & hooks…"
+                  <>
+                    <Loader2 size={14} className="animate-spin" aria-hidden />
+                    Extracting topics & hooks…
+                  </>
                 ) : (
                   <>
                     Extract from {selectedThemes.length || 0} theme
