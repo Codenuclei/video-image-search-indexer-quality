@@ -43,6 +43,7 @@ import {
 } from "@/lib/transcript-ensure";
 import {
   apiClient,
+  formatApiError,
   type CarouselItemFeedback,
   type CarouselItemReference,
   type CarouselPipelineExtractResponse,
@@ -198,7 +199,10 @@ function TestStudioInner() {
   const [videos, setVideos] = useState<TestVideo[]>([]);
   const [selected, setSelected] = useState<TestVideo | null>(null);
   const [loadingVideos, setLoadingVideos] = useState(true);
-  const [busy, setBusy] = useState(false);
+  const [themesLoading, setThemesLoading] = useState(false);
+  const [extractLoading, setExtractLoading] = useState(false);
+  const [copyLoading, setCopyLoading] = useState(false);
+  const [imagesLoading, setImagesLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const [uploading, setUploading] = useState(false);
@@ -380,7 +384,7 @@ function TestStudioInner() {
       const res = await testApi.recentVideos();
       setVideos(res.items ?? []);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load videos");
+      setError(formatApiError(e, "Could not load videos. Please refresh and try again."));
     } finally {
       setLoadingVideos(false);
     }
@@ -507,7 +511,7 @@ function TestStudioInner() {
       }
       void loadVideos();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Upload failed");
+      setError(formatApiError(e, "Upload failed. Check the file and try again."));
     } finally {
       setUploading(false);
       if (uploadInputRef.current) uploadInputRef.current.value = "";
@@ -625,10 +629,10 @@ function TestStudioInner() {
       return next;
     } catch (e) {
       if (e instanceof DOMException && e.name === "AbortError") return null;
-      const msg =
-        e instanceof Error
-          ? e.message
-          : "We couldn’t prepare this transcript. Please try again.";
+      const msg = formatApiError(
+        e,
+        "We couldn’t prepare this transcript. Please try again."
+      );
       setTranscriptModal({
         open: true,
         videoName: video.name,
@@ -640,13 +644,13 @@ function TestStudioInner() {
   }
 
   async function continueToThemes(opts?: { force?: boolean; runConfig?: CarouselRunConfig }) {
-    if (!selected || busy) return;
+    if (!selected || themesLoading) return;
     const cfg = opts?.runConfig ?? runConfig;
     let video = selected;
     const ensured = await ensureTranscriptForVideo(video);
     if (!ensured) return;
     video = ensured;
-    setBusy(true);
+    setThemesLoading(true);
     setError(null);
     try {
       const themesRes = await testApi.themes(video.id, {
@@ -671,22 +675,25 @@ function TestStudioInner() {
         if (themesRes.warning?.toLowerCase().includes("transcript")) {
           const ensured = await ensureTranscriptForVideo(video, { force: true });
           if (ensured) {
-            setBusy(false);
+            setThemesLoading(false);
             return continueToThemes({ ...opts, force: true });
           }
         }
         setError(
-          themesRes.warning ||
-            "No themes returned from API. This usually means the video has no transcript cues (captions/speech text)."
+          themesRes.warning
+            ? formatApiError(new Error(themesRes.warning), "No themes found for this video. Make sure it has a transcript, then try again.")
+            : "No themes found for this video. Make sure it has a transcript, then try again."
         );
         return;
       }
       setTranscriptModal((prev) => ({ ...prev, open: false }));
       setPhase(2);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Theme segmentation failed");
+      setError(
+        formatApiError(e, "We couldn’t generate themes for this video. Please try again.")
+      );
     } finally {
-      setBusy(false);
+      setThemesLoading(false);
     }
   }
 
@@ -694,13 +701,13 @@ function TestStudioInner() {
     force?: boolean;
     runConfig?: CarouselRunConfig;
   }) {
-    if (!selected || busy) return;
+    if (!selected || extractLoading) return;
     if (!selectedThemes.length) {
-      setError("Select at least one theme.");
+      setError("Select at least one theme, then extract topics and hooks.");
       return;
     }
     const cfg = opts?.runConfig ?? runConfig;
-    setBusy(true);
+    setExtractLoading(true);
     setError(null);
     try {
       const ordered = [...selectedThemes].sort((a, b) => a.start_sec - b.start_sec);
@@ -720,21 +727,23 @@ function TestStudioInner() {
       setCopySource(null);
       setPhase(3);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not load topics & hooks");
+      setError(
+        formatApiError(e, "We couldn’t extract topics and hooks. Please try again.")
+      );
     } finally {
-      setBusy(false);
+      setExtractLoading(false);
     }
   }
 
   /** Phase 4 — text-first generate (no frames yet). */
   async function generateCopy(opts?: { force?: boolean; runConfig?: CarouselRunConfig }) {
-    if (!selected || !extract || busy) return;
+    if (!selected || !extract || copyLoading) return;
     if (!selectedHooks.length && !selectedTopics.length) {
-      setError("Select at least one topic or hook.");
+      setError("Select at least one topic or hook, then generate copy.");
       return;
     }
     const cfg = opts?.runConfig ?? runConfig;
-    setBusy(true);
+    setCopyLoading(true);
     setError(null);
     try {
       const intentRes = await testApi.intent(selectedHooks, selectedTopics, cfg);
@@ -799,24 +808,24 @@ function TestStudioInner() {
       }
 
       if (!merged.length) {
-        setError("Generate returned no carousels.");
+        setError("No carousel copy came back. Try different topics or hooks.");
         return;
       }
 
       applyGenerateResult(merged, lastLayouts, lastCopySource);
       setPhase(4);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Generate copy failed");
+      setError(formatApiError(e, "We couldn’t generate copy. Please try again."));
     } finally {
-      setBusy(false);
+      setCopyLoading(false);
     }
   }
 
   /** Phase 5 — attach ranked frames after copy edit. */
   async function selectImages(opts?: { force?: boolean; runConfig?: CarouselRunConfig }) {
-    if (!selected || !carousels.length || busy) return;
+    if (!selected || !carousels.length || imagesLoading) return;
     const cfg = opts?.runConfig ?? runConfig;
-    setBusy(true);
+    setImagesLoading(true);
     setError(null);
     try {
       const selectedImgs = await testApi.selectImages({
@@ -834,9 +843,9 @@ function TestStudioInner() {
       setImageStage(selectedImgs.cache_hit ? "cache" : "generated");
       setPhase(5);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Select images failed");
+      setError(formatApiError(e, "We couldn’t select images. Please try again."));
     } finally {
-      setBusy(false);
+      setImagesLoading(false);
     }
   }
 
@@ -905,11 +914,17 @@ function TestStudioInner() {
         `Pre-run finished: ${res.ok_count}/${res.count} ok · cache hits ${hits} · generated ${generated}`
       );
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Pre-run failed");
+      setError(formatApiError(e, "Pre-run failed. Please try again."));
     } finally {
       setPrerunBusy(false);
     }
   }
+
+  const themesComplete = Boolean(themeStage) && phase >= 2;
+  const extractComplete = Boolean(extractStage) && phase >= 3;
+  const copyComplete = Boolean(copyStage) && phase >= 4;
+  const imagesComplete = Boolean(imageStage) && phase >= 5;
+  const transcriptBusy = transcriptModal.open && !transcriptModal.error;
 
   return (
     <div className="mx-auto max-w-5xl space-y-8 px-4 pb-24 pt-8 sm:px-6 sm:pt-10">
@@ -1075,6 +1090,11 @@ function TestStudioInner() {
                         setCopyStage(null);
                         setImageStage(null);
                         setHookFrames({});
+                        setThemesLoading(false);
+                        setExtractLoading(false);
+                        setCopyLoading(false);
+                        setImagesLoading(false);
+                        setError(null);
                       }}
                       data-testid="test-pick-video"
                     >
@@ -1101,9 +1121,9 @@ function TestStudioInner() {
               Selected: <span className="font-medium text-foreground">{selected.name}</span>
             </p>
             <StageLlmGenerate
-              label="Generate themes"
-              busy={busy || transcriptModal.open}
-              disabled={!selected}
+              label="Generate topics and hooks"
+              busy={themesLoading}
+              disabled={!selected || themesComplete || transcriptBusy}
               runConfig={runConfig}
               onRunConfigChange={applyRunConfig}
               onGenerate={(cfg) => continueToThemes({ force: true, runConfig: cfg })}
@@ -1113,10 +1133,17 @@ function TestStudioInner() {
               type="button"
               className="studio-btn studio-btn-primary studio-btn-continue"
               onClick={() => void continueToThemes()}
-              disabled={busy || transcriptModal.open}
+              disabled={themesLoading || themesComplete || transcriptBusy}
+              title={
+                themesComplete
+                  ? "Themes already generated for this video"
+                  : transcriptBusy
+                    ? "Wait for the transcript to finish preparing"
+                    : undefined
+              }
               data-testid="test-continue-themes"
             >
-              {busy && phase === 1 ? (
+              {themesLoading ? (
                 "Loading themes…"
               ) : (
                 <>
@@ -1206,10 +1233,10 @@ function TestStudioInner() {
                 type="button"
                 className="studio-btn studio-btn-primary studio-btn-continue"
                 onClick={() => void extractFromSelectedThemes({ force: false })}
-                disabled={busy || !selectedThemes.length}
+                disabled={extractLoading || !selectedThemes.length}
                 data-testid="test-continue-selection"
               >
-                {busy ? (
+                {extractLoading ? (
                   "Extracting topics & hooks…"
                 ) : (
                   <>
@@ -1219,26 +1246,17 @@ function TestStudioInner() {
                   </>
                 )}
               </button>
-              <StageLlmGenerate
-                label="Generate themes"
-                busy={busy}
-                disabled={!selected}
-                runConfig={runConfig}
-                onRunConfigChange={applyRunConfig}
-                onGenerate={(cfg) => continueToThemes({ force: true, runConfig: cfg })}
-                testId="test-regen-themes-llm"
-              />
             </div>
           )}
           {phase >= 3 && (
             <div className="mt-4">
               <StageLlmGenerate
-                label="Generate themes"
-                busy={busy}
-                disabled={!selected}
+                label="Generate topics and hooks"
+                busy={false}
+                disabled
                 runConfig={runConfig}
                 onRunConfigChange={applyRunConfig}
-                onGenerate={(cfg) => continueToThemes({ force: true, runConfig: cfg })}
+                onGenerate={() => undefined}
                 testId="test-regen-themes-llm-later"
               />
             </div>
@@ -1301,11 +1319,11 @@ function TestStudioInner() {
                 className="studio-btn studio-btn-primary studio-btn-continue"
                 onClick={() => void generateCopy({ force: false })}
                 disabled={
-                  busy || (!selectedHooks.length && !selectedTopics.length)
+                  copyLoading || (!selectedHooks.length && !selectedTopics.length)
                 }
                 data-testid="test-generate-copy"
               >
-                {busy ? (
+                {copyLoading ? (
                   "Generating copy…"
                 ) : (
                   <>
@@ -1315,9 +1333,9 @@ function TestStudioInner() {
                 )}
               </button>
               <StageLlmGenerate
-                label="Generate topics"
-                busy={busy}
-                disabled={!selectedThemes.length}
+                label="Generate topics and hooks"
+                busy={extractLoading}
+                disabled={!selectedThemes.length || extractComplete}
                 runConfig={runConfig}
                 onRunConfigChange={applyRunConfig}
                 onGenerate={(cfg) =>
@@ -1335,14 +1353,12 @@ function TestStudioInner() {
           {phase >= 4 && (
             <div className="mt-4">
               <StageLlmGenerate
-                label="Generate topics"
-                busy={busy}
-                disabled={!selectedThemes.length}
+                label="Generate topics and hooks"
+                busy={false}
+                disabled
                 runConfig={runConfig}
                 onRunConfigChange={applyRunConfig}
-                onGenerate={(cfg) =>
-                  extractFromSelectedThemes({ force: true, runConfig: cfg })
-                }
+                onGenerate={() => undefined}
                 testId="test-regen-extract-llm-later"
               />
             </div>
@@ -1385,8 +1401,10 @@ function TestStudioInner() {
             <div className="mt-5 flex flex-wrap gap-3">
               <StageLlmGenerate
                 label="Generate copy"
-                busy={busy}
-                disabled={!selectedHooks.length && !selectedTopics.length}
+                busy={copyLoading}
+                disabled={
+                  copyComplete || (!selectedHooks.length && !selectedTopics.length)
+                }
                 runConfig={runConfig}
                 onRunConfigChange={applyRunConfig}
                 onGenerate={(cfg) => generateCopy({ force: true, runConfig: cfg })}
@@ -1396,10 +1414,10 @@ function TestStudioInner() {
                 type="button"
                 className="studio-btn studio-btn-primary studio-btn-continue"
                 onClick={() => void selectImages({ force: false })}
-                disabled={busy || !carousels.length}
+                disabled={imagesLoading || !carousels.length}
                 data-testid="test-select-images"
               >
-                {busy ? (
+                {imagesLoading ? (
                   "Selecting images…"
                 ) : (
                   <>
@@ -1414,11 +1432,11 @@ function TestStudioInner() {
             <div className="mt-5">
               <StageLlmGenerate
                 label="Generate copy"
-                busy={busy}
-                disabled={!selectedHooks.length && !selectedTopics.length}
+                busy={false}
+                disabled
                 runConfig={runConfig}
                 onRunConfigChange={applyRunConfig}
-                onGenerate={(cfg) => generateCopy({ force: true, runConfig: cfg })}
+                onGenerate={() => undefined}
                 testId="test-regen-copy-llm-later"
               />
             </div>
@@ -1468,8 +1486,8 @@ function TestStudioInner() {
             <div className="mt-5 flex flex-wrap gap-3">
               <StageLlmGenerate
                 label="Generate images"
-                busy={busy}
-                disabled={!carousels.length}
+                busy={imagesLoading}
+                disabled={!carousels.length || imagesComplete}
                 runConfig={runConfig}
                 onRunConfigChange={applyRunConfig}
                 onGenerate={(cfg) => selectImages({ force: true, runConfig: cfg })}
@@ -1491,11 +1509,11 @@ function TestStudioInner() {
             <div className="mt-5">
               <StageLlmGenerate
                 label="Generate images"
-                busy={busy}
-                disabled={!carousels.length}
+                busy={false}
+                disabled
                 runConfig={runConfig}
                 onRunConfigChange={applyRunConfig}
-                onGenerate={(cfg) => selectImages({ force: true, runConfig: cfg })}
+                onGenerate={() => undefined}
                 testId="test-regen-images-llm-later"
               />
             </div>

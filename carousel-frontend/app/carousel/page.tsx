@@ -621,7 +621,7 @@ export default function CarouselSearchPage() {
       } catch (e) {
         if (signal?.aborted || themesRequestKeyRef.current !== requestKey) return;
         if (e instanceof Error && e.name === "AbortError") return;
-        setError(formatApiError(e, "Theme segmentation failed"));
+        setError(formatApiError(e, "We couldn’t generate themes for this video. Please try again."));
         setThemes([]);
         setThemeSaveId(null);
         setThemesFromCache(false);
@@ -1087,7 +1087,7 @@ export default function CarouselSearchPage() {
         phase3Ref.current?.scrollIntoView({ behavior: "smooth", block: "start" });
       });
     } catch (e) {
-      setError(formatApiError(e, "Hook & topic extract failed"));
+      setError(formatApiError(e, "We couldn’t extract topics and hooks. Please try again."));
       setExtract(null);
       setExtractFromCache(false);
     } finally {
@@ -1270,7 +1270,7 @@ export default function CarouselSearchPage() {
     } catch (e) {
       // Stay on phase 4 with a visible error — never silently wipe success state
       // without explaining why (error UI used to live only inside phase 5).
-      setOutlineError(formatApiError(e, "Carousel generation failed"));
+      setOutlineError(formatApiError(e, "We couldn’t generate carousel copy. Please try again."));
     } finally {
       setBuilding(false);
     }
@@ -1326,7 +1326,7 @@ export default function CarouselSearchPage() {
         );
       }
     } catch (e) {
-      setOutlineError(formatApiError(e, "Image selection failed"));
+      setOutlineError(formatApiError(e, "We couldn’t select images. Please try again."));
     } finally {
       setSelectingImages(false);
     }
@@ -1685,13 +1685,15 @@ export default function CarouselSearchPage() {
                   themesNeedContinue ||
                   loadingExtract ||
                   building ||
-                  phase >= 5 ||
+                  phase >= 3 ||
                   pipelineLocked
                 }
                 title={
                   themesNeedContinue
                     ? "Load themes first"
-                    : "Generate a fresh theme set and save it"
+                    : phase >= 3
+                      ? "Topics and hooks already generated"
+                      : "Generate a fresh theme set and save it"
                 }
               >
                 <RefreshCw size={14} className={cn(loadingThemes && "animate-spin")} />
@@ -1745,7 +1747,7 @@ export default function CarouselSearchPage() {
                     continueDisabledReason ||
                     (themeSaves.length > 0
                       ? "Load saved themes"
-                      : "Generate themes for this video")
+                      : "Generate topics and hooks for this video")
                   }
                 >
                   {loadingThemes ? (
@@ -1757,7 +1759,7 @@ export default function CarouselSearchPage() {
                     </>
                   ) : (
                     <>
-                      Generate themes
+                      Generate topics and hooks
                       <ArrowRight size={14} className="studio-btn-continue-arrow" />
                     </>
                   )}
@@ -1768,7 +1770,7 @@ export default function CarouselSearchPage() {
             <div className="mt-4 space-y-3">
               <p className="text-sm text-muted-foreground">
                 {themesMissing
-                  ? "No cached themes for this transcript. Generate themes explicitly — Continue never calls Gemini."
+                  ? "No cached themes for this transcript. Generate topics and hooks explicitly — Continue never calls Gemini."
                   : "No themes found for this video yet."}
               </p>
               <button
@@ -1778,10 +1780,14 @@ export default function CarouselSearchPage() {
                   e.preventDefault();
                   void generateThemes();
                 }}
-                disabled={loadingThemes || pipelineLocked}
+                disabled={loadingThemes || pipelineLocked || phase >= 3}
                 data-testid="carousel-generate-themes"
               >
-                {loadingThemes ? <LoadingLabel>Generating…</LoadingLabel> : "Generate themes"}
+                {loadingThemes ? (
+                  <LoadingLabel>Generating…</LoadingLabel>
+                ) : (
+                  "Generate topics and hooks"
+                )}
               </button>
             </div>
           ) : (
@@ -1889,14 +1895,17 @@ export default function CarouselSearchPage() {
                   building ||
                   pipelineLocked ||
                   selectedThemes.length === 0 ||
-                  themesNeedContinue
+                  themesNeedContinue ||
+                  phase >= 3
                 }
                 title={
-                  selectedThemes.length === 0
-                    ? "Select at least one theme"
-                    : loadingExtract
-                      ? "Extracting…"
-                      : "Extract hooks & topics (cache-first; generates only on miss)"
+                  phase >= 3
+                    ? "Topics and hooks already generated"
+                    : selectedThemes.length === 0
+                      ? "Select at least one theme"
+                      : loadingExtract
+                        ? "Extracting…"
+                        : "Extract hooks & topics (cache-first; generates only on miss)"
                 }
                 data-testid="carousel-extract-themes"
               >
@@ -1922,9 +1931,14 @@ export default function CarouselSearchPage() {
                   loadingThemes ||
                   building ||
                   pipelineLocked ||
-                  selectedThemes.length === 0
+                  selectedThemes.length === 0 ||
+                  phase >= 4
                 }
-                title="Force regenerate hooks & topics"
+                title={
+                  phase >= 4
+                    ? "Copy already generated — start over to regenerate extract"
+                    : "Force regenerate hooks & topics"
+                }
               >
                 <RefreshCw size={14} className={cn(loadingExtract && "animate-spin")} />
                 Regenerate extract

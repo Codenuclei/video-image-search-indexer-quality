@@ -42,9 +42,12 @@ export function formatApiError(
 
   if (raw.startsWith("{")) {
     try {
-      const parsed = JSON.parse(raw) as { detail?: string };
+      const parsed = JSON.parse(raw) as { detail?: string | { msg?: string }[] };
       if (typeof parsed.detail === "string" && parsed.detail.trim()) {
-        return parsed.detail.trim();
+        return friendlyDetail(parsed.detail.trim(), fallback);
+      }
+      if (Array.isArray(parsed.detail) && parsed.detail[0]?.msg) {
+        return friendlyDetail(String(parsed.detail[0].msg), fallback);
       }
     } catch {
       // fall through
@@ -56,12 +59,30 @@ export function formatApiError(
     /127\.0\.0\.1/i.test(raw) ||
     /:\d{4,5}\/?/i.test(raw) ||
     /internal server error/i.test(raw) ||
-    /<html/i.test(raw)
+    /<html/i.test(raw) ||
+    /traceback \(most recent call last\)/i.test(raw) ||
+    /file ".*", line \d+/i.test(raw)
   ) {
-    return SERVICE_UNAVAILABLE_MESSAGE;
+    return fallback === "Something went wrong. Please try again."
+      ? SERVICE_UNAVAILABLE_MESSAGE
+      : fallback;
   }
 
-  return raw.length > 240 ? `${raw.slice(0, 240)}…` : raw;
+  return friendlyDetail(raw.length > 240 ? `${raw.slice(0, 240)}…` : raw, fallback);
+}
+
+function friendlyDetail(detail: string, fallback: string): string {
+  const lower = detail.toLowerCase();
+  if (
+    lower.includes("traceback") ||
+    lower.includes("exception:") ||
+    /at\s+\S+\s+\(\S+:\d+:\d+\)/.test(detail) ||
+    lower.includes("typeerror") ||
+    lower.includes("referenceerror")
+  ) {
+    return fallback;
+  }
+  return detail;
 }
 
 export function isServiceUnavailableMessage(message: string): boolean {

@@ -142,7 +142,7 @@ export function TopicsHooksTree({
       });
       onRestoreExtract(extract, res.selected_hooks ?? [], res.selected_topics ?? []);
     } catch (e) {
-      setError(formatApiError(e, "Shuffle failed"));
+      setError(formatApiError(e, "Couldn’t reshuffle picks. Please try again."));
     } finally {
       setLoadingShuffle(false);
     }
