@@ -7,7 +7,8 @@ Rules enforced here:
 - Generation order: cohesive topics → optional subtopics → hooks (one topic at a time).
 - Topics are true thematic clusters from the transcript (where the speaker takes a
   direction), not scattered keyword tags. Subtopics nest under a parent when natural.
-- Hooks are crafted for a singular topic and must not reuse another topic's angle.
+- Hooks are exact transcript sentences for a singular topic (no rewrite / punch-up).
+- Hooks must not reuse another topic's angle.
 - Time spans stay aligned to spoken utterances for frames.
 - Hooks/topics prefer English: use parallel English cues when present, else translate.
 """
@@ -734,7 +735,7 @@ async def extract_hooks_and_topics_async(
         span_end=end_sec,
     )
 
-    # Hooks: craft for ONE singular topic at a time (no cross-topic reuse).
+    # Hooks: exact transcript sentences only — never LLM/heuristic rewrite.
     cue_corpus = [str(t or "") for _s, _e, t in window if (t or "").strip()]
     all_hooks: list[dict[str, Any]] = []
     used_angles: list[str] = []
@@ -743,6 +744,7 @@ async def extract_hooks_and_topics_async(
         "rejected_verbatim": 0,
         "rewritten": 0,
         "dropped": 0,
+        "verbatim_kept": 0,
     }
     hook_pool = primary_pool if primary_pool else cues
     for topic in topic_tree:
@@ -771,45 +773,9 @@ async def extract_hooks_and_topics_async(
         for h in candidates:
             h["topic_id"] = topic.get("id")
             h["topic_text"] = topic.get("text")
-        crafted: list[dict[str, Any]] | None = None
-        if has_llm:
-            try:
-                crafted = await _llm_hooks_for_singular_topic(
-                    hooks=candidates,
-                    topic_title=topic_title,
-                    topic_explanation=str(topic.get("explanation") or ""),
-                    theme_title=theme_title,
-                    theme_summary=theme_summary,
-                    used_angles=used_angles,
-                    api_key=api_key,
-                    model=model,
-                    claude_api_key=claude_api_key,
-                    claude_model=claude_model,
-                    provider=provider,
-                    openrouter_api_key=openrouter_api_key,
-                    openrouter_model=openrouter_model,
-                    openrouter_base_url=openrouter_base_url,
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("per-topic hook craft failed for %s: %s", topic.get("id"), exc)
-        if crafted:
-            topic_hooks = crafted
-        else:
-            topic_hooks = heuristic_craft_hooks(
-                candidates, theme_title=str(topic.get("text") or theme_title)
-            )
-            for h in topic_hooks:
-                h["topic_id"] = topic.get("id")
-                h["topic_text"] = topic.get("text")
-        # Hard verbatim guard (LLM + heuristic)
-        local_corpus = cue_corpus + [str(c.get("text") or "") for c in candidates]
-        topic_hooks, vstats = enforce_non_verbatim_hooks(
-            topic_hooks,
-            local_corpus,
-            theme_title=str(topic.get("text") or theme_title),
-        )
-        for k, v in vstats.items():
-            verbatim_stats_total[k] = verbatim_stats_total.get(k, 0) + v
+        topic_hooks = keep_verbatim_transcript_hooks(candidates)
+        verbatim_stats_total["checked"] += len(candidates)
+        verbatim_stats_total["verbatim_kept"] += len(topic_hooks)
         # Keep a useful local set; the global cap and final tree dedupe still
         # bound the shipped payload.
         topic_hooks = topic_hooks[:5]
@@ -848,50 +814,16 @@ async def extract_hooks_and_topics_async(
     verbatim_stats_total["hooks_backfilled"] = prune_stats.get("backfilled", 0)
 
     if not all_hooks:
-        # Legacy path: craft from theme-wide candidates.
+        # Legacy path: keep exact transcript windows (no rewrite).
         if english_cues and any(needs_english(h.get("text", "")) for h in base["hooks"]):
             base["hooks"] = _swap_hooks_with_english_cues(base["hooks"], english_cues)
-        if base.get("hooks"):
-            crafted_all: list[dict[str, Any]] | None = None
-            if has_llm:
-                try:
-                    crafted_all = await _llm_craft_hooks(
-                        hooks=base["hooks"],
-                        theme_title=theme_title,
-                        theme_summary=theme_summary,
-                        api_key=api_key,
-                        model=model,
-                        claude_api_key=claude_api_key,
-                        claude_model=claude_model,
-                        provider=provider,
-                        openrouter_api_key=openrouter_api_key,
-                        openrouter_model=openrouter_model,
-                        openrouter_base_url=openrouter_base_url,
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("hook analysis failed, using heuristic craft: %s", exc)
-            base["hooks"] = crafted_all or heuristic_craft_hooks(
-                base["hooks"], theme_title=theme_title
-            )
-            base["hooks"], vstats = enforce_non_verbatim_hooks(
-                list(base.get("hooks") or []),
-                cue_corpus + [str(h.get("original_text") or h.get("text") or "") for h in base["hooks"]],
-                theme_title=theme_title,
-            )
-            for k, v in vstats.items():
-                verbatim_stats_total[k] = verbatim_stats_total.get(k, 0) + v
+        base["hooks"] = keep_verbatim_transcript_hooks(list(base.get("hooks") or []))
         all_hooks = list(base.get("hooks") or [])
 
     all_hooks = _dedupe_hook_list(all_hooks)
 
-    # Final verbatim sweep across the full cue corpus.
-    all_hooks, final_vstats = enforce_non_verbatim_hooks(
-        all_hooks,
-        cue_corpus,
-        theme_title=theme_title,
-    )
-    for k, v in final_vstats.items():
-        verbatim_stats_total[k] = verbatim_stats_total.get(k, 0) + v
+    # Do NOT rewrite hooks — final pass only re-asserts verbatim flags.
+    all_hooks = keep_verbatim_transcript_hooks(all_hooks)
 
     # The tree is authoritative: a hook must have exactly one placement.
     topic_tree = _dedupe_topic_tree_hooks(topic_tree)
@@ -900,7 +832,11 @@ async def extract_hooks_and_topics_async(
     all_hooks.sort(key=lambda r: float(r.get("start_sec") or 0))
     for i, h in enumerate(all_hooks[:_MAX_HOOKS]):
         h["id"] = f"hook_{i + 1}"
-        h["verbatim"] = False
+        spoken = " ".join(str(h.get("original_text") or h.get("text") or "").split()).strip()
+        if spoken:
+            h["text"] = spoken
+            h["original_text"] = spoken
+        h["verbatim"] = True
     base["hooks"] = all_hooks[:_MAX_HOOKS]
     base["topics"] = _flatten_topic_tree(topic_tree)[:_MAX_TOPICS]
     base["topic_tree"] = _reindex_topic_tree(topic_tree)[:_MAX_TOPICS]
@@ -1057,6 +993,35 @@ async def _llm_craft_hooks(
             row["verbatim"] = False
             row["analysed"] = True
             row["contextual"] = True
+        out.append(row)
+    return out
+
+
+def keep_verbatim_transcript_hooks(
+    hooks: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Keep spoken transcript text exactly — no rewrite, paraphrase, or punch-up.
+
+    ``text`` and ``original_text`` are the same complete utterance so the UI can
+    show hook ↔ transcript side by side without drift.
+    """
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw in hooks:
+        row = dict(raw)
+        spoken = " ".join(
+            str(row.get("original_text") or row.get("text") or "").split()
+        ).strip()
+        if not spoken:
+            continue
+        key = spoken.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        row["text"] = spoken
+        row["original_text"] = spoken
+        row["verbatim"] = True
+        row["english_source"] = row.get("english_source") or "indexed"
         out.append(row)
     return out
 
@@ -1619,13 +1584,12 @@ def _pick_contextual_hooks(stitched: list[dict[str, Any]]) -> list[dict[str, Any
         if key in seen:
             continue
         seen.add(key)
-        # Cap length but keep a full clause
-        if len(words) > 28:
-            text = _trim_to_clause(text, max_words=28)
+        # Keep the full spoken utterance — do not trim/rewrite for display.
         hooks.append(
             {
                 "id": f"hook_{len(hooks) + 1}",
                 "text": text,
+                "original_text": text,
                 "start_sec": float(row["start_sec"]),
                 "end_sec": row.get("end_sec"),
                 "verbatim": True,
@@ -2560,14 +2524,7 @@ def _ensure_hooks_on_every_section(
             stitched = _stitch_complete_utterances(window) if window else []
             emerg = _emergency_hook_candidates(stitched or window, limit=4)
             if emerg:
-                crafted = heuristic_craft_hooks(
-                    emerg, theme_title=str(row.get("text") or theme_title)
-                )
-                crafted, _ = enforce_non_verbatim_hooks(
-                    crafted,
-                    cue_corpus + [str(c.get("text") or "") for c in emerg],
-                    theme_title=str(row.get("text") or theme_title),
-                )
+                crafted = keep_verbatim_transcript_hooks(emerg)
                 for h in crafted[:1]:
                     h["topic_id"] = row.get("id")
                     h["topic_text"] = row.get("text")
@@ -2601,14 +2558,7 @@ def _ensure_hooks_on_every_section(
                     _stitch_complete_utterances(sw) if sw else sw, limit=3
                 )
                 if emerg:
-                    crafted = heuristic_craft_hooks(
-                        emerg, theme_title=str(s.get("text") or theme_title)
-                    )
-                    crafted, _ = enforce_non_verbatim_hooks(
-                        crafted,
-                        cue_corpus + [str(c.get("text") or "") for c in emerg],
-                        theme_title=str(s.get("text") or theme_title),
-                    )
+                    crafted = keep_verbatim_transcript_hooks(emerg)
                     if crafted:
                         h = crafted[0]
                         h["topic_id"] = row.get("id")

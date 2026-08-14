@@ -74,6 +74,10 @@ export type TestItem = {
   is_subtopic?: boolean;
   parent_topic_id?: string | null;
   has_subtopics?: boolean;
+  /** Exact spoken transcript line (same as text when verbatim). */
+  original_text?: string | null;
+  verbatim?: boolean;
+  english_source?: string | null;
 };
 
 export type TestExtract = {

@@ -468,11 +468,26 @@ function HookLeaves({
                     <Sparkles size={10} className="inline -mt-0.5 mr-1 opacity-60" />
                     Hook
                   </span>
-                  <span className="topics-hooks-title">“{h.text}”</span>
+                  <div className="topics-hooks-sidebyside">
+                    <div className="topics-hooks-col">
+                      <span className="topics-hooks-col-label">Hook</span>
+                      <span className="topics-hooks-title">“{h.text}”</span>
+                    </div>
+                    <div className="topics-hooks-col">
+                      <span className="topics-hooks-col-label">Exact transcript</span>
+                      <span className="topics-hooks-transcript">
+                        “{(h.original_text || h.text).trim()}”
+                      </span>
+                    </div>
+                  </div>
                   <span className="topics-hooks-meta tabular-nums">{fmtTs(h.start_sec)}</span>
-                  {h.original_text && h.original_text !== h.text ? (
-                    <span className="topics-hooks-explain italic">From: {h.original_text}</span>
-                  ) : null}
+                  {h.verbatim === false && h.original_text && h.original_text !== h.text ? (
+                    <span className="topics-hooks-explain italic text-amber-700">
+                      Altered from transcript — prefer regenerating topics
+                    </span>
+                  ) : (
+                    <span className="topics-hooks-explain">Exact spoken line · not rewritten</span>
+                  )}
                 </span>
               </button>
               <button

@@ -1625,23 +1625,18 @@ def _sanitize_extract_hook_payload(
     *,
     theme_title: str = "",
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]] | None]:
-    """Rewrite banned stock openers (e.g. 'The hidden pattern behind…') on extract.
+    """Keep extract hooks as exact transcript sentences (no rewrite).
 
-    Applies to flat hooks and nested topic_tree hooks so cache hits from older
-    heuristic rewrites do not keep shipping identical boilerplate.
+    Older cache rows may still contain punchy rewrites; we restore ``text`` from
+    ``original_text`` when present so the UI never ships altered lines.
     """
-    from app.search.carousel_pipeline import enforce_non_verbatim_hooks
+    from app.search.carousel_pipeline import keep_verbatim_transcript_hooks
+
+    _ = theme_title  # reserved for future topic-aware filtering
 
     def _clean_list(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        corpus = [
-            str(r.get("original_text") or r.get("text") or "")
-            for r in rows
-            if isinstance(r, dict)
-        ]
-        cleaned, _stats = enforce_non_verbatim_hooks(
-            [dict(r) for r in rows if isinstance(r, dict)],
-            corpus,
-            theme_title=theme_title,
+        cleaned = keep_verbatim_transcript_hooks(
+            [dict(r) for r in rows if isinstance(r, dict)]
         )
         for i, h in enumerate(cleaned):
             h["id"] = h.get("id") or f"hook_{i + 1}"
