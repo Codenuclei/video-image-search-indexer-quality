@@ -297,6 +297,14 @@ class AppSettings(Base):
     search_use_captions: Mapped[bool] = mapped_column(default=False, nullable=False)
     search_rerank_enabled: Mapped[bool] = mapped_column(default=True, nullable=False)
     go_indexer_enabled: Mapped[bool] = mapped_column(default=False, nullable=False)
+    # Carousel LLM: auto | openrouter | claude | gemini (key stays in env).
+    carousel_llm_provider: Mapped[str] = mapped_column(String, default="auto", nullable=False)
+    openrouter_model: Mapped[str] = mapped_column(
+        String, default="anthropic/claude-sonnet-4", nullable=False
+    )
+    claude_model: Mapped[str] = mapped_column(
+        String, default="claude-sonnet-4-5-20250929", nullable=False
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
@@ -394,6 +402,9 @@ class VideoSegment(Base):
     start_sec: Mapped[float] = mapped_column(Float, nullable=False)
     end_sec: Mapped[float | None] = mapped_column(Float, nullable=True)
     text: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # BCP-47-ish tag for spoken/caption language of ``text`` (e.g. "en").
+    # Null = unknown / legacy row not yet classified.
+    language: Mapped[str | None] = mapped_column(String(16), nullable=True, index=True)
     frame_path: Mapped[str | None] = mapped_column(String, nullable=True)
     vlm_description: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -448,6 +459,40 @@ class CarouselItemFeedback(Base):
     # up | down | None (comment-only)
     rating: Mapped[str | None] = mapped_column(String(8), nullable=True)
     comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class FaceJobStatus(str, enum.Enum):
+    PENDING = "pending"
+    PROCESSING = "processing"
+    DONE = "done"
+    ERROR = "error"
+
+
+class FaceJob(Base):
+    """Durable InsightFace work item claimed via FOR UPDATE SKIP LOCKED."""
+
+    __tablename__ = "face_jobs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    drive_file_id: Mapped[str] = mapped_column(
+        ForeignKey("drive_files.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    status: Mapped[FaceJobStatus] = mapped_column(
+        Enum(FaceJobStatus, name="face_job_status"),
+        default=FaceJobStatus.PENDING,
+        nullable=False,
+        index=True,
+    )
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    lock_token: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

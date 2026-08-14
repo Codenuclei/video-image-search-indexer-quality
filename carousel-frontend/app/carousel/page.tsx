@@ -17,12 +17,10 @@ import {
   ChevronLeft,
   ChevronRight,
   Clapperboard,
-  Download,
   Film,
   History,
   ImageIcon,
   Layers,
-  Link2,
   Play,
   RefreshCw,
   Search,
@@ -32,7 +30,10 @@ import {
   Video,
   X,
 } from "lucide-react";
+import { DriveFolderPanel } from "@/components/drive-folder-panel";
+import { TranscriptProgressModal, type TranscriptModalState } from "@/components/transcript-progress-modal";
 import {
+  API_BASE,
   apiAssetUrl,
   cacheOnlyAssetUrl,
   apiClient,
@@ -54,7 +55,6 @@ import {
   type CarouselItemReference,
   type Person,
 } from "@/lib/api";
-import { downloadFromUrl } from "@/lib/download";
 import { DownloadButton, LoadingLabel, ServiceErrorCard } from "@/components/ui";
 import { ModalOverlay } from "@/components/modal";
 import { useDismissible } from "@/lib/use-dismissible";
@@ -71,6 +71,10 @@ import {
 import { TopicsHooksTree, TranscriptFramePicker } from "./topics-hooks-tree";
 import { ItemFeedback } from "@/components/item-feedback";
 import { ItemReferences } from "@/components/item-references";
+import {
+  ensureEnglishTranscript,
+  waitForEnglishTranscript,
+} from "@/lib/transcript-ensure";
 
 type Phase = 1 | 2 | 3 | 4 | 5;
 
@@ -272,11 +276,12 @@ export default function CarouselSearchPage() {
   const [loadingThemeSaves, setLoadingThemeSaves] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadNote, setUploadNote] = useState<string | null>(null);
+  const [transcriptModal, setTranscriptModal] = useState<TranscriptModalState>({
+    open: false,
+  });
+  const transcriptAbortRef = useRef<AbortController | null>(null);
   const [prerunBusy, setPrerunBusy] = useState(false);
   const [prerunNote, setPrerunNote] = useState<string | null>(null);
-  const [youtubeUrl, setYoutubeUrl] = useState("");
-  const [youtubeBusy, setYoutubeBusy] = useState(false);
-  const [youtubeNote, setYoutubeNote] = useState<string | null>(null);
   const uploadInputRef = useRef<HTMLInputElement>(null);
   const themeHistoryRef = useRef<HTMLDivElement>(null);
   useDismissible(themeHistoryOpen, () => setThemeHistoryOpen(false), themeHistoryRef);
@@ -733,9 +738,141 @@ export default function CarouselSearchPage() {
     });
   }
 
+  async function ensureTranscriptForVideo(
+    video: CarouselRecentVideo,
+    opts?: { force?: boolean }
+  ) {
+    const hasCues = (video.cue_count ?? 0) > 0 || video.has_captions;
+    transcriptAbortRef.current?.abort();
+    const ac = new AbortController();
+    transcriptAbortRef.current = ac;
+    setTranscriptModal({
+      open: true,
+      videoName: video.name,
+      message: hasCues
+        ? "Preparing an English transcript…"
+        : "Getting transcripts from the video…",
+      phase: hasCues ? "english" : "starting",
+      error: null,
+      cueCount: null,
+    });
+    setError(null);
+    try {
+      if (hasCues && !opts?.force) {
+        // Captions already exist — ensure they are complete English sentences.
+        setTranscriptModal((prev) => ({
+          ...prev,
+          open: true,
+          message: "Preparing an English transcript…",
+          phase: "english",
+        }));
+        const english = await ensureEnglishTranscript(API_BASE, video.id, {
+          force: false,
+        });
+        const next: CarouselRecentVideo = {
+          ...video,
+          has_captions: true,
+          cue_count: english.cue_count ?? video.cue_count ?? 0,
+          status: "processed",
+        };
+        setSelectedVideo(next);
+        setRecent((prev) => {
+          const without = prev.filter((x) => x.id !== next.id);
+          return [next, ...without];
+        });
+        setTranscriptModal({
+          open: true,
+          videoName: next.name,
+          message:
+            english.message ||
+            `English transcript ready (${next.cue_count} sentences).`,
+          phase: "english_ready",
+          cueCount: next.cue_count,
+          error: null,
+        });
+        setUploadNote(`Using “${next.name}” (${next.cue_count} sentences).`);
+        return next;
+      }
+
+      const { status } = await waitForEnglishTranscript(API_BASE, video.id, {
+        force: opts?.force,
+        signal: ac.signal,
+        onUpdate: (s) => {
+          setTranscriptModal((prev) => ({
+            ...prev,
+            open: true,
+            videoName: s.name || video.name,
+            message:
+              s.message ||
+              (s.phase?.includes("english")
+                ? "Preparing an English transcript…"
+                : "Getting transcripts from the video…"),
+            phase: s.phase,
+            error:
+              s.status === "failed"
+                ? s.message ||
+                  "We couldn’t prepare this transcript. Please try again."
+                : null,
+            cueCount: s.status === "ready" ? (s.cue_count ?? null) : null,
+          }));
+        },
+      });
+      if (status.status === "failed") {
+        setTranscriptModal({
+          open: true,
+          videoName: video.name,
+          error:
+            status.message ||
+            "We couldn’t prepare this transcript. Please try again.",
+          cueCount: 0,
+        });
+        return null;
+      }
+      const next: CarouselRecentVideo = {
+        ...video,
+        has_captions: true,
+        cue_count: status.cue_count ?? 0,
+        status: "processed",
+      };
+      setSelectedVideo(next);
+      setRecent((prev) => {
+        const without = prev.filter((x) => x.id !== next.id);
+        return [next, ...without];
+      });
+      setTranscriptModal({
+        open: true,
+        videoName: next.name,
+        message:
+          status.message ||
+          `English transcript ready (${next.cue_count} sentences).`,
+        phase: status.phase || "english_ready",
+        cueCount: next.cue_count,
+        error: null,
+      });
+      setUploadNote(`Using “${next.name}” (${next.cue_count} sentences).`);
+      return next;
+    } catch (e) {
+      if (e instanceof DOMException && e.name === "AbortError") return null;
+      const msg = formatApiError(
+        e,
+        "We couldn’t prepare this transcript. Please try again."
+      );
+      setTranscriptModal({
+        open: true,
+        videoName: video.name,
+        error: msg,
+        cueCount: 0,
+      });
+      return null;
+    }
+  }
+
   async function generateThemes() {
     if (!selectedVideo || loadingThemes) return;
-    const video = selectedVideo;
+    let video = selectedVideo;
+    const ensured = await ensureTranscriptForVideo(video);
+    if (!ensured) return;
+    video = ensured;
     const personName = personPick.trim();
     const fromObject = objectQuery.trim();
     const entity =
@@ -846,46 +983,6 @@ export default function CarouselSearchPage() {
     } finally {
       setUploading(false);
       if (uploadInputRef.current) uploadInputRef.current.value = "";
-    }
-  }
-
-  async function downloadYoutubeVideo() {
-    const urls = youtubeUrl
-      .split(/[\s,]+/)
-      .map((s) => s.trim())
-      .filter(Boolean);
-    if (!urls.length) {
-      setError("Paste a YouTube URL or video id first.");
-      return;
-    }
-    setYoutubeBusy(true);
-    setYoutubeNote(null);
-    setError(null);
-    try {
-      const res = await apiClient.addYoutubeVideos(urls, true, true);
-      const parts = (res.registered ?? []).map((r) => {
-        if (!r.drive_file_id) return r.message || r.name;
-        return `${r.name}: ${r.message}`;
-      });
-      setYoutubeNote(
-        parts.join(" · ") +
-          (res.index_scheduled ? " · Indexing queued." : "")
-      );
-      // Browser-side save when a library file id is already known (yt-dlp, no ffmpeg merge).
-      for (const r of res.registered ?? []) {
-        if (!r.drive_file_id || r.linked_to_drive) continue;
-        try {
-          await downloadFromUrl(driveFileDownloadUrl(r.drive_file_id), r.name || "youtube.mp4");
-        } catch {
-          /* file may still be downloading in the background */
-        }
-      }
-      setYoutubeUrl("");
-      await loadRecentVideos();
-    } catch (e) {
-      setError(formatApiError(e, "YouTube download failed"));
-    } finally {
-      setYoutubeBusy(false);
     }
   }
 
@@ -1269,8 +1366,9 @@ export default function CarouselSearchPage() {
           Choose a video
         </h2>
         <p className="mt-2 text-sm text-slate-500">
-          Use a video that already has captions. Upload a new file to index, or pre-run
-          themes/hooks so studio clicks stay cache-first.
+          Use a video that already has captions. Upload a local file, select from the indexed
+          library (works while Drive is disconnected), or pre-run themes/hooks so studio clicks stay
+          cache-first.
         </p>
 
         <div className="mt-4 flex flex-wrap items-center gap-2">
@@ -1318,46 +1416,46 @@ export default function CarouselSearchPage() {
           )}
         </div>
 
-        <div
-          className="mt-4 flex flex-wrap items-end gap-2 rounded-xl border border-slate-200 bg-slate-50/80 p-3"
-          data-testid="carousel-youtube-download"
-        >
-          <div className="studio-field min-w-[14rem] flex-1">
-            <label htmlFor="youtube-url" className="studio-field-label">
-              <Link2 size={12} className="inline" /> YouTube link
-            </label>
-            <input
-              id="youtube-url"
-              type="url"
-              className="studio-input"
-              placeholder="https://youtube.com/watch?v=…"
-              value={youtubeUrl}
-              onChange={(e) => setYoutubeUrl(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  void downloadYoutubeVideo();
-                }
-              }}
-              disabled={youtubeBusy}
-            />
-          </div>
-          <button
-            type="button"
-            className="studio-btn studio-btn-ghost"
-            disabled={youtubeBusy || !youtubeUrl.trim()}
-            onClick={() => void downloadYoutubeVideo()}
-            title="Download via API (yt-dlp progressive file, no ffmpeg) then browser save"
-          >
-            <Download size={14} />
-            {youtubeBusy ? <LoadingLabel>Downloading…</LoadingLabel> : "Download video"}
-          </button>
-          {youtubeNote && (
-            <p className="w-full text-xs text-muted-foreground" role="status">
-              {youtubeNote}
-            </p>
-          )}
-        </div>
+        <DriveFolderPanel
+          className="mt-4"
+          apiBase={API_BASE}
+          testIdPrefix="carousel-drive"
+          onLibraryChanged={() => {
+            void loadRecentVideos();
+          }}
+          onVideoReady={(v) => {
+            const cueCount = v.cue_count ?? 0;
+            const hasCaptions = Boolean(v.has_captions ?? cueCount > 0);
+            const asVideo: CarouselRecentVideo = {
+              id: v.id,
+              name: v.name,
+              mime_type: v.mime_type || "video/mp4",
+              path: null,
+              size: null,
+              modified_time: null,
+              last_synced_at: null,
+              status: v.status,
+              has_captions: hasCaptions,
+              cue_count: cueCount,
+            };
+            setSelectedVideo(asVideo);
+            setRecent((prev) => {
+              const without = prev.filter((x) => x.id !== asVideo.id);
+              return hasCaptions ? [asVideo, ...without] : without;
+            });
+            setError(null);
+            if (v.status === "processed" && !hasCaptions) {
+              setUploadNote(`“${v.name}” is indexed — getting transcripts from the video…`);
+              void ensureTranscriptForVideo(asVideo);
+            } else {
+              setUploadNote(
+                v.status === "processed"
+                  ? `Using Drive video “${v.name}” (${cueCount} cues).`
+                  : `Pulling “${v.name}” — indexing at max priority. Refresh when captions appear.`
+              );
+            }
+          }}
+        />
 
         <div className="mt-5 grid gap-4 sm:grid-cols-2">
           <div className="studio-field">
@@ -2447,6 +2545,14 @@ export default function CarouselSearchPage() {
           />
         )}
       </ModalOverlay>
+
+      <TranscriptProgressModal
+        state={transcriptModal}
+        onClose={() => setTranscriptModal((prev) => ({ ...prev, open: false }))}
+        onRetry={() => {
+          if (selectedVideo) void ensureTranscriptForVideo(selectedVideo, { force: true });
+        }}
+      />
     </div>
   );
 }

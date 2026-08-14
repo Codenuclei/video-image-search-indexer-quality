@@ -70,6 +70,13 @@ async def ingest_youtube_transcript_for_drive_file(
                 await session.delete(seg)
         await session.flush()
 
+    from app.search.english_text import cues_need_english
+
+    lang = (
+        "en"
+        if not cues_need_english((c.start_sec, c.end_sec, c.text) for c in cues)
+        else None
+    )
     for cue in cues:
         session.add(
             VideoSegment(
@@ -77,6 +84,7 @@ async def ingest_youtube_transcript_for_drive_file(
                 start_sec=cue.start_sec,
                 end_sec=cue.end_sec,
                 text=cue.text,
+                language=lang,
             )
         )
     await session.flush()

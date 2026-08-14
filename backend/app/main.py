@@ -39,6 +39,7 @@ from app.routers import (
     reid,
     search,
     settings,
+    transcripts,
     webhooks,
     youtube,
 )
@@ -63,9 +64,8 @@ async def lifespan(app: FastAPI):
     settings_obj = get_settings()
     logger = logging.getLogger(__name__)
     logger.info(
-        "DriveFaceIndexer (Gemini File Search) starting — connector=%s store=%s",
+        "DriveFaceIndexer starting — connector=%s (local Qdrant RAG; Google File Search disabled)",
         settings_obj.drive_connector_base_url,
-        settings_obj.gemini_file_search_store_display_name,
     )
 
     register_image_plugins()
@@ -73,6 +73,17 @@ async def lifespan(app: FastAPI):
     from app.video.youtube_download import prepare_youtube_cookies_at_startup
 
     prepare_youtube_cookies_at_startup()
+
+    # Bound asyncio.to_thread / default executor so IMAGE_INDEX_MAX_PARALLEL cannot
+    # spawn unbounded OS threads ("can't start new thread").
+    try:
+        loop = asyncio.get_running_loop()
+        from app.concurrency.pools import cpu_thread_pool
+
+        loop.set_default_executor(cpu_thread_pool())
+        logger.info("Startup: asyncio default executor bound to cpu_thread_pool")
+    except Exception:  # noqa: BLE001
+        logger.exception("Startup: failed to bind default executor")
 
     # Yield ASAP so Railway /health can pass. Prior deploys hung forever on the
     # first DB call (ensure_schema) after cookies — ASGI never accepted traffic,
@@ -115,6 +126,21 @@ async def lifespan(app: FastAPI):
 
             # With Gunicorn multi-worker, only one process may run indexer /
             # push-channel / recovery loops. Others stay API-only.
+            # RUN_INDEXER=false → API-only (or face-worker-only when RUN_FACE_WORKER).
+            if not settings_obj.run_indexer and not settings_obj.run_face_worker:
+                logger.info(
+                    "Startup: RUN_INDEXER=false RUN_FACE_WORKER=false — API-only"
+                )
+                logger.info("Startup: deferred boot complete (api-only)")
+                return
+
+            if settings_obj.run_face_worker and not settings_obj.run_indexer:
+                logger.info(
+                    "Startup: face-worker role (RUN_FACE_WORKER=true, RUN_INDEXER=false)"
+                )
+                logger.info("Startup: deferred boot complete (face-worker)")
+                return
+
             leader = await try_become_background_leader()
             if not leader:
                 logger.info(
@@ -138,6 +164,40 @@ async def lifespan(app: FastAPI):
                 await session.commit()
             if corrupt_skipped:
                 logger.info("Startup: skipped %d corrupt/unreadable file(s)", corrupt_skipped)
+
+            # Drop legacy AppleDouble / .DS_Store rows so they never count or queue.
+            from sqlalchemy import delete, or_
+
+            from app.db.models import DriveFile
+            from app.drive.content_hash import APPLEDOUBLE_SKIP_PREFIX
+
+            async with get_session_factory()() as session:
+                result = await session.execute(
+                    delete(DriveFile).where(
+                        or_(
+                            DriveFile.name.like("._%"),
+                            DriveFile.name == ".DS_Store",
+                            DriveFile.name.like(".DS_Store%"),
+                            DriveFile.error_message.like(f"{APPLEDOUBLE_SKIP_PREFIX}%"),
+                            DriveFile.error_message.like("appledouble_junk%"),
+                        )
+                    )
+                )
+                await session.commit()
+                purged = int(result.rowcount or 0)
+            if purged:
+                logger.info("Startup: purged %d Apple junk row(s) from drive_files", purged)
+
+            from app.drive.conflicts import promote_duplicate_content_skips
+
+            async with get_session_factory()() as session:
+                promoted = await promote_duplicate_content_skips(session)
+                await session.commit()
+            if promoted:
+                logger.info(
+                    "Startup: promoted %d duplicate_content skip(s) → PROCESSED",
+                    promoted,
+                )
 
             # A fresh process owns no carousel tasks, so any row still marked
             # processing was orphaned by a previous shutdown and must be released
@@ -200,17 +260,40 @@ async def lifespan(app: FastAPI):
     boot_task = asyncio.create_task(_deferred_boot())
 
     async def _start_workers_after_db() -> None:
-        await _boot_ready.wait()
+        # Leadership is elected after DB readiness is published. Waiting only on
+        # _boot_ready races the election and can make every Gunicorn worker
+        # conclude it is API-only before one of them acquires the leader lock.
+        await boot_task
         if _boot_error:
             logger.error("Skipping background workers — boot failed: %s", _boot_error)
             return
-        if not is_background_leader():
-            logger.info("Skipping background loops — not leader")
-            return
-        auto_task = asyncio.create_task(auto_index_loop(worker, stop_event))
-        maintenance_task = asyncio.create_task(startup_maintenance(worker))
-        backup_task = asyncio.create_task(backup_loop(stop_event))
-        app.state.worker_tasks = (auto_task, maintenance_task, backup_task)
+
+        worker_tasks: list[asyncio.Task] = []
+        settings_now = get_settings()
+
+        if settings_now.run_face_worker:
+            from app.workers.face_queue import FaceWorkerLoop
+
+            face_loop = FaceWorkerLoop(settings=settings_now)
+            face_loop.ensure_started()
+            app.state.face_worker_loop = face_loop
+            logger.info(
+                "Face worker loop started concurrency=%s",
+                settings_now.face_worker_concurrency,
+            )
+
+        if settings_now.run_indexer:
+            if not is_background_leader():
+                logger.info("Skipping indexer loops — not leader")
+            else:
+                auto_task = asyncio.create_task(auto_index_loop(worker, stop_event))
+                maintenance_task = asyncio.create_task(startup_maintenance(worker))
+                backup_task = asyncio.create_task(backup_loop(stop_event))
+                worker_tasks.extend([auto_task, maintenance_task, backup_task])
+        else:
+            logger.info("Skipping indexer loops — RUN_INDEXER=false")
+
+        app.state.worker_tasks = tuple(worker_tasks)
 
     workers_starter = asyncio.create_task(_start_workers_after_db())
     app.state.boot_task = boot_task
@@ -222,6 +305,12 @@ async def lifespan(app: FastAPI):
     stop_event.set()
     workers_starter.cancel()
     boot_task.cancel()
+    face_loop = getattr(app.state, "face_worker_loop", None)
+    if face_loop is not None:
+        try:
+            await face_loop.stop()
+        except Exception:  # noqa: BLE001
+            logger.exception("Face worker loop stop failed")
     worker_tasks = getattr(app.state, "worker_tasks", ())
     for task in (workers_starter, boot_task, *worker_tasks):
         try:
@@ -302,6 +391,7 @@ app.include_router(folder_contexts.router)
 app.include_router(fennec.router)
 app.include_router(qwen_vlm.router)
 app.include_router(youtube.router)
+app.include_router(transcripts.router)
 app.include_router(reid.router)
 app.include_router(help_router.router)
 
@@ -373,6 +463,12 @@ async def health_detail():
         return_exceptions=False,
     )
 
+    from app.storage import disk_usage_report
+
+    disk_media = disk_usage_report(settings_obj.media_cache_dir)
+    disk_video = disk_usage_report(settings_obj.video_cache_dir)
+    disk_ok = bool(disk_media.get("ok")) and bool(disk_video.get("ok"))
+
     elapsed_ms = round((time.monotonic() - t0) * 1000)
     all_ok = db_result.get("status") == "ok" and qdrant_result.get("status") == "ok"
 
@@ -398,6 +494,16 @@ async def health_detail():
                 "gemini_embed_max_concurrent": settings_obj.gemini_embed_max_concurrent,
                 "gemini_vlm_max_concurrent": settings_obj.gemini_vlm_max_concurrent,
                 "gemini_upload_max_concurrent": settings_obj.gemini_upload_max_concurrent,
+                "run_indexer": settings_obj.run_indexer,
+                "run_face_worker": settings_obj.run_face_worker,
+                "face_jobs_enabled": settings_obj.face_jobs_enabled,
+                "face_worker_concurrency": settings_obj.face_worker_concurrency,
+            },
+            "disk": {
+                "status": "ok" if disk_ok else "low",
+                "media_cache": disk_media,
+                "video_cache": disk_video,
+                "index_disk_high_water_bytes": settings_obj.index_disk_high_water_bytes,
             },
             "database": db_result,
             "google_drive": drive_result,

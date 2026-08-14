@@ -121,6 +121,24 @@ async def ensure_schema(engine: AsyncEngine) -> None:
                 "BOOLEAN NOT NULL DEFAULT false"
             )
         )
+        await conn.execute(
+            text(
+                "ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS carousel_llm_provider "
+                "VARCHAR NOT NULL DEFAULT 'auto'"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS openrouter_model "
+                "VARCHAR NOT NULL DEFAULT 'anthropic/claude-sonnet-4'"
+            )
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS claude_model "
+                "VARCHAR NOT NULL DEFAULT 'claude-sonnet-4-5-20250929'"
+            )
+        )
         # Carousel generation saves: themes vs topics/hooks + cache keys
         await conn.execute(
             text(
@@ -213,6 +231,16 @@ async def ensure_schema(engine: AsyncEngine) -> None:
                 "ON drive_files (root_folder_id)"
             )
         )
+        # Transcript language for English-ensure / non-English purge.
+        await conn.execute(
+            text("ALTER TABLE video_segments ADD COLUMN IF NOT EXISTS language VARCHAR(16)")
+        )
+        await conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_video_segments_language "
+                "ON video_segments (language)"
+            )
+        )
         # Soft-archive: never-delete policy for indexed artifacts.
         # Live PG enums use SQLAlchemy *member names* (PENDING, SKIPPED, …).
         # ADD 'ARCHIVED' (uppercase). A prior mistaken 'archived' label may also
@@ -257,21 +285,112 @@ async def ensure_schema(engine: AsyncEngine) -> None:
                 "ON indexed_folders (is_active)"
             )
         )
+        # Durable InsightFace job queue (FOR UPDATE SKIP LOCKED claim).
+        await conn.execute(
+            text(
+                """
+                DO $$ BEGIN
+                    CREATE TYPE face_job_status AS ENUM (
+                        'PENDING', 'PROCESSING', 'DONE', 'ERROR'
+                    );
+                EXCEPTION
+                    WHEN duplicate_object THEN null;
+                END $$
+                """
+            )
+        )
+        await conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS face_jobs (
+                    id SERIAL PRIMARY KEY,
+                    drive_file_id VARCHAR NOT NULL REFERENCES drive_files(id) ON DELETE CASCADE,
+                    status face_job_status NOT NULL DEFAULT 'PENDING',
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    lock_token VARCHAR(64),
+                    locked_at TIMESTAMPTZ,
+                    error_message TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                )
+                """
+            )
+        )
+        await conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_face_jobs_status_created "
+                "ON face_jobs (status, created_at)"
+            )
+        )
+        await conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_face_jobs_drive_file_id "
+                "ON face_jobs (drive_file_id)"
+            )
+        )
         await conn.run_sync(Base.metadata.create_all)
     logger.info("Database schema verified")
 
 
 async def recover_stuck_processing_files(session_factory: async_sessionmaker[AsyncSession]) -> int:
+    """Drain PROCESSING orphans without deleting media.
+
+    Rows that already have Media → PROCESSED (add-if-missing resume),
+    unless an open face_job is still pending/processing (multi-index path).
+    Rows without Media → PENDING so face/embed can run.
+    """
+    from sqlalchemy import select
+
+    from app.db.models import FaceJob, FaceJobStatus, Media
+
     async with session_factory() as session:
-        result = await session.execute(
-            update(DriveFile)
-            .where(DriveFile.status == DriveFileStatus.PROCESSING)
-            .values(status=DriveFileStatus.PENDING)
-        )
+        stuck = (
+            await session.execute(
+                select(DriveFile).where(DriveFile.status == DriveFileStatus.PROCESSING)
+            )
+        ).scalars().all()
+        if not stuck:
+            return 0
+        restored = 0
+        requeued = 0
+        face_waiting = 0
+        for row in stuck:
+            has_media = (
+                await session.execute(
+                    select(Media.id).where(Media.drive_file_id == row.id).limit(1)
+                )
+            ).scalar_one_or_none() is not None
+            if has_media:
+                open_face = (
+                    await session.execute(
+                        select(FaceJob.id)
+                        .where(
+                            FaceJob.drive_file_id == row.id,
+                            FaceJob.status.in_(
+                                (FaceJobStatus.PENDING, FaceJobStatus.PROCESSING)
+                            ),
+                        )
+                        .limit(1)
+                    )
+                ).scalar_one_or_none()
+                if open_face is not None:
+                    face_waiting += 1
+                    continue
+                row.status = DriveFileStatus.PROCESSED
+                row.error_message = None
+                restored += 1
+            else:
+                row.status = DriveFileStatus.PENDING
+                requeued += 1
         await session.commit()
-        count = result.rowcount or 0
-        if count:
-            logger.warning("Reset %d file(s) stuck in processing state", count)
+        count = restored + requeued
+        if count or face_waiting:
+            logger.warning(
+                "Drain stuck PROCESSING: restored=%d requeued=%d face_jobs_open=%d",
+                restored,
+                requeued,
+                face_waiting,
+            )
         return count
 
 

@@ -27,6 +27,7 @@ from app.pipelines.common import clear_existing_media, download_to_memory, downl
 from app.pipelines.dedup import LocalIdentityTracker, passes_quality_filter
 from app.pipelines.image import detect_faces_async
 from app.qdrant.client import upsert_frame_sync
+from app.storage import ensure_disk_space
 from app.video.ffmpeg_utils import extract_audio_wav, extract_frame_at, probe_video, sample_timestamps
 from app.video.vtt import VttCue, parse_vtt
 from app.video.youtube_cache import video_cache_path
@@ -248,11 +249,26 @@ async def process_video_file(
 ) -> VideoIndexResult:
     """
     Self-hosted video index: cache file, parse VTT, sample frames with ffmpeg,
-    detect faces, optional Gemini VLM captions, upload transcript + keyframes to File Search.
+    detect faces, optional Gemini VLM captions, embed frames + transcript text
+    into local Qdrant (no Google File Search).
     """
     settings = settings or get_settings()
     gemini = gemini or get_gemini_service()
     engine = engine or get_face_engine()
+
+    from app.pipelines.common import file_has_media
+
+    # Add-if-missing: never wipe faces/segments for an already-indexed video.
+    if await file_has_media(session, drive_file.id):
+        logger.info(
+            "video_index_skip reason=media_exists file_id=%s name=%s",
+            drive_file.id,
+            drive_file.name,
+        )
+        media = (
+            await session.execute(select(Media).where(Media.drive_file_id == drive_file.id))
+        ).scalar_one()
+        return VideoIndexResult(media=media, gemini_document_name=None)
 
     await clear_existing_media(session, drive_file.id)
 
@@ -277,8 +293,22 @@ async def process_video_file(
     elif os.path.isfile(dest) and os.path.getsize(dest) > 0:
         logger.info("Reusing cached video: %s", dest)
     else:
-        async with download_to_temp_file(client, drive_file.id, settings, suffix=suffix) as tmp:
-            shutil.move(tmp, dest)
+        expected_size = drive_file.size if drive_file.size and drive_file.size > 0 else None
+        ensure_disk_space(dest, expected_size or 0)
+        partial = f"{dest}.partial"
+        try:
+            async with download_to_temp_file(
+                client,
+                drive_file.id,
+                settings,
+                suffix=suffix,
+                expected_size=expected_size,
+            ) as tmp:
+                shutil.move(tmp, partial)
+                os.replace(partial, dest)
+        finally:
+            if os.path.exists(partial):
+                os.remove(partial)
         logger.info("Cached video: %s", dest)
 
     try:
@@ -343,7 +373,15 @@ async def process_video_file(
 
     for ts in sample_times:
         frame_path = str(frames_dir / f"{ts:.3f}.jpg")
-        ok = await run_cpu_bound(extract_frame_at, dest, ts, frame_path)
+        partial_frame = str(frames_dir / f"{ts:.3f}.partial.jpg")
+        ensure_disk_space(frame_path)
+        try:
+            ok = await run_cpu_bound(extract_frame_at, dest, ts, partial_frame)
+            if ok:
+                os.replace(partial_frame, frame_path)
+        finally:
+            if os.path.exists(partial_frame):
+                os.remove(partial_frame)
         if not ok:
             continue
         frame_paths[ts] = frame_path
@@ -357,6 +395,14 @@ async def process_video_file(
     cue_by_start = {round(c.start_sec, 3): c for c in cues}
     segments: list[VideoSegment] = []
 
+    from app.search.english_text import cues_need_english
+
+    transcript_lang = (
+        "en"
+        if cues and not cues_need_english((c.start_sec, c.end_sec, c.text) for c in cues)
+        else None
+    )
+
     for cue in cues:
         frame_path = frame_paths.get(round(cue.start_sec, 3))
         if frame_path is None:
@@ -368,6 +414,7 @@ async def process_video_file(
                 start_sec=cue.start_sec,
                 end_sec=cue.end_sec,
                 text=cue.text,
+                language=transcript_lang,
                 frame_path=frame_path,
             )
         )
@@ -406,82 +453,70 @@ async def process_video_file(
             except Exception as exc:  # noqa: BLE001
                 logger.warning("VLM describe failed at %.1fs: %s", seg.start_sec, exc)
 
-    transcript_doc: str | None = None
+    # Local transcript RAG into Qdrant (replaces Gemini File Search uploads).
     if settings.gemini_api_key:
-        transcript_doc = await _upload_video_index(
-            gemini,
-            drive_file=drive_file,
-            media=media,
+        await _index_transcripts_local(
+            drive_file_id=drive_file.id,
             segments=list(segments),
-            frame_paths=frame_paths,
             settings=settings,
         )
 
     logger.info(
-        "Indexed video %s: %d segments, %d frames, %d faces",
+        "Indexed video %s: %d segments, %d frames, %d faces (local Qdrant RAG)",
         drive_file.name,
         len(segments),
         len(frame_paths),
         len(tracker._tracks),
     )
-    return VideoIndexResult(media=media, gemini_document_name=transcript_doc)
+    return VideoIndexResult(media=media, gemini_document_name=None)
 
 
-async def _upload_video_index(
-    gemini: GeminiFileSearchService,
+async def _index_transcripts_local(
     *,
-    drive_file: DriveFile,
-    media: Media,
+    drive_file_id: str,
     segments: list[VideoSegment],
-    frame_paths: dict[float, str],
     settings: Settings,
-) -> str | None:
-    lines: list[str] = [f"Video: {drive_file.name}", f"Path: {drive_file.path}", ""]
-    for seg in segments:
-        line = f"[{seg.start_sec:.1f}s] {seg.text}".strip()
-        if seg.vlm_description:
-            line += f" | Visual: {seg.vlm_description}"
-        lines.append(line)
+) -> int:
+    """Embed spoken/VLM segment text into local Qdrant — no Google File Search."""
+    from app.gemini.video_embeddings import embed_text_sync
+    from app.qdrant.video_transcripts import upsert_transcript_segment_sync
 
-    os.makedirs(settings.temp_dir, exist_ok=True)
-    transcript_path = os.path.join(settings.temp_dir, f"{drive_file.id}_transcript.txt")
-    Path(transcript_path).write_text("\n".join(lines), encoding="utf-8")
+    sem = asyncio.Semaphore(settings.gemini_embed_max_concurrent)
 
-    doc_name = await asyncio.to_thread(
-        gemini.upload_file,
-        local_path=transcript_path,
-        display_name=f"{drive_file.name} (transcript)",
-        drive_file_id=drive_file.id,
-        drive_path=drive_file.path,
-        mime_type="text/plain",
-        extra_metadata={
-            "content_kind": "video_transcript",
-            "timestamp_sec": "0",
-        },
-    )
+    async def _one(seg: VideoSegment) -> bool:
+        text = " ".join(
+            p for p in ((seg.text or "").strip(), (seg.vlm_description or "").strip()) if p
+        ).strip()
+        if len(text) < 8:
+            return False
+        async with sem:
+            try:
+                vec = await asyncio.to_thread(embed_text_sync, text[:2000])
+                await asyncio.to_thread(
+                    upsert_transcript_segment_sync,
+                    drive_file_id=drive_file_id,
+                    start_sec=float(seg.start_sec or 0.0),
+                    end_sec=float(seg.end_sec) if seg.end_sec is not None else None,
+                    text=text,
+                    vector=vec,
+                )
+                return True
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Local transcript embed failed at %.1fs for %s: %s",
+                    float(seg.start_sec or 0.0),
+                    drive_file_id,
+                    exc,
+                )
+                return False
 
-    uploaded = 0
-    for ts in sorted(frame_paths.keys()):
-        if uploaded >= settings.video_max_gemini_frames:
-            break
-        frame_path = frame_paths[ts]
-        seg = next((s for s in segments if abs(s.start_sec - ts) < 0.5), None)
-        caption = ((seg.vlm_description or seg.text) if seg else "")[:200]
-        await asyncio.to_thread(
-            gemini.upload_file,
-            local_path=frame_path,
-            display_name=f"{drive_file.name} @ {ts:.1f}s",
-            drive_file_id=drive_file.id,
-            drive_path=drive_file.path,
-            mime_type="image/jpeg",
-            extra_metadata={
-                "content_kind": "video_frame",
-                "timestamp_sec": f"{ts:.2f}",
-                "caption": caption,
-            },
+    results = await asyncio.gather(*(_one(s) for s in segments))
+    indexed = sum(1 for ok in results if ok)
+    if indexed:
+        logger.info(
+            "Local transcript RAG: %d/%d segments into Qdrant for %s",
+            indexed,
+            len(segments),
+            drive_file_id,
         )
-        uploaded += 1
-
-    if os.path.isfile(transcript_path):
-        os.remove(transcript_path)
-    return doc_name
+    return indexed
