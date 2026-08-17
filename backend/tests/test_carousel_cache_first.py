@@ -18,6 +18,7 @@ from app.routers.carousel_script import (
     carousel_pipeline_themes,
     PipelineThemeSlice,
 )
+from app.search.carousel_pipeline import THEME_PROMPT_VERSION
 
 
 def _cues():
@@ -74,7 +75,7 @@ async def test_themes_cache_hit_returns_saved_without_llm():
     ]
     row = SimpleNamespace(
         id=99,
-        model="gemini-test",
+        model=f"gemini-test:{THEME_PROMPT_VERSION}",
         source="saved",
         payload={"themes": saved_themes, "cue_count": 1, "source": "saved"},
     )
@@ -91,6 +92,10 @@ async def test_themes_cache_hit_returns_saved_without_llm():
         patch(
             "app.routers.carousel_script.build_harmonized_themes",
             new=AsyncMock(side_effect=AssertionError("Gemini must not run")),
+        ),
+        patch(
+            "app.routers.carousel_script.carousel_llm_cache_id",
+            return_value="gemini-test",
         ),
         patch("app.routers.carousel_script.get_settings") as gs,
     ):

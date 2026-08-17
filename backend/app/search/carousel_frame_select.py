@@ -44,6 +44,7 @@ class FrameCandidate:
     preview_url: str | None = None
     quality_score: float = 0.0
     front_face: float = 0.0
+    perceptual_hash: str | None = None
 
 
 @dataclass
@@ -290,6 +291,44 @@ def _hamming(a: str | None, b: str | None) -> int:
     if not a or not b or len(a) != len(b):
         return 64
     return sum(ch1 != ch2 for ch1, ch2 in zip(a, b))
+
+
+def choose_adjacent_diverse_candidate(
+    candidates: list[FrameCandidate],
+    ranked_order: list[int],
+    proposed_index: int,
+    previous_hash: str | None,
+    *,
+    duplicate_distance: int = 6,
+    min_quality_ratio: float = 0.75,
+    max_face_drop: float = 0.08,
+) -> tuple[int, bool]:
+    """Swap a near-duplicate pick for the best acceptable ranked alternate."""
+    if (
+        not candidates
+        or not 0 <= proposed_index < len(candidates)
+        or not previous_hash
+        or _hamming(candidates[proposed_index].perceptual_hash, previous_hash)
+        > duplicate_distance
+    ):
+        return proposed_index, False
+    proposed = candidates[proposed_index]
+    quality_floor = max(0.0, proposed.quality_score * min_quality_ratio)
+    face_floor = max(0.0, proposed.front_face - max_face_drop)
+    for index in ranked_order:
+        if not 0 <= index < len(candidates) or index == proposed_index:
+            continue
+        alternate = candidates[index]
+        if not alternate.perceptual_hash:
+            continue
+        if _hamming(alternate.perceptual_hash, previous_hash) <= duplicate_distance:
+            continue
+        if alternate.quality_score < quality_floor:
+            continue
+        if proposed.front_face >= 0.18 and alternate.front_face < face_floor:
+            continue
+        return index, True
+    return proposed_index, False
 
 
 def filter_frame_candidates_by_quality(
@@ -1421,13 +1460,16 @@ async def polish_slides_instagram_frames(
         kept_images: list[bytes | None] = []
         for old_i in kept:
             c = raw[old_i]
+            candidate_quality = score_frame_quality(images[old_i])
             candidates.append(
                 FrameCandidate(
                     index=len(candidates),
                     timestamp_sec=c.timestamp_sec,
                     label=c.label,
                     preview_url=c.preview_url,
+                    quality_score=float(candidate_quality.get("score") or 0.0),
                     front_face=_front_face_for_slide(out, c.timestamp_sec),
+                    perceptual_hash=candidate_quality.get("phash"),
                 )
             )
             kept_images.append(images[old_i])
@@ -1447,6 +1489,7 @@ async def polish_slides_instagram_frames(
                     preview_url=candidates[j].preview_url,
                     quality_score=candidates[j].quality_score,
                     front_face=candidates[j].front_face,
+                    perceptual_hash=candidates[j].perceptual_hash,
                 )
                 for i, j in enumerate(order)
             ]
@@ -1527,6 +1570,8 @@ async def polish_slides_instagram_frames(
     # Two-phase assignment: reserve top choices only after every slide is ranked.
     assignments: dict[int, tuple[int, str, bool]] = {}
     used: list[float] = []
+    previous_hash: str | None = None
+    diversity_swaps: set[int] = set()
     for idx, item in enumerate(harvested):
         candidates = item["candidates"]
         if not candidates:
@@ -1586,6 +1631,14 @@ async def polish_slides_instagram_frames(
         )
         if choice is None:
             choice = heuristic_i
+        choice, diversity_swapped = choose_adjacent_diverse_candidate(
+            candidates,
+            ranked_order,
+            choice,
+            previous_hash,
+        )
+        if diversity_swapped:
+            diversity_swaps.add(idx)
         if item.get("local_ok"):
             source = "heuristic"
         else:
@@ -1596,6 +1649,7 @@ async def polish_slides_instagram_frames(
         )
         assignments[idx] = (choice, source, ready_flag)
         used.append(candidates[choice].timestamp_sec)
+        previous_hash = candidates[choice].perceptual_hash
 
     out_slides: list[dict[str, Any]] = []
     for idx, item in enumerate(harvested):
@@ -1610,6 +1664,10 @@ async def polish_slides_instagram_frames(
             out["frame_ts"] = chosen.timestamp_sec
             out["frame_source"] = source
             out["instagram_ready"] = ready_flag
+            out["frame_diversity"] = {
+                "adjacent_duplicate_avoided": idx in diversity_swaps,
+                "phash_available": bool(chosen.perceptual_hash),
+            }
             out["frame_candidates"] = [
                 candidates[i].timestamp_sec
                 for i in (ranked.get(idx, (None, None))[0] or range(len(candidates)))

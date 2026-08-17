@@ -8,7 +8,11 @@ from types import SimpleNamespace
 
 from app.db.models import DriveFileStatus
 from app.drive import cleanup as cleanup_mod
-from app.drive.cleanup import restore_archived_drive_file
+from app.drive.cleanup import (
+    archived_image_qualifies_for_processed,
+    archived_video_qualifies_for_processed,
+    restore_archived_drive_file,
+)
 from app.drive.library_tree import build_library_tree
 
 
@@ -84,3 +88,63 @@ def test_library_tree_includes_archived_globally():
     assert summary["missing_captions"] == 1
     assert summary["needs_work"] == summary["pending"] + summary["errors"] + summary["missing_captions"]
     assert root.archived_count == 1
+
+
+def test_archived_image_qualifies_requires_media_embed_and_caption():
+    assert archived_image_qualifies_for_processed(
+        has_media=True,
+        has_qdrant_embed=True,
+        has_valid_caption=True,
+        face_job_status=None,
+    )
+    assert not archived_image_qualifies_for_processed(
+        has_media=False,
+        has_qdrant_embed=True,
+        has_valid_caption=True,
+        face_job_status=None,
+    )
+    assert not archived_image_qualifies_for_processed(
+        has_media=True,
+        has_qdrant_embed=False,
+        has_valid_caption=True,
+        face_job_status=None,
+    )
+    assert not archived_image_qualifies_for_processed(
+        has_media=True,
+        has_qdrant_embed=True,
+        has_valid_caption=False,
+        face_job_status=None,
+    )
+
+
+def test_archived_image_does_not_qualify_while_face_job_in_flight():
+    assert not archived_image_qualifies_for_processed(
+        has_media=True,
+        has_qdrant_embed=True,
+        has_valid_caption=True,
+        face_job_status="pending",
+    )
+    assert not archived_image_qualifies_for_processed(
+        has_media=True,
+        has_qdrant_embed=True,
+        has_valid_caption=True,
+        face_job_status="PROCESSING",
+    )
+    assert archived_image_qualifies_for_processed(
+        has_media=True,
+        has_qdrant_embed=True,
+        has_valid_caption=True,
+        face_job_status="done",
+    )
+
+
+def test_archived_video_qualifies_requires_media_and_transcript():
+    assert archived_video_qualifies_for_processed(
+        has_media=True, has_transcript_segment=True
+    )
+    assert not archived_video_qualifies_for_processed(
+        has_media=True, has_transcript_segment=False
+    )
+    assert not archived_video_qualifies_for_processed(
+        has_media=False, has_transcript_segment=True
+    )

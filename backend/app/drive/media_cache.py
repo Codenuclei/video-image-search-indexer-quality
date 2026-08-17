@@ -10,7 +10,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, AsyncIterator
 
 from app.config import Settings, get_settings
-from app.pipelines.common import download_to_temp_file
+from app.pipelines.common import download_to_temp_file, svg_file_complete
+from app.pipelines.image_formats import is_svg_filename
 from app.storage import ensure_disk_space
 
 if TYPE_CHECKING:
@@ -67,6 +68,23 @@ def cache_rel_path_for(settings: Settings, absolute: Path) -> str:
         return str(absolute)
 
 
+def cache_is_incomplete(path: Path, drive_file: "DriveFile") -> bool:
+    """True when the on-disk copy is shorter than Drive metadata or a truncated SVG."""
+    try:
+        actual = path.stat().st_size
+    except OSError:
+        return True
+    if actual <= 0:
+        return True
+    expected = getattr(drive_file, "size", None)
+    if isinstance(expected, int) and expected > 0 and actual < expected:
+        return True
+    name = getattr(drive_file, "name", None) or ""
+    if is_svg_filename(name) and not svg_file_complete(path):
+        return True
+    return False
+
+
 def resolve_cache_path(settings: Settings, drive_file: "DriveFile") -> Path | None:
     """Return existing complete cache file, or None."""
     if drive_file.cache_rel_path:
@@ -95,6 +113,19 @@ async def ensure_media_cached(
     """
     settings = settings or get_settings()
     existing = resolve_cache_path(settings, drive_file)
+    if existing is not None and cache_is_incomplete(existing, drive_file):
+        logger.warning(
+            "Incomplete media cache for %s (%s bytes, expected %s) — re-downloading",
+            getattr(drive_file, "id", ""),
+            existing.stat().st_size,
+            getattr(drive_file, "size", None),
+        )
+        try:
+            existing.unlink(missing_ok=True)
+        except OSError:
+            pass
+        drive_file.cache_rel_path = None
+        existing = None
     if existing is not None:
         drive_file.cache_rel_path = cache_rel_path_for(settings, existing)
         return existing

@@ -52,6 +52,7 @@ import {
   focalPointStyle,
   formatTimestampRange,
   slideFrameUrl,
+  splitPanelCaptions,
   withReplacedFrame,
   type PickedFrame,
 } from "./utils";
@@ -2002,6 +2003,12 @@ function InstagramCarouselPost({
               rawPanels[0].frame_ts !== rawPanels[1].frame_ts
                 ? rawPanels
                 : null;
+            const panelCaptions = splitPanels
+              ? splitPanelCaptions(
+                  splitPanels,
+                  slide.transcript_text || slide.hook_line || ""
+                )
+              : [];
             return (
               <article
                 key={`${slide.index}-${slide.drive_file_id}-${slide.timestamp_sec}`}
@@ -2036,10 +2043,7 @@ function InstagramCarouselPost({
                       )}
                       <div className="ig-panel-scrim" aria-hidden />
                       <p className="ig-panel-caption">
-                        {panel.caption ||
-                          (p === 0
-                            ? slide.transcript_text || slide.hook_line || ""
-                            : "")}
+                        {panelCaptions[p] || ""}
                       </p>
                     </div>
                   ))

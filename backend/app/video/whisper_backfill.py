@@ -277,7 +277,9 @@ async def ensure_whisper_transcript(
             await _set_transcript_phase(session, drive_file_id, "transcribing")
             from app.pipelines.video import _whisper_cues_for_video
 
-            cues = await _whisper_cues_for_video(str(local_path), settings)
+            cues = await _whisper_cues_for_video(
+                str(local_path), settings, drive_file_id=drive_file_id
+            )
         except Exception as exc:  # noqa: BLE001
             logger.exception("Whisper failed for %s", drive_file_id)
             await _set_transcript_failed(

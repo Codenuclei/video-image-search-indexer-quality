@@ -1474,6 +1474,8 @@ export const apiClient = {
     startSec?: number;
     endSec?: number | null;
     limit?: number;
+    timeoutMs?: number;
+    silent?: boolean;
   }) => {
     const params = new URLSearchParams({
       drive_file_id: opts.driveFileId,
@@ -1482,7 +1484,11 @@ export const apiClient = {
     });
     if (opts.endSec != null) params.set("end_sec", String(opts.endSec));
     return api<{ drive_file_id: string; items: CarouselTranscriptFrameItem[] }>(
-      `/search/carousel/pipeline/transcript-frames?${params}`
+      `/search/carousel/pipeline/transcript-frames?${params}`,
+      {
+        timeoutMs: opts.timeoutMs ?? 180_000,
+        silent: opts.silent,
+      }
     );
   },
   searchUploadedFace: async (file: File, limit = 20): Promise<FaceSearchResponse> => {

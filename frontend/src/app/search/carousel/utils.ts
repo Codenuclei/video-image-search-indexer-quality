@@ -50,6 +50,36 @@ export function slideFrameUrl(
 
 export type PickedFrame = { frame_ts: number; preview_url: string };
 
+export function uniquePickerFrames<T extends { frame_ts: number; preview_url: string }>(
+  items: T[],
+  minGapSec = 0.45
+): T[] {
+  const out: T[] = [];
+  const seenUrls = new Set<string>();
+  for (const item of items) {
+    const url = item.preview_url || "";
+    if (!url || seenUrls.has(url)) continue;
+    if (out.some((prev) => Math.abs(prev.frame_ts - item.frame_ts) < minGapSec)) continue;
+    seenUrls.add(url);
+    out.push(item);
+  }
+  return out;
+}
+
+export function splitPanelCaptions(
+  panels: { caption?: string | null }[],
+  fallbackLine: string
+): string[] {
+  const line = fallbackLine.trim();
+  const caps = panels.map((panel, index) =>
+    (panel.caption || (index === 0 ? line : "") || "").trim()
+  );
+  if (caps.length >= 2 && caps[0] && caps[0] === caps[1]) {
+    caps[1] = "";
+  }
+  return caps;
+}
+
 /**
  * Swap only the image shown on a slide. The spoken span is left alone so slide
  * copy, clip playback and split panel timings survive the replacement, and the

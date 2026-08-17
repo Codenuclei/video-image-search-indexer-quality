@@ -9,6 +9,7 @@ import {
   type CarouselItemReference,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { uniquePickerFrames } from "@/app/carousel/utils";
 
 type Props = {
   driveFileId: string;
@@ -152,8 +153,10 @@ export function ItemReferences({
         startSec: Math.max(0, frameStartSec - 4),
         endSec: frameEndSec != null ? frameEndSec + 4 : frameStartSec + 28,
         limit: 16,
+        timeoutMs: 180_000,
+        silent: true,
       });
-      setFrameItems(res.items ?? []);
+      setFrameItems(uniquePickerFrames(res.items ?? []));
       if (!(res.items ?? []).length) setStatus("No cached frames in this window");
     } catch (e) {
       setStatus(formatApiError(e, "Could not load frames"));

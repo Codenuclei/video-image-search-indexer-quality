@@ -768,6 +768,42 @@
   min-width: 0;
 }
 
+.carousel-studio .ig-quality {
+  display: flex;
+  align-items: baseline;
+  gap: 0.55rem;
+  min-width: 0;
+  padding: 0.5rem 0.65rem;
+  border-radius: 0.55rem;
+  background: #f0fdf4;
+  color: #166534;
+  font-size: 0.6875rem;
+  line-height: 1.35;
+}
+
+.carousel-studio .ig-quality.is-warning {
+  background: #fffbeb;
+  color: #92400e;
+}
+
+.carousel-studio .ig-quality-score {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.carousel-studio .ig-quality-score strong {
+  font-size: 0.8125rem;
+}
+
+.carousel-studio .ig-quality-warnings {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #475569;
+}
+
 .carousel-studio .ig-post-action-control {
   width: auto;
   min-width: 7.5rem;
@@ -820,6 +856,7 @@
   scroll-snap-align: start;
   scroll-snap-stop: always;
   background: #111;
+  isolation: isolate;
 }
 
 .carousel-studio .ig-slide img {
@@ -862,10 +899,10 @@
   inset: 0;
   background: linear-gradient(
     to top,
-    rgba(0, 0, 0, 0.86) 0%,
-    rgba(0, 0, 0, 0.42) 30%,
-    rgba(0, 0, 0, 0.05) 58%,
-    transparent 72%
+    rgba(0, 0, 0, 0.94) 0%,
+    rgba(0, 0, 0, 0.66) 34%,
+    rgba(0, 0, 0, 0.16) 62%,
+    transparent 78%
   );
   pointer-events: none;
 }
@@ -877,10 +914,10 @@
   bottom: 0;
   z-index: 1;
   margin: 0;
-  padding: 0.85rem 0.95rem 0.9rem;
+  padding: 1rem 1.25rem 1.1rem;
   color: #fff;
-  font-size: clamp(0.9rem, 2.4vw, 1.05rem);
-  font-weight: 600;
+  font-size: clamp(0.92rem, 2.4vw, 1.08rem);
+  font-weight: 650;
   letter-spacing: -0.02em;
   line-height: 1.28;
   text-wrap: balance;
@@ -889,6 +926,10 @@
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
   overflow: hidden;
+}
+
+.carousel-studio .ig-panel-caption > span {
+  display: inline;
 }
 
 .carousel-studio .ig-slide-empty {
@@ -971,10 +1012,10 @@
   background:
     linear-gradient(
       to top,
-      rgba(0, 0, 0, 0.82) 0%,
-      rgba(0, 0, 0, 0.45) 28%,
-      rgba(0, 0, 0, 0.08) 52%,
-      transparent 68%
+      rgba(0, 0, 0, 0.96) 0%,
+      rgba(0, 0, 0, 0.72) 30%,
+      rgba(0, 0, 0, 0.18) 58%,
+      transparent 76%
     );
   pointer-events: none;
 }
@@ -985,14 +1026,16 @@
   right: 0;
   bottom: 0;
   z-index: 1;
-  padding: 1.15rem 1rem 1rem;
+  /* Keep production copy inside an Instagram-safe inset. */
+  padding: clamp(1.5rem, 7%, 2rem) clamp(1.35rem, 8%, 2.15rem);
   color: #fff;
 }
 
 .carousel-studio .ig-slide-hook {
   margin: 0;
-  font-size: clamp(0.95rem, 2.6vw, 1.1rem);
-  font-weight: 600;
+  max-width: 24ch;
+  font-size: clamp(1rem, 2.8vw, 1.18rem);
+  font-weight: 650;
   letter-spacing: -0.02em;
   line-height: 1.3;
   text-wrap: balance;
@@ -1000,8 +1043,54 @@
   /* Instagram one-liner: keep overlay to ~1–2 short lines, never a paragraph. */
   display: -webkit-box;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 3;
   overflow: hidden;
+}
+
+.carousel-studio .ig-slide-cover .ig-slide-hook {
+  max-width: 18ch;
+  font-size: clamp(1.35rem, 4.6vw, 1.85rem);
+  font-weight: 750;
+  line-height: 1.08;
+  letter-spacing: -0.04em;
+  -webkit-line-clamp: 4;
+}
+
+.carousel-studio .ig-slide-final .ig-slide-hook {
+  max-width: 20ch;
+  font-size: clamp(1.2rem, 3.8vw, 1.55rem);
+  font-weight: 720;
+  line-height: 1.15;
+}
+
+.carousel-studio .ig-hl {
+  color: #ffe600;
+  font-weight: 800;
+  text-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.85),
+    0 0 12px rgba(0, 0, 0, 0.35);
+}
+
+.carousel-studio .ig-slide-number {
+  position: absolute;
+  z-index: 2;
+  top: clamp(1rem, 5%, 1.4rem);
+  right: clamp(1rem, 5%, 1.4rem);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 2rem;
+  height: 1.45rem;
+  padding: 0 0.45rem;
+  border: 1px solid rgba(255, 255, 255, 0.34);
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.56);
+  color: #fff;
+  font-size: 0.625rem;
+  font-weight: 750;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.08em;
+  backdrop-filter: blur(6px);
 }
 
 .carousel-studio .ig-slide-meta {

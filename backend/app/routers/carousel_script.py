@@ -41,6 +41,8 @@ from app.search.transcript_topics import (
     fallback_topics_from_cues,
 )
 from app.search.carousel_pipeline import (
+    THEME_PROMPT_VERSION,
+    apply_carousel_quality_pass,
     build_harmonized_themes,
     cue_preview_lines,
     deduce_directional_intent,
@@ -175,7 +177,7 @@ class PipelineThemesRequest(CarouselRunLlmFields):
 SAVE_KIND_TOPICS = "topics_hooks"
 SAVE_KIND_THEMES = "themes"
 SAVE_KIND_CAROUSEL = "carousel"
-CAROUSEL_ALGORITHM_VERSION = "p0-fast-grouped-v2-highlights"
+CAROUSEL_ALGORITHM_VERSION = "p0-fast-grouped-v3-quality-diversity"
 CAROUSEL_STATUS_PROCESSING = "processing"
 CAROUSEL_STATUS_IDLE = "idle"
 
@@ -300,8 +302,19 @@ async def _persist_carousel_artifact(
 
 def _themes_transcript_hash(cues: list[Any]) -> str:
     """Stable cache key for theme generation input (transcript content)."""
-    text = compact_transcript(cues) or ""
-    return hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()
+    digest = hashlib.sha256()
+    for cue in cues:
+        try:
+            start, end, text = cue
+        except (TypeError, ValueError):
+            continue
+        cleaned = " ".join(str(text or "").split())
+        if not cleaned:
+            continue
+        end_value = "" if end is None else f"{float(end):.3f}"
+        line = f"{float(start):.3f}\t{end_value}\t{cleaned}\n"
+        digest.update(line.encode("utf-8", errors="ignore"))
+    return digest.hexdigest()
 
 
 def _extract_theme_key(slices: list[PipelineThemeSlice]) -> str:
@@ -451,8 +464,7 @@ class CarouselGenerateRequest(CarouselRunLlmFields):
     max_slides: int = Field(default=10, ge=2, le=12)
     # Transcript-first: defer Gemini/frame selection until the user explicitly asks.
     select_images: bool = False
-    # Claude-preferred Instagram copy polish + yellow keyword highlight indices.
-    # Used by /test preview+finalize; production /carousel can leave this false.
+    # Optional production copy finalization + yellow keyword highlight indices.
     polish_copy: bool = False
     # Cache-first: force regenerates; generate creates on miss; default is cache-only.
     force: bool = False
@@ -1377,7 +1389,9 @@ async def carousel_pipeline_themes(
     llm_pack = resolve_carousel_llm(body.llm_provider, body.llm_model)
     # Cache identity must track Claude/OpenRouter config — never gemini_model alone,
     # or Gemini-era theme saves would incorrectly satisfy Claude requests.
-    model_name = carousel_llm_cache_id(llm_pack)
+    model_name = (
+        f"{carousel_llm_cache_id(llm_pack)}:{THEME_PROMPT_VERSION}"
+    )[:128]
 
     if not body.force:
         cached_q = (
@@ -3310,6 +3324,14 @@ async def _carousel_pipeline_generate_impl(
             transcript_guard.get("ok"),
             drive_file_id,
         )
+    # Deterministic and source-safe: no extra model call. The transcript guard
+    # remains authoritative and is re-applied after any concise-prefix repair.
+    carousels, quality_summary = apply_carousel_quality_pass(carousels)
+    final_guard = _enforce_slides_match_transcript(carousels, cue_corpus)
+    for key in ("checked", "ok", "snapped", "empty"):
+        transcript_guard[key] = int(transcript_guard.get(key) or 0) + int(
+            final_guard.get(key) or 0
+        )
     if select_images:
         # One grouped frame pass for all carousel slides; the selector itself
         # enforces the hard three-request Gemini cap.
@@ -3356,6 +3378,7 @@ async def _carousel_pipeline_generate_impl(
         "intent": (body.intent or "").strip() or None,
         "transcript_language": translate_meta,
         "copy_source": copy_provider,
+        "quality_summary": quality_summary,
         "llm_model": llm_cache_id,
         "transcript_guard": transcript_guard,
         "cache_hit": False,
@@ -3421,6 +3444,7 @@ async def _carousel_pipeline_select_images_impl(
     except Exception as exc:  # noqa: BLE001
         logger.warning("select-images transcript guard skipped: %s", exc)
         transcript_guard = {"checked": 0, "ok": 0, "snapped": 0, "empty": 0}
+    polished, quality_summary = apply_carousel_quality_pass(polished)
     quality_rollup: list[dict[str, Any]] = []
     all_slides: list[dict[str, Any]] = []
     slide_locations: list[tuple[int, int]] = []
@@ -3533,6 +3557,7 @@ async def _carousel_pipeline_select_images_impl(
             "rejected": rejected,
             "slides_polished": sum(len(c.get("slides") or []) for c in polished),
         },
+        "quality_summary": quality_summary,
         "transcript_guard": transcript_guard,
     }
     try:
@@ -4163,7 +4188,7 @@ def _split_exact_caption_lines(text: str) -> tuple[str, str]:
     parts = [p.strip() for p in re.split(r"(?<=[.!?])\s+", cleaned) if p.strip()]
     if len(parts) >= 2:
         return parts[0], " ".join(parts[1:])
-    return cleaned, cleaned
+    return cleaned, ""
 
 
 def _pick_split_frame_timestamps(
@@ -4273,6 +4298,8 @@ def _attach_layout_panels(carousels: list[dict[str, Any]]) -> None:
                 else []
             )
             top, bottom = _split_exact_caption_lines(text)
+            if top and bottom and top.strip() == bottom.strip():
+                bottom = ""
             fx, fy, fs = focal_point_for_slide(slide, left_ts)
             ax, ay, afs = focal_point_for_slide(slide, right_ts)
             def panel(ts: float, caption: str, px: float, py: float, score: float) -> dict[str, Any]:

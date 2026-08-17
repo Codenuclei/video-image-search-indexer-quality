@@ -17,6 +17,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Clapperboard,
+  Download,
   Film,
   History,
   ImageIcon,
@@ -46,6 +47,7 @@ import {
   type CarouselLayouts,
   type CarouselOutlineResponse,
   type CarouselOutlineSlide,
+  type CarouselQualityReport,
   type CarouselPipelineExtractResponse,
   type CarouselPipelineTheme,
   type CarouselRecentVideo,
@@ -57,6 +59,7 @@ import {
   type Person,
 } from "@/lib/api";
 import { DownloadButton, LoadingLabel } from "@/components/ui";
+import { IgHighlightedCaption } from "@/components/ig-caption";
 import { ModalOverlay } from "@/components/modal";
 import { toastApiError } from "@/lib/toast-api-error";
 import { useDismissible } from "@/lib/use-dismissible";
@@ -66,6 +69,7 @@ import {
   focalPointStyle,
   formatTimestampRange,
   slideFrameUrl,
+  splitPanelCaptions,
   withReplacedFrame,
   withReplacedImage,
   type PickedFrame,
@@ -77,6 +81,13 @@ import {
   ensureEnglishTranscript,
   waitForEnglishTranscript,
 } from "@/lib/transcript-ensure";
+import {
+  carouselArchiveFilename,
+  carouselSlideFilename,
+  CarouselExportError,
+  renderCarouselSlide,
+  validateSlideForExport,
+} from "@/lib/carousel-export";
 
 type Phase = 1 | 2 | 3 | 4 | 5;
 
@@ -1223,6 +1234,7 @@ export default function CarouselSearchPage() {
           min_slides: 6,
           max_slides: 10,
           select_images: false,
+          polish_copy: true,
           // Explicit Generate must always fall through to Gemini on cache miss.
           generate: true,
           force,
@@ -2472,6 +2484,9 @@ export default function CarouselSearchPage() {
                               hook_line: text,
                               transcript_text: text,
                               snippet: text,
+                              caption: text,
+                              highlight: [],
+                              highlight_words: [],
                             }
                           : s
                       );
@@ -2489,6 +2504,7 @@ export default function CarouselSearchPage() {
                 driveFileId={selectedVideo.id}
                 imagesReady={imagesReady}
                 locked={pipelineLocked}
+                qualityReport={activeGeneratedCarousel.quality_report}
                 references={
                   activeGeneratedCarousel.references ??
                   outline?.references ??
@@ -2690,12 +2706,38 @@ function InlineTranscriptEditor({
   );
 }
 
+const QUALITY_ISSUE_LABELS: Record<string, string> = {
+  weak_cover: "Cover could be stronger",
+  weak_swipe_progression: "Swipe progression needs attention",
+  dense_copy: "Some slides are text-heavy",
+  duplicate_ideas: "Some slides repeat an idea",
+  weak_ending_payoff: "Final slide could land more clearly",
+};
+
+function slideRole(index: number, count: number): "cover" | "body" | "final" {
+  if (index === 0) return "cover";
+  if (index === count - 1) return "final";
+  return "body";
+}
+
+function downloadBrowserBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 function InstagramCarouselPost({
   title,
   slides,
   driveFileId,
   imagesReady,
   locked,
+  qualityReport,
   references: attachedRefs = [],
   onOpenSlide,
   onSlidesChange,
@@ -2709,6 +2751,7 @@ function InstagramCarouselPost({
   driveFileId: string;
   imagesReady: boolean;
   locked: boolean;
+  qualityReport?: CarouselQualityReport | null;
   references?: CarouselItemReference[];
   onOpenSlide: (slide: CarouselOutlineSlide) => void;
   onSlidesChange?: (slides: CarouselOutlineSlide[]) => void;
@@ -2729,10 +2772,14 @@ function InstagramCarouselPost({
   const [imageBusy, setImageBusy] = useState(false);
   const [imageNote, setImageNote] = useState<string | null>(null);
   const [regenerating, setRegenerating] = useState(false);
+  const [exporting, setExporting] = useState<"slide" | "carousel" | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
   const n = slides.length;
   const current = slides[Math.min(Math.max(active, 0), Math.max(n - 1, 0))];
   const imageRefs = attachedRefs.filter((r) => r.ref_kind === "image" && r.image_url);
   const copyRefs = attachedRefs.filter((r) => r.ref_kind === "copy" && r.copy_text);
+  const qualityScore = Math.min(100, Math.max(0, Math.round(qualityReport?.score ?? 0)));
+  const qualityIssues = qualityReport?.issues ?? [];
   const references = slides.map((slide, index) => ({
     type: "copy+image",
     slide_index: index,
@@ -2796,6 +2843,62 @@ function InstagramCarouselPost({
     }
   }
 
+  function validateExportSlide(slide: CarouselOutlineSlide, index: number) {
+    if (!imagesReady && slide.frame_source !== "manual") {
+      throw new CarouselExportError(
+        `Slide ${index + 1} does not have a selected frame yet. Run Select & filter images, or upload/choose a reference image.`
+      );
+    }
+    validateSlideForExport(slide, layoutMode, index + 1);
+  }
+
+  async function downloadSlide() {
+    setExportError(null);
+    setExporting("slide");
+    try {
+      if (!current) {
+        throw new CarouselExportError("No active slide is available to export.");
+      }
+      validateExportSlide(current, active);
+      const blob = await renderCarouselSlide(current, layoutMode, active, n);
+      downloadBrowserBlob(blob, carouselSlideFilename(title, active));
+    } catch (error) {
+      setExportError(
+        error instanceof Error ? error.message : "Slide export failed. Check the selected image and try again."
+      );
+    } finally {
+      setExporting(null);
+    }
+  }
+
+  async function downloadCarousel() {
+    setExportError(null);
+    setExporting("carousel");
+    try {
+      slides.forEach(validateExportSlide);
+      const { default: JSZip } = await import("jszip");
+      const zip = new JSZip();
+      for (let index = 0; index < slides.length; index++) {
+        const blob = await renderCarouselSlide(slides[index], layoutMode, index, slides.length);
+        zip.file(carouselSlideFilename(title, index), blob);
+      }
+      const archive = await zip.generateAsync({
+        type: "blob",
+        compression: "DEFLATE",
+        compressionOptions: { level: 6 },
+      });
+      downloadBrowserBlob(archive, carouselArchiveFilename(title));
+    } catch (error) {
+      setExportError(
+        error instanceof Error
+          ? error.message
+          : "Carousel export failed. Check every selected image and try again."
+      );
+    } finally {
+      setExporting(null);
+    }
+  }
+
   if (!n || !current) {
     return <p className="text-sm text-muted-foreground">No slides yet — generate a carousel first.</p>;
   }
@@ -2811,7 +2914,7 @@ function InstagramCarouselPost({
             {active + 1}/{n}
           </span>
         </div>
-        <div className="ig-post-actions" role="toolbar" aria-label="Slide frame controls">
+        <div className="ig-post-actions" role="toolbar" aria-label="Slide and export controls">
           <div className="studio-field studio-field-inline">
             <label htmlFor="carousel-layout" className="sr-only">
               Layout
@@ -2868,7 +2971,52 @@ function InstagramCarouselPost({
               {regenerating ? "Working…" : "Regenerate"}
             </button>
           )}
+          <button
+            type="button"
+            className="studio-btn studio-btn-ghost studio-btn-sm ig-post-action-btn"
+            title="Download the active slide as a 1080×1350 JPEG"
+            onClick={() => void downloadSlide()}
+            disabled={exporting !== null}
+          >
+            <Download size={14} />
+            {exporting === "slide" ? "Rendering…" : "Download slide"}
+          </button>
+          <button
+            type="button"
+            className="studio-btn studio-btn-ghost studio-btn-sm ig-post-action-btn"
+            title="Download all slides as ordered 1080×1350 JPEGs in a ZIP"
+            onClick={() => void downloadCarousel()}
+            disabled={exporting !== null}
+          >
+            <Download size={14} />
+            {exporting === "carousel" ? "Building ZIP…" : "Download carousel"}
+          </button>
         </div>
+        {exportError ? (
+          <p
+            className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs leading-relaxed text-red-700"
+            role="alert"
+          >
+            {exportError}
+          </p>
+        ) : null}
+        {qualityReport ? (
+          <div
+            className={cn("ig-quality", qualityScore < 70 && "is-warning")}
+            aria-label={`Carousel quality score ${qualityScore} out of 100`}
+          >
+            <span className="ig-quality-score">
+              <strong>{qualityScore}</strong>/100 quality
+            </span>
+            {qualityIssues.length ? (
+              <span className="ig-quality-warnings">
+                {qualityIssues.map((issue) => QUALITY_ISSUE_LABELS[issue] ?? issue.replaceAll("_", " ")).join(" · ")}
+              </span>
+            ) : (
+              <span className="ig-quality-warnings">No quality warnings</span>
+            )}
+          </div>
+        ) : null}
       </div>
 
       {changingImage ? (
@@ -3005,6 +3153,7 @@ function InstagramCarouselPost({
           aria-label="Carousel slides"
         >
           {slides.map((slide, i) => {
+            const role = slideRole(i, n);
             // A frame the user picked themselves shows immediately; pipeline
             // frames still wait for the explicit Select & filter images step.
             const manualFrame = slide.frame_source === "manual";
@@ -3025,10 +3174,22 @@ function InstagramCarouselPost({
               rawPanels[0].frame_ts !== rawPanels[1].frame_ts
                 ? rawPanels
                 : null;
+            const panelCaptions = splitPanels
+              ? splitPanelCaptions(
+                  splitPanels,
+                  slide.transcript_text || slide.hook_line || ""
+                )
+              : [];
             return (
               <article
                 key={`${slide.index}-${slide.drive_file_id}-${slide.timestamp_sec}`}
-                className={cn("ig-slide", splitPanels && "ig-slide-split")}
+                className={cn(
+                  "ig-slide",
+                  `ig-slide-${role}`,
+                  splitPanels && "ig-slide-split"
+                )}
+                data-slide-role={role}
+                data-slide-number={i + 1}
                 aria-label={`Slide ${i + 1} of ${n}`}
                 aria-hidden={i !== active}
               >
@@ -3059,10 +3220,13 @@ function InstagramCarouselPost({
                       )}
                       <div className="ig-panel-scrim" aria-hidden />
                       <p className="ig-panel-caption">
-                        {panel.caption ||
-                          (p === 0
-                            ? slide.transcript_text || slide.hook_line || ""
-                            : "")}
+                        <IgHighlightedCaption
+                          text={panelCaptions[p] || ""}
+                          highlight={panel.highlight ?? slide.highlight}
+                          highlight_words={
+                            panel.highlight_words ?? slide.highlight_words
+                          }
+                        />
                       </p>
                     </div>
                   ))
@@ -3093,7 +3257,11 @@ function InstagramCarouselPost({
                     <div className="ig-slide-scrim" aria-hidden />
                     <div className="ig-slide-body">
                       <p className="ig-slide-hook">
-                        {slide.transcript_text || slide.hook_line || ""}
+                        <IgHighlightedCaption
+                          text={slide.transcript_text || slide.hook_line || ""}
+                          highlight={slide.highlight}
+                          highlight_words={slide.highlight_words}
+                        />
                       </p>
                       <p className="ig-slide-meta">
                         {formatTimestampRange(slide.timestamp_sec, slide.end_timestamp_sec)}
@@ -3106,6 +3274,9 @@ function InstagramCarouselPost({
                     </div>
                   </>
                 )}
+                <span className="ig-slide-number" aria-hidden>
+                  {String(i + 1).padStart(2, "0")}
+                </span>
               </article>
             );
           })}

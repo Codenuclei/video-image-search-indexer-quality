@@ -22,6 +22,7 @@ from app.pipelines.image_formats import (
     extension_of,
     infer_image_mime,
     is_raw_filename,
+    is_svg_filename,
 )
 
 logger = logging.getLogger(__name__)
@@ -40,6 +41,8 @@ _CONVERTIBLE_EXTENSIONS = (
     ".jp2",
     ".j2k",
     ".jxl",
+    ".svg",
+    ".svgz",
 ) + TIFF_EXTENSIONS + RAW_EXTENSIONS
 
 _MAX_DECODE_PIXELS = 40_000_000
@@ -71,6 +74,7 @@ INDEXABLE_IMAGE_TYPES = frozenset(
         "image/x-pentax-pef",
         "image/x-samsung-srw",
         "image/x-raw",
+        "image/svg+xml",
     }
 )
 INDEXABLE_VIDEO_TYPES = frozenset(
@@ -305,6 +309,81 @@ def _decode_tiff_to_rgb(raw_bytes: bytes) -> "np.ndarray":
     return _normalize_tiff_array(arr)
 
 
+def looks_like_svg(raw_bytes: bytes, *, file_name: str = "") -> bool:
+    if is_svg_filename(file_name):
+        return True
+    head = (raw_bytes or b"")[:400].lstrip().lower()
+    return head.startswith(b"<svg") or (head.startswith(b"<?xml") and b"<svg" in head)
+
+
+def svg_bytes_complete(raw: bytes | None) -> bool:
+    """True when SVG XML ends with a closing tag (not a truncated cache).
+
+    Nested ``</svg>`` fragments in the last few KB of a truncated poster are
+    common; only a closing tag at the end of the file counts as complete.
+    """
+    if not raw:
+        return False
+    return raw.rstrip().lower().endswith(b"</svg>")
+
+
+def svg_file_complete(path: str | os.PathLike[str]) -> bool:
+    """True when the on-disk SVG ends with ``</svg>`` (reads the tail only)."""
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return False
+    if size <= 0:
+        return False
+    with open(path, "rb") as fh:
+        fh.seek(max(0, size - 16384))
+        tail = fh.read()
+    return svg_bytes_complete(tail)
+
+
+def rasterize_svg_to_png(raw_bytes: bytes) -> bytes:
+    """Rasterize SVG via rsvg-convert (librsvg). Used so Gemini can caption posters."""
+    import shutil
+    import subprocess
+    import tempfile
+
+    if shutil.which("rsvg-convert") is None:
+        raise ValueError("Could not decode SVG: rsvg-convert is not installed")
+    src_path = png_path = ""
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".svg", delete=False) as src:
+            src.write(raw_bytes)
+            src_path = src.name
+        png_path = src_path + ".png"
+        result = subprocess.run(
+            [
+                "rsvg-convert",
+                "-f",
+                "png",
+                "--width",
+                "1024",
+                "-o",
+                png_path,
+                src_path,
+            ],
+            check=False,
+            capture_output=True,
+            timeout=180,
+        )
+        if result.returncode != 0 or not os.path.exists(png_path) or os.path.getsize(png_path) == 0:
+            err = (result.stderr or result.stdout or b"").decode("utf-8", "replace")[:300]
+            raise ValueError(f"Could not decode SVG ({err or 'rsvg-convert failed'})")
+        with open(png_path, "rb") as fh:
+            return fh.read()
+    finally:
+        for path in (src_path, png_path):
+            if path and os.path.exists(path):
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+
+
 def open_image_rgb(raw_bytes: bytes, *, file_name: str = ""):
     """Open arbitrary image bytes as RGB via Pillow (first frame for GIF/TIFF)."""
     from PIL import Image
@@ -316,6 +395,12 @@ def open_image_rgb(raw_bytes: bytes, *, file_name: str = ""):
 
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
         return Image.fromarray(rgb)
+
+    if looks_like_svg(raw_bytes, file_name=file_name):
+        png = rasterize_svg_to_png(raw_bytes)
+        img = Image.open(io.BytesIO(png))
+        _downscale_if_huge(img)
+        return img.convert("RGB")
 
     ext = extension_of(file_name)
     if ext in TIFF_EXTENSIONS:
@@ -353,6 +438,13 @@ def decode_image_bgr(raw_bytes: bytes, *, file_name: str = "") -> "np.ndarray":
 
     if is_raw_filename(file_name):
         return _decode_raw_to_bgr(raw_bytes, file_name)
+
+    if looks_like_svg(raw_bytes, file_name=file_name):
+        png = rasterize_svg_to_png(raw_bytes)
+        image_bgr = cv2.imdecode(np.frombuffer(png, dtype=np.uint8), cv2.IMREAD_COLOR)
+        if image_bgr is None:
+            raise ValueError("Could not decode SVG raster")
+        return image_bgr
 
     image_bgr = cv2.imdecode(np.frombuffer(raw_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
     if image_bgr is not None:
@@ -450,6 +542,11 @@ async def download_to_temp_file(
                             async for chunk in response.aiter_bytes(chunk_size=1024 * 256):
                                 ensure_disk_space(path, len(chunk))
                                 fh.write(chunk)
+                got = os.path.getsize(path)
+                if expected_size and expected_size > 0 and got < expected_size:
+                    raise OSError(
+                        f"Incomplete Drive download: got {got} bytes, expected {expected_size}"
+                    )
                 last_exc = None
                 break
             except Exception as exc:  # noqa: BLE001

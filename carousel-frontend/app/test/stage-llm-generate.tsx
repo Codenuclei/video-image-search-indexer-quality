@@ -106,6 +106,11 @@ export function StageLlmGenerate({
     return runConfig.model;
   }, [models, runConfig.model, runConfig.provider]);
 
+  function selectModel(cfg: CarouselRunConfig) {
+    onRunConfigChange?.(cfg);
+    setOpen(false);
+  }
+
   async function runWith(cfg: CarouselRunConfig) {
     onRunConfigChange?.(cfg);
     setOpen(false);
@@ -150,7 +155,7 @@ export function StageLlmGenerate({
         <button
           type="button"
           className="stage-llm-gen-chevron"
-          disabled={disabled || busy}
+          disabled={busy}
           aria-expanded={open}
           aria-haspopup="menu"
           onClick={() => setOpen((v) => !v)}
@@ -194,7 +199,7 @@ export function StageLlmGenerate({
                           role="menuitem"
                           className={cn("stage-llm-gen-option", active && "is-active")}
                           onClick={() =>
-                            void runWith({
+                            selectModel({
                               provider: option.provider as CarouselLlmProvider,
                               model: option.id,
                             })

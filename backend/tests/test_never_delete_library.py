@@ -10,8 +10,17 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.db.models import DriveFile, DriveFileStatus, DriveUser, Media, MediaType
-from app.drive.cleanup import remove_drive_file
+from app.db.models import (
+    DriveFile,
+    DriveFileStatus,
+    DriveUser,
+    FaceJob,
+    FaceJobStatus,
+    Media,
+    MediaType,
+    VideoSegment,
+)
+from app.drive.cleanup import remove_drive_file, restore_archived_when_index_complete
 from app.drive.library_tree import build_library_tree
 from app.drive.schemas import ConnectorFile, ConnectorFolder, ConnectorFolderListing
 from app.workers.indexer import IndexingWorker
@@ -537,3 +546,165 @@ async def test_e2e_connect_index_switch_disconnect_reconnect_preserves(db_sessio
         await db_session.execute(select(Media).where(Media.drive_file_id == "sample-1"))
     ).scalar_one_or_none()
     assert media is not None
+
+
+@requires_postgres
+@pytest.mark.asyncio
+async def test_restore_archived_image_when_embed_caption_complete(db_session):
+    """Save-only: archived image with Media + Qdrant embed + caption → PROCESSED."""
+    db_session.add(
+        DriveFile(
+            id="save-img",
+            name="keep.jpg",
+            mime_type="image/jpeg",
+            path="/keep.jpg",
+            status=DriveFileStatus.ARCHIVED,
+            archived_at=datetime.now(timezone.utc),
+            error_message="archived: Drive 404 during image index",
+        )
+    )
+    await db_session.flush()
+    db_session.add(Media(drive_file_id="save-img", type=MediaType.IMAGE))
+    db_session.add(FaceJob(drive_file_id="save-img", status=FaceJobStatus.DONE))
+    await db_session.commit()
+
+    with (
+        patch("app.qdrant.images.existing_image_ids_sync", return_value={"save-img"}),
+        patch("app.qdrant.image_captions.valid_caption_ids_sync", return_value={"save-img"}),
+        patch("app.qdrant.images.delete_image_sync", side_effect=_fail_if_qdrant_delete),
+        patch("app.qdrant.image_captions.delete_caption_sync", side_effect=_fail_if_qdrant_delete),
+    ):
+        n = await restore_archived_when_index_complete(db_session)
+    await db_session.commit()
+
+    assert n == 1
+    row = await db_session.get(DriveFile, "save-img")
+    assert row is not None
+    assert row.status == DriveFileStatus.PROCESSED
+    assert row.archived_at is None
+    assert row.error_message is None
+    media = (
+        await db_session.execute(select(Media).where(Media.drive_file_id == "save-img"))
+    ).scalar_one_or_none()
+    assert media is not None
+
+
+@requires_postgres
+@pytest.mark.asyncio
+async def test_restore_archived_skips_incomplete_image_and_empty_archive(db_session):
+    """Do not mark PROCESSED without embed/caption, or with no Media, or in-flight faces."""
+    db_session.add(
+        DriveFile(
+            id="no-media",
+            name="ghost.jpg",
+            mime_type="image/jpeg",
+            path="/ghost.jpg",
+            status=DriveFileStatus.ARCHIVED,
+            archived_at=datetime.now(timezone.utc),
+            error_message="archived: stale incomplete under sync root (soft-archive)",
+        )
+    )
+    db_session.add(
+        DriveFile(
+            id="media-only",
+            name="partial.jpg",
+            mime_type="image/jpeg",
+            path="/partial.jpg",
+            status=DriveFileStatus.ARCHIVED,
+            archived_at=datetime.now(timezone.utc),
+            error_message="archived: Drive 404 during image index",
+        )
+    )
+    db_session.add(
+        DriveFile(
+            id="faces-pending",
+            name="faces.jpg",
+            mime_type="image/jpeg",
+            path="/faces.jpg",
+            status=DriveFileStatus.ARCHIVED,
+            archived_at=datetime.now(timezone.utc),
+            error_message="archived: x",
+        )
+    )
+    await db_session.flush()
+    db_session.add(Media(drive_file_id="media-only", type=MediaType.IMAGE))
+    db_session.add(Media(drive_file_id="faces-pending", type=MediaType.IMAGE))
+    db_session.add(FaceJob(drive_file_id="faces-pending", status=FaceJobStatus.PENDING))
+    await db_session.commit()
+
+    with (
+        patch(
+            "app.qdrant.images.existing_image_ids_sync",
+            return_value={"media-only", "faces-pending"},
+        ),
+        patch(
+            "app.qdrant.image_captions.valid_caption_ids_sync",
+            return_value={"faces-pending"},
+        ),
+        patch("app.qdrant.images.delete_image_sync", side_effect=_fail_if_qdrant_delete),
+    ):
+        n = await restore_archived_when_index_complete(db_session)
+    await db_session.commit()
+
+    assert n == 0
+    for fid in ("no-media", "media-only", "faces-pending"):
+        row = await db_session.get(DriveFile, fid)
+        assert row is not None
+        assert row.status == DriveFileStatus.ARCHIVED
+
+
+@requires_postgres
+@pytest.mark.asyncio
+async def test_restore_archived_video_when_transcript_exists(db_session):
+    db_session.add(
+        DriveFile(
+            id="save-vid",
+            name="talk.mp4",
+            mime_type="video/mp4",
+            path="/talk.mp4",
+            status=DriveFileStatus.ARCHIVED,
+            archived_at=datetime.now(timezone.utc),
+            error_message="archived: Drive 404 during video index",
+        )
+    )
+    db_session.add(
+        DriveFile(
+            id="empty-vid",
+            name="silent.mp4",
+            mime_type="video/mp4",
+            path="/silent.mp4",
+            status=DriveFileStatus.ARCHIVED,
+            archived_at=datetime.now(timezone.utc),
+            error_message="archived: stale",
+        )
+    )
+    await db_session.flush()
+    db_session.add(Media(drive_file_id="save-vid", type=MediaType.VIDEO))
+    db_session.add(Media(drive_file_id="empty-vid", type=MediaType.VIDEO))
+    await db_session.flush()
+    media = (
+        await db_session.execute(select(Media).where(Media.drive_file_id == "save-vid"))
+    ).scalar_one()
+    db_session.add(
+        VideoSegment(
+            media_id=media.id,
+            start_sec=0.0,
+            end_sec=2.0,
+            text="Welcome to the talk",
+        )
+    )
+    await db_session.commit()
+
+    n = await restore_archived_when_index_complete(db_session)
+    await db_session.commit()
+
+    assert n == 1
+    saved = await db_session.get(DriveFile, "save-vid")
+    empty = await db_session.get(DriveFile, "empty-vid")
+    assert saved is not None and saved.status == DriveFileStatus.PROCESSED
+    assert saved.archived_at is None
+    assert empty is not None and empty.status == DriveFileStatus.ARCHIVED
+    cues = (
+        await db_session.execute(select(VideoSegment).where(VideoSegment.media_id == media.id))
+    ).scalars().all()
+    assert len(cues) == 1

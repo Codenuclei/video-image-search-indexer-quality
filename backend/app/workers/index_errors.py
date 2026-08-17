@@ -50,6 +50,7 @@ def is_transient_network_error(exc: BaseException) -> bool:
             "broken pipe",
             "server disconnected",
             "remoteprotocolerror",
+            "incomplete drive download",
         )
     )
 

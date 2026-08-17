@@ -888,6 +888,11 @@
   position: relative;
   display: inline-flex;
   vertical-align: middle;
+  z-index: 1;
+}
+
+.carousel-studio .stage-llm-gen.is-open {
+  z-index: 50;
 }
 
 .carousel-studio .stage-llm-gen-split {

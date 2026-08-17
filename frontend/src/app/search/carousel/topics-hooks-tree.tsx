@@ -10,6 +10,7 @@ import { ChevronDown, History, ImageIcon, Play, Shuffle } from "lucide-react";
 import {
   apiAssetUrl,
   apiClient,
+  formatApiError,
   type CarouselGenerationSaveListItem,
   type CarouselPipelineExtractResponse,
   type CarouselTopicTreeNode,
@@ -18,12 +19,16 @@ import {
 } from "@/lib/api";
 import { LoadingLabel } from "@/components/ui";
 import { cn } from "@/lib/utils";
+import { uniquePickerFrames } from "./utils";
 
 function fmtTs(sec: number): string {
   const m = Math.floor(sec / 60);
   const s = Math.floor(sec % 60);
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
+
+const TRANSCRIPT_FRAME_TIMEOUT_MS = 180_000;
+const TRANSCRIPT_FRAME_MAX_ATTEMPTS = 3;
 
 const transcriptFrameJobs = new Map<string, Promise<CarouselTranscriptFrameItem[]>>();
 
@@ -40,27 +45,42 @@ function transcriptFrameJobKey(
 function loadTranscriptFrames(
   driveFileId: string,
   startSec: number,
-  endSec?: number | null
+  endSec?: number | null,
+  onAttempt?: (attempt: number) => void
 ): Promise<CarouselTranscriptFrameItem[]> {
   const key = transcriptFrameJobKey(driveFileId, startSec, endSec);
   const existing = transcriptFrameJobs.get(key);
   if (existing) return existing;
-  const job = apiClient
-    .carouselTranscriptFrames({
-      driveFileId,
-      startSec: Math.max(0, startSec - 4),
-      endSec: endSec != null ? endSec + 4 : startSec + 28,
-      limit: 24,
-    })
-    .then((res) => {
-      const list = res.items ?? [];
-      return [...list].sort((a, b) => {
-        const ac = a.cached === false ? 1 : 0;
-        const bc = b.cached === false ? 1 : 0;
-        if (ac !== bc) return ac - bc;
-        return a.frame_ts - b.frame_ts;
-      });
-    });
+  const job = (async () => {
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= TRANSCRIPT_FRAME_MAX_ATTEMPTS; attempt++) {
+      onAttempt?.(attempt);
+      try {
+        const res = await apiClient.carouselTranscriptFrames({
+          driveFileId,
+          startSec: Math.max(0, startSec - 4),
+          endSec: endSec != null ? endSec + 4 : startSec + 28,
+          limit: 24,
+          timeoutMs: TRANSCRIPT_FRAME_TIMEOUT_MS,
+          silent: true,
+        });
+        const list = uniquePickerFrames(
+          [...(res.items ?? [])].sort((a, b) => {
+            const ac = a.cached === false ? 1 : 0;
+            const bc = b.cached === false ? 1 : 0;
+            if (ac !== bc) return ac - bc;
+            return a.frame_ts - b.frame_ts;
+          })
+        );
+        return list;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    throw lastError instanceof Error
+      ? lastError
+      : new Error("Could not load transcript frames");
+  })();
   transcriptFrameJobs.set(key, job);
   job.catch(() => {
     transcriptFrameJobs.delete(key);
@@ -545,26 +565,41 @@ export function TranscriptFramePicker({
 }) {
   const [items, setItems] = useState<CarouselTranscriptFrameItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [saving, setSaving] = useState(false);
+  const [attempt, setAttempt] = useState(1);
+  const [elapsedSec, setElapsedSec] = useState(0);
+  const [reloadToken, setReloadToken] = useState(0);
 
   useEffect(() => {
     let alive = true;
+    const started = Date.now();
     setLoading(true);
-    loadTranscriptFrames(driveFileId, startSec, endSec)
+    setErr(null);
+    setElapsedSec(0);
+    setAttempt(1);
+    const tick = window.setInterval(() => {
+      if (alive) setElapsedSec(Math.floor((Date.now() - started) / 1000));
+    }, 500);
+    loadTranscriptFrames(driveFileId, startSec, endSec, (n) => {
+      if (alive) setAttempt(n);
+    })
       .then((list) => {
         if (alive) setItems(list);
       })
-      .catch(() => {
-        /* api() already toasted */
+      .catch((e) => {
+        if (alive) setErr(formatApiError(e, "Could not load transcript frames"));
       })
       .finally(() => {
         if (alive) setLoading(false);
+        window.clearInterval(tick);
       });
     return () => {
       alive = false;
+      window.clearInterval(tick);
     };
-  }, [driveFileId, startSec, endSec]);
+  }, [driveFileId, startSec, endSec, reloadToken]);
 
   function toggle(ts: number) {
     setSelected((prev) => {
@@ -604,11 +639,32 @@ export function TranscriptFramePicker({
           </button>
         </div>
         {loading && (
-          <p className="mt-4 text-sm text-muted-foreground">
-            <LoadingLabel>Loading frames…</LoadingLabel>
-          </p>
+          <div className="mt-4 space-y-1 text-sm text-muted-foreground">
+            <p>
+              <LoadingLabel>
+                {attempt > 1
+                  ? `Still waiting — retry ${attempt} of ${TRANSCRIPT_FRAME_MAX_ATTEMPTS}`
+                  : "Loading frames… this can take a few minutes"}
+              </LoadingLabel>
+            </p>
+            <p className="text-xs tabular-nums">
+              Waited {elapsedSec}s · each try up to {Math.round(TRANSCRIPT_FRAME_TIMEOUT_MS / 1000)}s
+            </p>
+          </div>
         )}
-        {!loading && !items.length && (
+        {err && !loading && (
+          <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-900 dark:bg-red-950/40 dark:text-red-200">
+            <p>{err}</p>
+            <button
+              type="button"
+              className="studio-btn studio-btn-ghost mt-2"
+              onClick={() => setReloadToken((n) => n + 1)}
+            >
+              Retry
+            </button>
+          </div>
+        )}
+        {!loading && !err && !items.length && (
           <p className="mt-4 text-sm text-muted-foreground">
             No transcript frames in this span yet.
           </p>

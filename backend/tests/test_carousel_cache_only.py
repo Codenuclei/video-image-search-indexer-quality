@@ -101,3 +101,22 @@ def test_pick_split_timestamps_prefers_far_cached_frames(tmp_path):
     assert left != right
     assert abs(right - left) >= 0.45
     assert {left, right} <= {10.0, 15.0, 20.0}
+
+
+def test_split_one_sentence_caption_is_not_duplicated():
+    carousels = [{
+        "slides": [{
+            "drive_file_id": "drive-id",
+            "timestamp_sec": 10.0,
+            "end_timestamp_sec": 20.0,
+            "frame_ts": 15.0,
+            "transcript_text": (
+                "Based on the name, you can figure out probably involves dots."
+            ),
+        }]
+    }]
+    _attach_layout_panels(carousels)
+    split = _layout_carousels(carousels, split=True)[0]["slides"][0]["panels"]
+    captions = [(p.get("caption") or "").strip() for p in split]
+    assert captions[0] != captions[1] or not captions[1]
+    assert sum(1 for c in captions if c) == 1

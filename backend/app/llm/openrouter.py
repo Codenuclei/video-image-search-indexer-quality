@@ -23,6 +23,7 @@ async def complete_json(
     temperature: float = 0.3,
     max_tokens: int = 4096,
     timeout: float = _DEFAULT_TIMEOUT,
+    json_root: str = "object",
 ) -> str:
     """POST ``{base}/chat/completions`` and return assistant text.
 
@@ -46,6 +47,9 @@ async def complete_json(
     sys_msg = (system or "").strip() or "Return ONLY valid JSON."
     if "json" not in sys_msg.lower():
         sys_msg = f"{sys_msg} Return ONLY valid JSON."
+    root = "array" if (json_root or "").strip().lower() == "array" else "object"
+    if root == "array" and "top-level json array" not in sys_msg.lower():
+        sys_msg = f"{sys_msg} The response must be a top-level JSON array."
 
     messages: list[dict[str, str]] = [
         {"role": "system", "content": sys_msg},
@@ -58,13 +62,18 @@ async def complete_json(
         "max_tokens": max_tokens,
     }
 
+    request_body = (
+        base_body
+        if root == "array"
+        else {**base_body, "response_format": {"type": "json_object"}}
+    )
     async with httpx.AsyncClient(timeout=timeout) as client:
         text = await _post_once(
             client,
             url,
             headers=headers,
-            body={**base_body, "response_format": {"type": "json_object"}},
-            allow_format_retry=True,
+            body=request_body,
+            allow_format_retry=root == "object",
             retry_body=base_body,
         )
     return text

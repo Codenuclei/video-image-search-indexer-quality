@@ -13,7 +13,12 @@ from app.concurrency.pools import effective_cpu_workers
 from app.db.models import DriveFile, DriveFileStatus
 from app.db.session import get_session_factory
 from app.pipelines.async_cpu import run_cpu_bound
-from app.pipelines.common import decode_image_bgr, download_to_memory
+from app.pipelines.common import (
+    decode_image_bgr,
+    download_to_memory,
+    looks_like_svg,
+    svg_bytes_complete,
+)
 from app.drive.indexing_pause import (
     CORRUPT_SKIPPED_PREFIX,
     is_file_indexing_paused,
@@ -177,7 +182,7 @@ async def run_caption_backfill(worker: IndexingWorker, *, max_batches: int | Non
         async def _prepare_item(fid: str) -> tuple[str, bytes] | None:
             async with dl_sem:
                 try:
-                    from app.drive.media_cache import ensure_media_cached, read_cached_bytes, resolve_cache_path
+                    from app.drive.media_cache import ensure_media_cached, read_cached_bytes
 
                     file_name = ""
                     raw: bytes | None = None
@@ -186,14 +191,17 @@ async def run_caption_backfill(worker: IndexingWorker, *, max_batches: int | Non
                         if row is None:
                             return None
                         file_name = row.name or ""
-                        cached = resolve_cache_path(settings, row)
-                        if cached is not None:
-                            raw = await run_cpu_bound(read_cached_bytes, cached)
-                        else:
-                            path = await ensure_media_cached(worker._client, row, settings)  # noqa: SLF001
-                            await session.commit()
-                            raw = await run_cpu_bound(read_cached_bytes, path)
-                    if raw is None:
+                        path = await ensure_media_cached(worker._client, row, settings)  # noqa: SLF001
+                        await session.commit()
+                    raw = await run_cpu_bound(read_cached_bytes, path)
+                    if raw is None or (
+                        looks_like_svg(raw, file_name=file_name) and not svg_bytes_complete(raw)
+                    ):
+                        logger.warning(
+                            "Incomplete SVG after cache for %s (%s bytes) — re-downloading",
+                            fid,
+                            len(raw or b""),
+                        )
                         raw = await download_to_memory(worker._client, fid)  # noqa: SLF001
                     image_bgr = await run_cpu_bound(decode_image_bgr, raw, file_name=file_name)
                     ok, buf = cv2.imencode(".jpg", image_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
@@ -354,15 +362,25 @@ async def run_embedding_backfill(worker: IndexingWorker, *, max_items: int | Non
                             _embed_skip_ids.add(fid)
                             return None
                         file_name = row.name if row else ""
-                        cache_path = resolve_cache_path(settings, row)
-                        if cache_path is None:
-                            if not drive_ok:
-                                return None
+                        if drive_ok:
                             cache_path = await ensure_media_cached(
                                 worker._client, row, settings  # noqa: SLF001
                             )
                             await session.commit()
+                        else:
+                            cache_path = resolve_cache_path(settings, row)
+                            if cache_path is None:
+                                return None
                     raw = await run_cpu_bound(read_cached_bytes, cache_path)
+                    if looks_like_svg(raw, file_name=file_name) and not svg_bytes_complete(raw):
+                        logger.warning(
+                            "Incomplete SVG after cache for embed %s (%s bytes) — re-downloading",
+                            fid,
+                            len(raw or b""),
+                        )
+                        if not drive_ok:
+                            return None
+                        raw = await download_to_memory(worker._client, fid)  # noqa: SLF001
                     from app.gemini.video_embeddings import _downscale_jpeg_bytes
 
                     # Fast path: already JPEG — skip cv2 decode/re-encode.
@@ -483,6 +501,18 @@ async def maintenance_tick(worker: IndexingWorker) -> None:
     parallel), not Gunicorn worker count. ``maintenance_batches_per_tick`` is a
     floor; we never run fewer caption batches than ``image_caption_batch_parallel``.
     """
+    from app.drive.cleanup import restore_archived_when_index_complete
+
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        saved = await restore_archived_when_index_complete(session)
+        if saved:
+            await session.commit()
+            logger.info(
+                "Maintenance: restored %d archived file(s) that already qualify as PROCESSED",
+                saved,
+            )
+
     settings = get_settings()
     batches_per_tick = max(1, settings.maintenance_batches_per_tick)
     caption_batches = max(batches_per_tick, max(1, settings.image_caption_batch_parallel))

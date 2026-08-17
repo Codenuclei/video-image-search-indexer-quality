@@ -40,7 +40,8 @@ import {
   type TestSlidePanel,
 } from "@/lib/test-api";
 import { cn } from "@/lib/utils";
-import { focalPointStyle } from "@/app/carousel/utils";
+import { LoadingLabel } from "@/components/spinner";
+import { focalPointStyle, splitPanelCaptions, uniquePickerFrames } from "@/app/carousel/utils";
 
 function slideUrl(url?: string | null) {
   if (!url) return "";
@@ -494,10 +495,14 @@ export function TestIgPost({
               rawPanels &&
               rawPanels[0]?.preview_url &&
               rawPanels[1]?.preview_url &&
-              rawPanels[0].preview_url !== rawPanels[1].preview_url
+              rawPanels[0].preview_url !== rawPanels[1].preview_url &&
+              rawPanels[0].frame_ts !== rawPanels[1].frame_ts
                 ? rawPanels
                 : null;
             const line = captionOf(slide);
+            const panelCaptions = splitPanels
+              ? splitPanelCaptions(splitPanels, line)
+              : [];
             return (
               <article
                 key={`${carousel.id}-${slide.index}-${i}`}
@@ -524,11 +529,7 @@ export function TestIgPost({
                       <div className="ig-panel-scrim" aria-hidden />
                       <p className="ig-panel-caption">
                         <IgHighlightedCaption
-                          text={
-                            panel.caption ||
-                            (p === 0 ? line : "") ||
-                            ""
-                          }
+                          text={panelCaptions[p] || ""}
                           highlight={panel.highlight ?? slide.highlight}
                           highlight_words={
                             panel.highlight_words ?? slide.highlight_words
@@ -759,11 +760,13 @@ function loadTestFrames(
         });
         if (captured.length) {
           return {
-            items: captured.map((f) => ({
-              frame_ts: f.frame_ts,
-              preview_url: f.dataUrl,
-              source: "browser" as const,
-            })),
+            items: uniquePickerFrames(
+              captured.map((f) => ({
+                frame_ts: f.frame_ts,
+                preview_url: f.dataUrl,
+                source: "browser" as const,
+              }))
+            ),
             sourceNote: "Browser capture",
           };
         }
@@ -778,11 +781,13 @@ function loadTestFrames(
       limit: 24,
     });
     return {
-      items: (res.items ?? []).map((item) => ({
-        frame_ts: item.frame_ts,
-        preview_url: item.preview_url,
-        source: "api" as const,
-      })),
+      items: uniquePickerFrames(
+        (res.items ?? []).map((item) => ({
+          frame_ts: item.frame_ts,
+          preview_url: item.preview_url,
+          source: "api" as const,
+        }))
+      ),
       sourceNote: "API frames",
     };
   })();
@@ -814,12 +819,19 @@ function TestFramePicker({
   const [sourceNote, setSourceNote] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [saving, setSaving] = useState(false);
+  const [elapsedSec, setElapsedSec] = useState(0);
+  const [reloadToken, setReloadToken] = useState(0);
 
   useEffect(() => {
     let alive = true;
+    const started = Date.now();
     setLoading(true);
     setErr(null);
     setSourceNote(null);
+    setElapsedSec(0);
+    const tick = window.setInterval(() => {
+      if (alive) setElapsedSec(Math.floor((Date.now() - started) / 1000));
+    }, 500);
     loadTestFrames(driveFileId, startSec, endSec)
       .then((res) => {
         if (!alive) return;
@@ -831,11 +843,13 @@ function TestFramePicker({
       })
       .finally(() => {
         if (alive) setLoading(false);
+        window.clearInterval(tick);
       });
     return () => {
       alive = false;
+      window.clearInterval(tick);
     };
-  }, [driveFileId, startSec, endSec]);
+  }, [driveFileId, startSec, endSec, reloadToken]);
 
   function toggle(ts: number) {
     setSelected((prev) => {
@@ -886,7 +900,26 @@ function TestFramePicker({
           Close
         </button>
       </div>
-      {loading && <p className="text-sm text-muted-foreground">Loading frames…</p>}
+      {loading && (
+        <div className="space-y-1 text-sm text-muted-foreground">
+          <p>
+            <LoadingLabel>Loading frames… this can take a few minutes</LoadingLabel>
+          </p>
+          <p className="text-xs tabular-nums">Waited {elapsedSec}s</p>
+        </div>
+      )}
+      {err && !loading && (
+        <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
+          <p>{err}</p>
+          <button
+            type="button"
+            className="studio-btn studio-btn-ghost studio-btn-sm mt-2"
+            onClick={() => setReloadToken((n) => n + 1)}
+          >
+            Retry
+          </button>
+        </div>
+      )}
       {!loading && !err && (
         <ul className="topics-hooks-frame-grid max-h-[min(56vh,28rem)] overflow-y-auto">
           {items.map((item) => {

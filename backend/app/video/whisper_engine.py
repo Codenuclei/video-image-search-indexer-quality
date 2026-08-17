@@ -57,5 +57,6 @@ def get_whisper_engine() -> WhisperEngine:
 
 
 async def transcribe_audio_async(wav_path: str, settings: Settings | None = None) -> list[WhisperSegment]:
-    engine = WhisperEngine(settings)
+    del settings  # model size is fixed on the process-wide cached engine
+    engine = get_whisper_engine()
     return await run_cpu_bound(engine.transcribe, wav_path)

@@ -43,6 +43,41 @@ def test_open_image_rgb_from_png():
     assert rgb.mode == "RGB"
 
 
+def test_looks_like_svg_from_name_and_bytes():
+    from app.pipelines.common import looks_like_svg
+
+    svg = b'<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"></svg>'
+    assert looks_like_svg(svg, file_name="poster.svg")
+    assert looks_like_svg(svg, file_name="x.bin")
+    assert not looks_like_svg(_png_bytes(), file_name="photo.png")
+    from app.pipelines.common import svg_bytes_complete
+
+    assert svg_bytes_complete(svg)
+    assert not svg_bytes_complete(b'<svg xmlns="http://www.w3.org/2000/svg"><g')
+    nested_but_truncated = (
+        b'<svg xmlns="http://www.w3.org/2000/svg"><g>'
+        + b'<svg width="1" height="1"></svg>'
+        + b'<g id="unclosed"'
+    )
+    assert not svg_bytes_complete(nested_but_truncated)
+    assert svg_bytes_complete(svg + b"\n  ")
+
+
+def test_decode_svg_when_rsvg_available():
+    import shutil
+
+    from app.pipelines.common import decode_image_bgr
+
+    if shutil.which("rsvg-convert") is None:
+        pytest.skip("rsvg-convert not installed")
+    svg = (
+        b'<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16">'
+        b'<rect width="16" height="16" fill="#ff0000"/></svg>'
+    )
+    bgr = decode_image_bgr(svg, file_name="poster.svg")
+    assert bgr.ndim == 3 and bgr.shape[2] == 3
+
+
 @pytest.mark.parametrize(
     ("mime", "name", "expected"),
     [
@@ -54,7 +89,8 @@ def test_open_image_rgb_from_png():
         ("image/bmp", "old.bmp", True),
         ("application/octet-stream", "DSC0001.ARW", True),
         ("", "photo.HEIC", True),
-        ("", "scan.TIF", True),
+        ("image/svg+xml", "poster.svg", True),
+        ("application/octet-stream", "poster.SVG", True),
     ],
 )
 def test_needs_jpeg_normalization(mime: str, name: str, expected: bool):

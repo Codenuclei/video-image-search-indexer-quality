@@ -74,6 +74,22 @@ async function main() {
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
   page.setDefaultTimeout(30_000);
   let st;
+  const generationRequests = [];
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      new URL(request.url()).pathname.endsWith("/search/carousel/pipeline/generate")
+    ) {
+      const raw = request.postData();
+      if (raw) {
+        try {
+          generationRequests.push(JSON.parse(raw));
+        } catch {
+          generationRequests.push({ parse_error: true, raw });
+        }
+      }
+    }
+  });
 
   const report = { steps: [], ok: false };
 
@@ -233,6 +249,7 @@ async function main() {
 
     // --- Step 4: Generate carousels (text only) ---
     log("STEP4 generate carousels");
+    const generationStart = generationRequests.length;
     await page.click('[data-testid="carousel-generate"]');
     st = await waitFor(
       page,
@@ -252,8 +269,32 @@ async function main() {
     if (!st.phase5) {
       throw new Error(`Generate did not reach phase5. error=${st.error} state=${JSON.stringify(st)}`);
     }
+    const polishedRequests = generationRequests.slice(generationStart);
+    assert.ok(polishedRequests.length > 0, "Generate must send at least one pipeline request");
+    for (const request of polishedRequests) {
+      assert.equal(request.parse_error, undefined, "Generate request body must be valid JSON");
+      assert.equal(request.polish_copy, true, "Generate request must enable copy polish");
+      assert.equal(request.generate, true, "Generate request must explicitly generate on cache miss");
+      assert.equal(request.select_images, false, "Generate must defer image selection");
+      assert.equal(request.min_slides, 6, "Generate request must preserve the minimum slide count");
+      assert.equal(request.max_slides, 10, "Generate request must preserve the maximum slide count");
+    }
+    const downloadSlide = page.getByRole("button", { name: "Download slide", exact: true });
+    const downloadCarousel = page.getByRole("button", {
+      name: "Download carousel",
+      exact: true,
+    });
+    assert.equal(await downloadSlide.count(), 1, "phase5 must show Download slide");
+    assert.equal(await downloadCarousel.count(), 1, "phase5 must show Download carousel");
+    assert.equal(await downloadSlide.isEnabled(), true, "Download slide must be enabled");
+    assert.equal(await downloadCarousel.isEnabled(), true, "Download carousel must be enabled");
     await shot(page, "06-carousel-texts");
-    report.steps.push({ step: 5, carousels: true });
+    report.steps.push({
+      step: 5,
+      carousels: true,
+      polishedRequests: polishedRequests.length,
+      exportControls: true,
+    });
 
     // --- Step 5: Select images ---
     log("STEP5 select images");
@@ -275,7 +316,6 @@ async function main() {
       async () => {
         const s = await page.evaluate(() => {
           const btn = document.querySelector('[data-testid="carousel-select-images"]');
-          const selecting = /Select|filter|Working|Loading|images/i.test(btn?.textContent || "");
           const imgs = document.querySelectorAll(
             '[data-testid="carousel-phase-5"] img[src*="frame"], [data-testid="carousel-phase-5"] img[src*="/media/"]'
           );

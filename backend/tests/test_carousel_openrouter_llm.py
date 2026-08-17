@@ -265,6 +265,46 @@ async def test_openrouter_complete_json_mocks_httpx(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_openrouter_array_root_omits_object_response_format(monkeypatch):
+    from app.llm import openrouter as or_mod
+
+    calls: list[dict] = []
+
+    class _Resp:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {"choices": [{"message": {"content": '[{"title":"ok"}]'}}]}
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def post(self, url, headers=None, json=None):
+            calls.append(json or {})
+            return _Resp()
+
+    monkeypatch.setattr(or_mod.httpx, "AsyncClient", _Client)
+    text = await or_mod.complete_json(
+        "return an array",
+        model="google/gemini-flash",
+        api_key="test-key",
+        json_root="array",
+    )
+
+    assert text.startswith("[")
+    assert "response_format" not in calls[0]
+    assert "top-level JSON array" in calls[0]["messages"][0]["content"]
+
+
+@pytest.mark.asyncio
 async def test_openrouter_retries_without_response_format(monkeypatch):
     from app.llm import openrouter as or_mod
 

@@ -168,6 +168,8 @@ export type CarouselSnapshotContext = {
 export type CarouselOutlineSlide = {
   index: number;
   hook_line: string;
+  highlight?: number[] | null;
+  highlight_words?: string[] | null;
   transcript_text?: string | null;
   original_text?: string | null;
   translated?: boolean | null;
@@ -188,6 +190,10 @@ export type CarouselOutlineSlide = {
   frames_prewarmed?: boolean | null;
   frame_candidates?: number[] | null;
   frame_quality?: Record<string, unknown> | null;
+  frame_diversity?: {
+    adjacent_duplicate_avoided?: boolean;
+    phash_available?: boolean;
+  } | null;
   focal_x?: number | null;
   focal_y?: number | null;
   front_face_score?: number | null;
@@ -199,6 +205,8 @@ export type CarouselSlidePanel = {
   frame_ts?: number | null;
   preview_url?: string | null;
   caption?: string | null;
+  highlight?: number[] | null;
+  highlight_words?: string[] | null;
   focal_x?: number | null;
   focal_y?: number | null;
   front_face_score?: number | null;
@@ -238,6 +246,33 @@ export type CarouselOutlineResponse = {
     rejected?: Record<string, number>;
     slides_polished?: number;
   };
+  quality_summary?: CarouselQualitySummary | null;
+};
+
+export type CarouselQualityDimensions = {
+  cover_strength?: number;
+  swipe_progression?: number;
+  copy_readability?: number;
+  idea_uniqueness?: number;
+  ending_payoff?: number;
+};
+
+export type CarouselQualityReport = {
+  score: number;
+  dimensions?: CarouselQualityDimensions;
+  issues?: string[];
+  repairs?: string[];
+  duplicate_pairs?: number[][];
+  grounding?: "transcript_locked" | string;
+};
+
+export type CarouselQualitySummary = {
+  carousel_count: number;
+  average_score: number;
+  needs_attention: number;
+  issue_count: number;
+  repair_count: number;
+  algorithm?: string;
 };
 
 export type CarouselGeneratedItem = {
@@ -252,6 +287,7 @@ export type CarouselGeneratedItem = {
   topics?: string[];
   images_ready?: boolean;
   plan_source?: string | null;
+  quality_report?: CarouselQualityReport | null;
   /** Theme/hook image+copy refs that influenced this carousel. */
   references?: CarouselItemReference[];
 };
@@ -284,6 +320,8 @@ export type CarouselGenerateRequest = {
   min_slides?: number;
   max_slides?: number;
   select_images?: boolean;
+  /** Finalize concise Instagram copy and sparse keyword highlights. */
+  polish_copy?: boolean;
   /** Explicit generate on cache miss. Continue/Load leave this false. */
   generate?: boolean;
   /** Explicit regenerate — bypasses cache. */
@@ -937,6 +975,8 @@ export const apiClient = {
     startSec?: number;
     endSec?: number | null;
     limit?: number;
+    timeoutMs?: number;
+    silent?: boolean;
   }) => {
     const params = new URLSearchParams({
       drive_file_id: opts.driveFileId,
@@ -945,7 +985,11 @@ export const apiClient = {
     });
     if (opts.endSec != null) params.set("end_sec", String(opts.endSec));
     return api<{ drive_file_id: string; items: CarouselTranscriptFrameItem[] }>(
-      `/search/carousel/pipeline/transcript-frames?${params}`
+      `/search/carousel/pipeline/transcript-frames?${params}`,
+      {
+        timeoutMs: opts.timeoutMs ?? 180_000,
+        silent: opts.silent,
+      }
     );
   },
 };

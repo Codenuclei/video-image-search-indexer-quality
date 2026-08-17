@@ -30,8 +30,8 @@ export const testAssetUrl = (path: string) =>
 export const testVideoStreamUrl = (driveFileId: string) =>
   `${API_BASE}/drive/files/${encodeURIComponent(driveFileId)}/preview`;
 
-async function api<T>(path: string, init?: RequestInit & { timeoutMs?: number }): Promise<T> {
-  const { timeoutMs, ...rest } = init ?? {};
+async function api<T>(path: string, init?: RequestInit & { timeoutMs?: number; silent?: boolean }): Promise<T> {
+  const { timeoutMs, silent, ...rest } = init ?? {};
   const timeout =
     typeof timeoutMs === "number" && timeoutMs > 0
       ? timeoutMs
@@ -60,11 +60,11 @@ async function api<T>(path: string, init?: RequestInit & { timeoutMs?: number })
       error.name === "AbortError"
     ) {
       const msg = `Request timed out after ${Math.round(timeout / 1000)}s. The API may be busy — retry in a moment.`;
-      toastApiError(msg);
+      if (!silent) toastApiError(msg);
       throw new Error(msg);
     }
     const msg = formatApiError(error);
-    toastApiError(msg);
+    if (!silent) toastApiError(msg);
     throw new Error(msg);
   } finally {
     clearTimeout(timer);
@@ -423,7 +423,10 @@ export const testApi = {
     return api<{
       drive_file_id: string;
       items: { frame_ts: number; preview_url: string; cached?: boolean }[];
-    }>(`/search/carousel/pipeline/transcript-frames?${params}`);
+    }>(`/search/carousel/pipeline/transcript-frames?${params}`, {
+      timeoutMs: 180_000,
+      silent: true,
+    });
   },
   feedback: (body: {
     drive_file_id: string;

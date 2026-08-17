@@ -6,6 +6,7 @@ from app.search.carousel_frame_select import (
     FrameCandidate,
     _parse_grouped_rank_response,
     build_frame_candidates,
+    choose_adjacent_diverse_candidate,
     front_face_score,
     focal_point_for_slide,
     heuristic_frame_ts,
@@ -157,6 +158,62 @@ def test_pick_ready_from_ranked_empty_order_uses_heuristic():
     assert idx == 2
     assert source == "heuristic"
     assert ready is False
+
+
+def test_adjacent_duplicate_swaps_to_best_quality_safe_alternate():
+    candidates = [
+        FrameCandidate(
+            0,
+            1.0,
+            "sample",
+            quality_score=100.0,
+            front_face=0.4,
+            perceptual_hash="0" * 64,
+        ),
+        FrameCandidate(
+            1,
+            2.0,
+            "sample",
+            quality_score=90.0,
+            front_face=0.36,
+            perceptual_hash="1" * 64,
+        ),
+    ]
+    choice, swapped = choose_adjacent_diverse_candidate(
+        candidates,
+        [0, 1],
+        0,
+        "0" * 64,
+    )
+    assert (choice, swapped) == (1, True)
+
+
+def test_adjacent_duplicate_keeps_best_when_alternate_harms_quality():
+    candidates = [
+        FrameCandidate(
+            0,
+            1.0,
+            "sample",
+            quality_score=100.0,
+            front_face=0.4,
+            perceptual_hash="0" * 64,
+        ),
+        FrameCandidate(
+            1,
+            2.0,
+            "sample",
+            quality_score=40.0,
+            front_face=0.1,
+            perceptual_hash="1" * 64,
+        ),
+    ]
+    choice, swapped = choose_adjacent_diverse_candidate(
+        candidates,
+        [0, 1],
+        0,
+        "0" * 64,
+    )
+    assert (choice, swapped) == (0, False)
 
 
 def test_build_cache_first_candidates_prefers_disk_frames(tmp_path):

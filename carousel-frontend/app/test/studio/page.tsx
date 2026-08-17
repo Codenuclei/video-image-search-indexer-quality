@@ -952,11 +952,6 @@ function TestStudioInner() {
     }
   }
 
-  const onVideoStep = phase === 1;
-  const onThemesStep = phase === 2;
-  const onExtractStep = phase === 3;
-  const onCopyStep = phase === 4;
-  const onImagesStep = phase === 5;
   const transcriptBusy = transcriptModal.open && !transcriptModal.error;
 
   return (
@@ -1138,7 +1133,7 @@ function TestStudioInner() {
             <StageLlmGenerate
               label="Generate themes"
               busy={themesLoading}
-              disabled={!onVideoStep || !selected || transcriptBusy}
+              disabled={!selected || transcriptBusy}
               runConfig={runConfig}
               onRunConfigChange={applyRunConfig}
               onGenerate={(cfg) => continueToThemes({ force: true, runConfig: cfg })}
@@ -1148,16 +1143,14 @@ function TestStudioInner() {
               type="button"
               className="studio-btn studio-btn-primary studio-btn-continue"
               onClick={() => void continueToThemes()}
-              disabled={!onVideoStep || themesLoading || transcriptBusy}
+              disabled={themesLoading || transcriptBusy}
               aria-busy={themesLoading}
               title={
-                !onVideoStep
-                  ? "Move back to this step to generate themes again"
-                  : transcriptBusy
-                    ? "Wait for the transcript to finish preparing"
-                    : themesLoading
-                      ? "Themes are generating"
-                      : undefined
+                transcriptBusy
+                  ? "Wait for the transcript to finish preparing"
+                  : themesLoading
+                    ? "Themes are generating"
+                    : undefined
               }
               data-testid="test-continue-themes"
             >
@@ -1239,46 +1232,40 @@ function TestStudioInner() {
               );
             })}
           </ul>
-          {onThemesStep && (
-            <div className="mt-4 flex flex-wrap items-center gap-3">
-              <button
-                type="button"
-                className="studio-btn studio-btn-primary studio-btn-continue"
-                onClick={() => void extractFromSelectedThemes({ force: false })}
-                disabled={extractLoading || !selectedThemes.length}
-                aria-busy={extractLoading}
-                data-testid="test-continue-selection"
-              >
-                Extract from {selectedThemes.length || 0} theme
-                {selectedThemes.length === 1 ? "" : "s"}
-                <ArrowRight size={14} className="studio-btn-continue-arrow" />
-              </button>
-              <StageLlmGenerate
-                label="Generate topics and hooks"
-                busy={extractLoading}
-                disabled={!selectedThemes.length}
-                runConfig={runConfig}
-                onRunConfigChange={applyRunConfig}
-                onGenerate={(cfg) =>
-                  extractFromSelectedThemes({ force: true, runConfig: cfg })
-                }
-                testId="test-regen-extract-llm"
-              />
-            </div>
-          )}
-          {!onThemesStep && (
-            <div className="mt-4">
-              <StageLlmGenerate
-                label="Generate topics and hooks"
-                busy={false}
-                disabled
-                runConfig={runConfig}
-                onRunConfigChange={applyRunConfig}
-                onGenerate={() => undefined}
-                testId="test-regen-extract-llm-later"
-              />
-            </div>
-          )}
+          <div className="mt-4 flex flex-wrap items-center gap-3">
+            <StageLlmGenerate
+              label="Generate themes"
+              busy={themesLoading}
+              disabled={!selected || transcriptBusy}
+              runConfig={runConfig}
+              onRunConfigChange={applyRunConfig}
+              onGenerate={(cfg) => continueToThemes({ force: true, runConfig: cfg })}
+              testId="test-regen-themes-llm"
+            />
+            <button
+              type="button"
+              className="studio-btn studio-btn-primary studio-btn-continue"
+              onClick={() => void extractFromSelectedThemes({ force: false })}
+              disabled={extractLoading || !selectedThemes.length}
+              aria-busy={extractLoading}
+              data-testid="test-continue-selection"
+            >
+              Extract from {selectedThemes.length || 0} theme
+              {selectedThemes.length === 1 ? "" : "s"}
+              <ArrowRight size={14} className="studio-btn-continue-arrow" />
+            </button>
+            <StageLlmGenerate
+              label="Generate topics and hooks"
+              busy={extractLoading}
+              disabled={!selectedThemes.length}
+              runConfig={runConfig}
+              onRunConfigChange={applyRunConfig}
+              onGenerate={(cfg) =>
+                extractFromSelectedThemes({ force: true, runConfig: cfg })
+              }
+              testId="test-regen-extract-llm"
+            />
+          </div>
         </section>
       )}
 
@@ -1330,50 +1317,35 @@ function TestStudioInner() {
             )}
           </div>
 
-          {onExtractStep && (
-            <div className="thd-generate-bar mt-4 flex flex-wrap items-center gap-3">
-              <button
-                type="button"
-                className="studio-btn studio-btn-primary studio-btn-continue"
-                onClick={() => void generateCopy({ force: false })}
-                disabled={
-                  copyLoading || (!selectedHooks.length && !selectedTopics.length)
-                }
-                aria-busy={copyLoading}
-                data-testid="test-generate-copy"
-              >
-                Generate copy
-                <ArrowRight size={14} className="studio-btn-continue-arrow" />
-              </button>
-              <StageLlmGenerate
-                label="Generate copy"
-                busy={copyLoading}
-                disabled={!selectedHooks.length && !selectedTopics.length}
-                runConfig={runConfig}
-                onRunConfigChange={applyRunConfig}
-                onGenerate={(cfg) => generateCopy({ force: true, runConfig: cfg })}
-                testId="test-generate-copy-llm"
-              />
-              <span className="text-xs text-muted-foreground">
-                {selectedHooks.length + selectedTopics.length === 0
-                  ? "Select a topic or hook"
-                  : `${selectedTopics.length} topic${selectedTopics.length === 1 ? "" : "s"} · ${selectedHooks.length} hook${selectedHooks.length === 1 ? "" : "s"}`}
-              </span>
-            </div>
-          )}
-          {!onExtractStep && (
-            <div className="mt-4">
-              <StageLlmGenerate
-                label="Generate copy"
-                busy={false}
-                disabled
-                runConfig={runConfig}
-                onRunConfigChange={applyRunConfig}
-                onGenerate={() => undefined}
-                testId="test-generate-copy-llm-later"
-              />
-            </div>
-          )}
+          <div className="thd-generate-bar mt-4 flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              className="studio-btn studio-btn-primary studio-btn-continue"
+              onClick={() => void generateCopy({ force: false })}
+              disabled={
+                copyLoading || (!selectedHooks.length && !selectedTopics.length)
+              }
+              aria-busy={copyLoading}
+              data-testid="test-generate-copy"
+            >
+              Generate copy
+              <ArrowRight size={14} className="studio-btn-continue-arrow" />
+            </button>
+            <StageLlmGenerate
+              label="Generate copy"
+              busy={copyLoading}
+              disabled={!selectedHooks.length && !selectedTopics.length}
+              runConfig={runConfig}
+              onRunConfigChange={applyRunConfig}
+              onGenerate={(cfg) => generateCopy({ force: true, runConfig: cfg })}
+              testId="test-generate-copy-llm"
+            />
+            <span className="text-xs text-muted-foreground">
+              {selectedHooks.length + selectedTopics.length === 0
+                ? "Select a topic or hook"
+                : `${selectedTopics.length} topic${selectedTopics.length === 1 ? "" : "s"} · ${selectedHooks.length} hook${selectedHooks.length === 1 ? "" : "s"}`}
+            </span>
+          </div>
         </section>
       )}
 
@@ -1408,48 +1380,33 @@ function TestStudioInner() {
             <CopyEditor carousels={displayCarousels} onChangeSlideText={onChangeSlideText} />
           </div>
 
-          {onCopyStep && (
-            <div className="mt-5 flex flex-wrap gap-3">
-              <StageLlmGenerate
-                label="Generate copy"
-                busy={copyLoading}
-                disabled={!selectedHooks.length && !selectedTopics.length}
-                runConfig={runConfig}
-                onRunConfigChange={applyRunConfig}
-                onGenerate={(cfg) => generateCopy({ force: true, runConfig: cfg })}
-                testId="test-regen-copy-llm"
-              />
-              <button
-                type="button"
-                className="studio-btn studio-btn-primary studio-btn-continue"
-                onClick={() => void selectImages({ force: false })}
-                disabled={imagesLoading || !carousels.length}
-                data-testid="test-select-images"
-              >
-                {imagesLoading ? (
-                  "Selecting images…"
-                ) : (
-                  <>
-                    Select images
-                    <ArrowRight size={14} className="studio-btn-continue-arrow" />
-                  </>
-                )}
-              </button>
-            </div>
-          )}
-          {!onCopyStep && (
-            <div className="mt-5">
-              <StageLlmGenerate
-                label="Generate copy"
-                busy={false}
-                disabled
-                runConfig={runConfig}
-                onRunConfigChange={applyRunConfig}
-                onGenerate={() => undefined}
-                testId="test-regen-copy-llm-later"
-              />
-            </div>
-          )}
+          <div className="mt-5 flex flex-wrap gap-3">
+            <StageLlmGenerate
+              label="Generate copy"
+              busy={copyLoading}
+              disabled={!selectedHooks.length && !selectedTopics.length}
+              runConfig={runConfig}
+              onRunConfigChange={applyRunConfig}
+              onGenerate={(cfg) => generateCopy({ force: true, runConfig: cfg })}
+              testId="test-regen-copy-llm"
+            />
+            <button
+              type="button"
+              className="studio-btn studio-btn-primary studio-btn-continue"
+              onClick={() => void selectImages({ force: false })}
+              disabled={imagesLoading || !carousels.length}
+              data-testid="test-select-images"
+            >
+              {imagesLoading ? (
+                "Selecting images…"
+              ) : (
+                <>
+                  Select images
+                  <ArrowRight size={14} className="studio-btn-continue-arrow" />
+                </>
+              )}
+            </button>
+          </div>
         </section>
       )}
 
@@ -1491,42 +1448,27 @@ function TestStudioInner() {
             )}
           </div>
 
-          {onImagesStep && (
-            <div className="mt-5 flex flex-wrap gap-3">
-              <StageLlmGenerate
-                label="Generate images"
-                busy={imagesLoading}
-                disabled={!carousels.length}
-                runConfig={runConfig}
-                onRunConfigChange={applyRunConfig}
-                onGenerate={(cfg) => selectImages({ force: true, runConfig: cfg })}
-                testId="test-regen-images-llm"
-              />
-              <button
-                type="button"
-                className="studio-btn studio-btn-primary"
-                onClick={() => finalize()}
-                disabled={!carousels.length}
-                data-testid="test-finalize"
-              >
-                Finalize carousel
-                <ArrowRight size={14} />
-              </button>
-            </div>
-          )}
-          {phase >= 6 && (
-            <div className="mt-5">
-              <StageLlmGenerate
-                label="Generate images"
-                busy={false}
-                disabled
-                runConfig={runConfig}
-                onRunConfigChange={applyRunConfig}
-                onGenerate={() => undefined}
-                testId="test-regen-images-llm-later"
-              />
-            </div>
-          )}
+          <div className="mt-5 flex flex-wrap gap-3">
+            <StageLlmGenerate
+              label="Generate images"
+              busy={imagesLoading}
+              disabled={!carousels.length}
+              runConfig={runConfig}
+              onRunConfigChange={applyRunConfig}
+              onGenerate={(cfg) => selectImages({ force: true, runConfig: cfg })}
+              testId="test-regen-images-llm"
+            />
+            <button
+              type="button"
+              className="studio-btn studio-btn-primary"
+              onClick={() => finalize()}
+              disabled={!carousels.length}
+              data-testid="test-finalize"
+            >
+              Finalize carousel
+              <ArrowRight size={14} />
+            </button>
+          </div>
         </section>
       )}
 

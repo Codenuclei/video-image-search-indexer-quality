@@ -43,6 +43,9 @@ _MAX_MERGED_TOPICS = 24
 # Per-chunk transcript budget for Gemini (full timed cues; chunk+merge for long talks).
 _TOPIC_CHUNK_CHARS = 12_000
 _TOPIC_CHUNK_OVERLAP_CUES = 6
+THEME_PROMPT_VERSION = "themes-v3-business-chunked-quality"
+_THEME_CHUNK_CHARS = 14_000
+_THEME_CHUNK_OVERLAP_CUES = 3
 # Gemini requests run in worker threads and the SDK does not time out by default,
 # so a stalled connection would pin its thread — and the background carousel slot
 # holding it — forever. Bound every request instead.
@@ -93,6 +96,7 @@ async def _llm_complete_json(
     openrouter_api_key: str | None = None,
     openrouter_model: str = "",
     openrouter_base_url: str = "",
+    json_root: str = "object",
 ) -> tuple[str, str]:
     """Return ``(raw_text, provider)`` with OpenRouter / Claude / Gemini selection.
 
@@ -126,6 +130,7 @@ async def _llm_complete_json(
             system=system,
             temperature=temperature,
             max_tokens=max_tokens,
+            json_root=json_root,
         )
         return text.strip(), "openrouter"
 
@@ -254,6 +259,186 @@ def snap_themes_to_cues(
     return cleaned
 
 
+_THEME_SYSTEM = (
+    "You are an expert business and entrepreneurship editor for short-form video. "
+    "Identify commercially meaningful ideas, strategies, mistakes, and outcomes "
+    "without inventing claims. Return ONLY valid JSON."
+)
+_THEME_FRAGMENT_OPENERS = (
+    "and ",
+    "but ",
+    "even if ",
+    "go ",
+    "i think ",
+    "it is ",
+    "it was ",
+    "it wasn't ",
+    "now ",
+    "so ",
+    "then ",
+    "there is ",
+    "this is ",
+    "we have ",
+    "you know ",
+)
+
+
+def _theme_generation_prompt(
+    *,
+    transcript: str,
+    video_name: str,
+    scope_note: str = "",
+    candidate_pass: bool = False,
+) -> str:
+    count_rule = (
+        "Return 2–5 candidate themes from THIS CHUNK for a later full-talk synthesis."
+        if candidate_pass
+        else (
+            "Return 3–8 chronological, non-overlapping themes. Use fewer themes when the "
+            "conversation has fewer genuine shifts; do not invent themes to reach a quota."
+        )
+    )
+    return (
+        "You analyze a long-form interview or podcast transcript and segment it into "
+        "clear, substantively distinct discussion themes for a business and "
+        "entrepreneurship social carousel studio.\n"
+        f"Video: {video_name or '(untitled)'}\n"
+        f"{scope_note}"
+        "A theme is a sustained discussion of one primary subject or policy area—not a "
+        "single remark, keyword, anecdote, question, or generic label. For example, "
+        "economic development, social protection, and foreign policy are separate themes "
+        "when the speaker develops each as a meaningful discussion.\n"
+        "Editorial lens: actively recognize business and entrepreneurship ideas such as "
+        "customer acquisition, distribution, product, pricing, sales, growth, capital, "
+        "profitability, operations, hiring, leadership, market strategy, wealth creation, "
+        "policy impact on enterprise, founder mistakes, contrarian lessons, and actionable "
+        "playbooks. These ideas may be expressed without standard business jargon.\n"
+        "Hard rules:\n"
+        "- Read all transcript text supplied in this prompt before deciding the themes.\n"
+        "- Separate themes by meaning and subject, not by equal time intervals or arbitrary "
+        "transcript chunks. Detect genuine topic shifts.\n"
+        "- Each theme must have one clear primary focus that is meaningfully different from "
+        "every other theme. Themes may be loosely related through the overall conversation, "
+        "but must not overlap, duplicate, restate, or nest the same central idea.\n"
+        "- Apply an exclusivity test: if two proposed themes could reasonably share the same "
+        "title or summary, merge them; if they address distinct policy areas, problems, "
+        "arguments, or outcomes, keep them separate.\n"
+        "- Keep each theme internally coherent and assign each transcript passage to at most "
+        "one theme. Do not mix unrelated subjects into a broad catch-all theme.\n"
+        "- Start and end at natural conversational boundaries, never mid-sentence or "
+        "mid-argument. Use cue timestamps from the transcript.\n"
+        "- Titles must be concise, specific, complete English phrases that name the actual "
+        "subject discussed; avoid vague titles such as 'Key Insights' or 'Looking Ahead'.\n"
+        "- NEVER use a raw transcript fragment as a title. Remove conversational lead-ins "
+        "such as 'now', 'so', 'I think', 'it was', 'go', or speaker-turn markers like '>>'.\n"
+        "- Prefer an insight-led title when the transcript supports one: frame the speaker's "
+        "actual thesis, strategy, mistake, opportunity, or outcome rather than merely naming "
+        "a category. For example, 'Why Most Customer Acquisition Fails' is stronger than "
+        "'Customer Acquisition', and 'Building a ₹100 Crore Business from Zero' is stronger "
+        "than 'Business Growth'. Do not copy these examples unless the transcript says them.\n"
+        "- Exercise editorial creativity in choosing the most compelling set of themes and "
+        "wording their titles, while remaining faithful to the speaker's actual meaning. "
+        "Never invent a claim, number, promise, or business lesson.\n"
+        "- Summaries must be polished editorial prose stating the distinct argument, issue, "
+        "or perspective—not copied transcript text, speaker markers, or keyword lists.\n"
+        f"- {count_rule}\n"
+        "Return ONLY a top-level JSON array. Each object must contain "
+        "theme_id, title, start_sec, end_sec, summary.\n\n"
+        f"Transcript:\n{transcript}"
+    )
+
+
+def _theme_quality_issues(
+    themes: list[dict[str, Any]],
+    *,
+    expected_min: int = 3,
+) -> list[str]:
+    """Return concrete editorial defects that justify one corrective LLM pass."""
+    issues: list[str] = []
+    if len(themes) < expected_min:
+        issues.append(f"Only {len(themes)} themes were returned; expected at least {expected_min}.")
+    if len(themes) > _MAX_THEMES:
+        issues.append(f"{len(themes)} themes exceed the {_MAX_THEMES}-theme limit.")
+
+    title_tokens: list[set[str]] = []
+    for i, theme in enumerate(themes):
+        title = " ".join(str(theme.get("title") or "").split()).strip()
+        summary = " ".join(str(theme.get("summary") or "").split()).strip()
+        lower = title.lower()
+        words = re.findall(r"[A-Za-z0-9₹$%]+", title)
+        if ">>" in title or not 2 <= len(words) <= 12:
+            issues.append(f"Theme {i + 1} title is fragmentary or poorly sized: {title!r}.")
+        if title[:1].islower() or lower.startswith(_THEME_FRAGMENT_OPENERS):
+            issues.append(f"Theme {i + 1} title begins like raw speech: {title!r}.")
+        if ">>" in summary or len(summary.split()) < 8:
+            issues.append(f"Theme {i + 1} summary is copied, fragmentary, or too thin.")
+        start = _as_float(theme.get("start_sec"))
+        end = _as_float(theme.get("end_sec"))
+        if start is None or (end is not None and end <= start):
+            issues.append(f"Theme {i + 1} has an invalid timestamp range.")
+        title_tokens.append(
+            {
+                token
+                for token in re.findall(r"[a-z0-9]+", lower)
+                if token not in _TOPIC_OVERLAP_STOP and len(token) > 2
+            }
+        )
+
+    for i, left in enumerate(title_tokens):
+        for j in range(i + 1, len(title_tokens)):
+            right = title_tokens[j]
+            if left and right and len(left & right) / len(left | right) >= 0.65:
+                issues.append(f"Themes {i + 1} and {j + 1} have near-duplicate titles.")
+    return issues
+
+
+def _theme_synthesis_prompt(
+    *,
+    video_name: str,
+    candidates: list[dict[str, Any]],
+    outline: str,
+) -> str:
+    return (
+        "Create the FINAL theme map for the full interview from chunk-level candidates and "
+        "an evenly sampled timed outline of the entire talk.\n"
+        f"Video: {video_name or '(untitled)'}\n"
+        "Read across the whole timeline. Merge duplicates across chunks, discard transcript "
+        "fragments, and separate genuinely different business ideas. Do not preserve chunk "
+        "boundaries or divide the talk into equal-duration buckets.\n"
+        "Return 3–8 chronological, non-overlapping themes with natural topic-shift boundaries. "
+        "Titles must be polished, insight-led business or entrepreneurship ideas—not quotes or "
+        "raw speech. Summaries must explain the speaker's distinct argument in editorial prose. "
+        "Use only claims and numbers supported by the supplied material.\n"
+        "Return ONLY a top-level JSON array. Each object must contain "
+        "theme_id, title, start_sec, end_sec, summary.\n\n"
+        f"Chunk candidates:\n{json.dumps(candidates[:40], ensure_ascii=False)}\n\n"
+        f"Full-talk timed outline:\n{outline}"
+    )
+
+
+def _theme_correction_prompt(
+    *,
+    video_name: str,
+    themes: list[dict[str, Any]],
+    issues: list[str],
+    outline: str,
+) -> str:
+    return (
+        "Rewrite this weak theme map into a production-quality business interview theme map.\n"
+        f"Video: {video_name or '(untitled)'}\n"
+        "Quality defects detected:\n"
+        + "\n".join(f"- {issue}" for issue in issues[:20])
+        + "\n\nCorrect every defect. Use the full-talk outline to replace transcript-fragment "
+        "titles with concise, insight-led themes; merge semantic duplicates; preserve distinct "
+        "business ideas; and place boundaries at real topic shifts rather than equal intervals. "
+        "Never invent claims or numbers. Return 3–8 chronological, non-overlapping themes.\n"
+        "Return ONLY a top-level JSON array. Each object must contain "
+        "theme_id, title, start_sec, end_sec, summary.\n\n"
+        f"Weak draft:\n{json.dumps(themes, ensure_ascii=False)}\n\n"
+        f"Full-talk timed outline:\n{outline}"
+    )
+
+
 async def build_harmonized_themes(
     *,
     cues: list[tuple[float, float | None, str]],
@@ -270,8 +455,8 @@ async def build_harmonized_themes(
 ) -> tuple[list[dict[str, Any]], str, str | None]:
     """Return normal narrative themes (search_entity is ignored — no reframing)."""
     del search_entity  # presence checks live in the router; themes stay video-native
-    transcript = compact_transcript(cues)
-    if not transcript.strip():
+    usable_cues = [(s, e, t) for s, e, t in cues if (t or "").strip()]
+    if not usable_cues:
         return [], "empty", "This video doesn’t have a transcript yet. Wait until indexing finishes, then try again."
 
     warning: str | None = None
@@ -282,38 +467,106 @@ async def build_harmonized_themes(
         openrouter_model=openrouter_model,
     ):
         try:
-            prompt = (
-                "You segment a video transcript into distinct narrative themes for a social carousel studio.\n"
-                f"Video: {video_name or '(untitled)'}\n"
-                "Hard rules:\n"
-                "- Start each theme at a logical context boundary, never mid-sentence.\n"
-                "- Titles must be concise, specific, complete English phrases.\n"
-                "- Summaries should explain the viewer-relevant idea, not merely repeat words.\n"
-                "- Use 3–8 chronological, non-overlapping themes with no duplicate angles.\n"
-                "Return ONLY a JSON array. Each object must contain theme_id, title, start_sec, end_sec, summary.\n\n"
-                f"Transcript:\n{transcript}"
+            chunks = _chunk_cues_for_topics(
+                usable_cues,
+                max_chars=_THEME_CHUNK_CHARS,
+                overlap_cues=_THEME_CHUNK_OVERLAP_CUES,
             )
-            text, llm_source = await _llm_complete_json(
-                prompt=prompt,
-                system="You are an expert short-form video editor and narrative copywriter. Return ONLY valid JSON.",
-                temperature=0.3,
-                max_tokens=1800,
-                api_key=api_key,
-                model=model,
-                claude_api_key=claude_api_key,
-                claude_model=claude_model or "claude-sonnet-4-20250514",
-                provider=provider,
-                openrouter_api_key=openrouter_api_key,
-                openrouter_model=openrouter_model,
-                openrouter_base_url=openrouter_base_url,
-            )
-            themes = _parse_themes_json(text)
+            candidates: list[dict[str, Any]] = []
+            llm_source = "unknown"
+            for index, chunk in enumerate(chunks):
+                transcript = compact_transcript(chunk, max_chars=_THEME_CHUNK_CHARS + 1_000)
+                scope_note = (
+                    f"This is transcript chunk {index + 1} of {len(chunks)}. Timestamps are "
+                    "absolute positions in the full video. Identify candidate themes only from "
+                    "this chunk; a later pass will synthesize the whole talk.\n"
+                    if len(chunks) > 1
+                    else ""
+                )
+                text, llm_source = await _llm_complete_json(
+                    prompt=_theme_generation_prompt(
+                        transcript=transcript,
+                        video_name=video_name,
+                        scope_note=scope_note,
+                        candidate_pass=len(chunks) > 1,
+                    ),
+                    system=_THEME_SYSTEM,
+                    temperature=0.3,
+                    max_tokens=1800,
+                    api_key=api_key,
+                    model=model,
+                    claude_api_key=claude_api_key,
+                    claude_model=claude_model or "claude-sonnet-4-20250514",
+                    provider=provider,
+                    openrouter_api_key=openrouter_api_key,
+                    openrouter_model=openrouter_model,
+                    openrouter_base_url=openrouter_base_url,
+                    json_root="array",
+                )
+                candidates.extend(_parse_themes_json(text))
+
+            outline = _condense_transcript_outline(usable_cues, max_chars=10_000)
+            themes = candidates
+            if len(chunks) > 1:
+                text, llm_source = await _llm_complete_json(
+                    prompt=_theme_synthesis_prompt(
+                        video_name=video_name,
+                        candidates=candidates,
+                        outline=outline,
+                    ),
+                    system=_THEME_SYSTEM,
+                    temperature=0.25,
+                    max_tokens=2200,
+                    api_key=api_key,
+                    model=model,
+                    claude_api_key=claude_api_key,
+                    claude_model=claude_model or "claude-sonnet-4-20250514",
+                    provider=provider,
+                    openrouter_api_key=openrouter_api_key,
+                    openrouter_model=openrouter_model,
+                    openrouter_base_url=openrouter_base_url,
+                    json_root="array",
+                )
+                themes = _parse_themes_json(text)
+
             if themes:
                 themes = snap_themes_to_cues(themes, cues)
+            issues = _theme_quality_issues(themes)
+            if issues:
+                text, corrected_source = await _llm_complete_json(
+                    prompt=_theme_correction_prompt(
+                        video_name=video_name,
+                        themes=themes,
+                        issues=issues,
+                        outline=outline,
+                    ),
+                    system=_THEME_SYSTEM,
+                    temperature=0.2,
+                    max_tokens=2200,
+                    api_key=api_key,
+                    model=model,
+                    claude_api_key=claude_api_key,
+                    claude_model=claude_model or "claude-sonnet-4-20250514",
+                    provider=provider,
+                    openrouter_api_key=openrouter_api_key,
+                    openrouter_model=openrouter_model,
+                    openrouter_base_url=openrouter_base_url,
+                    json_root="array",
+                )
+                corrected = snap_themes_to_cues(_parse_themes_json(text), cues)
+                corrected_issues = _theme_quality_issues(corrected)
+                if corrected and len(corrected_issues) < len(issues):
+                    themes = corrected
+                    issues = corrected_issues
+                    llm_source = corrected_source
+                if issues:
+                    warning = "Theme quality remained below target after one corrective pass."
+
+            if themes:
                 for t in themes:
                     t["harmonized"] = False
                     t["search_entity"] = None
-                return themes, llm_source, None
+                return themes, llm_source, warning
         except Exception as exc:  # noqa: BLE001
             logger.warning("carousel theme LLM failed: %s", exc)
             warning = str(exc)[:160]
@@ -427,10 +680,23 @@ async def _claude_themes(
 
 
 def _parse_themes_json(text: str) -> list[dict[str, Any]]:
-    m = re.search(r"\[[\s\S]*\]", text or "")
-    if not m:
-        return []
-    raw = json.loads(m.group())
+    raw: Any = None
+    cleaned = (text or "").strip()
+    try:
+        raw = json.loads(cleaned)
+    except json.JSONDecodeError:
+        m = re.search(r"\[[\s\S]*\]", cleaned)
+        if m:
+            try:
+                raw = json.loads(m.group())
+            except json.JSONDecodeError:
+                raw = None
+    if isinstance(raw, dict):
+        for key in ("themes", "items", "results"):
+            candidate = raw.get(key)
+            if isinstance(candidate, list):
+                raw = candidate
+                break
     if not isinstance(raw, list):
         return []
     out: list[dict[str, Any]] = []
@@ -758,10 +1024,13 @@ async def extract_hooks_and_topics_async(
         topic_title = str(topic.get("text") or "")
         candidates = _pick_contextual_hooks(topic_stitched)
         if candidates and topic_title:
-            # Prefer spoken windows that actually mention the topic (additive ranking).
+            # Prefer topic-relevant lines that also contain a strong business insight.
             candidates = sorted(
                 candidates,
-                key=lambda h: -_topic_text_overlap(topic_title, str(h.get("text") or "")),
+                key=lambda h: -(
+                    _topic_text_overlap(topic_title, str(h.get("text") or ""))
+                    + 0.35 * _business_hook_score(str(h.get("text") or ""))
+                ),
             )
         candidates = candidates[:4]
         if not candidates:
@@ -1681,6 +1950,33 @@ def _topic_text_overlap(topic_title: str, spoken: str) -> float:
     return hit / len(label_toks) + (0.15 if hit else 0.0)
 
 
+_BUSINESS_HOOK_TERMS = frozenset(
+    {
+        "acquisition", "business", "capital", "customer", "customers", "distribution",
+        "entrepreneur", "entrepreneurship", "founder", "growth", "hiring", "leadership",
+        "market", "marketing", "money", "operations", "pricing", "product", "profit",
+        "profitability", "revenue", "sales", "scale", "startup", "strategy", "wealth",
+    }
+)
+
+
+def _business_hook_score(text: str) -> float:
+    """Favor verbatim lines that express a concrete business insight or promise."""
+    clean = " ".join((text or "").split()).strip()
+    if not clean:
+        return 0.0
+    lower = clean.lower()
+    tokens = set(re.findall(r"[a-z0-9₹$%]+", lower))
+    score = min(1.0, 0.25 * len(tokens & _BUSINESS_HOOK_TERMS))
+    if re.search(r"(?:₹|\$|\b\d+(?:\.\d+)?\s*(?:cr|crore|lakh|million|billion|%))", lower):
+        score += 0.5
+    if re.search(r"\b(?:how|why|mistake|wrong|instead|secret|lesson|should|must|would)\b", lower):
+        score += 0.35
+    if re.search(r"\b(?:from zero|starting from|the real|most people|nobody|everyone)\b", lower):
+        score += 0.25
+    return min(score, 1.5)
+
+
 def _spread_topic_spans(
     count: int,
     *,
@@ -2022,18 +2318,28 @@ def _condense_transcript_outline(
     usable = [(s, e, t) for s, e, t in cues if (t or "").strip()]
     if not usable:
         return ""
-    full = compact_transcript(usable, max_chars=max_chars)
-    if len(full) <= max_chars:
-        return full
-    target_lines = max(40, max_chars // 90)
-    step = max(1, len(usable) // target_lines)
-    sampled = usable[::step]
-    # Always keep first/last beats for arc coverage
-    if usable[0] not in sampled:
-        sampled = [usable[0], *sampled]
-    if usable[-1] not in sampled:
-        sampled = [*sampled, usable[-1]]
-    return compact_transcript(sampled, max_chars=max_chars)
+    full_chars = sum(
+        len(format_cue_line(start, end, text)) + 1
+        for start, end, text in usable
+    )
+    if full_chars <= max_chars:
+        return compact_transcript(usable, max_chars=max_chars)
+    average_line_chars = max(1, full_chars // len(usable))
+    target_lines = max(2, min(len(usable), max_chars // average_line_chars))
+    while target_lines >= 2:
+        indices = sorted(
+            {
+                round(i * (len(usable) - 1) / (target_lines - 1))
+                for i in range(target_lines)
+            }
+        )
+        sampled = [usable[i] for i in indices]
+        outline = compact_transcript(sampled, max_chars=max_chars)
+        last_line = format_cue_line(*usable[-1])
+        if last_line in outline:
+            return outline
+        target_lines -= 1
+    return compact_transcript([usable[0], usable[-1]], max_chars=max_chars)
 
 
 def _cues_for_topic_ranges(
@@ -2122,6 +2428,11 @@ async def _llm_synthesize_global_topics(
         "local topics extracted from chunks (these may be fragmentary single-moment labels).\n\n"
         "Goal: produce parent topics that are COHERENT THREADS across the talk — narrative arcs, "
         "recurring ideas, and how the speaker's direction evolves — NOT isolated moment tags.\n\n"
+        "Business lens: surface commercially useful ideas even when they are expressed through "
+        "stories or informal language—customer acquisition, distribution, product, pricing, sales, "
+        "growth, capital, profitability, operations, hiring, leadership, market strategy, founder "
+        "mistakes, wealth creation, and policy effects on enterprise. Prefer the speaker's concrete "
+        "thesis, mechanism, playbook, trade-off, or outcome over a generic category label.\n\n"
         "Hard rules:\n"
         "- Output 5–12 parent topics (keep good granularity; do NOT collapse to 2–3 vague umbrellas)\n"
         "- Each topic = one coherent thread that can recur; use time_ranges for EVERY span where "
@@ -2132,7 +2443,8 @@ async def _llm_synthesize_global_topics(
         "- Titles: 2–8 words, concrete, grounded in the outline — not generic chapter names\n"
         "- explanation: 1 sentence on how this thread develops across the talk\n"
         "- Prefer merging duplicate local candidates into one spanning thread\n"
-        "- Do NOT invent facts beyond the outline/candidates\n"
+        "- Use editorial creativity to select and phrase the strongest business-relevant topics, "
+        "but do NOT invent facts, numbers, promises, or lessons beyond the outline/candidates\n"
         f"Theme title: {theme_title}\n"
         f"Theme summary: {theme_summary}\n"
         f"Window: {theme_start}s – {theme_end if theme_end is not None else 'end'}s\n"
@@ -2294,19 +2606,26 @@ async def _llm_topic_tree_from_theme(
         f"{chunk_note}"
         "These are LOCAL candidate beats for a later global synthesis pass. Still be specific.\n"
         "Flow: Topics → optional Subtopics (no hooks here).\n"
+        "Business lens: actively detect concrete entrepreneurial ideas, including acquisition, "
+        "distribution, product, pricing, sales, growth, capital, profit, operations, hiring, "
+        "leadership, market strategy, wealth creation, policy impact on enterprise, founder "
+        "mistakes, contrarian lessons, and actionable playbooks—even when the speaker uses "
+        "informal language rather than business jargon.\n"
         "Hard rules:\n"
         "- Extract MORE candidates when the speaker pivots: aim for 5–10 top-level topics in this "
         "chunk when the talk supports it (minimum 4 if the chunk is substantive). "
         "Do NOT collapse a long discussion into 2–3 generic labels.\n"
         "- Follow the transcript chronologically; each topic must map to real cue timestamps\n"
-        "- Each topic title: 2–8 words, natural English, ONE concrete idea from what was said\n"
+        "- Each topic title: 2–8 words, natural English, ONE concrete idea from what was said. "
+        "Prefer the actual insight, strategy, mistake, trade-off, or outcome over a category label\n"
         "- start_sec / end_sec must cover that direction using the cue times in the transcript\n"
         "- explanation: 1 sentence grounded in the spoken content (what they actually develop)\n"
         "- subtopics: 0–3 nested beats ONLY when the speaker subdivides the same direction\n"
         "- Distinct topics only (no near-duplicate labels), but keep adjacent distinct angles\n"
         "- READ the lines — titles must reflect specific claims/stories in the transcript, "
         "not invent generic chapter names that could fit any video\n"
-        "- Do NOT paste dialogue as titles; do NOT invent facts beyond the transcript\n"
+        "- Use editorial creativity to make titles compelling and useful to entrepreneurs, but "
+        "do NOT invent claims, numbers, promises, or facts beyond the transcript\n"
         f"Theme title: {theme_title}\n"
         f"Theme summary: {theme_summary}\n"
         f"Chunk window: {theme_start}s – {theme_end if theme_end is not None else 'end'}s\n"
@@ -2899,13 +3218,19 @@ async def _llm_topics_from_theme(
         "clusters where the speaker takes a direction — for one selected theme.\n"
         "Topics are thematic chapter titles grounded in what was said — NOT transcript quotes, "
         "NOT vague umbrellas that ignore most of the talk.\n"
+        "Prioritize concrete business and entrepreneurship insights: strategies, mechanisms, "
+        "mistakes, contrarian views, playbooks, numbers, trade-offs, and outcomes involving "
+        "customers, distribution, product, pricing, sales, growth, capital, profit, operations, "
+        "teams, markets, wealth creation, or policy effects on enterprise.\n"
         "Rules:\n"
         "- Aim for 5–10 topics when the transcript supports it (order = chronology)\n"
-        "- Each topic: 2–8 words; ONE concrete idea; natural English\n"
+        "- Each topic: 2–8 words; ONE concrete idea; natural English; insight-led rather than "
+        "a generic category when the transcript supports it\n"
         "- Cluster by meaning/direction pivots in the transcript\n"
         "- No incomplete thoughts; no near-duplicates "
         "(e.g. 'Student-First Philosophy' ≈ 'Student-Centric Decisions' — keep one)\n"
         "- Keep distinct adjacent angles; do not collapse the talk into 2–3 generic labels\n"
+        "- Use creative editorial phrasing, but never invent a claim, number, or lesson\n"
         f"Theme title: {theme_title}\n"
         f"Theme summary: {theme_summary}\n"
         f"Search entity: {entity or '(none)'}\n"
@@ -3664,3 +3989,211 @@ async def finalize_carousels_instagram_copy(
             provider_used = "claude"
         out.append(item)
     return out, provider_used
+
+
+_CAROUSEL_QUALITY_STOPWORDS = frozenset(
+    {
+        "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "from",
+        "has", "have", "i", "in", "is", "it", "of", "on", "or", "our", "that",
+        "the", "this", "to", "was", "we", "were", "with", "you", "your",
+    }
+)
+
+
+def _carousel_quality_text(slide: dict[str, Any]) -> str:
+    return " ".join(
+        str(
+            slide.get("transcript_text")
+            or slide.get("hook_line")
+            or slide.get("caption")
+            or slide.get("snippet")
+            or ""
+        ).split()
+    ).strip()
+
+
+def _carousel_idea_tokens(text: str) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"[a-z0-9']+", (text or "").lower())
+        if len(token) > 2 and token not in _CAROUSEL_QUALITY_STOPWORDS
+    }
+
+
+def _carousel_idea_similarity(left: str, right: str) -> float:
+    a = _carousel_idea_tokens(left)
+    b = _carousel_idea_tokens(right)
+    if not a or not b:
+        return 0.0
+    return len(a & b) / max(1, min(len(a), len(b)))
+
+
+def _source_safe_concise_text(text: str, *, max_words: int = 24) -> str:
+    """Return a contiguous source substring, never newly authored copy."""
+    cleaned = " ".join((text or "").split()).strip()
+    words = cleaned.split()
+    if len(words) <= max_words and len(cleaned) <= 180:
+        return cleaned
+    # A complete leading sentence/clause is safe because it is an exact,
+    # contiguous substring of the transcript-verified display text.
+    for match in re.finditer(r"[.!?;:](?:\s|$)", cleaned):
+        candidate = cleaned[: match.end()].strip()
+        count = len(candidate.split())
+        if 5 <= count <= max_words and len(candidate) <= 180:
+            return candidate
+    return cleaned
+
+
+def score_and_repair_carousel_quality(
+    carousel: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Deterministically score carousel quality and apply source-safe repairs.
+
+    Timestamps and source fields are never changed. Copy repairs can only
+    normalize whitespace or select a complete contiguous prefix of existing
+    slide text, so this pass cannot introduce a factual claim.
+    """
+    item = dict(carousel)
+    slides = [dict(slide) for slide in (item.get("slides") or []) if isinstance(slide, dict)]
+    repairs: list[str] = []
+
+    for index, slide in enumerate(slides):
+        original = _carousel_quality_text(slide)
+        concise = _source_safe_concise_text(original)
+        if concise != original:
+            repairs.append(f"slide_{index + 1}:concise_prefix")
+        if concise:
+            for field in ("hook_line", "transcript_text", "caption", "snippet"):
+                slide[field] = concise
+        indices, words = _normalize_highlight_indices(
+            concise,
+            slide.get("highlight"),
+            slide.get("highlight_words"),
+        )
+        slide["highlight"] = indices
+        slide["highlight_words"] = words
+
+    texts = [_carousel_quality_text(slide) for slide in slides]
+    word_counts = [len(text.split()) for text in texts]
+    duplicate_pairs: list[list[int]] = []
+    for right in range(1, len(texts)):
+        for left in range(right):
+            if texts[left] and texts[right] and _carousel_idea_similarity(
+                texts[left], texts[right]
+            ) >= 0.8:
+                duplicate_pairs.append([left, right])
+                break
+
+    cover = texts[0] if texts else ""
+    cover_words = word_counts[0] if word_counts else 0
+    cover_score = 35
+    if 4 <= cover_words <= 16:
+        cover_score += 35
+    elif cover_words:
+        cover_score += 15
+    if re.search(r"[?!]|\b\d+(?:\.\d+)?%?\b", cover):
+        cover_score += 20
+    if len(_carousel_idea_tokens(cover)) >= 3:
+        cover_score += 10
+    cover_score = min(100, cover_score if cover else 0)
+
+    readable = sum(
+        1
+        for text, count in zip(texts, word_counts)
+        if text and count <= 24 and len(text) <= 180
+    )
+    readability_score = round(100 * readable / max(1, len(slides)))
+
+    monotonic_pairs = 0
+    progressive_pairs = 0
+    for left, right in zip(slides, slides[1:]):
+        try:
+            monotonic = float(right.get("timestamp_sec") or 0) >= float(
+                left.get("timestamp_sec") or 0
+            )
+        except (TypeError, ValueError):
+            monotonic = False
+        if monotonic:
+            monotonic_pairs += 1
+        if _carousel_idea_similarity(_carousel_quality_text(left), _carousel_quality_text(right)) < 0.8:
+            progressive_pairs += 1
+    pair_count = max(1, len(slides) - 1)
+    progression_score = round(
+        100 * (0.6 * monotonic_pairs + 0.4 * progressive_pairs) / pair_count
+    )
+    if len(slides) <= 1:
+        progression_score = 0
+
+    duplicate_score = round(
+        100 * (1.0 - len(duplicate_pairs) / max(1, len(slides) - 1))
+    )
+    duplicate_score = max(0, duplicate_score)
+
+    ending = texts[-1] if texts else ""
+    ending_score = 30 if ending else 0
+    if ending and len(ending.split()) <= 20:
+        ending_score += 25
+    if re.search(r"[.!?]$", ending):
+        ending_score += 20
+    if re.search(
+        r"\b(remember|try|start|build|choose|ask|learn|save|share|follow|next|result|because|so)\b",
+        ending,
+        re.IGNORECASE,
+    ):
+        ending_score += 25
+    ending_score = min(100, ending_score)
+
+    dimensions = {
+        "cover_strength": cover_score,
+        "swipe_progression": progression_score,
+        "copy_readability": readability_score,
+        "idea_uniqueness": duplicate_score,
+        "ending_payoff": ending_score,
+    }
+    overall = round(sum(dimensions.values()) / len(dimensions))
+    issues: list[str] = []
+    if cover_score < 70:
+        issues.append("weak_cover")
+    if progression_score < 75:
+        issues.append("weak_swipe_progression")
+    if readability_score < 90:
+        issues.append("dense_copy")
+    if duplicate_pairs:
+        issues.append("duplicate_ideas")
+    if ending_score < 70:
+        issues.append("weak_ending_payoff")
+
+    report: dict[str, Any] = {
+        "score": overall,
+        "dimensions": dimensions,
+        "issues": issues,
+        "repairs": repairs,
+        "duplicate_pairs": duplicate_pairs,
+        "grounding": "transcript_locked",
+    }
+    item["slides"] = slides
+    item["slide_count"] = len(slides)
+    item["quality_report"] = report
+    return item, report
+
+
+def apply_carousel_quality_pass(
+    carousels: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Apply deterministic quality scoring/repair and return a compact rollup."""
+    repaired: list[dict[str, Any]] = []
+    reports: list[dict[str, Any]] = []
+    for carousel in carousels:
+        item, report = score_and_repair_carousel_quality(carousel)
+        repaired.append(item)
+        reports.append(report)
+    scores = [int(report.get("score") or 0) for report in reports]
+    summary = {
+        "carousel_count": len(reports),
+        "average_score": round(sum(scores) / len(scores)) if scores else 0,
+        "needs_attention": sum(1 for score in scores if score < 70),
+        "issue_count": sum(len(report.get("issues") or []) for report in reports),
+        "repair_count": sum(len(report.get("repairs") or []) for report in reports),
+        "algorithm": "deterministic_transcript_locked_v1",
+    }
+    return repaired, summary

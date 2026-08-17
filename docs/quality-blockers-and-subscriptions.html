@@ -1,0 +1,362 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Quality blockers and funding</title>
+  <style>
+    :root {
+      --ink: #18212f;
+      --muted: #5c6878;
+      --line: #d7dde5;
+      --soft: #f3f6f9;
+      --blue: #174ea6;
+      --blue-soft: #e9f1ff;
+      --red: #a61b29;
+      --red-soft: #fff0f1;
+      --amber: #815500;
+      --amber-soft: #fff7df;
+      --green: #146c43;
+      --green-soft: #eaf7f0;
+      --white: #fff;
+    }
+    * { box-sizing: border-box; }
+    html { font-size: 10pt; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--white);
+      font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+      line-height: 1.42;
+    }
+    @page {
+      size: A4;
+      margin: 17mm 15mm 18mm;
+      @top-left {
+        content: "QUALITY BLOCKERS AND FUNDING";
+        color: #6b7480;
+        font-size: 7.5pt;
+        letter-spacing: .08em;
+      }
+      @top-right {
+        content: "17 AUGUST 2026";
+        color: #6b7480;
+        font-size: 7.5pt;
+      }
+      @bottom-left {
+        content: "DriveFaceIndexer + Carousel Studio";
+        color: #6b7480;
+        font-size: 7.5pt;
+      }
+      @bottom-right {
+        content: "PAGE " counter(page) " OF " counter(pages);
+        color: #6b7480;
+        font-size: 7.5pt;
+      }
+    }
+    @media screen {
+      body { background: #e9edf2; padding: 24px; }
+      main { max-width: 210mm; margin: auto; background: white; padding: 17mm 15mm; }
+    }
+    h1, h2, h3, p { margin-top: 0; }
+    h1 { font-size: 24pt; line-height: 1.08; letter-spacing: -.02em; margin-bottom: 4mm; }
+    h2 {
+      font-size: 13pt;
+      line-height: 1.2;
+      color: var(--blue);
+      margin: 7mm 0 3mm;
+      break-after: avoid;
+    }
+    h3 { font-size: 10.5pt; margin: 4mm 0 2mm; break-after: avoid; }
+    p { margin-bottom: 3mm; }
+    ul, ol { margin: 0 0 3.5mm 5mm; padding-left: 4mm; }
+    li { margin-bottom: 1.1mm; }
+    strong { font-weight: 700; }
+    code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 8.2pt;
+      overflow-wrap: anywhere;
+    }
+    .eyebrow {
+      color: var(--blue);
+      font-size: 8.5pt;
+      font-weight: 750;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      margin-bottom: 3mm;
+    }
+    .lede { font-size: 12pt; line-height: 1.35; max-width: 170mm; color: #2d3948; }
+    .cover-rule { height: 3px; width: 42mm; background: var(--blue); margin: 6mm 0 7mm; }
+    .meta {
+      display: grid;
+      grid-template-columns: 28mm 1fr;
+      gap: 1.5mm 5mm;
+      border-top: 1px solid var(--line);
+      padding-top: 4mm;
+      margin-bottom: 5mm;
+      color: var(--muted);
+      font-size: 8.5pt;
+    }
+    .meta b { color: var(--ink); }
+    .kpis {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 3mm;
+      margin: 2mm 0 5mm;
+    }
+    .kpi { border-top: 2px solid var(--blue); padding-top: 3mm; break-inside: avoid; }
+    .kpi.good { border-color: var(--green); }
+    .kpi.warn { border-color: #c28400; }
+    .kpi .value { font-size: 16pt; font-weight: 760; line-height: 1.05; }
+    .kpi .label { font-size: 8pt; color: var(--muted); margin-top: 1.4mm; }
+    .callout {
+      border-left: 4px solid var(--blue);
+      background: var(--blue-soft);
+      padding: 3.5mm 4.5mm;
+      margin: 3mm 0 5mm;
+      break-inside: avoid;
+    }
+    .callout.warn { border-color: #c28400; background: var(--amber-soft); }
+    .callout.good { border-color: var(--green); background: var(--green-soft); }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 2mm 0 5mm;
+      font-size: 8.2pt;
+    }
+    thead { display: table-header-group; }
+    tr { break-inside: avoid; }
+    th {
+      text-align: left;
+      color: var(--white);
+      background: #334154;
+      padding: 2.2mm;
+      font-weight: 650;
+    }
+    td { padding: 2.1mm; border-bottom: 1px solid var(--line); vertical-align: top; }
+    tbody tr:nth-child(even) td { background: var(--soft); }
+    .id { font-weight: 700; white-space: nowrap; width: 12mm; }
+    .steps {
+      display: grid;
+      grid-template-columns: 8mm 1fr;
+      gap: 1.5mm 3mm;
+      margin: 2mm 0 5mm;
+    }
+    .n {
+      font-weight: 760;
+      color: var(--blue);
+    }
+  </style>
+</head>
+<body>
+<main>
+  <p class="eyebrow">Decision brief</p>
+  <h1>Quality blockers and funding</h1>
+  <p class="lede">What blocks live quality, what to drive next, and whether any new subscription is required. Pay for models only after the index can finish and stay on disk.</p>
+  <div class="cover-rule"></div>
+  <div class="meta">
+    <span>System</span><b>DriveFaceIndexer + Carousel Studio</b>
+    <span>Date</span><b>17 August 2026</b>
+    <span>Audience</span><b>Product and ops</b>
+    <span>Source</span><b>docs/quality-blockers-and-subscriptions.md</b>
+  </div>
+
+  <div class="kpis">
+    <div class="kpi good">
+      <div class="value">No</div>
+      <div class="label">New SaaS vendor required</div>
+    </div>
+    <div class="kpi">
+      <div class="value">Yes</div>
+      <div class="label">Fund OpenRouter credits</div>
+    </div>
+    <div class="kpi warn">
+      <div class="value">Keep</div>
+      <div class="label">Claude + Gemini billed</div>
+    </div>
+  </div>
+
+  <div class="callout warn">
+    <strong>Pay models after the index can finish.</strong>
+    Disk, overlapping video claims, and empty Whisper cues collapse quality before extra LLM spend can show up. Extra quota without isolation shows up as more 429s and cached junk.
+  </div>
+
+  <h2>1. Quality is five outcomes</h2>
+  <p>Each outcome has a different saturator. A better model cannot fix the wrong one.</p>
+  <table>
+    <thead>
+      <tr><th>Outcome</th><th>Quality means</th><th>Saturator if it fails</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Library permanence</td><td>PROCESSED work stays when Drive folders change</td><td>Indexer policy + disk</td></tr>
+      <tr><td>Search</td><td>Right faces, scenes, spoken moments rank first</td><td>Faces, captions, embeddings, transcripts</td></tr>
+      <tr><td>Video index</td><td>Transcript + faces + frames exist</td><td>CPU + disk + claim locks</td></tr>
+      <tr><td>Carousel script</td><td>Hooks people would post</td><td>LLM quality + verbatim timestamps</td></tr>
+      <tr><td>Carousel images</td><td>Centered, front-facing guest</td><td>Local face scores, then vision</td></tr>
+    </tbody>
+  </table>
+
+  <h2>2. Blockers — do these before buying more models</h2>
+  <p>Ranked by what blocks live quality today, not the full architecture register.</p>
+  <table>
+    <thead>
+      <tr><th>ID</th><th>Blocker</th><th>Why quality dies</th><th>Drive this</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td class="id">B1</td>
+        <td>Leftover Drive downloads refill volume</td>
+        <td>ENOSPC stops index, preview, backup. Manual cleanup already recovered ~41 GiB.</td>
+        <td>Auto-unlink on success and ERROR. Keep uploads and YouTube. Do not buy more volume first.</td>
+      </tr>
+      <tr>
+        <td class="id">B2</td>
+        <td>Overlapping video workers + 900s stall watchdog</td>
+        <td>Proof video committed Media/segments then ERROR. Empty transcript, no VLM cues.</td>
+        <td>One indexer replica until leases. Fencing token on finalize.</td>
+      </tr>
+      <tr>
+        <td class="id">B3</td>
+        <td>Whisper / empty transcript cues</td>
+        <td>Hooks must be exact transcript sentences. Empty cues make carousels unusable.</td>
+        <td>Confirm faster-whisper on the indexer image. Backfill empty-cue videos. No new vendor.</td>
+      </tr>
+      <tr>
+        <td class="id">B4</td>
+        <td>API and indexer share one process</td>
+        <td>Search and InsightFace fight for CPU, RAM, DB pool. Carousel feels broken during video index.</td>
+        <td>Split <code>dfi-backend</code> vs <code>dfi-indexer</code> (same image). Railway replica, not a SaaS.</td>
+      </tr>
+      <tr>
+        <td class="id">B5</td>
+        <td>Gemini quota mixed with backfill</td>
+        <td>Caption/embed 429s starve interactive generate. Weak fallbacks get cached.</td>
+        <td>Pause backfill on 429. Reserve interactive quota before raising the Gemini tier.</td>
+      </tr>
+      <tr>
+        <td class="id">B6</td>
+        <td>Synchronous carousel LLM stages</td>
+        <td>Timeouts and retries double spend while the provider keeps running.</td>
+        <td>Persist per-stage jobs + idempotency.</td>
+      </tr>
+      <tr>
+        <td class="id">B7</td>
+        <td>Weak generations poison cache</td>
+        <td>Cache key is provider+model+transcript, not prompt version. Bad themes stick.</td>
+        <td>Claude remains script default. Force new cache id on regenerate.</td>
+      </tr>
+      <tr>
+        <td class="id">B8</td>
+        <td>No search-quality regression gate</td>
+        <td><code>eval_search_quality.py</code> exists but is not an SLO on deploy.</td>
+        <td>Run golden set after indexer deploys. Uses existing Gemini key.</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>Not quality blockers this quarter: Qwen GPU sidecar, Cloud Vision, SerpAPI, Cohesivity, copying <code>/test</code> onto <code>/carousel</code>.</p>
+
+  <h2>3. Quality ladder</h2>
+  <p>Climb the next rung only when the previous one is green.</p>
+  <table>
+    <thead>
+      <tr><th>Rung</th><th>Drive</th><th>Done looks like</th><th>How</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td class="id">1</td>
+        <td>Finish the index</td>
+        <td>Media + non-empty transcript + faces + frames</td>
+        <td>Local InsightFace, ffmpeg, faster-whisper. Gemini embeddings and captions stay the search backbone.</td>
+      </tr>
+      <tr>
+        <td class="id">2</td>
+        <td>Grounded carousel text</td>
+        <td>Themes, topics, hooks people would post</td>
+        <td>Claude Sonnet 4.5 default. Cheap draft then polish once. Hooks must be transcript substrings.</td>
+      </tr>
+      <tr>
+        <td class="id">3</td>
+        <td>Intentional frames</td>
+        <td>Centered, front-facing guest matching the hook</td>
+        <td>Local face scores first. Vision only as a tie-breaker.</td>
+      </tr>
+      <tr>
+        <td class="id">4</td>
+        <td>Search relevance loop</td>
+        <td>Golden queries stay true after indexer deploys</td>
+        <td>People vs scene vs spoken-text precision, judged with the Gemini key you already have.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>4. Accounts</h2>
+  <h3>Keep — already the product</h3>
+  <table>
+    <thead>
+      <tr><th>Account</th><th>Powers</th><th>Subscription</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Railway</td><td>API, carousel, volume, Postgres/Qdrant</td><td>Keep. Indexer split may add one replica.</td></tr>
+      <tr><td>Google Cloud</td><td>Drive API, OAuth, Picker</td><td>Project + APIs. Not a Face product.</td></tr>
+      <tr><td>Gemini API</td><td>Embeddings, captions, VLM, search eval</td><td>Keep paid usage. Quality floor for search.</td></tr>
+      <tr><td>Anthropic Claude</td><td>Default themes / extract / polish</td><td>Keep billed. Cheap scripts are the regression.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Fund — only new spend that lifts quality</h3>
+  <table>
+    <thead>
+      <tr><th>Account</th><th>Unlocks</th><th>Need a subscription?</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>OpenRouter credits</td>
+        <td>Model picker, Gemini/Claude failover, optional GPT/Llama</td>
+        <td><strong>Credits, not a required monthly plan.</strong> Only new spend that lifts carousel quality and uptime.</td>
+      </tr>
+      <tr>
+        <td>Gemini tier bump</td>
+        <td>Higher embed/caption/VLM concurrency</td>
+        <td>Only after interactive vs backfill isolation. Raising first fills 429s faster.</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>OpenRouter does not replace Gemini embeddings or Claude-as-default. Fund credits for generate plus a small failover buffer. Image-gen models can wait.</p>
+
+  <h3>Do not buy this quarter</h3>
+  <table>
+    <thead>
+      <tr><th>Offer</th><th>Why skip</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Qwen / GPU VLM host</td><td>Railway has no GPU. Gemini already captions.</td></tr>
+      <tr><td>Cloud Vision Web Detection</td><td>Repo notes it is weak for people ID.</td></tr>
+      <tr><td>SerpAPI Google Lens</td><td>Skip unless reverse-image identity is a launch gate.</td></tr>
+      <tr><td>Apify Google Lens</td><td>Useful for review-queue naming, not scripts or embeddings.</td></tr>
+      <tr><td>Cohesivity / Exa</td><td>LinkedIn enrichment, not index quality.</td></tr>
+      <tr><td>Hosted Whisper / Deepgram</td><td>faster-whisper is already wired. Pay only if B2/B3 still leave empty cues.</td></tr>
+      <tr><td>Gemini File Search revival</td><td>Retired. Qdrant is the index.</td></tr>
+      <tr><td>Bigger Railway volume</td><td>Treats B1’s symptom. Auto-clean first.</td></tr>
+    </tbody>
+  </table>
+  <p>YouTube Netscape cookies and the Google Picker HTTP-referrer allowlist are operational config, not paid plans.</p>
+
+  <h2>5. Work order</h2>
+  <div class="steps">
+    <div class="n">1</div><div>Auto-unlink leftover Drive caches on success/ERROR (B1).</div>
+    <div class="n">2</div><div>Single-owner video execution; stop stall-watchdog false ERROR (B2).</div>
+    <div class="n">3</div><div>Whisper present + backfill empty transcripts (B3).</div>
+    <div class="n">4</div><div>API / indexer service split (B4).</div>
+    <div class="n">5</div><div>Quota isolation + OpenRouter credits for generate/failover (B5).</div>
+    <div class="n">6</div><div>Golden search eval on deploy (B8).</div>
+    <div class="n">7</div><div>Only then: Whisper model size bump, vision tie-breakers, Apify.</div>
+  </div>
+
+  <div class="callout good">
+    <strong>Decision.</strong>
+    No new SaaS vendor. Keep Claude and Gemini billed. Fund OpenRouter credits. Raise Gemini quota only after backfill is isolated. Skip GPU, Vision, SerpAPI, Apify, and Exa unless people reverse-search becomes a launch gate.
+  </div>
+  <p>Until rungs 1–3 are green, extra model subscriptions will not show up as better carousels or better search. They will show up as more 429s and more cached junk.</p>
+</main>
+</body>
+</html>

@@ -19,7 +19,7 @@ RAW_EXTENSIONS = (
 
 TIFF_EXTENSIONS = (".tif", ".tiff")
 
-RECOVERABLE_IMAGE_EXTENSIONS = TIFF_EXTENSIONS + RAW_EXTENSIONS
+RECOVERABLE_IMAGE_EXTENSIONS = TIFF_EXTENSIONS + RAW_EXTENSIONS + (".svg", ".svgz")
 
 _EXTENSION_TO_MIME: dict[str, str] = {
     ".heic": "image/heic",
@@ -40,6 +40,8 @@ _EXTENSION_TO_MIME: dict[str, str] = {
     ".pef": "image/x-pentax-pef",
     ".srw": "image/x-samsung-srw",
     ".raw": "image/x-raw",
+    ".svg": "image/svg+xml",
+    ".svgz": "image/svg+xml",
 }
 
 _DECODE_ERROR_MARKERS = (
@@ -65,6 +67,8 @@ _DECODE_ERROR_MARKERS = (
     "libraw",
     "compression method",
     "not a TIFF",
+    "svg",
+    "rsvg",
 )
 
 
@@ -90,6 +94,11 @@ def infer_image_mime(mime_type: str, file_name: str) -> str:
 def is_raw_filename(file_name: str) -> bool:
     lower = (file_name or "").lower()
     return lower.endswith(RAW_EXTENSIONS)
+
+
+def is_svg_filename(file_name: str) -> bool:
+    lower = (file_name or "").lower()
+    return lower.endswith((".svg", ".svgz"))
 
 
 def is_tiff_filename(file_name: str) -> bool:

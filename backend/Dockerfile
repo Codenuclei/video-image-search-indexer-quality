@@ -31,6 +31,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     liblerc4 \
     libzstd1 \
     libraw20 \
+    librsvg2-bin \
     postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 

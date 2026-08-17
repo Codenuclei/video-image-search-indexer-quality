@@ -209,13 +209,20 @@ export async function captureVideoFramesInRange(
   const out: CapturedFrame[] = [];
   try {
     await ensureVideoReady(video, videoUrl, timeoutMs);
+    let lastActual = Number.NaN;
     for (let i = 0; i < count; i++) {
       const t =
         count === 1 ? lo : lo + (span * i) / (count - 1);
       await seekVideo(video, t, timeoutMs);
+      const actual = Number.isFinite(video.currentTime) ? video.currentTime : t;
+      if (Number.isFinite(lastActual) && Math.abs(actual - lastActual) < 0.12) {
+        continue;
+      }
+      lastActual = actual;
       const canvas = drawToCanvas(video, maxWidth);
       const blob = await canvasToBlob(canvas, mimeType, quality);
       const dataUrl = await blobToDataUrl(blob);
+      if (out.some((prev) => prev.dataUrl === dataUrl)) continue;
       out.push({
         frame_ts: Math.round(t * 100) / 100,
         dataUrl,

@@ -141,7 +141,30 @@ async def _load_vtt_cues(
     return []
 
 
-async def _whisper_cues_for_video(video_path: str, settings: Settings) -> list[VttCue]:
+async def _heartbeat_last_synced(drive_file_id: str) -> None:
+    """Keep last_synced_at fresh so a restarted indexer does not treat Whisper as an orphan."""
+    from datetime import datetime, timezone
+
+    from sqlalchemy import update
+
+    from app.db.session import get_session_factory
+
+    factory = get_session_factory()
+    async with factory() as session:
+        await session.execute(
+            update(DriveFile)
+            .where(DriveFile.id == drive_file_id)
+            .values(last_synced_at=datetime.now(timezone.utc))
+        )
+        await session.commit()
+
+
+async def _whisper_cues_for_video(
+    video_path: str,
+    settings: Settings,
+    *,
+    drive_file_id: str | None = None,
+) -> list[VttCue]:
     """Local ASR when captions are missing — required for carousel captioned listing."""
     from app.video.whisper_engine import transcribe_audio_async
 
@@ -150,7 +173,26 @@ async def _whisper_cues_for_video(video_path: str, settings: Settings) -> list[V
         await run_cpu_bound(extract_audio_wav, video_path, wav_path)
         if not os.path.isfile(wav_path) or os.path.getsize(wav_path) <= 0:
             return []
-        segments = await transcribe_audio_async(wav_path, settings)
+
+        async def _heartbeat_loop() -> None:
+            if not drive_file_id:
+                return
+            while True:
+                try:
+                    await _heartbeat_last_synced(drive_file_id)
+                except Exception:  # noqa: BLE001
+                    logger.debug("whisper heartbeat failed for %s", drive_file_id[:12], exc_info=True)
+                await asyncio.sleep(45)
+
+        hb = asyncio.create_task(_heartbeat_loop(), name=f"whisper-hb:{drive_file_id or 'none'}")
+        try:
+            segments = await transcribe_audio_async(wav_path, settings)
+        finally:
+            hb.cancel()
+            try:
+                await hb
+            except asyncio.CancelledError:
+                pass
     return [
         VttCue(start_sec=float(s.start_sec), end_sec=float(s.end_sec), text=s.text)
         for s in segments
@@ -349,7 +391,7 @@ async def process_video_file(
 
     if not cues and settings.whisper_fallback_enabled:
         try:
-            cues = await _whisper_cues_for_video(dest, settings)
+            cues = await _whisper_cues_for_video(dest, settings, drive_file_id=drive_file.id)
             if cues:
                 logger.info(
                     "Whisper fallback produced %d cue(s) for %s",

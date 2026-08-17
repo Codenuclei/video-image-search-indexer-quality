@@ -13,7 +13,11 @@ from app.config import Settings, get_settings
 from app.db.models import CarouselGenerationSave, DriveFile, DriveFileStatus, Media, VideoSegment
 from app.drive.client import DriveConnectorClient, DriveConnectorError
 from app.drive.google_client import DriveDirectError
-from app.drive.cleanup import remove_drive_file, restore_processed_when_media_exists
+from app.drive.cleanup import (
+    remove_drive_file,
+    restore_archived_when_index_complete,
+    restore_processed_when_media_exists,
+)
 from app.drive.content_hash import APPLEDOUBLE_SKIP_PREFIX, is_macos_junk_name
 from app.drive.schemas import ConnectorFile
 from app.gemini.service import GeminiFileSearchService, get_gemini_service
@@ -28,6 +32,7 @@ from app.pipelines.common import (
 )
 from app.pipelines.image import process_image_file
 from app.pipelines.video import process_video_file
+from app.video.youtube_registry import is_youtube_source
 from app.pipelines.decode_recovery import apply_decode_failure, decode_max_attempts, is_decode_failure_error
 from app.drive.traverse import FOLDER_MIME, SHORTCUT_MIME
 from app.drive.indexing_pause import (
@@ -76,6 +81,19 @@ def _log_skip(drive_file: DriveFile, reason: str) -> None:
 def _cached_video_recovery_eligible(cue_count: int, frames_dir: Path) -> bool:
     """Return whether surviving transcript/frame assets can support recovery."""
     return cue_count >= 2 and any(frames_dir.glob("*.jpg"))
+
+
+def needs_drive_folder_listing(drive_file: DriveFile) -> bool:
+    """Drive listing is only for Drive-sourced videos (sidecar VTT lookup).
+
+    Local uploads already have bytes on the volume; requiring a selected Drive
+    folder blocked Whisper captions for /search/carousel/upload.
+    """
+    source = (getattr(drive_file, "source", None) or "drive").strip().lower()
+    fid = str(getattr(drive_file, "id", "") or "")
+    if source in {"upload", "youtube"} or fid.startswith(("upload:", "yt:")):
+        return False
+    return not is_youtube_source(drive_file)
 
 
 # Background carousel generation drains the captioned backlog a couple of
@@ -902,10 +920,8 @@ class IndexingWorker:
                     await asyncio.to_thread(gemini.delete_document, old_document)
                     drive_file.gemini_document_name = None
 
-                from app.video.youtube_registry import is_youtube_source
-
                 listing = None
-                if not is_youtube_source(drive_file):
+                if needs_drive_folder_listing(drive_file):
                     listing = await self._client.list_folder_files()
                 result = await process_video_file(
                     session,
@@ -930,7 +946,6 @@ class IndexingWorker:
                 logger.info("Video index complete: %s (%s)", file_name, file_id)
         except Exception as exc:  # noqa: BLE001
             logger.exception("Parallel video index failed for %s (%s)", file_id, file_name)
-            from app.video.youtube_registry import is_youtube_source
 
             async with self._session_factory() as error_session:
                 failed = await error_session.get(DriveFile, file_id)
@@ -1348,7 +1363,7 @@ class IndexingWorker:
 
     async def release_stalled_processing(self) -> int:
         """Mark long-stuck PROCESSING videos as ERROR so slots free up."""
-        stall_sec = max(60, int(self._settings.video_index_stall_seconds or 900))
+        stall_sec = max(60, int(self._settings.video_index_stall_seconds or 3600))
         now = datetime.now(timezone.utc)
         loop_now = asyncio.get_event_loop().time()
         released = 0
@@ -1380,26 +1395,31 @@ class IndexingWorker:
                     )
                     continue
                 task = self._video_tasks.get(drive_file.id)
-                if task is None or task.done():
-                    from app.db.advisory_locks import (
-                        try_acquire_advisory_lock,
-                        video_index_lock_key,
+                if task is not None and not task.done():
+                    logger.info(
+                        "video_slot_active file_id=%s elapsed_sec=%.0f name=%s",
+                        drive_file.id,
+                        elapsed,
+                        drive_file.name,
                     )
+                    continue
+                from app.db.advisory_locks import (
+                    try_acquire_advisory_lock,
+                    video_index_lock_key,
+                )
 
-                    probe_lock = await try_acquire_advisory_lock(
-                        video_index_lock_key(drive_file.id),
-                        name=f"video_stall_probe:{drive_file.id[:24]}",
+                probe_lock = await try_acquire_advisory_lock(
+                    video_index_lock_key(drive_file.id),
+                    name=f"video_stall_probe:{drive_file.id[:24]}",
+                )
+                if probe_lock is None:
+                    logger.info(
+                        "video_slot_remote_active file_id=%s elapsed_sec=%.0f",
+                        drive_file.id,
+                        elapsed,
                     )
-                    if probe_lock is None:
-                        logger.info(
-                            "video_slot_remote_active file_id=%s elapsed_sec=%.0f",
-                            drive_file.id,
-                            elapsed,
-                        )
-                        continue
-                    await probe_lock.release()
-                if task and not task.done():
-                    task.cancel()
+                    continue
+                await probe_lock.release()
                 drive_file.status = DriveFileStatus.ERROR
                 drive_file.error_message = (
                     f"index_stall: processing exceeded {stall_sec}s without completion"
@@ -1515,6 +1535,12 @@ class IndexingWorker:
             restored = await restore_processed_when_media_exists(session)
             if restored:
                 logger.info("sync_file_list restored %d media-backed PROCESSED row(s)", restored)
+            saved = await restore_archived_when_index_complete(session)
+            if saved:
+                logger.info(
+                    "sync_file_list restored %d archived file(s) that already qualify as PROCESSED",
+                    saved,
+                )
             await session.commit()
 
         # Permanent library: never soft-archive PROCESSED/SKIPPED rows when a
@@ -1705,9 +1731,16 @@ class IndexingWorker:
 
         async with self._session_factory() as session:
             restored = await restore_processed_when_media_exists(session)
-            if restored:
+            saved = await restore_archived_when_index_complete(session)
+            if restored or saved:
                 await session.commit()
-                logger.info("process_pending restored %d media-backed PROCESSED row(s)", restored)
+                if restored:
+                    logger.info("process_pending restored %d media-backed PROCESSED row(s)", restored)
+                if saved:
+                    logger.info(
+                        "process_pending restored %d archived file(s) that already qualify as PROCESSED",
+                        saved,
+                    )
 
         summary["videos_started"] = await self.ensure_parallel_video_indexing()
         summary["images_started"] = await self.ensure_parallel_image_indexing()

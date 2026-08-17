@@ -80,8 +80,9 @@ class Settings(BaseSettings):
     index_prefer_small_files: bool = True
     # How many pending rows to scan per claim round (multiplied by free slots).
     index_claim_window_multiplier: int = 40
-    # Requeue/error PROCESSING videos stuck longer than this (seconds).
-    video_index_stall_seconds: int = 900
+    # Orphan PROCESSING videos (no live task) become ERROR after this many seconds.
+    # Live Whisper/index tasks are never cancelled by this watchdog.
+    video_index_stall_seconds: int = 3600
 
     # Dedicated indexer service sets RUN_INDEXER=true with WEB_CONCURRENCY=1.
     # API-only replicas set RUN_INDEXER=false so search stays responsive.
