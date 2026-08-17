@@ -4,7 +4,7 @@ import { useState } from "react";
 import type { LucideIcon } from "lucide-react";
 import { Download, ExternalLink } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { API_BASE, driveFileDownloadUrl, driveFilePreviewUrl, driveGoogleViewUrl, isServiceUnavailableMessage } from "@/lib/api";
+import { API_BASE, driveFileDownloadUrl, driveFilePreviewUrl, driveGoogleViewUrl, formatApiError, isServiceUnavailableMessage } from "@/lib/api";
 import { downloadFromUrl } from "@/lib/download";
 import { BackendDisconnectedOverlay } from "@/components/backend-disconnected-overlay";
 import { LoadingLabel, Spinner } from "@/components/spinner";
@@ -94,7 +94,7 @@ export function DownloadButton({
         setError(null);
         void downloadFromUrl(url, filename)
           .catch((err) => {
-            setError(err instanceof Error ? err.message : "Download failed");
+            setError(formatApiError(err, "Download failed"));
           })
           .finally(() => setBusy(false));
       }}

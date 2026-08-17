@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import {
   apiClient,
+  formatApiError,
   driveFileDownloadUrl,
   driveFilePreviewUrl,
   driveGoogleViewUrl,
@@ -26,6 +27,7 @@ import {
 } from "@/lib/api";
 import { Button, Card, DownloadButton, IconLink, Input, LoadingLabel, ServiceErrorCard, Spinner, StatCard } from "@/components/ui";
 import { ManualFaceTagger } from "@/components/manual-face-tagger";
+import { humanizeIndexError } from "@/lib/index-errors";
 import { cn } from "@/lib/utils";
 
 type FilterMode = "all" | "processed" | "skipped" | "archived" | "missing_caption" | "missing_embed" | "pending" | "error";
@@ -273,7 +275,7 @@ export default function LibraryPage() {
       setData(lib);
       setError(null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load library");
+      setError(formatApiError(e, "Failed to load library"));
     } finally {
       setLoading(false);
     }
@@ -350,7 +352,7 @@ export default function LibraryPage() {
       await apiClient.pauseFolderIndexing(path);
       await load();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to pause folder");
+      setError(formatApiError(e, "Failed to pause folder"));
     } finally {
       setFolderActionBusy(null);
     }
@@ -362,7 +364,7 @@ export default function LibraryPage() {
       await apiClient.resumeFolderIndexing(path);
       await load();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to resume folder");
+      setError(formatApiError(e, "Failed to resume folder"));
     } finally {
       setFolderActionBusy(null);
     }
@@ -374,7 +376,7 @@ export default function LibraryPage() {
       await apiClient.skipCorruptFiles();
       await load();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to skip corrupt files");
+      setError(formatApiError(e, "Failed to skip corrupt files"));
     } finally {
       setSkipBusy(false);
     }
@@ -622,7 +624,7 @@ export default function LibraryPage() {
               )}
               {selectedFile.error_message && (
                 <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-2 text-xs text-destructive">
-                  {selectedFile.error_message}
+                  {humanizeIndexError(selectedFile.error_message).summary}
                 </div>
               )}
             </div>

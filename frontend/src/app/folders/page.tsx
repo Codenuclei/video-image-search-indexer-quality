@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useState, useMemo, useCallback } from "react";
+import { useEffect, useRef, useState, useMemo, useCallback } from "react";
 import Link from "next/link";
 import Script from "next/script";
 import {
   apiClient,
+  formatApiError,
   type FolderContext,
   type DriveFile,
   type IndexStatus,
@@ -17,7 +18,7 @@ import {
 import { Button, Card, ConfirmDialog, Input, LoadingLabel, Spinner } from "@/components/ui";
 import { IndexErrorCard } from "@/components/index-error-card";
 import { ModalOverlay } from "@/components/modal";
-import { formatCount, humanizeIndexError, skipReasonMeta } from "@/lib/index-errors";
+import { formatCount, humanizeIndexError, sanitizeUserFacingError, skipReasonMeta } from "@/lib/index-errors";
 import { formatDate } from "@/lib/utils";
 import { trackYoutubeDownloads } from "@/lib/youtube-download-toast";
 import { toast } from "sonner";
@@ -65,7 +66,7 @@ export default function FoldersPage() {
   const [youtubeBusy, setYoutubeBusy] = useState(false);
   const [youtubeMsg, setYoutubeMsg] = useState<string | null>(null);
   const [settings, setSettings] = useState<Settings | null>(null);
-  const [settingsSaving, setSettingsSaving] = useState(false);
+  const shortcutsBusyRef = useRef(false);
   const [indexedFolders, setIndexedFolders] = useState<IndexedFolder[]>([]);
 
   const [queueOpen, setQueueOpen] = useState(false);
@@ -101,11 +102,17 @@ export default function FoldersPage() {
       }
       setFolderContexts(Array.isArray(fc) ? fc : []);
       setDriveSession(ds);
-      setSettings(st);
+      setSettings((prev) => {
+        if (!st) return prev;
+        if (shortcutsBusyRef.current && prev) {
+          return { ...st, follow_shortcut_folders: prev.follow_shortcut_folders };
+        }
+        return st;
+      });
       setIndexedFolders(foldersRes.folders ?? []);
       setError(null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load");
+      setError(formatApiError(e, "Failed to load"));
     }
   }
 
@@ -122,7 +129,7 @@ export default function FoldersPage() {
       setQueueOffset(page.offset);
     } catch (e) {
       toast.error("Failed to load queue", {
-        description: e instanceof Error ? e.message : "Unknown error",
+        description: formatApiError(e, "Could not load the queue. Please try again."),
       });
     } finally {
       setQueueLoading(false);
@@ -148,16 +155,20 @@ export default function FoldersPage() {
 
   async function toggleShortcutFolders(enabled: boolean) {
     if (!settings) return;
-    setSettingsSaving(true);
+    const previous = settings.follow_shortcut_folders;
+    shortcutsBusyRef.current = true;
+    setSettings({ ...settings, follow_shortcut_folders: enabled });
     try {
       const updated = await apiClient.updateSettings({ follow_shortcut_folders: enabled });
-      setSettings(updated);
-      await apiClient.syncDriveFiles();
-      await load();
+      setSettings((s) =>
+        s ? { ...s, follow_shortcut_folders: updated.follow_shortcut_folders } : updated
+      );
+      void apiClient.syncDriveFiles().catch(() => {});
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to update shortcut setting");
+      setSettings((s) => (s ? { ...s, follow_shortcut_folders: previous } : s));
+      setError(formatApiError(e, "Could not update the shortcut setting."));
     } finally {
-      setSettingsSaving(false);
+      shortcutsBusyRef.current = false;
     }
   }
 
@@ -227,7 +238,7 @@ export default function FoldersPage() {
 
       builder.build().setVisible(true);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not open folder picker");
+      setError(formatApiError(e, "Could not open the folder picker."));
     } finally {
       setPickerBusy(false);
     }
@@ -256,7 +267,7 @@ export default function FoldersPage() {
       await load();
       if (queueOpen) await loadQueue(queueStatus, queueOffset);
     } catch (e) {
-      const msg = e instanceof Error ? e.message : "Retry failed";
+      const msg = formatApiError(e, "Retry failed");
       setError(msg);
       toast.error("Retry failed", { description: msg });
     } finally {
@@ -271,26 +282,30 @@ export default function FoldersPage() {
       const res = await apiClient.retrySkippedByReason(reason);
       if (res.action === "unsupported") {
         toast.message(skipReasonMeta(reason).label, {
-          description: res.message || "These files cannot be indexed.",
+          description: sanitizeUserFacingError(res.message, "These files cannot be indexed."),
         });
       } else if (res.requeued > 0) {
         toast.success(
           res.action === "resume_paused" ? "Folders resumed" : "Requeued for indexing",
           {
             description:
-              res.message ||
-              `${formatCount(res.requeued)} file${res.requeued === 1 ? "" : "s"} queued`,
+              res.message
+                ? sanitizeUserFacingError(
+                    res.message,
+                    `${formatCount(res.requeued)} file${res.requeued === 1 ? "" : "s"} queued`
+                  )
+                : `${formatCount(res.requeued)} file${res.requeued === 1 ? "" : "s"} queued`,
           }
         );
       } else {
         toast.message("Nothing to retry", {
-          description: res.message || "No eligible files for this skip reason.",
+          description: sanitizeUserFacingError(res.message, "No eligible files for this skip reason."),
         });
       }
       await load();
       if (queueOpen) await loadQueue(queueStatus, queueOffset);
     } catch (e) {
-      const msg = e instanceof Error ? e.message : "Retry all failed";
+      const msg = formatApiError(e, "Retry all failed");
       toast.error("Retry all failed", { description: msg });
     } finally {
       setRetryingReason(null);
@@ -319,7 +334,7 @@ export default function FoldersPage() {
       await load();
       if (queueOpen) await loadQueue(queueStatus, queueOffset);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Remove failed");
+      setError(formatApiError(e, "Could not remove this file."));
     } finally {
       setBusy(false);
     }
@@ -331,7 +346,7 @@ export default function FoldersPage() {
       await (reindex ? apiClient.triggerReindex() : apiClient.triggerIndex());
       await load();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Index failed");
+      setError(formatApiError(e, "Could not start indexing. Please try again."));
     } finally {
       setBusy(false);
     }
@@ -353,9 +368,10 @@ export default function FoldersPage() {
       const downloads = registered.filter((r) => r.download_queued);
 
       if (!registered.length) {
-        const why =
-          failed.map((r) => r.message).filter(Boolean).join("; ") ||
-          "No videos registered";
+        const why = sanitizeUserFacingError(
+          failed.map((r) => r.message).filter(Boolean).join("; ") || "",
+          "Could not register those YouTube links."
+        );
         toast.error("YouTube register failed", {
           id: toastId,
           description: why,
@@ -386,10 +402,14 @@ export default function FoldersPage() {
 
       if (failed.length > 0 && registered.length > 0) {
         toast.warning(`${failed.length} link(s) failed`, {
-          description: failed
-            .map((r) => r.message || "unknown")
-            .slice(0, 2)
-            .join("; "),
+          description: sanitizeUserFacingError(
+            failed
+              .map((r) => r.message)
+              .filter(Boolean)
+              .slice(0, 2)
+              .join("; "),
+            `${failed.length} link(s) could not be registered.`
+          ),
           duration: 10_000,
         });
       }
@@ -397,7 +417,7 @@ export default function FoldersPage() {
       setYoutubeInput("");
       await load();
     } catch (e) {
-      const msg = e instanceof Error ? e.message : "YouTube feed failed";
+      const msg = formatApiError(e, "Could not add those YouTube videos. Please try again.");
       setError(msg);
       toast.error("YouTube feed failed", {
         id: toastId,
@@ -425,7 +445,7 @@ export default function FoldersPage() {
       setEditingFolder(null);
       await load();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Save failed");
+      setError(formatApiError(e, "Could not save. Please try again."));
     } finally {
       setSavingFolder(null);
     }
@@ -581,7 +601,6 @@ export default function FoldersPage() {
             <input
               type="checkbox"
               checked={settings.follow_shortcut_folders}
-              disabled={settingsSaving}
               onChange={(e) => toggleShortcutFolders(e.target.checked)}
               className="mt-0.5 h-4 w-4 shrink-0 rounded border-border bg-background accent-blue-500"
             />
@@ -1017,7 +1036,7 @@ export default function FoldersPage() {
                         <td className={`p-3 ${statusColor[f.status] ?? ""}`}>{f.status}</td>
                         <td
                           className="max-w-[16rem] p-3 text-xs text-red-700 dark:text-red-300"
-                          title={friendlyErr?.details ?? friendlyErr?.summary ?? ""}
+                          title={friendlyErr?.summary ?? ""}
                         >
                           {friendlyErr ? (
                             <span className="line-clamp-2 leading-snug">{friendlyErr.summary}</span>

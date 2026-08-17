@@ -26,6 +26,7 @@ import { ModalOverlay } from "@/components/modal";
 import { captureVideoFramesInRange } from "@/lib/browser-frame-capture";
 import {
   apiClient,
+  formatApiError,
   type CarouselItemFeedback,
   type CarouselItemReference,
 } from "@/lib/api";
@@ -162,7 +163,7 @@ export function TestIgPost({
       const uploaded = await apiClient.carouselReferenceUploadImage(file);
       applySlideImage(uploaded.url, current?.frame_ts ?? current?.timestamp_sec);
     } catch (e) {
-      setImageNote(e instanceof Error ? e.message : "Upload failed");
+      setImageNote(formatApiError(e, "Upload failed"));
     } finally {
       setImageBusy(false);
       if (imageFileRef.current) imageFileRef.current.value = "";
@@ -240,7 +241,7 @@ export function TestIgPost({
       setImageNote("Copy saved");
       setTimeout(() => setImageNote(null), 1200);
     } catch (e) {
-      setImageNote(e instanceof Error ? e.message : "Could not save copy");
+      setImageNote(formatApiError(e, "Could not save copy"));
     } finally {
       setSavingCopy(false);
     }
@@ -802,7 +803,7 @@ function TestFramePicker({
         setSourceNote("API frames");
       } catch (e) {
         if (!cancelled) {
-          setErr(e instanceof Error ? e.message : "Could not load frames");
+          setErr(formatApiError(e, "Could not load frames"));
         }
       } finally {
         if (!cancelled) setLoading(false);

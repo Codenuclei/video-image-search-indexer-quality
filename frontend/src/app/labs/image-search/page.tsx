@@ -14,6 +14,7 @@ import Link from "next/link";
 import {
   apiClient,
   faceThumbnailUrl,
+  formatApiError,
   type FaceReverseSearchResult,
   type OfficialImageSearchResult,
   type OfficialImageSearchStatus,
@@ -85,7 +86,7 @@ export default function OfficialImageSearchLabPage() {
       setVisionStatus(vision);
       setReidStatus(reid);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load status");
+      setError(formatApiError(e, "Failed to load status"));
     } finally {
       setLoadingStatus(false);
     }
@@ -149,7 +150,7 @@ export default function OfficialImageSearchLabPage() {
     try {
       setLensResult(await apiClient.reverseSearchFace(id));
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Google Lens reverse search failed");
+      setError(formatApiError(e, "Google Lens reverse search failed"));
     } finally {
       setSearching(false);
     }
@@ -166,7 +167,7 @@ export default function OfficialImageSearchLabPage() {
     try {
       setVisionResult(await apiClient.officialImageSearch({ face_id: id, max_results: 12 }));
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Cloud Vision search failed");
+      setError(formatApiError(e, "Cloud Vision search failed"));
     } finally {
       setVisionBusy(false);
     }

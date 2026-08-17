@@ -15,6 +15,7 @@ import {
 import Link from "next/link";
 import {
   apiClient,
+  formatApiError,
   driveFilePreviewUrl,
   type FaceCrawlResponse,
   type FaceSearchAppearance,
@@ -304,7 +305,7 @@ export default function ReverseFaceLabPage() {
       const res = await apiClient.leadershipRoster("executive");
       setRoster(res);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load Executive Leaders");
+      setError(formatApiError(e, "Failed to load Executive Leaders"));
       setRoster(null);
     } finally {
       setRosterLoading(false);
@@ -338,7 +339,7 @@ export default function ReverseFaceLabPage() {
       const res = await apiClient.searchUploadedFace(target, 20);
       setResult(res);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Face search failed");
+      setError(formatApiError(e, "Face search failed"));
       setResult(null);
     } finally {
       setSearching(false);
@@ -364,7 +365,7 @@ export default function ReverseFaceLabPage() {
       const res = await apiClient.searchFaceByUrl(person.image_url, 20);
       setResult(res);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Leader face search failed");
+      setError(formatApiError(e, "Leader face search failed"));
       setResult(null);
     } finally {
       setSearching(false);
@@ -414,7 +415,7 @@ export default function ReverseFaceLabPage() {
         setResult(refreshed);
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Name-tag failed");
+      setError(formatApiError(e, "Name-tag failed"));
     } finally {
       setTagging(false);
     }
@@ -432,7 +433,7 @@ export default function ReverseFaceLabPage() {
       const res = await apiClient.crawlFaceUrls(urls);
       setCrawlResult(res);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Crawl failed");
+      setError(formatApiError(e, "Crawl failed"));
       setCrawlResult(null);
     } finally {
       setCrawling(false);

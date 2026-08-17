@@ -1,5 +1,7 @@
 "use client";
 
+import { formatApiError } from "@/lib/api";
+
 export type TranscriptStatus = {
   ok: boolean;
   status: "ready" | "running" | "missing" | "failed" | "not_found" | string;
@@ -26,22 +28,7 @@ export type EnsureEnglishResult = {
 };
 
 function extractApiDetail(raw: string, fallback: string): string {
-  const text = (raw || "").trim();
-  if (!text) return fallback;
-  try {
-    const parsed = JSON.parse(text) as { detail?: unknown; message?: unknown };
-    if (typeof parsed.detail === "string" && parsed.detail.trim()) {
-      return parsed.detail.trim();
-    }
-    if (typeof parsed.message === "string" && parsed.message.trim()) {
-      return parsed.message.trim();
-    }
-  } catch {
-    // plain text body
-  }
-  // Avoid dumping raw HTML / stack traces into the UI.
-  if (text.startsWith("<") || text.length > 400) return fallback;
-  return text;
+  return formatApiError(new Error(raw || ""), fallback);
 }
 
 export async function ensureVideoTranscript(
@@ -190,10 +177,10 @@ export async function waitForEnglishTranscript(
     opts?.onUpdate?.(ready);
     return { status: ready, english };
   } catch (e) {
-    const msg =
-      e instanceof Error
-        ? e.message
-        : "We couldn’t prepare an English transcript for this video. Please try again.";
+    const msg = formatApiError(
+      e,
+      "We couldn’t prepare an English transcript for this video. Please try again."
+    );
     const failed: TranscriptStatus = {
       ...status,
       status: "failed",

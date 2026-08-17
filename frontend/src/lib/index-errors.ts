@@ -88,23 +88,76 @@ const TECHNICAL_MARKERS = [
   "operationalerror",
   "psycopg",
   "greenlet",
+  "psycopg2",
+  "exception:",
+  "typeerror",
+  "referenceerror",
+  "syntaxerror",
+  "httpexception",
+  "starlette",
+  "uvicorn",
+  "fastapi",
+  "pydantic",
 ];
 
-function firstMeaningfulLine(raw: string): string {
-  for (const line of raw.split(/\r?\n/)) {
-    const t = line.trim();
-    if (!t) continue;
-    if (t.startsWith("File ") || t.startsWith("Traceback")) continue;
-    return t;
-  }
-  return raw.trim();
+function looksTechnical(raw: string): boolean {
+  const lower = raw.toLowerCase();
+  if (!raw.trim()) return false;
+  if (raw.startsWith("{") || raw.startsWith("[")) return true;
+  if (raw.startsWith("<") || /<html/i.test(raw)) return true;
+  if (raw.length > 220) return true;
+  if (raw.includes("\n") && raw.length > 80) return true;
+  if (TECHNICAL_MARKERS.some((m) => lower.includes(m))) return true;
+  if (/file ["'].*["'], line \d+/i.test(raw)) return true;
+  if (/traceback \(most recent call last\)/i.test(raw)) return true;
+  if (/localhost:\d+|127\.0\.0\.1|\[::1\]/i.test(raw)) return true;
+  if (/:\d{4,5}\/?/.test(raw) && /http|econn|refused|connect/i.test(raw)) return true;
+  if (/internal server error|status code 50\d/i.test(raw)) return true;
+  if (/\b(?:select|insert|update|delete)\b.+\bfrom\b/i.test(raw)) return true;
+  return false;
 }
 
-function isTechnicalWall(raw: string): boolean {
-  const lower = raw.toLowerCase();
-  if (raw.length > 280) return true;
-  if (raw.includes("\n") && raw.length > 120) return true;
-  return TECHNICAL_MARKERS.some((m) => lower.includes(m));
+function unwrapApiPayload(raw: string): string {
+  const text = raw.trim();
+  if (!text.startsWith("{") && !text.startsWith("[")) return text;
+  try {
+    const parsed = JSON.parse(text) as { detail?: unknown; message?: unknown };
+    if (typeof parsed.detail === "string" && parsed.detail.trim()) {
+      return unwrapApiPayload(parsed.detail.trim());
+    }
+    if (Array.isArray(parsed.detail)) {
+      const first = parsed.detail[0] as { msg?: unknown } | undefined;
+      if (typeof first?.msg === "string" && first.msg.trim()) return first.msg.trim();
+      return "";
+    }
+    if (typeof parsed.message === "string" && parsed.message.trim()) {
+      return parsed.message.trim();
+    }
+  } catch {
+    return text;
+  }
+  return text;
+}
+
+/**
+ * Never returns stack traces, SQLAlchemy, FastAPI JSON, or HTML.
+ * Known indexer failures become a short explanation; everything else falls back.
+ */
+export function sanitizeUserFacingError(
+  raw: string | null | undefined,
+  fallback = "Something went wrong. Please try again."
+): string {
+  const unwrapped = unwrapApiPayload((raw ?? "").trim());
+  if (!unwrapped) return fallback;
+  if (looksTechnical(unwrapped)) {
+    const mapped = humanizeIndexError(unwrapped);
+    if (mapped.kind === "db" || mapped.kind === "network" || mapped.details) {
+      return mapped.summary;
+    }
+    return fallback;
+  }
+  if (unwrapped.length > 180) return fallback;
+  return unwrapped;
 }
 
 /**
@@ -160,7 +213,7 @@ export function humanizeIndexError(raw: string | null | undefined): FriendlyInde
   ) {
     return {
       summary: "Temporary network or service timeout. Retry this file.",
-      details: isTechnicalWall(text) ? text : null,
+      details: looksTechnical(text) ? text : null,
       kind: "network",
     };
   }
@@ -170,6 +223,18 @@ export function humanizeIndexError(raw: string | null | undefined): FriendlyInde
       summary: "Could not decode this media file.",
       details: text.length > 80 ? text : null,
       kind: "decode",
+    };
+  }
+
+  if (
+    lower.includes("drive_not_connected") ||
+    lower.includes("no drive folder selected") ||
+    lower.includes("drive is not connected")
+  ) {
+    return {
+      summary: "Connect Google Drive and choose a folder, then retry.",
+      details: text.length > 80 ? text : null,
+      kind: "missing",
     };
   }
 
@@ -188,8 +253,7 @@ export function humanizeIndexError(raw: string | null | undefined): FriendlyInde
     (lower.includes("youtube") && lower.includes("cookies") && lower.includes("netscape"))
   ) {
     return {
-      summary:
-        "YouTube blocked the download (bot check). Set YTDLP_COOKIES_FILE or YTDLP_COOKIES on the backend.",
+      summary: "YouTube blocked this download. Please retry later, or ask an admin to refresh login cookies.",
       details: text,
       kind: "other",
     };
@@ -203,29 +267,17 @@ export function humanizeIndexError(raw: string | null | undefined): FriendlyInde
     };
   }
 
-  if (isTechnicalWall(text) || TECHNICAL_MARKERS.some((m) => lower.includes(m))) {
-    const head = firstMeaningfulLine(text);
-    const short =
-      head.length > 160
-        ? `${head.slice(0, 157)}…`
-        : head.length > 0
-          ? head
-          : "Database error during indexing.";
-    // Prefer a generic DB line over dumping SQLAlchemy class names as the summary.
-    const looksLikeSqlAlchemy =
-      /sqlalchemy|asyncpg|psycopg|InFailedSQL|IntegrityError|OperationalError/i.test(head);
+  if (looksTechnical(text) || TECHNICAL_MARKERS.some((m) => lower.includes(m))) {
     return {
-      summary: looksLikeSqlAlchemy
-        ? "Database error during indexing. Retry this file."
-        : short,
+      summary: "Indexing failed. Please retry this file.",
       details: text,
-      kind: "db",
+      kind: "other",
     };
   }
 
   if (text.length > 160) {
     return {
-      summary: `${text.slice(0, 157)}…`,
+      summary: "Indexing failed. Please retry this file.",
       details: text,
       kind: "other",
     };

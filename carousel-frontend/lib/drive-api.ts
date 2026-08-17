@@ -3,6 +3,8 @@
  * Uses the same backend routes as the main indexer frontend folders page.
  */
 
+import { formatApiError } from "@/lib/api";
+
 export type DriveSession = {
   connected: boolean;
   email?: string;
@@ -49,7 +51,7 @@ async function jsonApi<T>(base: string, path: string, init?: RequestInit): Promi
   });
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(text || res.statusText);
+    throw new Error(formatApiError(new Error(text || res.statusText)));
   }
   if (res.status === 204) return undefined as T;
   return res.json();

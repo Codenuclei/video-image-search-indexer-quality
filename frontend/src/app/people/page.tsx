@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { Images, Pencil } from "lucide-react";
-import { apiClient, type Person, type PersonRole } from "@/lib/api";
+import { apiClient, formatApiError, type Person, type PersonRole } from "@/lib/api";
 import { Button, Card, ConfirmDialog, FaceThumb, Input, LoadingLabel, ServiceErrorCard } from "@/components/ui";
 import { RoleSelector } from "@/components/role-selector";
 import { AnimatedTrash } from "@/components/animated-trash";
@@ -54,7 +54,7 @@ function PersonCard({
       onRenamed(person);
       setEditing(true);
       setName(person.name);
-      setError(e instanceof Error ? e.message : "Rename failed");
+      setError(formatApiError(e, "Rename failed"));
     } finally {
       savingRef.current = false;
       setSaving(false);
@@ -69,7 +69,7 @@ function PersonCard({
       const updated = await apiClient.updatePerson(person.id, { role: nextRole });
       onRenamed(updated);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not update role");
+      setError(formatApiError(e, "Could not update role"));
     } finally {
       setRoleSaving(false);
     }
@@ -87,7 +87,7 @@ function PersonCard({
     } catch (e) {
       onDeleteFailed(person);
       setVanishing(false);
-      setError(e instanceof Error ? e.message : "Delete failed");
+      setError(formatApiError(e, "Delete failed"));
       setDeleting(false);
     }
   }
@@ -219,7 +219,7 @@ export default function PeoplePage() {
         setPersons(items);
         setError(null);
       })
-      .catch((e) => setError(e instanceof Error ? e.message : "Failed to load people"))
+      .catch((e) => setError(formatApiError(e, "Failed to load people")))
       .finally(() => setLoading(false));
   }, []);
 

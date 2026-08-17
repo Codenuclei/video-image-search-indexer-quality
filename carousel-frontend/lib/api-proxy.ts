@@ -51,10 +51,9 @@ export async function proxyToBackend(
   let upstream: Response;
   try {
     upstream = await fetch(url, init);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : "Upstream fetch failed";
+  } catch {
     return NextResponse.json(
-      { detail: `Backend unreachable (${API_PROXY_TARGET}): ${message}` },
+      { detail: "Can't reach the API right now. It may be starting up or temporarily unavailable." },
       { status: 502 }
     );
   }

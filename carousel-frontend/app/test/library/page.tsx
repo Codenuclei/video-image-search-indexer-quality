@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { Film, RefreshCw } from "lucide-react";
+import { formatApiError } from "@/lib/api";
 import { testApi, type TestVideo } from "@/lib/test-api";
 
 export default function TestLibraryPage() {
@@ -22,7 +23,7 @@ export default function TestLibraryPage() {
       setVideos(lib.items ?? []);
       setYoutube(yt ?? []);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not load library");
+      setError(formatApiError(e, "Could not load library"));
     } finally {
       setLoading(false);
     }

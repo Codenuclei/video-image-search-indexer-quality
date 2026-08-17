@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Script from "next/script";
 import {
   CheckSquare,
@@ -19,6 +19,7 @@ import {
   type DriveSession,
   type IndexedFolder,
 } from "@/lib/drive-api";
+import { formatApiError } from "@/lib/api";
 import { ModalOverlay } from "@/components/modal";
 
 declare global {
@@ -73,11 +74,12 @@ export function DriveFolderPanel({
   const [videos, setVideos] = useState<DriveLibraryFile[]>([]);
   const [videoTotalHint, setVideoTotalHint] = useState(0);
   const [followShortcuts, setFollowShortcuts] = useState(false);
+  const shortcutsBusyRef = useRef(false);
   const [busy, setBusy] = useState(false);
   const [pickerBusy, setPickerBusy] = useState(false);
-  const [settingsSaving, setSettingsSaving] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [modalError, setModalError] = useState<string | null>(null);
 
   const [modalOpen, setModalOpen] = useState(false);
   const [modalVideos, setModalVideos] = useState<DriveLibraryFile[]>([]);
@@ -115,12 +117,14 @@ export function DriveFolderPanel({
       ]);
       setSession(ds);
       setIndexedFolders(foldersRes.folders ?? []);
-      setFollowShortcuts(Boolean(settings.follow_shortcut_folders));
+      if (!shortcutsBusyRef.current) {
+        setFollowShortcuts(Boolean(settings.follow_shortcut_folders));
+      }
       setVideos(vids);
       setVideoTotalHint(vids.length);
       setError(null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load Drive status");
+      setError(formatApiError(e, "Failed to load Drive status"));
     }
   }, [api, loadVideosFromDrive]);
 
@@ -347,7 +351,7 @@ export function DriveFolderPanel({
             await load();
             onLibraryChanged?.();
           } catch (e) {
-            setError(e instanceof Error ? e.message : "Could not save folder");
+            setError(formatApiError(e, "Could not save folder"));
           } finally {
             setBusy(false);
           }
@@ -406,7 +410,7 @@ export function DriveFolderPanel({
       }, 2800);
     } catch (e) {
       dismissGooglePickerShell();
-      setError(e instanceof Error ? e.message : "Could not open folder picker");
+      setError(formatApiError(e, "Could not open folder picker"));
     } finally {
       setPickerBusy(false);
     }
@@ -419,7 +423,7 @@ export function DriveFolderPanel({
       setNote("Google Drive disconnected. Indexed library files are kept.");
       await load();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Disconnect failed");
+      setError(formatApiError(e, "Disconnect failed"));
     } finally {
       setBusy(false);
     }
@@ -439,24 +443,25 @@ export function DriveFolderPanel({
       await load();
       onLibraryChanged?.();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not select folder");
+      setError(formatApiError(e, "Could not select folder"));
     } finally {
       setBusy(false);
     }
   }
 
   async function toggleShortcuts(enabled: boolean) {
-    setSettingsSaving(true);
+    const previous = followShortcuts;
+    shortcutsBusyRef.current = true;
+    setFollowShortcuts(enabled);
     try {
       const updated = await api.updateShortcutFolders(enabled);
       setFollowShortcuts(updated.follow_shortcut_folders);
-      await api.syncDriveFiles().catch(() => {});
-      await load();
-      onLibraryChanged?.();
+      void api.syncDriveFiles().catch(() => {});
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to update shortcut setting");
+      setFollowShortcuts(previous);
+      setError(formatApiError(e, "Could not update the shortcut setting."));
     } finally {
-      setSettingsSaving(false);
+      shortcutsBusyRef.current = false;
     }
   }
 
@@ -472,7 +477,7 @@ export function DriveFolderPanel({
       await load();
       onLibraryChanged?.();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Sync failed");
+      setError(formatApiError(e, "Sync failed"));
     } finally {
       setBusy(false);
     }
@@ -484,6 +489,7 @@ export function DriveFolderPanel({
     setSelectedIds(new Set());
     setModalLoading(true);
     setError(null);
+    setModalError(null);
     try {
       // Permanent library list (DB) — does not require Drive OAuth.
       const vids = await loadVideosFromDrive();
@@ -491,7 +497,9 @@ export function DriveFolderPanel({
       setModalVideos(vids);
       setVideoTotalHint(vids.length);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not list indexed Drive videos");
+      const msg = formatApiError(e, "Could not list indexed Drive videos. Please try again.");
+      setModalError(msg);
+      setError(msg);
       setModalVideos(videos);
     } finally {
       setModalLoading(false);
@@ -503,6 +511,7 @@ export function DriveFolderPanel({
     setModalOpen(false);
     setSelectedIds(new Set());
     setFilterQuery("");
+    setModalError(null);
   }
 
   const filteredModalVideos = useMemo(() => {
@@ -548,14 +557,16 @@ export function DriveFolderPanel({
 
     // Already-indexed library videos work offline; live re-index needs Drive OAuth.
     if (!session?.connected && needsIndex.length > 0 && alreadyIndexed.length === 0) {
-      setError(
-        "Reconnect Google Drive to index videos that are not already processed. Already-indexed library videos can be selected while disconnected."
-      );
+      const msg =
+        "Reconnect Google Drive to index videos that are not already processed. Already-indexed library videos can be selected while disconnected.";
+      setModalError(msg);
+      setError(msg);
       return;
     }
 
     setModalIndexing(true);
     setError(null);
+    setModalError(null);
     try {
       const requestIds =
         !session?.connected && alreadyIndexed.length > 0
@@ -586,13 +597,13 @@ export function DriveFolderPanel({
           message: item?.message,
         });
       }
-      const baseNote =
-        res.message ||
-        `Priority indexing queued for ${res.queued ?? requestIds.length} selected video(s).`;
+      const n = res.queued ?? requestIds.length;
+      const successNote =
+        n === 1 ? "1 video indexed successfully." : `${n} videos indexed successfully.`;
       setNote(
         skippedNeedsIndex
-          ? `${baseNote} Skipped ${skippedNeedsIndex} not-yet-indexed video(s) — reconnect Drive to index those.`
-          : baseNote
+          ? `${successNote} Skipped ${skippedNeedsIndex} not-yet-indexed video(s) — reconnect Drive to index those.`
+          : successNote
       );
       if (skippedNeedsIndex) {
         setError(
@@ -601,10 +612,13 @@ export function DriveFolderPanel({
       }
       setModalOpen(false);
       setSelectedIds(new Set());
+      setModalError(null);
       await load();
       onLibraryChanged?.();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Index selected failed");
+      const msg = formatApiError(e, "Could not index the selected videos. Please try again.");
+      setModalError(msg);
+      setError(msg);
     } finally {
       setModalIndexing(false);
     }
@@ -703,7 +717,6 @@ export function DriveFolderPanel({
           <input
             type="checkbox"
             checked={followShortcuts}
-            disabled={settingsSaving}
             onChange={(e) => void toggleShortcuts(e.target.checked)}
             className="mt-0.5 h-4 w-4 shrink-0 rounded border-slate-300"
             data-testid={`${testIdPrefix}-shortcuts`}
@@ -942,6 +955,12 @@ export function DriveFolderPanel({
               )}
             </div>
           </div>
+
+          {modalError ? (
+            <p className="px-4 text-sm text-red-600 sm:px-5" role="alert">
+              {modalError}
+            </p>
+          ) : null}
 
           <div className="drive-select-modal__chrome drive-select-modal__footer flex flex-wrap items-center justify-end gap-2 px-4 py-3 sm:px-5">
             <button

@@ -1,5 +1,6 @@
 import { toast } from "sonner";
 import { apiClient, type DriveFile } from "@/lib/api";
+import { humanizeIndexError } from "@/lib/index-errors";
 
 function formatBytes(n: number | null | undefined): string {
   if (n == null || n <= 0) return "—";
@@ -81,7 +82,7 @@ export function trackYoutubeDownloads(
           .map((f) => f.error_message)
           .find((m): m is string => !!m && m.trim().length > 0);
         const failDesc = errHint
-          ? `${desc} — ${errHint.length > 220 ? `${errHint.slice(0, 217)}…` : errHint}`
+          ? `${desc} — ${humanizeIndexError(errHint).summary}`
           : desc;
         if (failed && !ok) {
           toast.error(title, { id: toastId, description: failDesc, duration: 16_000 });

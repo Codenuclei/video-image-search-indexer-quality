@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Bar, BarChart, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import {
   apiClient,
+  formatApiError,
   type FileIndexConflict,
   type IndexStatus,
   type IndexedFolder,
@@ -60,7 +61,7 @@ export default function DashboardPage() {
       setIndexStatus(status);
       setError(null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load dashboard");
+      setError(formatApiError(e, "Failed to load dashboard"));
     }
   }, []);
 
@@ -97,7 +98,7 @@ export default function DashboardPage() {
       await load();
       await loadSecondary();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Retry failed");
+      setError(formatApiError(e, "Retry failed"));
     } finally {
       setRetryingReason(null);
     }
@@ -110,7 +111,7 @@ export default function DashboardPage() {
       await load();
       await loadSecondary();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not resolve conflict");
+      setError(formatApiError(e, "Could not resolve conflict"));
     } finally {
       setResolvingId(null);
     }

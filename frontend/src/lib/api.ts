@@ -10,6 +10,8 @@
  *   LAN IP                 → same host, API port
  *   tunnel / other origin  → the configured public URL, protocol-matched
  */
+import { sanitizeUserFacingError } from "./index-errors";
+
 const LOOPBACK_API = (process.env.NEXT_PUBLIC_API_URL_LOCAL ?? "http://127.0.0.1:8000").replace(/\/+$/, "");
 const PUBLIC_API = (process.env.NEXT_PUBLIC_API_URL ?? "").replace(/\/+$/, "");
 const API_PORT = process.env.NEXT_PUBLIC_API_PORT ?? "8000";
@@ -51,8 +53,12 @@ export function formatApiError(
   error: unknown,
   fallback = "Something went wrong. Please try again."
 ): string {
-  if (!(error instanceof Error)) return fallback;
-  const raw = error.message.trim();
+  const raw =
+    error instanceof Error
+      ? error.message.trim()
+      : typeof error === "string"
+        ? error.trim()
+        : "";
   if (!raw) return fallback;
 
   const lower = raw.toLowerCase();
@@ -67,28 +73,16 @@ export function formatApiError(
     return SERVICE_UNAVAILABLE_MESSAGE;
   }
 
-  if (raw.startsWith("{")) {
-    try {
-      const parsed = JSON.parse(raw) as { detail?: string };
-      if (typeof parsed.detail === "string" && parsed.detail.trim()) {
-        return parsed.detail.trim();
-      }
-    } catch {
-      // fall through
-    }
-  }
-
   if (
     /localhost:\d+/i.test(raw) ||
     /127\.0\.0\.1/i.test(raw) ||
-    /:\d{4,5}\/?/i.test(raw) ||
     /internal server error/i.test(raw) ||
     /<html/i.test(raw)
   ) {
     return SERVICE_UNAVAILABLE_MESSAGE;
   }
 
-  return raw.length > 240 ? `${raw.slice(0, 240)}…` : raw;
+  return sanitizeUserFacingError(raw, fallback);
 }
 
 export function isServiceUnavailableMessage(message: string): boolean {

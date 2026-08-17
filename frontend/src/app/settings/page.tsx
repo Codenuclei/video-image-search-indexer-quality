@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { apiClient, type Settings } from "@/lib/api";
+import { apiClient, formatApiError, type Settings } from "@/lib/api";
 import { Button, Card, Input, LoadingLabel } from "@/components/ui";
 
 export default function SettingsPage() {
@@ -15,7 +15,7 @@ export default function SettingsPage() {
     apiClient
       .settings()
       .then(setSettings)
-      .catch((e) => setError(e instanceof Error ? e.message : "Failed to load settings"));
+      .catch((e) => setError(formatApiError(e, "Failed to load settings")));
   }, []);
 
   const persist = useCallback(async (patch: Partial<Settings>) => {
@@ -27,7 +27,7 @@ export default function SettingsPage() {
       setSaved(true);
       setTimeout(() => setSaved(false), 1500);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to save");
+      setError(formatApiError(e, "Failed to save"));
     } finally {
       setSaving(false);
     }
@@ -213,7 +213,6 @@ export default function SettingsPage() {
             <input
               type="checkbox"
               checked={settings.follow_shortcut_folders}
-              disabled={saving}
               onChange={(e) => {
                 const v = e.target.checked;
                 setSettings({ ...settings, follow_shortcut_folders: v });

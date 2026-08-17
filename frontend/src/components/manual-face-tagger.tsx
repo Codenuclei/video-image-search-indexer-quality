@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Pencil, X } from "lucide-react";
-import { apiClient, driveFilePreviewUrl, type FileFace } from "@/lib/api";
+import { apiClient, driveFilePreviewUrl, formatApiError, type FileFace } from "@/lib/api";
 import { Button, Input, LoadingLabel } from "@/components/ui";
 import { ModalOverlay } from "@/components/modal";
 import { cn } from "@/lib/utils";
@@ -101,7 +101,7 @@ function ManualFaceTagModal({
     apiClient
       .facesForFile(driveFileId)
       .then(setFaces)
-      .catch((e) => setError(e instanceof Error ? e.message : "Failed to load faces"))
+      .catch((e) => setError(formatApiError(e, "Failed to load faces")))
       .finally(() => setLoading(false));
   }, [driveFileId]);
 
@@ -194,7 +194,7 @@ function ManualFaceTagModal({
         );
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Tag failed");
+      setError(formatApiError(e, "Tag failed"));
     } finally {
       setSaving(false);
     }

@@ -24,8 +24,12 @@ export function formatApiError(
   error: unknown,
   fallback = "Something went wrong. Please try again."
 ): string {
-  if (!(error instanceof Error)) return fallback;
-  const raw = error.message.trim();
+  const raw =
+    error instanceof Error
+      ? error.message.trim()
+      : typeof error === "string"
+        ? error.trim()
+        : "";
   if (!raw) return fallback;
 
   const lower = raw.toLowerCase();
@@ -55,9 +59,9 @@ export function formatApiError(
   }
 
   if (
+    lower === "failed to fetch" ||
     /localhost:\d+/i.test(raw) ||
     /127\.0\.0\.1/i.test(raw) ||
-    /:\d{4,5}\/?/i.test(raw) ||
     /internal server error/i.test(raw) ||
     /<html/i.test(raw) ||
     /traceback \(most recent call last\)/i.test(raw) ||
@@ -68,7 +72,7 @@ export function formatApiError(
       : fallback;
   }
 
-  return friendlyDetail(raw.length > 240 ? `${raw.slice(0, 240)}…` : raw, fallback);
+  return friendlyDetail(raw, fallback);
 }
 
 function friendlyDetail(detail: string, fallback: string): string {
@@ -78,7 +82,20 @@ function friendlyDetail(detail: string, fallback: string): string {
     lower.includes("exception:") ||
     /at\s+\S+\s+\(\S+:\d+:\d+\)/.test(detail) ||
     lower.includes("typeerror") ||
-    lower.includes("referenceerror")
+    lower.includes("referenceerror") ||
+    lower.includes("sqlalchemy") ||
+    lower.includes("asyncpg") ||
+    lower.includes("psycopg") ||
+    lower.includes("integrityerror") ||
+    lower.includes("operationalerror") ||
+    detail.startsWith("{") ||
+    detail.startsWith("[") ||
+    detail.startsWith("<") ||
+    detail.includes("\n") ||
+    detail.length > 180 ||
+    /file ["'].*["'], line \d+/i.test(detail) ||
+    /internal server error|status code 50\d/i.test(detail) ||
+    /\b(?:select|insert|update|delete)\b.+\bfrom\b/i.test(detail)
   ) {
     return fallback;
   }

@@ -7,6 +7,8 @@
  * Set `NEXT_PUBLIC_TEST_USE_REAL_API=0` to fall back to local `/api/test` mocks.
  */
 
+import { formatApiError } from "@/lib/api";
+
 const USE_REAL_API = process.env.NEXT_PUBLIC_TEST_USE_REAL_API !== "0";
 
 const RAW_REAL_BASE = (process.env.NEXT_PUBLIC_API_URL ?? "/api/proxy").replace(/\/+$/, "");
@@ -35,7 +37,7 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(text || res.statusText);
+    throw new Error(formatApiError(new Error(text || res.statusText)));
   }
   if (res.status === 204) return undefined as T;
   return res.json();
@@ -243,7 +245,7 @@ export const testApi = {
     });
     if (!res.ok) {
       const text = await res.text();
-      throw new Error(text || res.statusText);
+      throw new Error(formatApiError(new Error(text || res.statusText)));
     }
     return (await res.json()) as {
       drive_file_id: string;

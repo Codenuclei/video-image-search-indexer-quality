@@ -15,6 +15,7 @@ import Link from "next/link";
 import {
   API_BASE,
   apiClient,
+  formatApiError,
   type ReidGalleryItem,
   type ReidProveResult,
   type ReidStatus,
@@ -143,7 +144,7 @@ export default function ReidLabPage() {
       setStatus(st);
       setItems(gallery);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load lab data");
+      setError(formatApiError(e, "Failed to load lab data"));
     } finally {
       setLoading(false);
     }
@@ -160,7 +161,7 @@ export default function ReidLabPage() {
       await apiClient.reidBackfill(50);
       await load();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Backfill failed");
+      setError(formatApiError(e, "Backfill failed"));
     } finally {
       setScanning(false);
     }
@@ -179,7 +180,7 @@ export default function ReidLabPage() {
       setProveResult(result);
       await load();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Prove failed");
+      setError(formatApiError(e, "Prove failed"));
     } finally {
       setProving(false);
     }

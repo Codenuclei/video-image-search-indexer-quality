@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { FileImage, Gauge, ScanFace, Tag, Users } from "lucide-react";
-import { apiClient, type Cluster, type Person } from "@/lib/api";
+import { apiClient, formatApiError, type Cluster, type Person } from "@/lib/api";
 import { Button, Card, FaceThumb, Input, LoadingLabel, ServiceErrorCard } from "@/components/ui";
 import { PersonMergeSearch } from "@/components/person-merge-search";
 import { AnimatedTrash } from "@/components/animated-trash";
@@ -55,7 +55,7 @@ export default function ReviewPage() {
         setClusterTotal(response.total);
         setError(null);
       } catch (e) {
-        setError(e instanceof Error ? e.message : "Failed to load");
+        setError(formatApiError(e, "Failed to load"));
       } finally {
         if (initial) setInitialLoading(false);
         else setRefreshing(false);
@@ -97,7 +97,7 @@ export default function ReviewPage() {
       await vanishCard(id);
       await load();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to name cluster");
+      setError(formatApiError(e, "Failed to name cluster"));
     } finally {
       namingRef.current = false;
       setAction(null);
@@ -115,7 +115,7 @@ export default function ReviewPage() {
       await vanishCard(id);
       await load();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to ignore cluster");
+      setError(formatApiError(e, "Failed to ignore cluster"));
     } finally {
       setAction(null);
     }
@@ -137,7 +137,7 @@ export default function ReviewPage() {
       await vanishCard(id);
       await load();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to merge cluster");
+      setError(formatApiError(e, "Failed to merge cluster"));
     } finally {
       setAction(null);
     }

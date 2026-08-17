@@ -5,6 +5,7 @@ import { ExternalLink, Play, X } from "lucide-react";
 import {
   apiAssetUrl,
   apiClient,
+  formatApiError,
   API_BASE,
   driveFileDownloadUrl,
   driveFilePreviewUrl,
@@ -133,7 +134,7 @@ export default function SearchPage() {
       if (!res.ok) throw new Error(await res.text());
       setResults(await res.json());
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Search failed");
+      setError(formatApiError(e, "Search failed"));
       setResults(null);
     } finally {
       setLoading(false);

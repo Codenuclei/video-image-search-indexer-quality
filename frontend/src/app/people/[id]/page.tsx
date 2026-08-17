@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { Pencil } from "lucide-react";
-import { apiClient, type Person, type PersonRole } from "@/lib/api";
+import { apiClient, formatApiError, type Person, type PersonRole } from "@/lib/api";
 import { Button, Card, ConfirmDialog, FaceThumb, Input, LoadingLabel } from "@/components/ui";
 import { RoleSelector } from "@/components/role-selector";
 import { AnimatedTrash } from "@/components/animated-trash";
@@ -69,7 +69,7 @@ export default function PersonDetailPage() {
       setPerson(previous);
       setName(previous.name);
       setEditing(true);
-      setError(e instanceof Error ? e.message : "Rename failed");
+      setError(formatApiError(e, "Rename failed"));
     } finally {
       savingRef.current = false;
       setSaving(false);
@@ -84,7 +84,7 @@ export default function PersonDetailPage() {
       const updated = await apiClient.updatePerson(person.id, { role: nextRole });
       setPerson(updated);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not update role");
+      setError(formatApiError(e, "Could not update role"));
     } finally {
       setRoleSaving(false);
     }
@@ -98,7 +98,7 @@ export default function PersonDetailPage() {
     try {
       await apiClient.deletePerson(person.id);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Delete failed");
+      setError(formatApiError(e, "Delete failed"));
       setDeleting(false);
     }
   }

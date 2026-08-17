@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { Download, RefreshCw, WifiOff, X } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { isServiceUnavailableMessage } from "@/lib/api";
+import { formatApiError, isServiceUnavailableMessage } from "@/lib/api";
 import { downloadFromUrl } from "@/lib/download";
 import { LoadingLabel, Spinner } from "@/components/spinner";
 
@@ -54,7 +54,7 @@ export function DownloadButton({
         setError(null);
         void downloadFromUrl(url, filename)
           .catch((err) => {
-            setError(err instanceof Error ? err.message : "Download failed");
+            setError(formatApiError(err, "Download failed"));
           })
           .finally(() => setBusy(false));
       }}
