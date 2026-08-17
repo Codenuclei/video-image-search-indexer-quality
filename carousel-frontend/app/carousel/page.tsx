@@ -40,6 +40,7 @@ import {
   driveFileDownloadUrl,
   driveVideoStreamUrl,
   formatApiError,
+  prependUniqueById,
   type CarouselGeneratedItem,
   type CarouselGenerationSaveListItem,
   type CarouselLayouts,
@@ -283,6 +284,7 @@ export default function CarouselSearchPage() {
   const [prerunBusy, setPrerunBusy] = useState(false);
   const [prerunNote, setPrerunNote] = useState<string | null>(null);
   const uploadInputRef = useRef<HTMLInputElement>(null);
+  const stagedUploadsRef = useRef<CarouselRecentVideo[]>([]);
   const themeHistoryRef = useRef<HTMLDivElement>(null);
   useDismissible(themeHistoryOpen, () => setThemeHistoryOpen(false), themeHistoryRef);
   /** Selection key that currently has loaded themes (null = need Continue). */
@@ -477,19 +479,22 @@ export default function CarouselSearchPage() {
     return markers.sort((a, b) => a.start_sec - b.start_sec);
   }, [extract, selectedHooks, selectedTopics, selectedThemes]);
 
-  const loadRecentVideos = useCallback(async (signal?: AbortSignal) => {
-    setLoadingRecent(true);
+  const loadRecentVideos = useCallback(async (signal?: AbortSignal, opts?: { silent?: boolean }) => {
+    if (!opts?.silent) setLoadingRecent(true);
     setError(null);
     try {
       // Don't await persons here — a hung /persons used to stall the whole video list.
       const vids = await apiClient.carouselRecentVideos(5, true);
       if (signal?.aborted) return;
-      setRecent(vids.items ?? []);
+      const items = vids.items ?? [];
+      const apiIds = new Set(items.map((v) => v.id));
+      stagedUploadsRef.current = stagedUploadsRef.current.filter((v) => !apiIds.has(v.id));
+      setRecent(prependUniqueById(stagedUploadsRef.current, items));
     } catch (e) {
       if (signal?.aborted) return;
       setError(formatApiError(e, "Could not load recent videos"));
     } finally {
-      if (!signal?.aborted) setLoadingRecent(false);
+      if (!signal?.aborted && !opts?.silent) setLoadingRecent(false);
     }
     void apiClient
       .persons()
@@ -972,12 +977,31 @@ export default function CarouselSearchPage() {
     setError(null);
     try {
       const notes: string[] = [];
+      const uploaded: CarouselRecentVideo[] = [];
       for (const file of list) {
         const res = await apiClient.carouselUploadVideo(file);
         notes.push(`${res.name}: ${res.message}`);
+        uploaded.push({
+          id: res.drive_file_id,
+          name: res.name,
+          mime_type: file.type || "video/mp4",
+          path: null,
+          size: res.size ?? file.size ?? null,
+          modified_time: null,
+          last_synced_at: null,
+          status: res.status || "pending",
+          has_captions: false,
+          cue_count: 0,
+        });
+      }
+      stagedUploadsRef.current = prependUniqueById(uploaded, stagedUploadsRef.current);
+      setRecent((prev) => prependUniqueById(uploaded, prev));
+      if (uploaded[0]) {
+        setSelectedVideo(uploaded[0]);
+        setVideoScope("recent");
       }
       setUploadNote(notes.join(" · "));
-      await loadRecentVideos();
+      await loadRecentVideos(undefined, { silent: true });
     } catch (e) {
       setError(formatApiError(e, "Upload failed"));
     } finally {
@@ -1421,7 +1445,7 @@ export default function CarouselSearchPage() {
           apiBase={API_BASE}
           testIdPrefix="carousel-drive"
           onLibraryChanged={() => {
-            void loadRecentVideos();
+            void loadRecentVideos(undefined, { silent: true });
           }}
           onVideoReady={(v) => {
             const cueCount = v.cue_count ?? 0;
@@ -1439,10 +1463,8 @@ export default function CarouselSearchPage() {
               cue_count: cueCount,
             };
             setSelectedVideo(asVideo);
-            setRecent((prev) => {
-              const without = prev.filter((x) => x.id !== asVideo.id);
-              return hasCaptions ? [asVideo, ...without] : without;
-            });
+            stagedUploadsRef.current = prependUniqueById([asVideo], stagedUploadsRef.current);
+            setRecent((prev) => prependUniqueById([asVideo], prev));
             setError(null);
             if (v.status === "processed" && !hasCaptions) {
               setUploadNote(`“${v.name}” is indexed — getting transcripts from the video…`);
@@ -1546,7 +1568,7 @@ export default function CarouselSearchPage() {
 
         <div className="mt-2">
           {videoScope === "recent" ? (
-            loadingRecent ? (
+            loadingRecent && recent.length === 0 ? (
               <p className="text-sm text-muted-foreground">
                 <LoadingLabel>Loading recent videos…</LoadingLabel>
               </p>

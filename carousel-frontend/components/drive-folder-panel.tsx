@@ -161,7 +161,12 @@ export function DriveFolderPanel({
         .catch(() => load())
         .then(() => onLibraryChanged?.());
     } else if (params.get("error")) {
-      setError(`Drive connection failed: ${params.get("error")}`);
+      setError(
+        formatApiError(
+          `Drive connection failed: ${params.get("error")}`,
+          "Google Drive connection failed. Try connecting again."
+        )
+      );
       const url = new URL(window.location.href);
       url.searchParams.delete("error");
       url.searchParams.delete("detail");
@@ -832,7 +837,7 @@ export function DriveFolderPanel({
       )}
       {error && (
         <p className="mt-2 text-xs text-red-600" role="alert">
-          {error}
+          {formatApiError(error, "Something went wrong. Please try again.")}
         </p>
       )}
 
@@ -975,7 +980,7 @@ export function DriveFolderPanel({
 
           {modalError ? (
             <p className="px-4 text-sm text-red-600 sm:px-5" role="alert">
-              {modalError}
+              {formatApiError(modalError, "Could not complete that action. Please try again.")}
             </p>
           ) : null}
 

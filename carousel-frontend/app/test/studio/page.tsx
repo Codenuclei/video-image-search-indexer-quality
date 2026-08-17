@@ -45,6 +45,7 @@ import {
 import {
   apiClient,
   formatApiError,
+  prependUniqueById,
   type CarouselItemFeedback,
   type CarouselItemReference,
   type CarouselPipelineExtractResponse,
@@ -209,6 +210,7 @@ function TestStudioInner() {
   const [uploading, setUploading] = useState(false);
   const [uploadNote, setUploadNote] = useState<string | null>(null);
   const uploadInputRef = useRef<HTMLInputElement>(null);
+  const stagedUploadsRef = useRef<TestVideo[]>([]);
   const previewVideoRef = useRef<HTMLVideoElement>(null);
   const [previewItem, setPreviewItem] = useState<{ start_sec: number; text: string } | null>(
     null
@@ -379,15 +381,18 @@ function TestStudioInner() {
     });
   }
 
-  const loadVideos = useCallback(async () => {
-    setLoadingVideos(true);
+  const loadVideos = useCallback(async (opts?: { silent?: boolean }) => {
+    if (!opts?.silent) setLoadingVideos(true);
     try {
       const res = await testApi.recentVideos();
-      setVideos(res.items ?? []);
+      const items = res.items ?? [];
+      const apiIds = new Set(items.map((v) => v.id));
+      stagedUploadsRef.current = stagedUploadsRef.current.filter((v) => !apiIds.has(v.id));
+      setVideos(prependUniqueById(stagedUploadsRef.current, items));
     } catch (e) {
       setError(formatApiError(e, "Could not load videos. Please refresh and try again."));
     } finally {
-      setLoadingVideos(false);
+      if (!opts?.silent) setLoadingVideos(false);
     }
   }, []);
 
@@ -493,9 +498,8 @@ function TestStudioInner() {
           has_captions: false,
           cue_count: 0,
         };
-        setVideos((prev) =>
-          prev.some((v) => v.id === asVideo.id) ? prev : [asVideo, ...prev]
-        );
+        stagedUploadsRef.current = prependUniqueById([asVideo], stagedUploadsRef.current);
+        setVideos((prev) => prependUniqueById([asVideo], prev));
       }
       setUploadNote(notes.join(" · "));
       if (firstId) {
@@ -510,7 +514,7 @@ function TestStudioInner() {
           cue_count: 0,
         });
       }
-      void loadVideos();
+      void loadVideos({ silent: true });
     } catch (e) {
       setError(formatApiError(e, "Upload failed. Check the file and try again."));
     } finally {
@@ -1044,7 +1048,7 @@ function TestStudioInner() {
           apiBase={API_BASE}
           testIdPrefix="test-drive"
           onLibraryChanged={() => {
-            void loadVideos();
+            void loadVideos({ silent: true });
           }}
           onVideoReady={(v) => {
             const cueCount = v.cue_count ?? 0;
@@ -1060,10 +1064,8 @@ function TestStudioInner() {
               cue_count: cueCount,
             };
             setSelected(asVideo);
-            setVideos((prev) => {
-              const without = prev.filter((x) => x.id !== asVideo.id);
-              return [asVideo, ...without];
-            });
+            stagedUploadsRef.current = prependUniqueById([asVideo], stagedUploadsRef.current);
+            setVideos((prev) => prependUniqueById([asVideo], prev));
             setError(null);
             if (v.status === "processed" && !hasCaptions) {
               setUploadNote(
@@ -1081,7 +1083,7 @@ function TestStudioInner() {
         />
 
         <div className="mt-5">
-          {loadingVideos ? (
+          {loadingVideos && videos.length === 0 ? (
             <p className="text-sm text-muted-foreground">Loading videos…</p>
           ) : videos.length === 0 ? (
             <p className="text-sm text-muted-foreground">No captioned videos — is the backend up?</p>

@@ -75,14 +75,18 @@ export function formatApiError(
   return friendlyDetail(raw, fallback);
 }
 
-function friendlyDetail(detail: string, fallback: string): string {
+function looksLibraryDiagnostic(detail: string): boolean {
   const lower = detail.toLowerCase();
-  if (
+  return (
     lower.includes("traceback") ||
     lower.includes("exception:") ||
     /at\s+\S+\s+\(\S+:\d+:\d+\)/.test(detail) ||
-    lower.includes("typeerror") ||
-    lower.includes("referenceerror") ||
+    /\b(?:type|reference|syntax|value|key|attribute|name|index|runtime|assertion)error\b/.test(
+      lower
+    ) ||
+    /format ['"][^'"]+['"] not found/i.test(detail) ||
+    /unknown (?:format|strftime|token)/i.test(detail) ||
+    /invalid format (?:string|code|specifier)/i.test(detail) ||
     lower.includes("sqlalchemy") ||
     lower.includes("asyncpg") ||
     lower.includes("psycopg") ||
@@ -96,10 +100,24 @@ function friendlyDetail(detail: string, fallback: string): string {
     /file ["'].*["'], line \d+/i.test(detail) ||
     /internal server error|status code 50\d/i.test(detail) ||
     /\b(?:select|insert|update|delete)\b.+\bfrom\b/i.test(detail)
-  ) {
-    return fallback;
-  }
+  );
+}
+
+function friendlyDetail(detail: string, fallback: string): string {
+  if (looksLibraryDiagnostic(detail)) return fallback;
   return detail;
+}
+
+/** Keep local-only rows (e.g. a just-uploaded file) at the front of an API list. */
+export function prependUniqueById<T extends { id: string }>(prefix: T[], rest: T[]): T[] {
+  const seen = new Set<string>();
+  const out: T[] = [];
+  for (const item of [...prefix, ...rest]) {
+    if (seen.has(item.id)) continue;
+    seen.add(item.id);
+    out.push(item);
+  }
+  return out;
 }
 
 export function isServiceUnavailableMessage(message: string): boolean {
