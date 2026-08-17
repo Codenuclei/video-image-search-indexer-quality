@@ -12,13 +12,13 @@ import {
 } from "@/lib/api";
 import { downloadFromUrl } from "@/lib/download";
 import StudioLogo from "@/components/StudioLogo";
-import { LoadingLabel, ServiceErrorCard } from "@/components/ui";
+import { LoadingLabel } from "@/components/ui";
 
 export default function LibraryPage() {
   const [videos, setVideos] = useState<CarouselRecentVideo[]>([]);
   const [youtube, setYoutube] = useState<YoutubeDriveFile[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -89,16 +89,6 @@ export default function LibraryPage() {
             {loading ? <LoadingLabel>Refreshing…</LoadingLabel> : "Refresh"}
           </button>
         </header>
-
-        {error && (
-          <ServiceErrorCard
-            message={error}
-            onDismiss={() => setError(null)}
-            onRetry={() => void load()}
-            retrying={loading}
-            retryLabel="Reload library"
-          />
-        )}
 
         {youtube.length > 0 && (
           <section className="mb-10">

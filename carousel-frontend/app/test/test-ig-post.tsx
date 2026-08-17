@@ -887,7 +887,6 @@ function TestFramePicker({
         </button>
       </div>
       {loading && <p className="text-sm text-muted-foreground">Loading frames…</p>}
-      {err && <p className="text-sm text-red-600">{err}</p>}
       {!loading && !err && (
         <ul className="topics-hooks-frame-grid max-h-[min(56vh,28rem)] overflow-y-auto">
           {items.map((item) => {

@@ -20,6 +20,7 @@ import {
   type IndexedFolder,
 } from "@/lib/drive-api";
 import { formatApiError } from "@/lib/api";
+import { toastApiError } from "@/lib/toast-api-error";
 import { ModalOverlay } from "@/components/modal";
 
 declare global {
@@ -111,8 +112,8 @@ export function DriveFolderPanel({
   const [busy, setBusy] = useState(false);
   const [pickerBusy, setPickerBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [modalError, setModalError] = useState<string | null>(null);
+  const [, setError] = useState<string | null>(null);
+  const [, setModalError] = useState<string | null>(null);
 
   const [modalOpen, setModalOpen] = useState(false);
   const [modalVideos, setModalVideos] = useState<DriveLibraryFile[]>([]);
@@ -188,12 +189,12 @@ export function DriveFolderPanel({
         .catch(() => load())
         .then(() => onLibraryChanged?.());
     } else if (params.get("error")) {
-      setError(
-        formatApiError(
-          `Drive connection failed: ${params.get("error")}`,
-          "Google Drive connection failed. Try connecting again."
-        )
+      const msg = formatApiError(
+        `Drive connection failed: ${params.get("error")}`,
+        "Google Drive connection failed. Try connecting again."
       );
+      setError(msg);
+      toastApiError(msg);
       const url = new URL(window.location.href);
       url.searchParams.delete("error");
       url.searchParams.delete("detail");
@@ -384,9 +385,9 @@ export function DriveFolderPanel({
           pickerAlive = false;
           const doc = data.docs[0];
           if (doc.mimeType && doc.mimeType !== FOLDER_MIME) {
-            setError(
-              `"${doc.name}" is a file. Use Select folder (top-right) to choose the folder to index.`
-            );
+            const msg = `"${doc.name}" is a file. Use Select folder (top-right) to choose the folder to index.`;
+            setError(msg);
+            toastApiError(msg);
             return;
           }
           setBusy(true);
@@ -449,15 +450,17 @@ export function DriveFolderPanel({
           /* ignore */
         }
         dismissGooglePickerShell();
-        setError(
-          looksLikeKeyError
-            ? `Google Picker rejected the API key for this site. In Google Cloud Console → Credentials → the Browser key used as backend GOOGLE_API_KEY, add HTTP referrer ${origin}/* (Drive API + Picker API). Then retry Change folder.`
-            : `Google Drive folder picker opened blank. Allow this origin as an HTTP referrer on GOOGLE_API_KEY (e.g. ${origin}/*), enable Drive API + Picker API, then retry Change folder.`
-        );
+        const msg = looksLikeKeyError
+          ? `Google Picker rejected the API key for this site. In Google Cloud Console → Credentials → the Browser key used as backend GOOGLE_API_KEY, add HTTP referrer ${origin}/* (Drive API + Picker API). Then retry Change folder.`
+          : `Google Drive folder picker opened blank. Allow this origin as an HTTP referrer on GOOGLE_API_KEY (e.g. ${origin}/*), enable Drive API + Picker API, then retry Change folder.`;
+        setError(msg);
+        toastApiError(msg);
       }, 2800);
     } catch (e) {
       dismissGooglePickerShell();
-      setError(formatApiError(e, "Could not open folder picker"));
+      const msg = formatApiError(e, "Could not open folder picker");
+      setError(msg);
+      toastApiError(msg);
     } finally {
       setPickerBusy(false);
     }
@@ -478,7 +481,9 @@ export function DriveFolderPanel({
 
   async function useIndexedFolder(folder: IndexedFolder) {
     if (!session?.connected) {
-      setError("Connect Google Drive first, then re-select this folder.");
+      const msg = "Connect Google Drive first, then re-select this folder.";
+      setError(msg);
+      toastApiError(msg);
       return;
     }
     setBusy(true);
@@ -515,7 +520,9 @@ export function DriveFolderPanel({
 
   async function syncNow() {
     if (!session?.connected) {
-      setError("Reconnect Google Drive to sync live folder contents.");
+      const msg = "Reconnect Google Drive to sync live folder contents.";
+      setError(msg);
+      toastApiError(msg);
       return;
     }
     setBusy(true);
@@ -610,6 +617,7 @@ export function DriveFolderPanel({
         "Reconnect Google Drive to index videos that are not already processed. Already-indexed library videos can be selected while disconnected.";
       setModalError(msg);
       setError(msg);
+      toastApiError(msg);
       return;
     }
 
@@ -627,7 +635,9 @@ export function DriveFolderPanel({
       const failed = (res.items ?? []).filter((it) => it.ok === false);
       if (failed.length) {
         const first = failed[0]?.error || failed[0]?.message || res.message;
-        setModalError(friendlyDriveIndexError(first));
+        const msg = friendlyDriveIndexError(first);
+        setModalError(msg);
+        toastApiError(msg);
         return;
       }
       const byId = new Map((res.items ?? []).map((it) => [it.drive_file_id, it]));
@@ -870,11 +880,6 @@ export function DriveFolderPanel({
           {note}
         </p>
       )}
-      {error && (
-        <p className="mt-2 text-xs text-red-600" role="alert">
-          {formatApiError(error, "Something went wrong. Please try again.")}
-        </p>
-      )}
 
       <ModalOverlay
         open={modalOpen}
@@ -921,11 +926,6 @@ export function DriveFolderPanel({
           </div>
 
           <div className="drive-select-modal__body space-y-3 px-4 py-3 sm:px-5">
-            {modalError ? (
-              <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">
-                {formatApiError(modalError, "Could not complete that action. Please try again.")}
-              </p>
-            ) : null}
             <div className="relative">
               <Search
                 size={14}

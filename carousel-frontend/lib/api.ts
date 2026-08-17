@@ -5,6 +5,8 @@
  * and long extract/generate calls are not killed by Next rewrite timeouts.
  */
 
+import { toastApiError } from "./toast-api-error";
+
 const RAW_API_BASE = (process.env.NEXT_PUBLIC_API_URL ?? "/api/proxy").replace(/\/+$/, "");
 /**
  * Prefer the durable App Router proxy. Legacy `/backend` Next rewrites die at ~30s;
@@ -123,6 +125,12 @@ export function prependUniqueById<T extends { id: string }>(prefix: T[], rest: T
 
 export function isServiceUnavailableMessage(message: string): boolean {
   return message === SERVICE_UNAVAILABLE_MESSAGE;
+}
+
+function throwApiError(error: unknown, fallback?: string, silent?: boolean): never {
+  const msg = formatApiError(error, fallback);
+  if (!silent) toastApiError(msg);
+  throw new Error(msg);
 }
 
 export type PersonRole = "student" | "non_student" | null;
@@ -496,8 +504,11 @@ export type CarouselItemReference = {
   updated_at?: string | null;
 };
 
-async function api<T>(path: string, init?: RequestInit & { timeoutMs?: number }): Promise<T> {
-  const { timeoutMs, ...rest } = init ?? {};
+async function api<T>(
+  path: string,
+  init?: RequestInit & { timeoutMs?: number; silent?: boolean }
+): Promise<T> {
+  const { timeoutMs, silent, ...rest } = init ?? {};
   const timeout =
     typeof timeoutMs === "number" && timeoutMs > 0
       ? timeoutMs
@@ -523,8 +534,6 @@ async function api<T>(path: string, init?: RequestInit & { timeoutMs?: number })
       const text = await res.text();
       if (res.status >= 500) {
         const textBody = text.trim();
-        // Next rewrite proxy used to return a bare "Internal Server Error" at ~30s;
-        // surface that distinctly so extract failures aren't a silent theme-list stay.
         if (/^internal server error$/i.test(textBody)) {
           throw new Error(
             "The API proxy timed out before extract finished. Soft-refresh the studio and try again — long extract calls now go through a durable proxy."
@@ -532,7 +541,7 @@ async function api<T>(path: string, init?: RequestInit & { timeoutMs?: number })
         }
         throw new Error(SERVICE_UNAVAILABLE_MESSAGE);
       }
-      throw new Error(formatApiError(new Error(text || res.statusText)));
+      throw new Error(text || res.statusText);
     }
     if (res.status === 204) return undefined as T;
     return res.json();
@@ -542,11 +551,13 @@ async function api<T>(path: string, init?: RequestInit & { timeoutMs?: number })
       error.name === "AbortError"
     ) {
       if (external?.aborted) throw error;
-      throw new Error(
-        `Request timed out after ${Math.round(timeout / 1000)}s. The API may be busy — retry in a moment.`
+      throwApiError(
+        `Request timed out after ${Math.round(timeout / 1000)}s. The API may be busy — retry in a moment.`,
+        undefined,
+        silent
       );
     }
-    throw new Error(formatApiError(error));
+    throwApiError(error, undefined, silent);
   } finally {
     clearTimeout(timer);
     if (external) external.removeEventListener("abort", onAbort);
@@ -735,7 +746,7 @@ export const apiClient = {
       });
       if (!res.ok) {
         const text = await res.text();
-        throw new Error(formatApiError(new Error(text || res.statusText)));
+        throw new Error(text || res.statusText);
       }
       return (await res.json()) as {
         ok: boolean;
@@ -744,7 +755,7 @@ export const apiClient = {
         size: number;
       };
     } catch (error) {
-      throw new Error(formatApiError(error, "Image upload failed"));
+      throwApiError(error, "Image upload failed");
     } finally {
       clearTimeout(timer);
     }
@@ -788,7 +799,7 @@ export const apiClient = {
       });
       if (!res.ok) {
         const text = await res.text();
-        throw new Error(formatApiError(new Error(text || res.statusText)));
+        throw new Error(text || res.statusText);
       }
       return (await res.json()) as {
         drive_file_id: string;
@@ -799,7 +810,7 @@ export const apiClient = {
         message: string;
       };
     } catch (error) {
-      throw new Error(formatApiError(error, "Upload failed"));
+      throwApiError(error, "Upload failed");
     } finally {
       clearTimeout(timer);
     }

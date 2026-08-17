@@ -17,8 +17,9 @@ import {
   type SearchResponse,
   type SearchResultFile,
 } from "@/lib/api";
-import { Button, Card, DownloadButton, FilePreview, IconButton, IconLink, Input, LoadingLabel, PersonTags, ServiceErrorCard } from "@/components/ui";
+import { Button, Card, DownloadButton, FilePreview, IconButton, IconLink, Input, LoadingLabel, PersonTags } from "@/components/ui";
 import { ModalOverlay } from "@/components/modal";
+import { toastApiError } from "@/lib/toast-api-error";
 
 function formatTimestamp(sec: number): string {
   const m = Math.floor(sec / 60);
@@ -77,7 +78,6 @@ export default function SearchPage() {
   const [results, setResults] = useState<SearchResponse | null>(null);
   const [lastSearchMode, setLastSearchMode] = useState<{ captions: boolean; rerank: boolean } | null>(null);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [previewFile, setPreviewFile] = useState<SearchResultFile | null>(null);
   const [previewMoment, setPreviewMoment] = useState<SearchMoment | null>(null);
   const [linkedinMap, setLinkedinMap] = useState<Record<string, string>>({});
@@ -116,7 +116,6 @@ export default function SearchPage() {
   async function search() {
     if (!q.trim()) return;
     setLoading(true);
-    setError(null);
     setPreviewFile(null);
     setPreviewMoment(null);
     setLastSearchMode({ captions: useCaptions, rerank });
@@ -134,7 +133,7 @@ export default function SearchPage() {
       if (!res.ok) throw new Error(await res.text());
       setResults(await res.json());
     } catch (e) {
-      setError(formatApiError(e, "Search failed"));
+      toastApiError(formatApiError(e, "Search failed"));
       setResults(null);
     } finally {
       setLoading(false);
@@ -242,10 +241,6 @@ export default function SearchPage() {
         <p className="text-sm text-muted-foreground">
           <LoadingLabel size={16}>Searching indexed media… visual queries can take up to a minute.</LoadingLabel>
         </p>
-      )}
-
-      {error && (
-        <ServiceErrorCard message={error} onRetry={search} onDismiss={() => setError(null)} />
       )}
 
       {results && lastSearchMode && (

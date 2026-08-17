@@ -4,14 +4,13 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Bar, BarChart, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import {
   apiClient,
-  formatApiError,
   type FileIndexConflict,
   type IndexStatus,
   type IndexedFolder,
   type SkipStats,
 } from "@/lib/api";
 import { formatCount, skipReasonMeta } from "@/lib/index-errors";
-import { Button, Card, LoadingLabel, ServiceErrorCard, StatCard } from "@/components/ui";
+import { Button, Card, LoadingLabel, StatCard } from "@/components/ui";
 
 const STATUS_ORDER = ["processed", "pending", "processing", "error", "skipped"] as const;
 
@@ -49,7 +48,6 @@ export default function DashboardPage() {
   const [skipStats, setSkipStats] = useState<SkipStats | null>(null);
   const [folders, setFolders] = useState<IndexedFolder[]>([]);
   const [conflicts, setConflicts] = useState<FileIndexConflict[]>([]);
-  const [error, setError] = useState<string | null>(null);
   const [retryingReason, setRetryingReason] = useState<string | null>(null);
   const [resolvingId, setResolvingId] = useState<number | null>(null);
 
@@ -59,9 +57,8 @@ export default function DashboardPage() {
       // spamming Postgres on every poll tick when a few tabs are open.
       const status = await apiClient.indexStatus();
       setIndexStatus(status);
-      setError(null);
-    } catch (e) {
-      setError(formatApiError(e, "Failed to load dashboard"));
+    } catch {
+      /* silent poll; IndexStatusBanner surfaces unreachable */
     }
   }, []);
 
@@ -97,8 +94,8 @@ export default function DashboardPage() {
       await apiClient.retrySkippedByReason(reason);
       await load();
       await loadSecondary();
-    } catch (e) {
-      setError(formatApiError(e, "Retry failed"));
+    } catch {
+      /* api() already toasted */
     } finally {
       setRetryingReason(null);
     }
@@ -110,8 +107,8 @@ export default function DashboardPage() {
       await apiClient.resolveIndexConflict(id, action);
       await load();
       await loadSecondary();
-    } catch (e) {
-      setError(formatApiError(e, "Could not resolve conflict"));
+    } catch {
+      /* api() already toasted */
     } finally {
       setResolvingId(null);
     }
@@ -152,17 +149,7 @@ export default function DashboardPage() {
         </p>
       </div>
 
-      {error && (
-        <ServiceErrorCard
-          message={error}
-          onRetry={() => {
-            void load();
-          }}
-          onDismiss={() => setError(null)}
-        />
-      )}
-
-      {!indexStatus && !error && (
+      {!indexStatus && (
         <p className="text-sm text-muted-foreground">
           <LoadingLabel size={16}>Loading dashboard…</LoadingLabel>
         </p>

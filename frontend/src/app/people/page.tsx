@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { Images, Pencil } from "lucide-react";
 import { apiClient, formatApiError, type Person, type PersonRole } from "@/lib/api";
-import { Button, Card, ConfirmDialog, FaceThumb, Input, LoadingLabel, ServiceErrorCard } from "@/components/ui";
+import { Button, Card, ConfirmDialog, FaceThumb, Input, LoadingLabel } from "@/components/ui";
 import { RoleSelector } from "@/components/role-selector";
 import { AnimatedTrash } from "@/components/animated-trash";
 import { cn } from "@/lib/utils";
@@ -237,9 +237,7 @@ export default function PeoplePage() {
         </p>
       </div>
 
-      {error && (
-        <ServiceErrorCard message={error} onRetry={load} onDismiss={() => setError(null)} />
-      )}
+      </div>
 
       {loading && (
         <p className="text-sm text-muted-foreground">

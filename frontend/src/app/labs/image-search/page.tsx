@@ -21,7 +21,7 @@ import {
   type Person,
   type ReidStatus,
 } from "@/lib/api";
-import { Button, Card, FaceThumb, Input, LoadingLabel, ServiceErrorCard } from "@/components/ui";
+import { Button, Card, FaceThumb, Input, LoadingLabel } from "@/components/ui";
 import { cn } from "@/lib/utils";
 
 function ResultLink({ href, children }: { href: string; children: React.ReactNode }) {
@@ -318,7 +318,7 @@ export default function OfficialImageSearchLabPage() {
         </label>
       </Card>
 
-      {error && <ServiceErrorCard message={error} onRetry={runGoogleLens} onDismiss={() => setError(null)} />}
+      )}
 
       {lensResult && (
         <div className="space-y-4">

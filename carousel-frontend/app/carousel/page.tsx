@@ -56,8 +56,9 @@ import {
   type CarouselItemReference,
   type Person,
 } from "@/lib/api";
-import { DownloadButton, LoadingLabel, ServiceErrorCard } from "@/components/ui";
+import { DownloadButton, LoadingLabel } from "@/components/ui";
 import { ModalOverlay } from "@/components/modal";
+import { toastApiError } from "@/lib/toast-api-error";
 import { useDismissible } from "@/lib/use-dismissible";
 import { cn } from "@/lib/utils";
 import {
@@ -250,7 +251,7 @@ export default function CarouselSearchPage() {
   const [recent, setRecent] = useState<CarouselRecentVideo[]>([]);
   const [persons, setPersons] = useState<Person[]>([]);
   const [loadingRecent, setLoadingRecent] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [, setError] = useState<string | null>(null);
   const [personNotFound, setPersonNotFound] = useState<string | null>(null);
 
   const [videoScope, setVideoScope] = useState<"recent" | "all">("recent");
@@ -258,7 +259,7 @@ export default function CarouselSearchPage() {
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const [allVideos, setAllVideos] = useState<CarouselRecentVideo[]>([]);
   const [loadingAll, setLoadingAll] = useState(false);
-  const [allVideosError, setAllVideosError] = useState<string | null>(null);
+  const [, setAllVideosError] = useState<string | null>(null);
 
   const [selectedVideo, setSelectedVideo] = useState<CarouselRecentVideo | null>(null);
   const [searchEntity, setSearchEntity] = useState("");
@@ -622,12 +623,12 @@ export default function CarouselSearchPage() {
           const raw = String(res.warning || res.message);
           const lower = raw.toLowerCase();
           if (!lower.includes("cached")) {
-            setError(
-              formatApiError(
-                raw,
-                "We couldn’t find themes for this video yet. Wait until the transcript is ready, then try again."
-              )
+            const msg = formatApiError(
+              raw,
+              "We couldn’t find themes for this video yet. Wait until the transcript is ready, then try again."
             );
+            setError(msg);
+            toastApiError(msg);
           }
         }
         // Never clobber an in-progress extract / hooks step back to themes.
@@ -953,6 +954,7 @@ export default function CarouselSearchPage() {
       const themesPayload = (res.payload?.themes ?? []) as CarouselPipelineTheme[];
       if (!themesPayload.length) {
         setError("That save has no themes.");
+        toastApiError("That save has no themes.");
         return;
       }
       setThemes(themesPayload);
@@ -980,6 +982,7 @@ export default function CarouselSearchPage() {
     const list = Array.from(files).filter((f) => f.type.startsWith("video/") || /\.(mp4|webm|mov|mkv|avi)$/i.test(f.name));
     if (!list.length) {
       setError("Pick a video file (mp4, webm, mov, mkv, avi).");
+      toastApiError("Pick a video file (mp4, webm, mov, mkv, avi).");
       return;
     }
     setUploading(true);
@@ -1070,6 +1073,7 @@ export default function CarouselSearchPage() {
     if (!selectedVideo || loadingExtract) return;
     if (!selectedThemes.length) {
       setError("Select at least one theme.");
+      toastApiError("Select at least one theme.");
       return;
     }
     const force = Boolean(opts?.force);
@@ -1102,11 +1106,12 @@ export default function CarouselSearchPage() {
       if (!hasTree && !res.cache_hit) {
         setExtract(null);
         setExtractFromCache(false);
-        setError(
+        const msg =
           res.message ||
-            res.warning ||
-            "No cached hooks/topics for these themes. Click Extract to generate."
-        );
+          res.warning ||
+          "No cached hooks/topics for these themes. Click Extract to generate.";
+        setError(msg);
+        toastApiError(msg);
         return;
       }
       setExtract(res);
@@ -1132,6 +1137,7 @@ export default function CarouselSearchPage() {
   async function goToPreviewIntent() {
     if (!selectedHooks.length && !selectedTopics.length) {
       setError("Select at least one hook or topic.");
+      toastApiError("Select at least one hook or topic.");
       return;
     }
     setError(null);
@@ -1173,6 +1179,7 @@ export default function CarouselSearchPage() {
           : [];
       if (!goals.length) {
         setOutlineError("Select at least one topic or hook.");
+        toastApiError("Select at least one topic or hook.");
         return;
       }
 
@@ -1264,11 +1271,12 @@ export default function CarouselSearchPage() {
       }
 
       if (!merged.length) {
-        setOutlineError(
+        const msg =
           lastRes?.message ||
-            lastRes?.warning ||
-            "Generate returned no carousels. Try fewer hooks or another theme."
-        );
+          lastRes?.warning ||
+          "Generate returned no carousels. Try fewer hooks or another theme.";
+        setOutlineError(msg);
+        toastApiError(msg);
         return;
       }
       // Re-id sequentially for stable tabs after per-hook merge.
@@ -1378,15 +1386,6 @@ export default function CarouselSearchPage() {
         <PhaseRail phase={phase} />
       </header>
 
-      {error && (
-        <ServiceErrorCard
-          message={error}
-          onDismiss={() => setError(null)}
-          onRetry={() => void loadRecentVideos()}
-          retrying={loadingRecent}
-          retryLabel="Reload videos"
-        />
-      )}
       {pipelineLocked && (
         <div className="studio-callout" role="status">
           Generation is running. Editing is paused until it finishes.
@@ -1598,10 +1597,6 @@ export default function CarouselSearchPage() {
           ) : loadingAll ? (
             <p className="text-sm text-muted-foreground">
               <LoadingLabel>Searching library…</LoadingLabel>
-            </p>
-          ) : allVideosError ? (
-            <p className="text-sm text-destructive" role="alert">
-              {allVideosError}
             </p>
           ) : allVideos.length === 0 ? (
             <p className="text-sm text-muted-foreground">
@@ -2290,11 +2285,6 @@ export default function CarouselSearchPage() {
               <RefreshCw size={14} className={cn(building && "animate-spin")} />
               Regenerate carousels
             </button>
-            {outlineError && phase < 5 && (
-              <p className="text-xs font-medium text-destructive" role="alert">
-                {outlineError}
-              </p>
-            )}
           </div>
         </section>
       )}
@@ -2315,12 +2305,6 @@ export default function CarouselSearchPage() {
                 <strong>Select &amp; filter images</strong> — frames are not fetched until that click.
               </p>
             </div>
-
-            {outlineError && (
-              <p className="text-xs font-medium text-destructive" role="alert">
-                {outlineError}
-              </p>
-            )}
 
             {generatedCarousels.length === 0 && !outlineError && (
               <p className="text-sm text-muted-foreground" role="status">
@@ -2364,6 +2348,7 @@ export default function CarouselSearchPage() {
                               : []);
                             if (!list.length) {
                               setOutlineError("That save has no carousel slides.");
+                              toastApiError("That save has no carousel slides.");
                               return;
                             }
                             setGeneratedCarousels(list as CarouselGeneratedItem[]);

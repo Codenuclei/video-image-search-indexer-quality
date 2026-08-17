@@ -5,7 +5,6 @@ import Link from "next/link";
 import Script from "next/script";
 import {
   apiClient,
-  formatApiError,
   type FolderContext,
   type DriveFile,
   type IndexStatus,
@@ -21,6 +20,7 @@ import { ModalOverlay } from "@/components/modal";
 import { formatCount, humanizeIndexError, sanitizeUserFacingError, skipReasonMeta } from "@/lib/index-errors";
 import { formatDate } from "@/lib/utils";
 import { trackYoutubeDownloads } from "@/lib/youtube-download-toast";
+import { toastApiError } from "@/lib/toast-api-error";
 import { toast } from "sonner";
 
 declare global {
@@ -58,7 +58,6 @@ export default function FoldersPage() {
   const [driveSession, setDriveSession] = useState<DriveSession | null>(null);
   const [busy, setBusy] = useState(false);
   const [pickerBusy, setPickerBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [editingFolder, setEditingFolder] = useState<string | null>(null);
   const [editDescription, setEditDescription] = useState("");
   const [savingFolder, setSavingFolder] = useState<string | null>(null);
@@ -110,9 +109,8 @@ export default function FoldersPage() {
         return st;
       });
       setIndexedFolders(foldersRes.folders ?? []);
-      setError(null);
-    } catch (e) {
-      setError(formatApiError(e, "Failed to load"));
+    } catch {
+      /* indexStatus is silent; IndexStatusBanner surfaces unreachable */
     }
   }
 
@@ -127,10 +125,8 @@ export default function FoldersPage() {
       setQueueItems(page.items);
       setQueueTotal(page.total);
       setQueueOffset(page.offset);
-    } catch (e) {
-      toast.error("Failed to load queue", {
-        description: formatApiError(e, "Could not load the queue. Please try again."),
-      });
+    } catch {
+      /* api() already toasted */
     } finally {
       setQueueLoading(false);
     }
@@ -148,7 +144,7 @@ export default function FoldersPage() {
       window.history.replaceState({}, "", "/folders");
       apiClient.syncDriveFiles().then(() => load()).catch(() => load());
     } else if (params.get("error")) {
-      setError(`Drive connection failed: ${params.get("error")}`);
+      toastApiError(`Drive connection failed: ${params.get("error")}`);
       window.history.replaceState({}, "", "/folders");
     }
   }, []);
@@ -164,9 +160,9 @@ export default function FoldersPage() {
         s ? { ...s, follow_shortcut_folders: updated.follow_shortcut_folders } : updated
       );
       void apiClient.syncDriveFiles().catch(() => {});
-    } catch (e) {
+    } catch {
       setSettings((s) => (s ? { ...s, follow_shortcut_folders: previous } : s));
-      setError(formatApiError(e, "Could not update the shortcut setting."));
+      /* api() already toasted */
     } finally {
       shortcutsBusyRef.current = false;
     }
@@ -177,9 +173,10 @@ export default function FoldersPage() {
     try {
       const { accessToken, apiKey, appId } = await apiClient.driveToken();
       if (!apiKey) {
-        throw new Error(
+        toastApiError(
           "GOOGLE_API_KEY is missing on the backend. Set a Browser API key (Drive + Picker APIs, HTTP referrer localhost:3001) in backend/.env and restart."
         );
+        return;
       }
       const FOLDER_MIME = "application/vnd.google-apps.folder";
 
@@ -222,7 +219,7 @@ export default function FoldersPage() {
           if (data.action !== window.google.picker.Action.PICKED) return;
           const doc = data.docs[0];
           if (doc.mimeType && doc.mimeType !== FOLDER_MIME) {
-            setError(
+            toastApiError(
               `"${doc.name}" is a file. Browse images/videos to preview media, then use Select folder (top-right) to choose the folder to index.`
             );
             return;
@@ -237,8 +234,8 @@ export default function FoldersPage() {
       }
 
       builder.build().setVisible(true);
-    } catch (e) {
-      setError(formatApiError(e, "Could not open the folder picker."));
+    } catch {
+      /* driveToken already toasted; local picker errors toasted above */
     } finally {
       setPickerBusy(false);
     }
@@ -266,10 +263,8 @@ export default function FoldersPage() {
       }
       await load();
       if (queueOpen) await loadQueue(queueStatus, queueOffset);
-    } catch (e) {
-      const msg = formatApiError(e, "Retry failed");
-      setError(msg);
-      toast.error("Retry failed", { description: msg });
+    } catch {
+      /* api() already toasted */
     } finally {
       setBusy(false);
     }
@@ -304,9 +299,8 @@ export default function FoldersPage() {
       }
       await load();
       if (queueOpen) await loadQueue(queueStatus, queueOffset);
-    } catch (e) {
-      const msg = formatApiError(e, "Retry all failed");
-      toast.error("Retry all failed", { description: msg });
+    } catch {
+      /* api() already toasted */
     } finally {
       setRetryingReason(null);
     }
@@ -333,8 +327,8 @@ export default function FoldersPage() {
       await apiClient.removeDriveFile(id);
       await load();
       if (queueOpen) await loadQueue(queueStatus, queueOffset);
-    } catch (e) {
-      setError(formatApiError(e, "Could not remove this file."));
+    } catch {
+      /* api() already toasted */
     } finally {
       setBusy(false);
     }
@@ -345,8 +339,8 @@ export default function FoldersPage() {
     try {
       await (reindex ? apiClient.triggerReindex() : apiClient.triggerIndex());
       await load();
-    } catch (e) {
-      setError(formatApiError(e, "Could not start indexing. Please try again."));
+    } catch {
+      /* api() already toasted */
     } finally {
       setBusy(false);
     }
@@ -416,14 +410,8 @@ export default function FoldersPage() {
 
       setYoutubeInput("");
       await load();
-    } catch (e) {
-      const msg = formatApiError(e, "Could not add those YouTube videos. Please try again.");
-      setError(msg);
-      toast.error("YouTube feed failed", {
-        id: toastId,
-        description: msg,
-        duration: 12_000,
-      });
+    } catch {
+      toast.dismiss(toastId);
     } finally {
       setYoutubeBusy(false);
     }
@@ -444,8 +432,8 @@ export default function FoldersPage() {
       await apiClient.upsertFolderContext(folderPath, editDescription);
       setEditingFolder(null);
       await load();
-    } catch (e) {
-      setError(formatApiError(e, "Could not save. Please try again."));
+    } catch {
+      /* api() already toasted */
     } finally {
       setSavingFolder(null);
     }
@@ -657,8 +645,6 @@ export default function FoldersPage() {
         </div>
         {youtubeMsg && <p className="mt-3 text-xs text-zinc-400">{youtubeMsg}</p>}
       </Card>
-
-      {error && <Card className="border-destructive/50 text-destructive">{error}</Card>}
 
       <Card className={status?.is_running ? "border-blue-800 bg-blue-950/20" : ""}>
         <div className="flex flex-wrap items-center justify-between gap-3">

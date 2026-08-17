@@ -10,7 +10,6 @@ import { ChevronDown, History, ImageIcon, Play, Shuffle } from "lucide-react";
 import {
   apiAssetUrl,
   apiClient,
-  formatApiError,
   type CarouselGenerationSaveListItem,
   type CarouselPipelineExtractResponse,
   type CarouselTopicTreeNode,
@@ -139,7 +138,6 @@ export function TopicsHooksTree({
   const [loadingSaves, setLoadingSaves] = useState(false);
   const [loadingShuffle, setLoadingShuffle] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [framePick, setFramePick] = useState<{
     hookText: string;
     start_sec: number;
@@ -175,7 +173,6 @@ export function TopicsHooksTree({
 
   async function shuffle() {
     setLoadingShuffle(true);
-    setError(null);
     try {
       const res = await apiClient.carouselPipelineShuffle({
         topic_tree: tree,
@@ -185,15 +182,14 @@ export function TopicsHooksTree({
         count_topics: 3,
       });
       onRestoreExtract(extract, res.selected_hooks ?? [], res.selected_topics ?? []);
-    } catch (e) {
-      setError(formatApiError(e, "Shuffle failed"));
+    } catch {
+      /* api() already toasted */
     } finally {
       setLoadingShuffle(false);
     }
   }
 
   async function restoreSave(id: number) {
-    setError(null);
     try {
       const res = await apiClient.carouselPipelineSaveGet(id);
       const payload = res.payload;
@@ -215,8 +211,8 @@ export function TopicsHooksTree({
         userSave ? (payload.selected_topics ?? []) : []
       );
       setHistoryOpen(false);
-    } catch (e) {
-      setError(formatApiError(e, "Could not restore save"));
+    } catch {
+      /* api() already toasted */
     }
   }
 
@@ -281,12 +277,6 @@ export function TopicsHooksTree({
           <span className="topics-hooks-autosave">Autosaved #{extract.save_id}</span>
         ) : null}
       </div>
-
-      {error && (
-        <p className="mt-2 text-xs font-medium text-destructive" role="alert">
-          {error}
-        </p>
-      )}
 
       <ul className="topics-hooks-root mt-4 space-y-2">
         {tree.length === 0 && (
@@ -555,20 +545,18 @@ export function TranscriptFramePicker({
 }) {
   const [items, setItems] = useState<CarouselTranscriptFrameItem[]>([]);
   const [loading, setLoading] = useState(true);
-  const [err, setErr] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     let alive = true;
     setLoading(true);
-    setErr(null);
     loadTranscriptFrames(driveFileId, startSec, endSec)
       .then((list) => {
         if (alive) setItems(list);
       })
-      .catch((e) => {
-        if (alive) setErr(formatApiError(e, "Could not load transcript frames"));
+      .catch(() => {
+        /* api() already toasted */
       })
       .finally(() => {
         if (alive) setLoading(false);
@@ -620,12 +608,7 @@ export function TranscriptFramePicker({
             <LoadingLabel>Loading frames…</LoadingLabel>
           </p>
         )}
-        {err && (
-          <p className="mt-4 text-xs text-destructive" role="alert">
-            {err}
-          </p>
-        )}
-        {!loading && !err && !items.length && (
+        {!loading && !items.length && (
           <p className="mt-4 text-sm text-muted-foreground">
             No transcript frames in this span yet.
           </p>

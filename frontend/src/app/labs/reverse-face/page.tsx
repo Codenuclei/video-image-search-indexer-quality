@@ -24,7 +24,7 @@ import {
   type LeadershipPerson,
   type LeadershipRoster,
 } from "@/lib/api";
-import { Button, Card, ConfirmDialog, FaceThumb, LoadingLabel, ServiceErrorCard } from "@/components/ui";
+import { Button, Card, ConfirmDialog, FaceThumb, LoadingLabel } from "@/components/ui";
 import { cn } from "@/lib/utils";
 
 function collectAppearances(matches: FaceSearchMatch[]): FaceSearchAppearance[] {
@@ -460,18 +460,6 @@ export default function ReverseFaceLabPage() {
           </p>
         </div>
       </div>
-
-      {error && (
-        <ServiceErrorCard
-          message={error}
-          onDismiss={() => setError(null)}
-          onRetry={() => {
-            if (selectedLeader) void selectLeader(selectedLeader);
-            else if (file) void runSearch();
-            else void loadRoster();
-          }}
-        />
-      )}
 
       <Card>
         <div className="mb-3 flex flex-wrap items-start justify-between gap-2">

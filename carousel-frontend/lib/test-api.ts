@@ -8,6 +8,7 @@
  */
 
 import { formatApiError } from "@/lib/api";
+import { toastApiError } from "@/lib/toast-api-error";
 
 const USE_REAL_API = process.env.NEXT_PUBLIC_TEST_USE_REAL_API !== "0";
 
@@ -49,7 +50,7 @@ async function api<T>(path: string, init?: RequestInit & { timeoutMs?: number })
     });
     if (!res.ok) {
       const text = await res.text();
-      throw new Error(formatApiError(new Error(text || res.statusText)));
+      throw new Error(text || res.statusText);
     }
     if (res.status === 204) return undefined as T;
     return res.json();
@@ -58,11 +59,13 @@ async function api<T>(path: string, init?: RequestInit & { timeoutMs?: number })
       (error instanceof DOMException || error instanceof Error) &&
       error.name === "AbortError"
     ) {
-      throw new Error(
-        `Request timed out after ${Math.round(timeout / 1000)}s. The API may be busy — retry in a moment.`
-      );
+      const msg = `Request timed out after ${Math.round(timeout / 1000)}s. The API may be busy — retry in a moment.`;
+      toastApiError(msg);
+      throw new Error(msg);
     }
-    throw error;
+    const msg = formatApiError(error);
+    toastApiError(msg);
+    throw new Error(msg);
   } finally {
     clearTimeout(timer);
   }
@@ -270,7 +273,9 @@ export const testApi = {
     });
     if (!res.ok) {
       const text = await res.text();
-      throw new Error(formatApiError(new Error(text || res.statusText)));
+      const msg = formatApiError(new Error(text || res.statusText));
+      toastApiError(msg);
+      throw new Error(msg);
     }
     return (await res.json()) as {
       drive_file_id: string;

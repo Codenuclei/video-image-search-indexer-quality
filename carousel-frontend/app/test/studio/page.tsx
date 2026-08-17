@@ -50,6 +50,7 @@ import {
   type CarouselPipelineExtractResponse,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { toastApiError } from "@/lib/toast-api-error";
 import { loadRunConfig, persistRunConfig } from "../carousel-llm-picker";
 import { StageLlmGenerate } from "../stage-llm-generate";
 import { TestIgPost } from "../test-ig-post";
@@ -204,7 +205,7 @@ function TestStudioInner() {
   const [extractLoading, setExtractLoading] = useState(false);
   const [copyLoading, setCopyLoading] = useState(false);
   const [imagesLoading, setImagesLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [, setError] = useState<string | null>(null);
 
   const [uploading, setUploading] = useState(false);
   const [uploadNote, setUploadNote] = useState<string | null>(null);
@@ -705,9 +706,10 @@ function TestStudioInner() {
             return continueToThemes({ ...opts, force: true });
           }
         }
-        setError(
-          "This video doesn’t have themes yet. Wait until the transcript is ready, then try Continue again."
-        );
+        const msg =
+          "This video doesn’t have themes yet. Wait until the transcript is ready, then try Continue again.";
+        setError(msg);
+        toastApiError(msg);
         return;
       }
       setTranscriptModal((prev) => ({ ...prev, open: false }));
@@ -727,7 +729,9 @@ function TestStudioInner() {
   }) {
     if (!selected || extractLoading) return;
     if (!selectedThemes.length) {
-      setError("Select at least one theme, then extract topics and hooks.");
+      const msg = "Select at least one theme, then extract topics and hooks.";
+      setError(msg);
+      toastApiError(msg);
       return;
     }
     const cfg = opts?.runConfig ?? runConfig;
@@ -763,7 +767,9 @@ function TestStudioInner() {
   async function generateCopy(opts?: { force?: boolean; runConfig?: CarouselRunConfig }) {
     if (!selected || !extract || copyLoading) return;
     if (!selectedHooks.length && !selectedTopics.length) {
-      setError("Select at least one topic or hook, then generate copy.");
+      const msg = "Select at least one topic or hook, then generate copy.";
+      setError(msg);
+      toastApiError(msg);
       return;
     }
     const cfg = opts?.runConfig ?? runConfig;
@@ -832,7 +838,9 @@ function TestStudioInner() {
       }
 
       if (!merged.length) {
-        setError("No carousel copy came back. Try different topics or hooks.");
+        const msg = "No carousel copy came back. Try different topics or hooks.";
+        setError(msg);
+        toastApiError(msg);
         return;
       }
 
@@ -961,22 +969,6 @@ function TestStudioInner() {
         </p>
         <PhaseRail phase={phase} />
       </header>
-
-      {error && (
-        <div
-          className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700"
-          role="alert"
-        >
-          {error}
-          <button
-            type="button"
-            className="ml-3 underline"
-            onClick={() => setError(null)}
-          >
-            Dismiss
-          </button>
-        </div>
-      )}
 
       {/* Step 1 — Video */}
       <section className="studio-panel p-5 sm:p-8" data-testid="test-phase-1">

@@ -11,6 +11,7 @@
  *   tunnel / other origin  → the configured public URL, protocol-matched
  */
 import { sanitizeUserFacingError } from "./index-errors";
+import { toastApiError } from "./toast-api-error";
 
 const LOOPBACK_API = (process.env.NEXT_PUBLIC_API_URL_LOCAL ?? "http://127.0.0.1:8000").replace(/\/+$/, "");
 const PUBLIC_API = (process.env.NEXT_PUBLIC_API_URL ?? "").replace(/\/+$/, "");
@@ -919,8 +920,11 @@ export type DriveTokenResponse = {
   appId?: string | null;
 };
 
-async function api<T>(path: string, init?: RequestInit & { timeoutMs?: number }): Promise<T> {
-  const { timeoutMs, signal: external, ...rest } = init ?? {};
+async function api<T>(
+  path: string,
+  init?: RequestInit & { timeoutMs?: number; silent?: boolean }
+): Promise<T> {
+  const { timeoutMs, silent, signal: external, ...rest } = init ?? {};
   let controller: AbortController | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let signal = external;
@@ -956,13 +960,15 @@ async function api<T>(path: string, init?: RequestInit & { timeoutMs?: number })
       error.name === "AbortError"
     ) {
       if (typeof timeoutMs === "number" && timeoutMs > 0 && !external?.aborted) {
-        throw new Error(
-          `Request timed out after ${Math.round(timeoutMs / 1000)}s. The API may be busy — retry in a moment.`
-        );
+        const msg = `Request timed out after ${Math.round(timeoutMs / 1000)}s. The API may be busy — retry in a moment.`;
+        if (!silent) toastApiError(msg);
+        throw new Error(msg);
       }
       throw error;
     }
-    throw new Error(formatApiError(error));
+    const msg = formatApiError(error);
+    if (!silent) toastApiError(msg);
+    throw new Error(msg);
   } finally {
     if (timer) clearTimeout(timer);
   }
@@ -1189,7 +1195,7 @@ export const apiClient = {
     }),
   skipCorruptFiles: () =>
     api<{ ok: boolean; skipped: number }>("/drive/skip-corrupt", { method: "POST" }),
-  captionStats: () => api<CaptionStats>("/index/captions"),
+  captionStats: () => api<CaptionStats>("/index/captions", { silent: true }),
   backfillCaptions: () => api<{ ok: boolean; scheduled: boolean }>("/backfill/image-captions", { method: "POST" }),
   retryDriveFile: (id: string) => api<DriveFile>(`/drive/files/${id}/retry`, { method: "POST" }),
   removeDriveFile: (id: string) => api<void>(`/drive/files/${id}`, { method: "DELETE" }),
@@ -1199,9 +1205,9 @@ export const apiClient = {
       method: "POST",
       body: JSON.stringify({ urls, index_now: indexNow, download_local: downloadLocal }),
     }),
-  indexStatus: () => api<IndexStatus>("/index"),
-  goIndexerStatus: () => api<GoIndexerStatus>("/index/go/status"),
-  skipStats: () => api<SkipStats>("/index/skip-stats"),
+  indexStatus: () => api<IndexStatus>("/index", { silent: true }),
+  goIndexerStatus: () => api<GoIndexerStatus>("/index/go/status", { silent: true }),
+  skipStats: () => api<SkipStats>("/index/skip-stats", { silent: true }),
   indexedFolders: () =>
     api<{ folders: IndexedFolder[]; total: number }>("/index/folders"),
   indexConflicts: (status: string | null = "pending", limit = 50, offset = 0) => {
@@ -1492,11 +1498,13 @@ export const apiClient = {
       if (!res.ok) {
         const text = await res.text();
         if (res.status >= 500) throw new Error(SERVICE_UNAVAILABLE_MESSAGE);
-        throw new Error(formatApiError(new Error(text || res.statusText)));
+        throw new Error(text || res.statusText);
       }
       return res.json();
     } catch (error) {
-      throw new Error(formatApiError(error));
+      const msg = formatApiError(error);
+      toastApiError(msg);
+      throw new Error(msg);
     }
   },
   searchFaceByUrl: (imageUrl: string, limit = 20) =>
@@ -1558,7 +1566,7 @@ export const apiClient = {
         if (res.status >= 500) {
           throw new Error(SERVICE_UNAVAILABLE_MESSAGE);
         }
-        throw new Error(formatApiError(new Error(text || res.statusText)));
+        throw new Error(text || res.statusText);
       }
       const raw = (await res.json()) as Partial<SearchResponse>;
       return {
@@ -1570,9 +1578,13 @@ export const apiClient = {
       };
     } catch (e) {
       if (e instanceof Error && e.name === "AbortError") {
-        throw new Error("Search timed out after 2 minutes. Try a shorter query.");
+        const msg = "Search timed out after 2 minutes. Try a shorter query.";
+        toastApiError(msg);
+        throw new Error(msg);
       }
-      throw new Error(formatApiError(e));
+      const msg = formatApiError(e);
+      toastApiError(msg);
+      throw new Error(msg);
     } finally {
       clearTimeout(timeout);
     }

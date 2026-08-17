@@ -20,7 +20,7 @@ import {
   type ReidProveResult,
   type ReidStatus,
 } from "@/lib/api";
-import { Button, Card, FaceThumb, Input, LoadingLabel, ServiceErrorCard } from "@/components/ui";
+import { Button, Card, FaceThumb, Input, LoadingLabel } from "@/components/ui";
 import { cn } from "@/lib/utils";
 
 function BodyCrop({ faceId, className }: { faceId: number; className?: string }) {
@@ -272,8 +272,6 @@ export default function ReidLabPage() {
           </span>
         </div>
       )}
-
-      {error && <ServiceErrorCard message={error} onRetry={load} onDismiss={() => setError(null)} />}
 
       {loading && (
         <p className="text-sm text-muted-foreground">

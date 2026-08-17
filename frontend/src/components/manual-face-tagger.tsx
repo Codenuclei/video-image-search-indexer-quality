@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Pencil, X } from "lucide-react";
-import { apiClient, driveFilePreviewUrl, formatApiError, type FileFace } from "@/lib/api";
+import { apiClient, driveFilePreviewUrl, type FileFace } from "@/lib/api";
 import { Button, Input, LoadingLabel } from "@/components/ui";
 import { ModalOverlay } from "@/components/modal";
 import { cn } from "@/lib/utils";
@@ -81,7 +81,6 @@ function ManualFaceTagModal({
   const overlayRef = useRef<HTMLDivElement>(null);
   const [faces, setFaces] = useState<FileFace[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [name, setName] = useState("");
   const [saving, setSaving] = useState(false);
@@ -97,11 +96,12 @@ function ManualFaceTagModal({
 
   const load = useCallback(() => {
     setLoading(true);
-    setError(null);
     apiClient
       .facesForFile(driveFileId)
       .then(setFaces)
-      .catch((e) => setError(formatApiError(e, "Failed to load faces")))
+      .catch(() => {
+        /* api() already toasted */
+      })
       .finally(() => setLoading(false));
   }, [driveFileId]);
 
@@ -120,7 +120,6 @@ function ManualFaceTagModal({
     setDraft(null);
     setSelectedId(face.id);
     setName(face.person_name ?? "");
-    setError(null);
   }
 
   function clientToImagePercent(clientX: number, clientY: number) {
@@ -140,7 +139,6 @@ function ManualFaceTagModal({
     setDrag({ x0: p.x, y0: p.y, x1: p.x, y1: p.y });
     setSelectedId(null);
     setDraft(null);
-    setError(null);
   }
 
   function onPointerMove(e: React.PointerEvent) {
@@ -170,7 +168,6 @@ function ManualFaceTagModal({
   async function saveTag() {
     if (!name.trim() || saving) return;
     setSaving(true);
-    setError(null);
     try {
       if (draft) {
         const res = await apiClient.createManualFaceBox({
@@ -193,8 +190,8 @@ function ManualFaceTagModal({
           )
         );
       }
-    } catch (e) {
-      setError(formatApiError(e, "Tag failed"));
+    } catch {
+      /* api() already toasted */
     } finally {
       setSaving(false);
     }
@@ -419,8 +416,6 @@ function ManualFaceTagModal({
               {drawMode ? "Drag on the image to start a box." : "Click a face box to edit its name."}
             </p>
           )}
-
-          {error && <p className="text-xs text-destructive">{error}</p>}
         </div>
       </div>
     </ModalOverlay>

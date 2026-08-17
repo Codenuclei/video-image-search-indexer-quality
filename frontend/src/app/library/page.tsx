@@ -16,7 +16,6 @@ import {
 } from "lucide-react";
 import {
   apiClient,
-  formatApiError,
   driveFileDownloadUrl,
   driveFilePreviewUrl,
   driveGoogleViewUrl,
@@ -25,7 +24,7 @@ import {
   type LibraryFolder,
   type LibraryResponse,
 } from "@/lib/api";
-import { Button, Card, DownloadButton, IconLink, Input, LoadingLabel, ServiceErrorCard, Spinner, StatCard } from "@/components/ui";
+import { Button, Card, DownloadButton, IconLink, Input, LoadingLabel, Spinner, StatCard } from "@/components/ui";
 import { ManualFaceTagger } from "@/components/manual-face-tagger";
 import { humanizeIndexError } from "@/lib/index-errors";
 import { cn } from "@/lib/utils";
@@ -259,7 +258,6 @@ function FileRow({
 export default function LibraryPage() {
   const [data, setData] = useState<LibraryResponse | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [selectedFolderPath, setSelectedFolderPath] = useState("/");
   const [selectedFileId, setSelectedFileId] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set(["/"]));
@@ -273,9 +271,8 @@ export default function LibraryPage() {
     try {
       const lib = await apiClient.driveLibrary();
       setData(lib);
-      setError(null);
-    } catch (e) {
-      setError(formatApiError(e, "Failed to load library"));
+    } catch {
+      /* api() already toasted */
     } finally {
       setLoading(false);
     }
@@ -351,8 +348,8 @@ export default function LibraryPage() {
     try {
       await apiClient.pauseFolderIndexing(path);
       await load();
-    } catch (e) {
-      setError(formatApiError(e, "Failed to pause folder"));
+    } catch {
+      /* api() already toasted */
     } finally {
       setFolderActionBusy(null);
     }
@@ -363,8 +360,8 @@ export default function LibraryPage() {
     try {
       await apiClient.resumeFolderIndexing(path);
       await load();
-    } catch (e) {
-      setError(formatApiError(e, "Failed to resume folder"));
+    } catch {
+      /* api() already toasted */
     } finally {
       setFolderActionBusy(null);
     }
@@ -375,8 +372,8 @@ export default function LibraryPage() {
     try {
       await apiClient.skipCorruptFiles();
       await load();
-    } catch (e) {
-      setError(formatApiError(e, "Failed to skip corrupt files"));
+    } catch {
+      /* api() already toasted */
     } finally {
       setSkipBusy(false);
     }
@@ -414,18 +411,6 @@ export default function LibraryPage() {
             </LoadingLabel>
           </div>
         </Card>
-      )}
-
-      {error && (
-        <ServiceErrorCard
-          message={error}
-          onRetry={() => {
-            setLoading(true);
-            load();
-          }}
-          onDismiss={() => setError(null)}
-          retryLabel="Refresh"
-        />
       )}
 
       {summary && (

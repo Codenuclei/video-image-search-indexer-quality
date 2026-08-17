@@ -10,7 +10,7 @@ export default function TestLibraryPage() {
   const [videos, setVideos] = useState<TestVideo[]>([]);
   const [youtube, setYoutube] = useState<TestVideo[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -53,14 +53,8 @@ export default function TestLibraryPage() {
         >
           <RefreshCw size={14} className={loading ? "animate-spin" : undefined} />
           {loading ? "Refreshing…" : "Refresh"}
-        </button>
+          </button>
       </header>
-
-      {error && (
-        <p className="mb-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-          {error}
-        </p>
-      )}
 
       {youtube.length > 0 && (
         <section className="mb-10">

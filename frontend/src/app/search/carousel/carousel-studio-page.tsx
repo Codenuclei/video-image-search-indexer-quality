@@ -43,8 +43,9 @@ import {
   type CarouselVerbatimItem,
   type Person,
 } from "@/lib/api";
-import { DownloadButton, LoadingLabel, ServiceErrorCard } from "@/components/ui";
+import { DownloadButton, LoadingLabel } from "@/components/ui";
 import { ModalOverlay } from "@/components/modal";
+import { toastApiError } from "@/lib/toast-api-error";
 import { cn } from "@/lib/utils";
 import {
   applyHookFrameOverrides,
@@ -229,7 +230,6 @@ export default function CarouselSearchPage() {
   const [recent, setRecent] = useState<CarouselRecentVideo[]>([]);
   const [persons, setPersons] = useState<Person[]>([]);
   const [loadingRecent, setLoadingRecent] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [personNotFound, setPersonNotFound] = useState<string | null>(null);
 
   const [videoScope, setVideoScope] = useState<"recent" | "all">("recent");
@@ -237,7 +237,6 @@ export default function CarouselSearchPage() {
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const [allVideos, setAllVideos] = useState<CarouselRecentVideo[]>([]);
   const [loadingAll, setLoadingAll] = useState(false);
-  const [allVideosError, setAllVideosError] = useState<string | null>(null);
 
   const [selectedVideo, setSelectedVideo] = useState<CarouselRecentVideo | null>(null);
   const [searchEntity, setSearchEntity] = useState("");
@@ -286,7 +285,6 @@ export default function CarouselSearchPage() {
   const [outline, setOutline] = useState<CarouselOutlineResponse | null>(null);
   const [generatedCarousels, setGeneratedCarousels] = useState<CarouselGeneratedItem[]>([]);
   const [activeCarouselId, setActiveCarouselId] = useState<string | null>(null);
-  const [outlineError, setOutlineError] = useState<string | null>(null);
   const [imagesReady, setImagesReady] = useState(false);
   const [selectingImages, setSelectingImages] = useState(false);
   const [imageQualityNote, setImageQualityNote] = useState<string | null>(null);
@@ -404,8 +402,8 @@ export default function CarouselSearchPage() {
         const vids = await apiClient.carouselRecentVideos(5, true);
         if (cancelled) return;
         setRecent(vids.items ?? []);
-      } catch (e) {
-        if (!cancelled) setError(formatApiError(e, "Could not load recent videos"));
+      } catch {
+        /* api() already toasted */
       } finally {
         if (!cancelled) setLoadingRecent(false);
       }
@@ -433,7 +431,6 @@ export default function CarouselSearchPage() {
     let cancelled = false;
     (async () => {
       setLoadingAll(true);
-      setAllVideosError(null);
       try {
         const res = await apiClient.carouselVideos({
           q: debouncedQuery || undefined,
@@ -441,11 +438,8 @@ export default function CarouselSearchPage() {
           captionedOnly: true,
         });
         if (!cancelled) setAllVideos(res.items ?? []);
-      } catch (e) {
-        if (!cancelled) {
-          setAllVideos([]);
-          setAllVideosError(formatApiError(e, "Could not load captioned videos"));
-        }
+      } catch {
+        if (!cancelled) setAllVideos([]);
       } finally {
         if (!cancelled) setLoadingAll(false);
       }
@@ -467,7 +461,6 @@ export default function CarouselSearchPage() {
     setGeneratedCarousels([]);
     setCarouselLayouts(null);
     setActiveCarouselId(null);
-    setOutlineError(null);
     setPersonNotFound(null);
   }, []);
 
@@ -511,6 +504,7 @@ export default function CarouselSearchPage() {
             res.message ||
             res.warning ||
             "Person not found in this video. Try without that person or change video.";
+          toastApiError(msg);
           setPersonNotFound(msg);
           setThemes([]);
           setThemeSaveId(null);
@@ -524,7 +518,7 @@ export default function CarouselSearchPage() {
         setThemesFromCache(Boolean(res.cache_hit));
         setThemesLoadedKey(selectionKey);
         if (!(res.themes ?? []).length && res.warning && !String(res.warning).toLowerCase().includes("cached")) {
-          setError(
+          toastApiError(
             formatApiError(
               res.warning,
               "We couldn’t find themes for this video yet. Wait until the transcript is ready, then try again."
@@ -536,7 +530,6 @@ export default function CarouselSearchPage() {
       } catch (e) {
         if (signal?.aborted || themesRequestKeyRef.current !== requestKey) return;
         if (e instanceof Error && e.name === "AbortError") return;
-        setError(formatApiError(e, "Theme segmentation failed"));
         setThemes([]);
         setThemeSaveId(null);
         setThemesFromCache(false);
@@ -585,7 +578,6 @@ export default function CarouselSearchPage() {
     setThemeHistoryOpen(false);
     resetFromPhase2();
     setLoadingThemes(false);
-    setError(null);
     setPersonNotFound(null);
     setPhase(1);
     setSearchEntity(entity);
@@ -628,7 +620,6 @@ export default function CarouselSearchPage() {
     themesAbortRef.current = ac;
     themesRequestKeyRef.current = requestKey;
     setThemeHistoryOpen(false);
-    setError(null);
     await loadThemesForVideo({
       video,
       personName,
@@ -660,7 +651,6 @@ export default function CarouselSearchPage() {
     setExtract(null);
     setSelectedHooks([]);
     setSelectedTopics([]);
-    setError(null);
     await loadThemesForVideo({
       video,
       personName,
@@ -673,12 +663,11 @@ export default function CarouselSearchPage() {
   }
 
   async function restoreThemeSave(saveId: number) {
-    setError(null);
     try {
       const res = await apiClient.carouselPipelineSaveGet(saveId);
       const themesPayload = (res.payload?.themes ?? []) as CarouselPipelineTheme[];
       if (!themesPayload.length) {
-        setError("That save has no themes.");
+        toastApiError("That save has no themes.");
         return;
       }
       setThemes(themesPayload);
@@ -691,8 +680,8 @@ export default function CarouselSearchPage() {
       setSelectedTopics([]);
       setPhase(2);
       setThemeHistoryOpen(false);
-    } catch (e) {
-      setError(formatApiError(e, "Could not restore saved themes"));
+    } catch {
+      /* api() already toasted */
     }
   }
 
@@ -718,18 +707,16 @@ export default function CarouselSearchPage() {
     setGeneratedCarousels([]);
     setCarouselLayouts(null);
     setActiveCarouselId(null);
-    setOutlineError(null);
     if (phase > 2) setPhase(2);
   }
 
   async function extractFromSelectedThemes() {
     if (!selectedVideo || loadingExtract) return;
     if (!selectedThemes.length) {
-      setError("Select at least one theme.");
+      toastApiError("Select at least one theme.");
       return;
     }
     setLoadingExtract(true);
-    setError(null);
     setOutline(null);
     setPhaseIntent(null);
     setPhaseIntentScore(null);
@@ -752,8 +739,7 @@ export default function CarouselSearchPage() {
       setPhaseIntent(res.intent ?? null);
       setPhaseIntentScore(res.intent_score ?? null);
       setPhase(3);
-    } catch (e) {
-      setError(formatApiError(e, "Hook & topic extract failed"));
+    } catch {
       setExtract(null);
     } finally {
       setLoadingExtract(false);
@@ -762,10 +748,9 @@ export default function CarouselSearchPage() {
 
   async function goToPreviewIntent() {
     if (!selectedHooks.length && !selectedTopics.length) {
-      setError("Select at least one hook or topic.");
+      toastApiError("Select at least one hook or topic.");
       return;
     }
-    setError(null);
     setPhase(4);
     setLoadingIntent(true);
     try {
@@ -790,14 +775,13 @@ export default function CarouselSearchPage() {
   async function generateCarousel() {
     if (!selectedVideo || !selectedThemes.length || !extract || building) return;
     setBuilding(true);
-    setOutlineError(null);
     setImageQualityNote(null);
     try {
       const hookPicks = selectedHooks.map((text) => toHookTimedPick(text, extract));
       // Explicit topics + parents implied by selected hooks → one carousel each.
       const topicPicks = expandTopicSeeds(selectedTopics, selectedHooks, extract);
       if (!topicPicks.length && !hookPicks.length) {
-        setOutlineError("Select at least one topic or hook.");
+        toastApiError("Select at least one topic or hook.");
         return;
       }
 
@@ -847,7 +831,7 @@ export default function CarouselSearchPage() {
               ]
             : [];
       if (!list.length) {
-        setOutlineError("Generate returned no carousels. Try fewer hooks or another theme.");
+        toastApiError("Generate returned no carousels. Try fewer hooks or another theme.");
         return;
       }
       const withPicks = applyHookFrameOverrides(list, hookFrames);
@@ -856,15 +840,12 @@ export default function CarouselSearchPage() {
       setImagesReady(Boolean(res.images_ready));
       setCarouselLayouts(res.layouts ?? null);
       setOutline(res);
-      setOutlineError(null);
       setPhase(5);
       requestAnimationFrame(() => {
         outlineRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
       });
-    } catch (e) {
-      // Stay on phase 4 with a visible error — never silently wipe success state
-      // without explaining why (error UI used to live only inside phase 5).
-      setOutlineError(formatApiError(e, "Carousel generation failed"));
+    } catch {
+      // Stay on phase 4; api() already toasted the failure.
     } finally {
       setBuilding(false);
     }
@@ -873,7 +854,6 @@ export default function CarouselSearchPage() {
   async function selectCarouselImages() {
     if (!selectedVideo || selectingImages || !generatedCarousels.length) return;
     setSelectingImages(true);
-    setOutlineError(null);
     setImageQualityNote(null);
     try {
       const res = await apiClient.carouselPipelineSelectImages({
@@ -915,8 +895,8 @@ export default function CarouselSearchPage() {
             (rej ? ` (filtered ${rej})` : "")
         );
       }
-    } catch (e) {
-      setOutlineError(formatApiError(e, "Image selection failed"));
+    } catch {
+      /* api() already toasted */
     } finally {
       setSelectingImages(false);
     }
@@ -934,7 +914,6 @@ export default function CarouselSearchPage() {
         <PhaseRail phase={phase} />
       </header>
 
-      {error && <ServiceErrorCard message={error} onDismiss={() => setError(null)} />}
       {pipelineLocked && (
         <p className="text-xs font-medium text-muted-foreground" role="status">
           Carousel generation is in progress. Editing and regeneration are temporarily locked.
@@ -1049,10 +1028,6 @@ export default function CarouselSearchPage() {
           ) : loadingAll ? (
             <p className="text-sm text-muted-foreground">
               <LoadingLabel>Searching…</LoadingLabel>
-            </p>
-          ) : allVideosError ? (
-            <p className="text-sm text-destructive" role="alert">
-              {allVideosError}
             </p>
           ) : allVideos.length === 0 ? (
             <p className="text-sm text-muted-foreground">
@@ -1498,11 +1473,6 @@ export default function CarouselSearchPage() {
                 "Generate carousels"
               )}
             </button>
-            {outlineError && phase < 5 && (
-              <p className="text-xs font-medium text-destructive" role="alert">
-                {outlineError}
-              </p>
-            )}
           </div>
         </section>
       )}
@@ -1523,12 +1493,6 @@ export default function CarouselSearchPage() {
                 <strong>Select &amp; filter images</strong> for frames.
               </p>
             </div>
-
-            {outlineError && (
-              <p className="text-xs font-medium text-destructive" role="alert">
-                {outlineError}
-              </p>
-            )}
 
             {carouselSaves.length > 0 && (
               <details className="rounded-lg border border-border px-3 py-2">
@@ -1563,9 +1527,9 @@ export default function CarouselSearchPage() {
                             setActiveCarouselId(list[0]?.id ?? null);
                             setImagesReady(true);
                             setPhase(5);
-                          }).catch((e) =>
-                            setOutlineError(formatApiError(e, "Could not restore generation"))
-                          );
+                          }).catch(() => {
+                            /* api() already toasted */
+                          });
                         }}
                       >
                         Restore

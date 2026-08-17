@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { FileImage, Gauge, ScanFace, Tag, Users } from "lucide-react";
 import { apiClient, formatApiError, type Cluster, type Person } from "@/lib/api";
-import { Button, Card, FaceThumb, Input, LoadingLabel, ServiceErrorCard } from "@/components/ui";
+import { Button, Card, FaceThumb, Input, LoadingLabel } from "@/components/ui";
 import { PersonMergeSearch } from "@/components/person-merge-search";
 import { AnimatedTrash } from "@/components/animated-trash";
 import { cn } from "@/lib/utils";
@@ -174,8 +174,6 @@ export default function ReviewPage() {
           </button>
         </div>
       )}
-      {error && (
-        <ServiceErrorCard message={error} onRetry={() => load()} onDismiss={() => setError(null)} />
       )}
       {initialLoading && (
         <p className="text-muted-foreground">

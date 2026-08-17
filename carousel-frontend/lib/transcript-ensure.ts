@@ -1,6 +1,7 @@
 "use client";
 
 import { formatApiError } from "@/lib/api";
+import { toastApiError } from "@/lib/toast-api-error";
 
 export type TranscriptStatus = {
   ok: boolean;
@@ -31,6 +32,12 @@ function extractApiDetail(raw: string, fallback: string): string {
   return formatApiError(new Error(raw || ""), fallback);
 }
 
+function throwTranscriptError(raw: string, fallback: string, silent = false): never {
+  const msg = extractApiDetail(raw, fallback);
+  if (!silent) toastApiError(msg);
+  throw new Error(msg);
+}
+
 export async function ensureVideoTranscript(
   apiBase: string,
   driveFileId: string,
@@ -47,8 +54,9 @@ export async function ensureVideoTranscript(
   });
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(
-      extractApiDetail(text, "We couldn’t get transcripts from this video. Please try again.")
+    throwTranscriptError(
+      text,
+      "We couldn’t get transcripts from this video. Please try again."
     );
   }
   return res.json();
@@ -64,8 +72,10 @@ export async function pollVideoTranscriptStatus(
   );
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(
-      extractApiDetail(text, "We couldn’t check transcript progress. Please try again.")
+    throwTranscriptError(
+      text,
+      "We couldn’t check transcript progress. Please try again.",
+      true
     );
   }
   return res.json();
@@ -90,11 +100,9 @@ export async function ensureEnglishTranscript(
   });
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(
-      extractApiDetail(
-        text,
-        "We couldn’t prepare an English transcript for this video. Please try again."
-      )
+    throwTranscriptError(
+      text,
+      "We couldn’t prepare an English transcript for this video. Please try again."
     );
   }
   return res.json();

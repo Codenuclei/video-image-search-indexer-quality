@@ -4,6 +4,7 @@
  */
 
 import { formatApiError } from "@/lib/api";
+import { toastApiError } from "@/lib/toast-api-error";
 
 export type DriveSession = {
   connected: boolean;
@@ -51,7 +52,9 @@ async function jsonApi<T>(base: string, path: string, init?: RequestInit): Promi
   });
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(formatApiError(new Error(text || res.statusText)));
+    const msg = formatApiError(new Error(text || res.statusText));
+    toastApiError(msg);
+    throw new Error(msg);
   }
   if (res.status === 204) return undefined as T;
   return res.json();

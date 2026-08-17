@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import SmoothScroll from "@/components/smooth-scroll";
+import { Toaster } from "@/components/sonner";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -24,6 +25,7 @@ export default function RootLayout({
       {/* System stack avoids next/font/google build-time fetches (flaky on Railway). */}
       <body className="min-h-full font-sans antialiased bg-white text-[#191919]">
         <SmoothScroll>{children}</SmoothScroll>
+        <Toaster />
       </body>
     </html>
   );

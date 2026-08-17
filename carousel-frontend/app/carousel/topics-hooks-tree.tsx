@@ -162,7 +162,7 @@ export function TopicsHooksTree({
   const [historyOpen, setHistoryOpen] = useState(false);
   const historyRef = useRef<HTMLDivElement>(null);
   useDismissible(historyOpen, () => setHistoryOpen(false), historyRef);
-  const [error, setError] = useState<string | null>(null);
+  const [, setError] = useState<string | null>(null);
   const [framePick, setFramePick] = useState<{
     hookText: string;
     start_sec: number;
@@ -307,12 +307,6 @@ export function TopicsHooksTree({
           <span className="topics-hooks-autosave">Autosaved #{extract.save_id}</span>
         ) : null}
       </div>
-
-      {error && (
-        <p className="mt-2 text-xs font-medium text-destructive" role="alert">
-          {error}
-        </p>
-      )}
 
       <ul className="topics-hooks-root mt-4 space-y-2">
         {tree.length === 0 && (
@@ -743,11 +737,6 @@ export function TranscriptFramePicker({
         {loading && (
           <p className="mt-4 text-sm text-muted-foreground">
             <LoadingLabel>Loading frames…</LoadingLabel>
-          </p>
-        )}
-        {err && (
-          <p className="mt-4 text-xs text-destructive" role="alert">
-            {err}
           </p>
         )}
         {!loading && !err && !items.length && (
