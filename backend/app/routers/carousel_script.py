@@ -2619,6 +2619,11 @@ async def transcript_frame_candidates(
             items.append(_row(i, cached=False))
             cold_added += 1
     items.sort(key=lambda x: float(x["frame_ts"]))
+    from app.routers.media import schedule_frame_extract
+
+    for row in items:
+        if not row.get("cached"):
+            schedule_frame_extract(fid, float(row["frame_ts"]))
     return {
         "drive_file_id": fid,
         "items": items,

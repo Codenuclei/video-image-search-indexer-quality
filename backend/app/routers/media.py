@@ -12,7 +12,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.db.models import DriveFile, Face, Media, MediaType, OcrPage, VideoSegment
-from app.db.session import get_db
+from app.db.session import get_db, get_session_factory
+from app.video.ffmpeg_utils import ffmpeg_carousel_still_cmd
 from app.schemas import FaceOut, MediaOut
 
 logger = logging.getLogger(__name__)
@@ -158,9 +159,10 @@ async def get_video_frame(
     if seg and seg.frame_path and Path(seg.frame_path).is_file():
         return _respond(Path(seg.frame_path))
 
-    # 4. On-demand extraction (local cache first; live Drive stream last)
+    # 4. On-demand extraction (local cache first; live Drive stream last).
+    # Coalesce so Close / a second click on the same timestamp reuses one ffmpeg job.
     frames_dir.mkdir(parents=True, exist_ok=True)
-    ok = await _extract_frame_on_demand(drive_file_id, ts, out_path, settings, session)
+    ok = await ensure_frame_extracted(drive_file_id, ts, out_path, settings, session)
     if ok and out_path.is_file():
         return _respond(out_path)
 
@@ -188,6 +190,88 @@ async def get_video_frame(
     raise HTTPException(status_code=404, detail="Frame not available")
 
 
+_EXTRACT_JOBS: dict[str, asyncio.Future[bool]] = {}
+_EXTRACT_JOBS_LOCK: asyncio.Lock | None = None
+_EXTRACT_SEM = asyncio.Semaphore(2)
+
+
+def _extract_job_key(drive_file_id: str, ts: float) -> str:
+    return f"{drive_file_id}:{round(float(ts), 3):.3f}"
+
+
+def _extract_jobs_lock() -> asyncio.Lock:
+    global _EXTRACT_JOBS_LOCK
+    if _EXTRACT_JOBS_LOCK is None:
+        _EXTRACT_JOBS_LOCK = asyncio.Lock()
+    return _EXTRACT_JOBS_LOCK
+
+
+async def ensure_frame_extracted(
+    drive_file_id: str,
+    ts: float,
+    out_path: Path,
+    settings,
+    _session: AsyncSession,
+) -> bool:
+    """One in-flight ffmpeg per (video, timestamp). Closing the client does not cancel it."""
+    if out_path.is_file():
+        return True
+    key = _extract_job_key(drive_file_id, ts)
+    lock = _extract_jobs_lock()
+    async with lock:
+        fut = _EXTRACT_JOBS.get(key)
+        if fut is None:
+            loop = asyncio.get_running_loop()
+            fut = loop.create_future()
+            _EXTRACT_JOBS[key] = fut
+
+            async def _run() -> None:
+                try:
+                    async with _EXTRACT_SEM:
+                        if out_path.is_file():
+                            ok = True
+                        else:
+                            factory = get_session_factory()
+                            async with factory() as own:
+                                ok = await _extract_frame_on_demand(
+                                    drive_file_id, ts, out_path, settings, own
+                                )
+                    if not fut.done():
+                        fut.set_result(bool(ok))
+                except Exception as exc:  # noqa: BLE001
+                    if not fut.done():
+                        fut.set_exception(exc)
+                finally:
+                    _EXTRACT_JOBS.pop(key, None)
+
+            asyncio.create_task(_run())
+    return await asyncio.shield(fut)
+
+
+def schedule_frame_extract(drive_file_id: str, ts: float) -> None:
+    """Kick on-demand extract without blocking the list/API caller."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    loop.create_task(_bg_frame_extract(drive_file_id, ts))
+
+
+async def _bg_frame_extract(drive_file_id: str, ts: float) -> None:
+    settings = get_settings()
+    frames_dir = Path(settings.thumbnail_dir) / "video" / drive_file_id
+    out_path = frames_dir / f"{float(ts):.3f}.jpg"
+    if out_path.is_file():
+        return
+    frames_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        factory = get_session_factory()
+        async with factory() as session:
+            await ensure_frame_extracted(drive_file_id, ts, out_path, settings, session)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("background frame extract %s@%.3f: %s", drive_file_id, ts, exc)
+
+
 async def _extract_frame_on_demand(
     drive_file_id: str,
     ts: float,
@@ -210,14 +294,7 @@ async def _extract_frame_on_demand(
     if drive_file is not None:
         src = video_cache_path(settings, drive_file)
         if src.is_file():
-            cmd = [
-                "ffmpeg", "-y",
-                "-ss", str(ts),
-                "-i", str(src),
-                "-frames:v", "1",
-                "-q:v", "3",
-                str(out_path),
-            ]
+            cmd = ffmpeg_carousel_still_cmd(str(src), ts, str(out_path))
 
             def _run_local() -> bool:
                 try:
@@ -272,15 +349,12 @@ async def _extract_frame_on_demand(
     access_token = user.access_token
     drive_url = f"https://www.googleapis.com/drive/v3/files/{drive_file_id}?alt=media"
 
-    cmd = [
-        "ffmpeg", "-y",
-        "-headers", f"Authorization: Bearer {access_token}\r\n",
-        "-ss", str(ts),
-        "-i", drive_url,
-        "-frames:v", "1",
-        "-q:v", "3",
+    cmd = ffmpeg_carousel_still_cmd(
+        drive_url,
+        ts,
         str(out_path),
-    ]
+        extra_input_args=["-headers", f"Authorization: Bearer {access_token}\r\n"],
+    )
 
     def _run() -> bool:
         try:

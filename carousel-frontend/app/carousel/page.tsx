@@ -3217,9 +3217,10 @@ function InstagramCarouselPost({
           endSec={current.end_timestamp_sec}
           hookText={current.hook_line}
           onClose={() => setPickingFrame(false)}
-          onPick={(item) => {
+          onSave={(picked) => {
+            if (!picked.length) return;
             const next = slides.map((slide, i) =>
-              i === active ? withReplacedFrame(slide, item) : slide
+              i === active ? withReplacedFrame(slide, picked[0]) : slide
             );
             onSlidesChange?.(next);
             setPickingFrame(false);

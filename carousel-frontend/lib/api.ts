@@ -560,7 +560,8 @@ export const apiClient = {
     }),
   carouselRecentVideos: (limit = 5, captionedOnly = true) =>
     api<{ items: CarouselRecentVideo[]; captioned_only?: boolean }>(
-      `/search/carousel/recent-videos?limit=${limit}&captioned_only=${captionedOnly ? "true" : "false"}`
+      `/search/carousel/recent-videos?limit=${limit}&captioned_only=${captionedOnly ? "true" : "false"}`,
+      { timeoutMs: 15_000 }
     ),
   carouselVideos: (opts?: {
     q?: string;

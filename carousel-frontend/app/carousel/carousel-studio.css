@@ -1419,8 +1419,8 @@
 
 .carousel-studio .topics-hooks-frame-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(8.5rem, 1fr));
-  gap: 0.55rem;
+  grid-template-columns: repeat(auto-fill, minmax(10.8rem, 1fr));
+  gap: 0.65rem;
 }
 
 .carousel-studio .topics-hooks-frame-card {
@@ -1435,6 +1435,10 @@
   background: var(--studio-surface-zinc);
   transition: border-color 140ms ease, box-shadow 140ms ease, transform 180ms var(--th-ease);
 }
+.carousel-studio .topics-hooks-frame-card.is-selected {
+  border-color: var(--studio-primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--studio-primary) 18%, transparent);
+}
 .carousel-studio .topics-hooks-frame-card:hover {
   border-color: var(--studio-primary);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--studio-primary) 12%, transparent);
@@ -1444,6 +1448,7 @@
 .carousel-studio .topics-hooks-frame-img {
   aspect-ratio: 4 / 5;
   width: 100%;
+  height: auto;
   object-fit: cover;
   background: var(--muted);
 }

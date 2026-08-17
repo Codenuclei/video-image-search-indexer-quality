@@ -29,18 +29,43 @@ export const testAssetUrl = (path: string) =>
 export const testVideoStreamUrl = (driveFileId: string) =>
   `${API_BASE}/drive/files/${encodeURIComponent(driveFileId)}/preview`;
 
-async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
-    ...init,
-    headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
-    cache: "no-store",
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(formatApiError(new Error(text || res.statusText)));
+async function api<T>(path: string, init?: RequestInit & { timeoutMs?: number }): Promise<T> {
+  const { timeoutMs, ...rest } = init ?? {};
+  const timeout =
+    typeof timeoutMs === "number" && timeoutMs > 0
+      ? timeoutMs
+      : String(rest.method || "GET").toUpperCase() === "GET" ||
+          String(rest.method || "GET").toUpperCase() === "HEAD"
+        ? 15_000
+        : 120_000;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeout);
+  try {
+    const res = await fetch(`${API_BASE}${path}`, {
+      ...rest,
+      signal: controller.signal,
+      headers: { "Content-Type": "application/json", ...(rest.headers || {}) },
+      cache: "no-store",
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(formatApiError(new Error(text || res.statusText)));
+    }
+    if (res.status === 204) return undefined as T;
+    return res.json();
+  } catch (error) {
+    if (
+      (error instanceof DOMException || error instanceof Error) &&
+      error.name === "AbortError"
+    ) {
+      throw new Error(
+        `Request timed out after ${Math.round(timeout / 1000)}s. The API may be busy — retry in a moment.`
+      );
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
   }
-  if (res.status === 204) return undefined as T;
-  return res.json();
 }
 
 export type TestVideo = {

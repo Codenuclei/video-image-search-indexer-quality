@@ -61,6 +61,12 @@ const statusTone: Record<string, string> = {
 const PAGE_SIZE = 100;
 const MAX_PAGES = 8;
 
+const driveVideoJobs = new Map<string, Promise<DriveLibraryFile[]>>();
+
+function invalidateDriveVideoJob(apiBase: string) {
+  driveVideoJobs.delete(apiBase);
+}
+
 export function DriveFolderPanel({
   apiBase,
   onVideoReady,
@@ -89,44 +95,52 @@ export function DriveFolderPanel({
   const [filterQuery, setFilterQuery] = useState("");
 
   const loadVideosFromDrive = useCallback(async (): Promise<DriveLibraryFile[]> => {
-    const collected: DriveLibraryFile[] = [];
-    let offset = 0;
-    for (let page = 0; page < MAX_PAGES; page++) {
-      const res = await api.driveFilesPage({
-        source: "drive",
-        limit: PAGE_SIZE,
-        offset,
-      });
-      const items = res.items ?? [];
-      for (const f of items) {
-        if (isVideoMime(f.mime_type)) collected.push(f);
+    const existing = driveVideoJobs.get(apiBase);
+    if (existing) return existing;
+    const job = (async () => {
+      const collected: DriveLibraryFile[] = [];
+      let offset = 0;
+      for (let page = 0; page < MAX_PAGES; page++) {
+        const res = await api.driveFilesPage({
+          source: "drive",
+          limit: PAGE_SIZE,
+          offset,
+        });
+        const items = res.items ?? [];
+        for (const f of items) {
+          if (isVideoMime(f.mime_type)) collected.push(f);
+        }
+        offset += items.length;
+        if (items.length < PAGE_SIZE || offset >= (res.total ?? 0)) break;
       }
-      offset += items.length;
-      if (items.length < PAGE_SIZE || offset >= (res.total ?? 0)) break;
+      return collected;
+    })();
+    driveVideoJobs.set(apiBase, job);
+    try {
+      return await job;
+    } catch (e) {
+      driveVideoJobs.delete(apiBase);
+      throw e;
     }
-    return collected;
-  }, [api]);
+  }, [api, apiBase]);
 
   const load = useCallback(async () => {
     try {
-      const [ds, foldersRes, settings, vids] = await Promise.all([
+      const [ds, foldersRes, settings] = await Promise.all([
         api.driveSession().catch(() => null as DriveSession | null),
         api.indexedFolders().catch(() => ({ folders: [] as IndexedFolder[], total: 0 })),
         api.settingsShortcuts().catch(() => ({ follow_shortcut_folders: false })),
-        loadVideosFromDrive().catch(() => [] as DriveLibraryFile[]),
       ]);
       setSession(ds);
       setIndexedFolders(foldersRes.folders ?? []);
       if (!shortcutsBusyRef.current) {
         setFollowShortcuts(Boolean(settings.follow_shortcut_folders));
       }
-      setVideos(vids);
-      setVideoTotalHint(vids.length);
       setError(null);
     } catch (e) {
       setError(formatApiError(e, "Failed to load Drive status"));
     }
-  }, [api, loadVideosFromDrive]);
+  }, [api]);
 
   useEffect(() => {
     void load();
@@ -347,6 +361,7 @@ export function DriveFolderPanel({
           try {
             await api.saveDriveFolder(doc.id, doc.name);
             await api.syncDriveFiles().catch(() => {});
+            invalidateDriveVideoJob(apiBase);
             setNote(`Folder “${doc.name}” selected — syncing videos…`);
             await load();
             onLibraryChanged?.();
@@ -437,8 +452,9 @@ export function DriveFolderPanel({
     setBusy(true);
     setError(null);
     try {
-      await api.saveDriveFolder(folder.id, folder.name);
-      await api.syncDriveFiles().catch(() => {});
+            await api.saveDriveFolder(folder.id, folder.name);
+            await api.syncDriveFiles().catch(() => {});
+            invalidateDriveVideoJob(apiBase);
       setNote(`Using folder “${folder.name}”.`);
       await load();
       onLibraryChanged?.();
@@ -474,6 +490,7 @@ export function DriveFolderPanel({
     try {
       await api.syncDriveFiles();
       setNote("Drive folder sync scheduled.");
+      invalidateDriveVideoJob(apiBase);
       await load();
       onLibraryChanged?.();
     } catch (e) {

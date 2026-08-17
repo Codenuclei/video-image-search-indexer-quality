@@ -705,11 +705,13 @@ export function TestIgPost({
             endSec={current.end_timestamp_sec}
             hookText={captionOf(current)}
             onClose={() => setPickingFrame(false)}
-            onPick={(frameTs, previewUrl) => {
+            onSave={(picked) => {
+              if (!picked.length) return;
+              const first = picked[0];
               const next: TestSlide = {
                 ...current,
-                frame_ts: frameTs,
-                preview_url: previewUrl,
+                frame_ts: first.frame_ts,
+                preview_url: first.preview_url,
                 frame_source: "manual",
               };
               onSlideUpdated?.(active, next);
@@ -728,93 +730,134 @@ type FrameThumb = {
   source: "browser" | "api";
 };
 
+const testFrameJobs = new Map<string, Promise<{ items: FrameThumb[]; sourceNote: string }>>();
+
+function testFrameJobKey(driveFileId: string, startSec: number, endSec?: number | null): string {
+  const lo = Math.max(0, startSec - 4);
+  const hi = endSec != null ? endSec + 4 : startSec + 28;
+  return `${driveFileId}:${lo}:${hi}`;
+}
+
+function loadTestFrames(
+  driveFileId: string,
+  startSec: number,
+  endSec?: number | null
+): Promise<{ items: FrameThumb[]; sourceNote: string }> {
+  const key = testFrameJobKey(driveFileId, startSec, endSec);
+  const existing = testFrameJobs.get(key);
+  if (existing) return existing;
+  const lo = Math.max(0, startSec - 4);
+  const hi = endSec != null ? endSec + 4 : startSec + 28;
+  const job = (async () => {
+    if (driveFileId) {
+      try {
+        const videoUrl = testVideoStreamUrl(driveFileId);
+        const captured = await captureVideoFramesInRange(videoUrl, lo, hi, {
+          count: 12,
+          maxWidth: 480,
+          timeoutMs: 15_000,
+        });
+        if (captured.length) {
+          return {
+            items: captured.map((f) => ({
+              frame_ts: f.frame_ts,
+              preview_url: f.dataUrl,
+              source: "browser" as const,
+            })),
+            sourceNote: "Browser capture",
+          };
+        }
+      } catch {
+        /* fall through to API frames */
+      }
+    }
+    const res = await testApi.transcriptFrames({
+      driveFileId,
+      startSec: lo,
+      endSec: hi,
+      limit: 24,
+    });
+    return {
+      items: (res.items ?? []).map((item) => ({
+        frame_ts: item.frame_ts,
+        preview_url: item.preview_url,
+        source: "api" as const,
+      })),
+      sourceNote: "API frames",
+    };
+  })();
+  testFrameJobs.set(key, job);
+  job.catch(() => {
+    testFrameJobs.delete(key);
+  });
+  return job;
+}
+
 function TestFramePicker({
   driveFileId,
   startSec,
   endSec,
   hookText,
   onClose,
-  onPick,
+  onSave,
 }: {
   driveFileId: string;
   startSec: number;
   endSec?: number | null;
   hookText?: string;
   onClose: () => void;
-  onPick: (frameTs: number, previewUrl: string) => void;
+  onSave: (items: FrameThumb[]) => void | Promise<void>;
 }) {
   const [items, setItems] = useState<FrameThumb[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [sourceNote, setSourceNote] = useState<string | null>(null);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    let cancelled = false;
-    const lo = Math.max(0, startSec - 4);
-    const hi = endSec != null ? endSec + 4 : startSec + 28;
-
-    async function load() {
-      setLoading(true);
-      setErr(null);
-      setSourceNote(null);
-
-      // Prefer browser canvas capture from the playable preview stream.
-      if (driveFileId) {
-        try {
-          const videoUrl = testVideoStreamUrl(driveFileId);
-          const captured = await captureVideoFramesInRange(videoUrl, lo, hi, {
-            count: 12,
-            maxWidth: 480,
-            timeoutMs: 15_000,
-          });
-          if (cancelled) return;
-          if (captured.length) {
-            setItems(
-              captured.map((f) => ({
-                frame_ts: f.frame_ts,
-                preview_url: f.dataUrl,
-                source: "browser" as const,
-              }))
-            );
-            setSourceNote("Browser capture");
-            setLoading(false);
-            return;
-          }
-        } catch {
-          /* fall through to API frames */
-        }
-      }
-
-      try {
-        const res = await testApi.transcriptFrames({
-          driveFileId,
-          startSec: lo,
-          endSec: hi,
-          limit: 24,
-        });
-        if (cancelled) return;
-        setItems(
-          (res.items ?? []).map((item) => ({
-            frame_ts: item.frame_ts,
-            preview_url: item.preview_url,
-            source: "api" as const,
-          }))
-        );
-        setSourceNote("API frames");
-      } catch (e) {
-        if (!cancelled) {
-          setErr(formatApiError(e, "Could not load frames"));
-        }
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    }
-
-    void load();
+    let alive = true;
+    setLoading(true);
+    setErr(null);
+    setSourceNote(null);
+    loadTestFrames(driveFileId, startSec, endSec)
+      .then((res) => {
+        if (!alive) return;
+        setItems(res.items);
+        setSourceNote(res.sourceNote);
+      })
+      .catch((e) => {
+        if (alive) setErr(formatApiError(e, "Could not load frames"));
+      })
+      .finally(() => {
+        if (alive) setLoading(false);
+      });
     return () => {
-      cancelled = true;
+      alive = false;
     };
   }, [driveFileId, startSec, endSec]);
+
+  function toggle(ts: number) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(ts)) next.delete(ts);
+      else next.add(ts);
+      return next;
+    });
+  }
+
+  async function commit() {
+    const picked = items.filter((item) => selected.has(item.frame_ts));
+    if (!picked.length) return;
+    setSaving(true);
+    try {
+      await onSave(picked);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const n = selected.size;
 
   return (
     <div
@@ -847,32 +890,38 @@ function TestFramePicker({
       {err && <p className="text-sm text-red-600">{err}</p>}
       {!loading && !err && (
         <ul className="topics-hooks-frame-grid max-h-[min(56vh,28rem)] overflow-y-auto">
-          {items.map((item) => (
-            <li key={`${item.source}-${item.frame_ts}`}>
-              <button
-                type="button"
-                className="topics-hooks-frame-card"
-                onClick={() => onPick(item.frame_ts, item.preview_url)}
-              >
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={
-                    item.source === "browser"
-                      ? item.preview_url
-                      : testAssetUrl(item.preview_url)
-                  }
-                  alt=""
-                  className="topics-hooks-frame-img"
-                />
-                <span className="topics-hooks-frame-ts tabular-nums">
-                  {Math.floor(item.frame_ts / 60)}:
-                  {Math.floor(item.frame_ts % 60)
-                    .toString()
-                    .padStart(2, "0")}
-                </span>
-              </button>
-            </li>
-          ))}
+          {items.map((item) => {
+            const on = selected.has(item.frame_ts);
+            return (
+              <li key={`${item.source}-${item.frame_ts}`}>
+                <button
+                  type="button"
+                  className={cn("topics-hooks-frame-card", on && "is-selected")}
+                  aria-pressed={on}
+                  onClick={() => toggle(item.frame_ts)}
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={
+                      item.source === "browser"
+                        ? item.preview_url
+                        : testAssetUrl(item.preview_url)
+                    }
+                    alt=""
+                    className="topics-hooks-frame-img"
+                    width={1080}
+                    height={1350}
+                  />
+                  <span className="topics-hooks-frame-ts tabular-nums">
+                    {Math.floor(item.frame_ts / 60)}:
+                    {Math.floor(item.frame_ts % 60)
+                      .toString()
+                      .padStart(2, "0")}
+                  </span>
+                </button>
+              </li>
+            );
+          })}
           {!items.length && (
             <li className="col-span-full text-sm text-muted-foreground">
               No frames in this span.
@@ -880,6 +929,25 @@ function TestFramePicker({
           )}
         </ul>
       )}
+      {items.length > 0 ? (
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+          <p className="text-xs text-muted-foreground tabular-nums">
+            {n === 0 ? "No frames selected" : `${n} frame${n === 1 ? "" : "s"} selected`}
+          </p>
+          <button
+            type="button"
+            className="studio-btn studio-btn-primary studio-btn-sm"
+            disabled={saving || n === 0}
+            onClick={() => void commit()}
+          >
+            {saving
+              ? "Saving…"
+              : n === 0
+                ? "Save frames"
+                : `Save ${n} frame${n === 1 ? "" : "s"}`}
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }

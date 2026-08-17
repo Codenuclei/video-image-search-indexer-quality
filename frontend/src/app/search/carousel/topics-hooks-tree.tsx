@@ -26,6 +26,49 @@ function fmtTs(sec: number): string {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
+const transcriptFrameJobs = new Map<string, Promise<CarouselTranscriptFrameItem[]>>();
+
+function transcriptFrameJobKey(
+  driveFileId: string,
+  startSec: number,
+  endSec?: number | null
+): string {
+  const lo = Math.max(0, startSec - 4);
+  const hi = endSec != null ? endSec + 4 : startSec + 28;
+  return `${driveFileId}:${lo}:${hi}`;
+}
+
+function loadTranscriptFrames(
+  driveFileId: string,
+  startSec: number,
+  endSec?: number | null
+): Promise<CarouselTranscriptFrameItem[]> {
+  const key = transcriptFrameJobKey(driveFileId, startSec, endSec);
+  const existing = transcriptFrameJobs.get(key);
+  if (existing) return existing;
+  const job = apiClient
+    .carouselTranscriptFrames({
+      driveFileId,
+      startSec: Math.max(0, startSec - 4),
+      endSec: endSec != null ? endSec + 4 : startSec + 28,
+      limit: 24,
+    })
+    .then((res) => {
+      const list = res.items ?? [];
+      return [...list].sort((a, b) => {
+        const ac = a.cached === false ? 1 : 0;
+        const bc = b.cached === false ? 1 : 0;
+        if (ac !== bc) return ac - bc;
+        return a.frame_ts - b.frame_ts;
+      });
+    });
+  transcriptFrameJobs.set(key, job);
+  job.catch(() => {
+    transcriptFrameJobs.delete(key);
+  });
+  return job;
+}
+
 function buildTreeFromFlat(
   topics: CarouselVerbatimItem[],
   hooks: CarouselVerbatimItem[]
@@ -409,8 +452,9 @@ export function TopicsHooksTree({
           endSec={framePick.end_sec}
           hookText={framePick.hookText}
           onClose={() => setFramePick(null)}
-          onPick={(item) => {
-            onFramePicked?.(framePick.hookText, item.frame_ts, item.preview_url);
+          onSave={(picked) => {
+            if (!picked.length) return;
+            onFramePicked?.(framePick.hookText, picked[0].frame_ts, picked[0].preview_url);
             setFramePick(null);
           }}
         />
@@ -499,51 +543,63 @@ export function TranscriptFramePicker({
   hookText,
   onClose,
   onPick,
+  onSave,
 }: {
   driveFileId: string;
   startSec: number;
   endSec?: number | null;
   hookText: string;
   onClose: () => void;
-  onPick: (item: CarouselTranscriptFrameItem) => void;
+  onPick?: (item: CarouselTranscriptFrameItem) => void;
+  onSave?: (items: CarouselTranscriptFrameItem[]) => void | Promise<void>;
 }) {
   const [items, setItems] = useState<CarouselTranscriptFrameItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    let cancelled = false;
+    let alive = true;
     setLoading(true);
-    apiClient
-      .carouselTranscriptFrames({
-        driveFileId,
-        startSec: Math.max(0, startSec - 4),
-        endSec: endSec != null ? endSec + 4 : startSec + 28,
-        limit: 24,
-      })
-      .then((res) => {
-        if (!cancelled) {
-          const list = res.items ?? [];
-          setItems(
-            [...list].sort((a, b) => {
-              const ac = a.cached === false ? 1 : 0;
-              const bc = b.cached === false ? 1 : 0;
-              if (ac !== bc) return ac - bc;
-              return a.frame_ts - b.frame_ts;
-            })
-          );
-        }
+    setErr(null);
+    loadTranscriptFrames(driveFileId, startSec, endSec)
+      .then((list) => {
+        if (alive) setItems(list);
       })
       .catch((e) => {
-        if (!cancelled) setErr(formatApiError(e, "Could not load transcript frames"));
+        if (alive) setErr(formatApiError(e, "Could not load transcript frames"));
       })
       .finally(() => {
-        if (!cancelled) setLoading(false);
+        if (alive) setLoading(false);
       });
     return () => {
-      cancelled = true;
+      alive = false;
     };
   }, [driveFileId, startSec, endSec]);
+
+  function toggle(ts: number) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(ts)) next.delete(ts);
+      else next.add(ts);
+      return next;
+    });
+  }
+
+  async function commit() {
+    const picked = items.filter((item) => selected.has(item.frame_ts));
+    if (!picked.length) return;
+    setSaving(true);
+    try {
+      if (onSave) await onSave(picked);
+      else onPick?.(picked[0]);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const n = selected.size;
 
   return (
     <div className="topics-hooks-frame-overlay" role="dialog" aria-modal="true">
@@ -575,31 +631,56 @@ export function TranscriptFramePicker({
           </p>
         )}
         <ul className="topics-hooks-frame-grid mt-4">
-          {items.map((item) => (
-            <li key={`${item.frame_ts}-${item.text.slice(0, 12)}`}>
-              <button
-                type="button"
-                className="topics-hooks-frame-card"
-                title={
-                  item.cached === false
-                    ? "Frame is extracted from the video on first view"
-                    : undefined
-                }
-                onClick={() => onPick(item)}
-              >
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={apiAssetUrl(item.preview_url)}
-                  alt=""
-                  className="topics-hooks-frame-img"
-                  loading="lazy"
-                />
-                <span className="topics-hooks-frame-ts tabular-nums">{fmtTs(item.start_sec)}</span>
-                <span className="topics-hooks-frame-cue line-clamp-2">{item.text}</span>
-              </button>
-            </li>
-          ))}
+          {items.map((item) => {
+            const on = selected.has(item.frame_ts);
+            return (
+              <li key={`${item.frame_ts}-${item.text.slice(0, 12)}`}>
+                <button
+                  type="button"
+                  className={cn("topics-hooks-frame-card", on && "is-selected")}
+                  aria-pressed={on}
+                  title={
+                    item.cached === false
+                      ? "Extracting this timestamp in the background — reopen if it is still blank"
+                      : undefined
+                  }
+                  onClick={() => toggle(item.frame_ts)}
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={apiAssetUrl(item.preview_url)}
+                    alt=""
+                    className="topics-hooks-frame-img"
+                    loading="lazy"
+                    width={1080}
+                    height={1350}
+                  />
+                  <span className="topics-hooks-frame-ts tabular-nums">{fmtTs(item.start_sec)}</span>
+                  <span className="topics-hooks-frame-cue line-clamp-2">{item.text}</span>
+                </button>
+              </li>
+            );
+          })}
         </ul>
+        {items.length > 0 ? (
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
+            <p className="text-xs text-muted-foreground tabular-nums">
+              {n === 0 ? "No frames selected" : `${n} frame${n === 1 ? "" : "s"} selected`}
+            </p>
+            <button
+              type="button"
+              className="studio-btn studio-btn-primary"
+              disabled={saving || n === 0}
+              onClick={() => void commit()}
+            >
+              {saving
+                ? "Saving…"
+                : n === 0
+                  ? "Save frames"
+                  : `Save ${n} frame${n === 1 ? "" : "s"}`}
+            </button>
+          </div>
+        ) : null}
       </div>
     </div>
   );

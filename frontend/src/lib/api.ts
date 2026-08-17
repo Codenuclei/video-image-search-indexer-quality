@@ -919,11 +919,25 @@ export type DriveTokenResponse = {
   appId?: string | null;
 };
 
-async function api<T>(path: string, init?: RequestInit): Promise<T> {
+async function api<T>(path: string, init?: RequestInit & { timeoutMs?: number }): Promise<T> {
+  const { timeoutMs, signal: external, ...rest } = init ?? {};
+  let controller: AbortController | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let signal = external;
+  if (typeof timeoutMs === "number" && timeoutMs > 0) {
+    controller = new AbortController();
+    if (external) {
+      if (external.aborted) controller.abort();
+      else external.addEventListener("abort", () => controller!.abort(), { once: true });
+    }
+    signal = controller.signal;
+    timer = setTimeout(() => controller!.abort(), timeoutMs);
+  }
   try {
     const res = await fetch(`${API_BASE}${path}`, {
-      ...init,
-      headers: { "Content-Type": "application/json", ...init?.headers },
+      ...rest,
+      signal,
+      headers: { "Content-Type": "application/json", ...rest.headers },
       cache: "no-store",
     });
     if (!res.ok) {
@@ -941,9 +955,16 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
       (error instanceof DOMException || error instanceof Error) &&
       error.name === "AbortError"
     ) {
+      if (typeof timeoutMs === "number" && timeoutMs > 0 && !external?.aborted) {
+        throw new Error(
+          `Request timed out after ${Math.round(timeoutMs / 1000)}s. The API may be busy — retry in a moment.`
+        );
+      }
       throw error;
     }
     throw new Error(formatApiError(error));
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 
@@ -1248,7 +1269,8 @@ export const apiClient = {
     }),
   carouselRecentVideos: (limit = 5, captionedOnly = true) =>
     api<{ items: CarouselRecentVideo[]; captioned_only?: boolean }>(
-      `/search/carousel/recent-videos?limit=${limit}&captioned_only=${captionedOnly ? "true" : "false"}`
+      `/search/carousel/recent-videos?limit=${limit}&captioned_only=${captionedOnly ? "true" : "false"}`,
+      { timeoutMs: 15_000 }
     ),
   carouselVideos: (opts?: { q?: string; limit?: number; offset?: number; captionedOnly?: boolean }) => {
     const params = new URLSearchParams();

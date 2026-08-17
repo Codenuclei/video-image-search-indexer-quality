@@ -54,6 +54,15 @@ def extract_audio_wav(video_path: str, wav_path: str) -> None:
     subprocess.run(cmd, capture_output=True, timeout=600, check=True)
 
 
+# Instagram portrait stills for carousel on-demand extracts (does not change indexer sampling).
+CAROUSEL_FRAME_WIDTH = 1080
+CAROUSEL_FRAME_HEIGHT = 1350
+CAROUSEL_PORTRAIT_VF = (
+    f"scale={CAROUSEL_FRAME_WIDTH}:{CAROUSEL_FRAME_HEIGHT}:force_original_aspect_ratio=increase,"
+    f"crop={CAROUSEL_FRAME_WIDTH}:{CAROUSEL_FRAME_HEIGHT}"
+)
+
+
 def extract_frame_at(video_path: str, timestamp_sec: float, output_path: str) -> bool:
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     cmd = [
@@ -71,6 +80,34 @@ def extract_frame_at(video_path: str, timestamp_sec: float, output_path: str) ->
     ]
     proc = subprocess.run(cmd, capture_output=True, timeout=120)
     return proc.returncode == 0 and Path(output_path).is_file()
+
+
+def ffmpeg_carousel_still_cmd(
+    source: str,
+    timestamp_sec: float,
+    output_path: str,
+    extra_input_args: list[str] | None = None,
+) -> list[str]:
+    """Seek + one JPEG cropped to 1080x1350 (4:5)."""
+    cmd = ["ffmpeg", "-y"]
+    if extra_input_args:
+        cmd.extend(extra_input_args)
+    cmd.extend(
+        [
+            "-ss",
+            f"{float(timestamp_sec):.3f}",
+            "-i",
+            source,
+            "-frames:v",
+            "1",
+            "-vf",
+            CAROUSEL_PORTRAIT_VF,
+            "-q:v",
+            "3",
+            output_path,
+        ]
+    )
+    return cmd
 
 
 def sample_timestamps(duration_sec: float, interval_sec: float, max_frames: int) -> list[float]:

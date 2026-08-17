@@ -393,8 +393,30 @@ export function TopicsHooksTree({
           endSec={framePick.end_sec}
           hookText={framePick.hookText}
           onClose={() => setFramePick(null)}
-          onPick={(item) => {
-            onFramePicked?.(framePick.hookText, item.frame_ts, item.preview_url);
+          onSave={(picked) => {
+            if (!picked.length) return;
+            onFramePicked?.(framePick.hookText, picked[0].frame_ts, picked[0].preview_url);
+            const extras = picked.slice(1);
+            if (extras.length && onReferenceAdded) {
+              void (async () => {
+                for (const item of extras) {
+                  try {
+                    const res = await apiClient.carouselReferenceCreate({
+                      drive_file_id: driveFileId,
+                      target_kind: "hook",
+                      target_key: framePick.hookText,
+                      target_label: framePick.hookText,
+                      ref_kind: "image",
+                      image_url: item.preview_url,
+                      frame_ts: item.frame_ts,
+                    });
+                    onReferenceAdded(res.item);
+                  } catch {
+                    /* keep the first-pick save even if extra refs fail */
+                  }
+                }
+              })();
+            }
             setFramePick(null);
           }}
         />

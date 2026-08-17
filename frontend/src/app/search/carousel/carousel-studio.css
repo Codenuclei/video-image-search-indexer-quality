@@ -925,8 +925,8 @@
 
 .carousel-studio .topics-hooks-frame-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(8.5rem, 1fr));
-  gap: 0.55rem;
+  grid-template-columns: repeat(auto-fill, minmax(10.8rem, 1fr));
+  gap: 0.65rem;
 }
 
 .carousel-studio .topics-hooks-frame-card {
@@ -939,10 +939,15 @@
   border-radius: calc(var(--radius) - 2px);
   overflow: hidden;
   background: var(--background);
-  transition: border-color 140ms ease, transform 180ms var(--th-ease);
+  transition: border-color 140ms ease, box-shadow 140ms ease, transform 180ms var(--th-ease);
+}
+.carousel-studio .topics-hooks-frame-card.is-selected {
+  border-color: var(--th-sky);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--th-sky) 18%, transparent);
 }
 .carousel-studio .topics-hooks-frame-card:hover {
   border-color: var(--th-sky);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--th-sky) 12%, transparent);
   transform: translateY(-1px);
 }
 
