@@ -50,6 +50,33 @@ type Props = {
   testIdPrefix?: string;
 };
 
+const statusLabel: Record<string, string> = {
+  pending: "Waiting to index",
+  processing: "Indexing…",
+  processed: "Ready",
+  error: "Couldn’t index",
+  skipped: "Skipped",
+};
+
+function friendlyDriveFileStatus(status: string): string {
+  const key = (status || "").trim().toLowerCase();
+  return statusLabel[key] || "In library";
+}
+
+function friendlyDriveIndexError(raw: string | null | undefined): string {
+  const text = (raw || "").trim().toLowerCase();
+  if (text.includes("not_found") || text.includes("not found")) {
+    return "One of those videos isn’t in the library anymore. Refresh the list and try again.";
+  }
+  if (text.includes("not_a_video") || text.includes("not a video")) {
+    return "One of the selected files isn’t a video.";
+  }
+  if (text.includes("drive") && (text.includes("reconnect") || text.includes("oauth") || text.includes("disconnect"))) {
+    return "Reconnect Google Drive to index videos that aren’t already processed.";
+  }
+  return formatApiError(raw, "Could not index the selected videos. Please try again.");
+}
+
 const statusTone: Record<string, string> = {
   pending: "text-amber-700",
   processing: "text-blue-700",
@@ -597,6 +624,12 @@ export function DriveFolderPanel({
       const skippedNeedsIndex =
         !session?.connected && needsIndex.length > 0 ? needsIndex.length : 0;
       const res = await api.prioritizeDriveVideos(requestIds);
+      const failed = (res.items ?? []).filter((it) => it.ok === false);
+      if (failed.length) {
+        const first = failed[0]?.error || failed[0]?.message || res.message;
+        setModalError(friendlyDriveIndexError(first));
+        return;
+      }
       const byId = new Map((res.items ?? []).map((it) => [it.drive_file_id, it]));
       for (const id of requestIds) {
         const file = selectedFiles.find((v) => v.id === id);
@@ -619,26 +652,23 @@ export function DriveFolderPanel({
           message: item?.message,
         });
       }
-      const n = res.queued ?? requestIds.length;
+      const n = requestIds.length;
       const successNote =
         n === 1 ? "1 video indexed successfully." : `${n} videos indexed successfully.`;
+      setError(null);
+      setModalError(null);
+      setSelectedIds(new Set());
+      setModalOpen(false);
       setNote(
         skippedNeedsIndex
           ? `${successNote} Skipped ${skippedNeedsIndex} not-yet-indexed video(s) — reconnect Drive to index those.`
           : successNote
       );
-      if (skippedNeedsIndex) {
-        setError(
-          `Reconnect Google Drive to index ${skippedNeedsIndex} selected video(s) that are not already processed.`
-        );
-      }
-      setModalOpen(false);
-      setSelectedIds(new Set());
-      setModalError(null);
-      await load();
-      onLibraryChanged?.();
+      void load().then(() => onLibraryChanged?.());
     } catch (e) {
-      const msg = formatApiError(e, "Could not index the selected videos. Please try again.");
+      const msg = friendlyDriveIndexError(
+        e instanceof Error ? e.message : "Could not index the selected videos. Please try again."
+      );
       setModalError(msg);
       setError(msg);
     } finally {
@@ -831,7 +861,12 @@ export function DriveFolderPanel({
         </div>
 
       {note && (
-        <p className="mt-2 text-xs text-slate-500" role="status">
+        <p
+          className={`mt-2 text-xs ${
+            note.includes("indexed successfully") ? "font-medium text-emerald-700" : "text-slate-500"
+          }`}
+          role="status"
+        >
           {note}
         </p>
       )}
@@ -886,6 +921,11 @@ export function DriveFolderPanel({
           </div>
 
           <div className="drive-select-modal__body space-y-3 px-4 py-3 sm:px-5">
+            {modalError ? (
+              <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">
+                {formatApiError(modalError, "Could not complete that action. Please try again.")}
+              </p>
+            ) : null}
             <div className="relative">
               <Search
                 size={14}
@@ -926,7 +966,7 @@ export function DriveFolderPanel({
               </span>
             </div>
 
-            <div className="drive-select-modal__list max-h-[min(50vh,22rem)] overflow-y-auto rounded-xl border border-slate-200">
+            <div className="studio-scroll-fade drive-select-modal__list max-h-[min(50vh,22rem)] overflow-y-auto rounded-xl border border-slate-200">
               {modalLoading ? (
                 <p className="flex items-center justify-center gap-2 px-3 py-10 text-sm text-slate-500">
                   <Loader2 size={16} className="animate-spin" />
@@ -961,12 +1001,11 @@ export function DriveFolderPanel({
                           <span className="min-w-0 flex-1">
                             <span className="block truncate text-sm text-slate-900">{v.name}</span>
                             <span
-                              className={`mt-0.5 block text-[11px] capitalize ${
+                              className={`mt-0.5 block text-[11px] ${
                                 statusTone[v.status] || "text-slate-500"
                               }`}
                             >
-                              {v.status}
-                              {v.path ? ` · ${v.path}` : ""}
+                              {friendlyDriveFileStatus(v.status)}
                             </span>
                           </span>
                         </label>
@@ -977,12 +1016,6 @@ export function DriveFolderPanel({
               )}
             </div>
           </div>
-
-          {modalError ? (
-            <p className="px-4 text-sm text-red-600 sm:px-5" role="alert">
-              {formatApiError(modalError, "Could not complete that action. Please try again.")}
-            </p>
-          ) : null}
 
           <div className="drive-select-modal__chrome drive-select-modal__footer flex flex-wrap items-center justify-end gap-2 px-4 py-3 sm:px-5">
             <button

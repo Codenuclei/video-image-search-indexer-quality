@@ -707,9 +707,7 @@ function TestStudioInner() {
           }
         }
         setError(
-          themesRes.warning
-            ? formatApiError(new Error(themesRes.warning), "No themes found for this video. Make sure it has a transcript, then try again.")
-            : "No themes found for this video. Make sure it has a transcript, then try again."
+          "This video doesn’t have themes yet. Wait until the transcript is ready, then try Continue again."
         );
         return;
       }

@@ -523,7 +523,14 @@ export default function CarouselSearchPage() {
         setThemeSaveId(res.save_id ?? null);
         setThemesFromCache(Boolean(res.cache_hit));
         setThemesLoadedKey(selectionKey);
-        if (res.warning) setError(res.warning);
+        if (!(res.themes ?? []).length && res.warning && !String(res.warning).toLowerCase().includes("cached")) {
+          setError(
+            formatApiError(
+              res.warning,
+              "We couldn’t find themes for this video yet. Wait until the transcript is ready, then try again."
+            )
+          );
+        }
         setPhase(2);
         void refreshThemeSaves(video.id);
       } catch (e) {
@@ -2270,7 +2277,7 @@ function VideoPickList({
   return (
     <ul
       className={cn(
-        "mt-2 divide-y divide-border overflow-y-auto rounded-lg border border-border",
+        "studio-video-list studio-scroll-fade mt-2 divide-y divide-border overflow-y-auto rounded-lg border border-border",
         maxHeightClass
       )}
     >

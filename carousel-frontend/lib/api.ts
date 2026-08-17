@@ -85,6 +85,7 @@ function looksLibraryDiagnostic(detail: string): boolean {
       lower
     ) ||
     /format ['"][^'"]+['"] not found/i.test(detail) ||
+    /returned from (the )?api/i.test(lower) ||
     /unknown (?:format|strftime|token)/i.test(detail) ||
     /invalid format (?:string|code|specifier)/i.test(detail) ||
     lower.includes("sqlalchemy") ||

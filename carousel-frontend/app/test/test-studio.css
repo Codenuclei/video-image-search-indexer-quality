@@ -68,21 +68,13 @@
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
   padding: 0.15rem 0.1rem 0.35rem;
-  scrollbar-width: thin;
-  scrollbar-color: #cbd5e1 transparent;
+  -ms-overflow-style: none;
+  scrollbar-width: none;
 }
 
 .carousel-studio .thd-col::-webkit-scrollbar {
-  width: 6px;
-}
-
-.carousel-studio .thd-col::-webkit-scrollbar-thumb {
-  background: #cbd5e1;
-  border-radius: 999px;
-}
-
-.carousel-studio .thd-col::-webkit-scrollbar-track {
-  background: transparent;
+  display: none;
+  width: 0;
 }
 
 .carousel-studio .thd-col-gutter {

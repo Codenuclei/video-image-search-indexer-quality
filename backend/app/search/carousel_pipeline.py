@@ -272,7 +272,7 @@ async def build_harmonized_themes(
     del search_entity  # presence checks live in the router; themes stay video-native
     transcript = compact_transcript(cues)
     if not transcript.strip():
-        return [], "empty", "No transcript cues for this video"
+        return [], "empty", "This video doesn’t have a transcript yet. Wait until indexing finishes, then try again."
 
     warning: str | None = None
     if _llm_has_any_key(

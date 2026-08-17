@@ -304,38 +304,25 @@
   }
 }
 
-/* Hidden/transparent scrollbars (keep scroll) — phase 4 preview + studio lists */
+/* Hidden scrollbars (keep scroll) */
 .carousel-studio .studio-scroll-fade,
+.carousel-studio .studio-video-list,
 .carousel-studio .topics-hooks-tree,
 .carousel-studio .topics-hooks-history-panel,
 .carousel-studio .topics-hooks-frame-panel,
 .carousel-studio [role="tablist"][aria-label="Generated carousels"] {
-  scrollbar-width: thin;
-  scrollbar-color: transparent transparent;
+  -ms-overflow-style: none;
+  scrollbar-width: none;
 }
 .carousel-studio .studio-scroll-fade::-webkit-scrollbar,
+.carousel-studio .studio-video-list::-webkit-scrollbar,
 .carousel-studio .topics-hooks-tree::-webkit-scrollbar,
 .carousel-studio .topics-hooks-history-panel::-webkit-scrollbar,
 .carousel-studio .topics-hooks-frame-panel::-webkit-scrollbar,
 .carousel-studio [role="tablist"][aria-label="Generated carousels"]::-webkit-scrollbar {
+  display: none;
   width: 0;
   height: 0;
-  background: transparent;
-}
-.carousel-studio .studio-scroll-fade::-webkit-scrollbar-thumb,
-.carousel-studio .topics-hooks-tree::-webkit-scrollbar-thumb,
-.carousel-studio .topics-hooks-history-panel::-webkit-scrollbar-thumb,
-.carousel-studio .topics-hooks-frame-panel::-webkit-scrollbar-thumb,
-.carousel-studio [role="tablist"][aria-label="Generated carousels"]::-webkit-scrollbar-thumb {
-  background: transparent;
-  border: none;
-}
-.carousel-studio .studio-scroll-fade::-webkit-scrollbar-track,
-.carousel-studio .topics-hooks-tree::-webkit-scrollbar-track,
-.carousel-studio .topics-hooks-history-panel::-webkit-scrollbar-track,
-.carousel-studio .topics-hooks-frame-panel::-webkit-scrollbar-track,
-.carousel-studio [role="tablist"][aria-label="Generated carousels"]::-webkit-scrollbar-track {
-  background: transparent;
 }
 
 /* —— Instagram-style carousel result (Phase 5) —— */

@@ -115,6 +115,7 @@ function looksTechnical(raw: string): boolean {
   if (/internal server error|status code 50\d/i.test(raw)) return true;
   if (/\b(?:select|insert|update|delete)\b.+\bfrom\b/i.test(raw)) return true;
   if (/format ['"][^'"]+['"] not found/i.test(raw)) return true;
+  if (/returned from (the )?api/i.test(lower)) return true;
   if (/unknown (?:format|strftime|token)/i.test(raw)) return true;
   if (/invalid format (?:string|code|specifier)/i.test(raw)) return true;
   if (/\b(?:value|key|attribute|name|index|runtime|assertion)error\b/i.test(lower)) return true;

@@ -1370,7 +1370,7 @@ async def carousel_pipeline_themes(
             "themes": [],
             "cache_hit": False,
             "generated": False,
-            "warning": "No transcript cues for this video",
+            "warning": "This video doesn’t have a transcript yet. Wait until indexing finishes, then try again.",
         }
 
     transcript_hash = _themes_transcript_hash(cues)
@@ -2829,7 +2829,7 @@ async def generate_transcript_topics(
             "name": drive_file.name,
             "cue_count": 0,
             "topics": [],
-            "warning": "No transcript cues for this video",
+            "warning": "This video doesn’t have a transcript yet. Wait until indexing finishes, then try again.",
         }
 
     transcript = compact_transcript(cues)

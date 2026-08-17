@@ -618,8 +618,18 @@ export default function CarouselSearchPage() {
         setThemesFromCache(Boolean(res.cache_hit));
         setThemesMissing(!nextThemes.length && !res.cache_hit);
         setThemesLoadedKey(selectionKey);
-        if (res.warning && nextThemes.length === 0) setError(res.warning);
-        else if (res.warning) setError(res.warning);
+        if (!nextThemes.length && (res.warning || res.message)) {
+          const raw = String(res.warning || res.message);
+          const lower = raw.toLowerCase();
+          if (!lower.includes("cached")) {
+            setError(
+              formatApiError(
+                raw,
+                "We couldn’t find themes for this video yet. Wait until the transcript is ready, then try again."
+              )
+            );
+          }
+        }
         // Never clobber an in-progress extract / hooks step back to themes.
         setPhase((p) => (p >= 3 ? p : 2));
         void refreshThemeSaves(video.id);
