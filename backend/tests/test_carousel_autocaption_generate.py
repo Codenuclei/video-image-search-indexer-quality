@@ -64,6 +64,8 @@ def test_relaxed_gates_accept_autocaption_lines_but_not_fragments():
     # Bare clause continuations stay rejected so slides read as one idea.
     assert not _line_starts_clean("to lecture after lecture really prepare")
     assert not _line_starts_clean("you for the true business world")
+    assert not _line_starts_clean("and it all fits on one screen")
+    assert not _line_starts_clean("And it all fits on one screen")
 
 
 def test_punctuated_transcript_keeps_strict_line_rules():
@@ -109,3 +111,63 @@ async def test_autocaption_transcript_builds_carousel():
         for s in slides
     )
     assert all(s.get("frame_source") == "deferred" for s in slides)
+
+
+@pytest.mark.asyncio
+async def test_oneline_span_plan_honors_selected_llm(monkeypatch):
+    """Cut planning must call the studio LLM router, not a Gemini-only path."""
+    import json
+
+    from app.routers.carousel_script import _plan_hook_oneline_spans
+
+    captured: dict[str, object] = {}
+
+    async def fake_complete_json(**kwargs):
+        captured["provider"] = kwargs.get("provider")
+        captured["claude_api_key"] = kwargs.get("claude_api_key")
+        captured["model"] = kwargs.get("model")
+        catalog = [
+            {"i": 10, "s": 9.2, "e": 11.8, "t": "different this is masters union a next"},
+            {"i": 11, "s": 11.8, "e": 14.4, "t": "generation business school in delhi"},
+            {"i": 12, "s": 14.4, "e": 17.0, "t": "learning happens both inside and outside"},
+            {"i": 17, "s": 22.0, "e": 24.6, "t": "every student manages a live portfolio"},
+        ]
+        payload = {
+            "spans": [
+                {"cue_i": row["i"], "start_sec": row["s"], "end_sec": row["e"]}
+                for row in catalog
+            ]
+        }
+        return json.dumps(payload), "claude"
+
+    monkeypatch.setattr(
+        "app.search.carousel_pipeline._llm_complete_json",
+        fake_complete_json,
+    )
+
+    plan = await _plan_hook_oneline_spans(
+        cues=PUNCTUATED_CUES + AUTOCAPTION_CUES,
+        hook=TimedPick(
+            id="hook_1",
+            text="masters union trains students with real operators",
+            start_sec=9.2,
+            end_sec=14.4,
+        ),
+        min_slides=3,
+        max_slides=6,
+        llm={
+            "provider": "claude",
+            "api_key": "",
+            "model": "gemini-2.5-pro",
+            "claude_api_key": "sk-ant-test",
+            "claude_model": "claude-sonnet-4-5-20250929",
+            "openrouter_api_key": "",
+            "openrouter_model": "",
+            "openrouter_base_url": "",
+        },
+    )
+    assert captured.get("provider") == "claude"
+    assert captured.get("claude_api_key") == "sk-ant-test"
+    assert str(plan.get("source") or "").startswith("claude")
+    assert len(plan.get("spans") or []) >= 2
+

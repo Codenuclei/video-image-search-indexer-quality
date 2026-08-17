@@ -543,13 +543,35 @@ function TestStudioInner() {
           message: "Preparing an English transcript…",
           phase: "english",
         }));
-        const english = await ensureEnglishTranscript(API_BASE, video.id, {
-          force: false,
-        });
+        let english: Awaited<ReturnType<typeof ensureEnglishTranscript>> | null = null;
+        try {
+          english = await ensureEnglishTranscript(API_BASE, video.id, {
+            force: false,
+          });
+        } catch {
+          // Captions already exist — do not block themes because English polish
+          // rejected spoken fragments as "incomplete" / missing.
+          const next: TestVideo = {
+            ...video,
+            has_captions: true,
+            cue_count: video.cue_count ?? 0,
+            status: "processed",
+          };
+          setSelected(next);
+          setVideos((prev) => {
+            const without = prev.filter((x) => x.id !== next.id);
+            return [next, ...without];
+          });
+          setTranscriptModal((prev) => ({ ...prev, open: false }));
+          setUploadNote(
+            `Using existing transcript for “${next.name}” (${next.cue_count} cues).`
+          );
+          return next;
+        }
         const next: TestVideo = {
           ...video,
           has_captions: true,
-          cue_count: english.cue_count ?? video.cue_count ?? 0,
+          cue_count: english?.cue_count ?? video.cue_count ?? 0,
           status: "processed",
         };
         setSelected(next);
@@ -561,7 +583,7 @@ function TestStudioInner() {
           open: true,
           videoName: next.name,
           message:
-            english.message ||
+            english?.message ||
             `English transcript ready (${next.cue_count} sentences).`,
           phase: "english_ready",
           cueCount: next.cue_count,
@@ -921,10 +943,11 @@ function TestStudioInner() {
     }
   }
 
-  const themesComplete = Boolean(themeStage) && phase >= 2;
-  const extractComplete = Boolean(extractStage) && phase >= 3;
-  const copyComplete = Boolean(copyStage) && phase >= 4;
-  const imagesComplete = Boolean(imageStage) && phase >= 5;
+  const onVideoStep = phase === 1;
+  const onThemesStep = phase === 2;
+  const onExtractStep = phase === 3;
+  const onCopyStep = phase === 4;
+  const onImagesStep = phase === 5;
   const transcriptBusy = transcriptModal.open && !transcriptModal.error;
 
   return (
@@ -1122,9 +1145,9 @@ function TestStudioInner() {
               Selected: <span className="font-medium text-foreground">{selected.name}</span>
             </p>
             <StageLlmGenerate
-              label="Generate topics and hooks"
+              label="Generate themes"
               busy={themesLoading}
-              disabled={!selected || themesComplete || transcriptBusy}
+              disabled={!onVideoStep || !selected || transcriptBusy}
               runConfig={runConfig}
               onRunConfigChange={applyRunConfig}
               onGenerate={(cfg) => continueToThemes({ force: true, runConfig: cfg })}
@@ -1134,10 +1157,10 @@ function TestStudioInner() {
               type="button"
               className="studio-btn studio-btn-primary studio-btn-continue"
               onClick={() => void continueToThemes()}
-              disabled={themesLoading || themesComplete || transcriptBusy}
+              disabled={!onVideoStep || themesLoading || transcriptBusy}
               title={
-                themesComplete
-                  ? "Themes already generated for this video"
+                !onVideoStep
+                  ? "Move back to this step to generate themes again"
                   : transcriptBusy
                     ? "Wait for the transcript to finish preparing"
                     : undefined
@@ -1228,7 +1251,7 @@ function TestStudioInner() {
               );
             })}
           </ul>
-          {phase < 3 && (
+          {onThemesStep && (
             <div className="mt-4 flex flex-wrap items-center gap-3">
               <button
                 type="button"
@@ -1250,9 +1273,20 @@ function TestStudioInner() {
                   </>
                 )}
               </button>
+              <StageLlmGenerate
+                label="Generate topics and hooks"
+                busy={extractLoading}
+                disabled={!selectedThemes.length}
+                runConfig={runConfig}
+                onRunConfigChange={applyRunConfig}
+                onGenerate={(cfg) =>
+                  extractFromSelectedThemes({ force: true, runConfig: cfg })
+                }
+                testId="test-regen-extract-llm"
+              />
             </div>
           )}
-          {phase >= 3 && (
+          {!onThemesStep && (
             <div className="mt-4">
               <StageLlmGenerate
                 label="Generate topics and hooks"
@@ -1261,7 +1295,7 @@ function TestStudioInner() {
                 runConfig={runConfig}
                 onRunConfigChange={applyRunConfig}
                 onGenerate={() => undefined}
-                testId="test-regen-themes-llm-later"
+                testId="test-regen-extract-llm-later"
               />
             </div>
           )}
@@ -1316,7 +1350,7 @@ function TestStudioInner() {
             )}
           </div>
 
-          {phase < 4 && (
+          {onExtractStep && (
             <div className="thd-generate-bar mt-4 flex flex-wrap items-center gap-3">
               <button
                 type="button"
@@ -1337,15 +1371,13 @@ function TestStudioInner() {
                 )}
               </button>
               <StageLlmGenerate
-                label="Generate topics and hooks"
-                busy={extractLoading}
-                disabled={!selectedThemes.length || extractComplete}
+                label="Generate copy"
+                busy={copyLoading}
+                disabled={!selectedHooks.length && !selectedTopics.length}
                 runConfig={runConfig}
                 onRunConfigChange={applyRunConfig}
-                onGenerate={(cfg) =>
-                  extractFromSelectedThemes({ force: true, runConfig: cfg })
-                }
-                testId="test-regen-extract-llm"
+                onGenerate={(cfg) => generateCopy({ force: true, runConfig: cfg })}
+                testId="test-generate-copy-llm"
               />
               <span className="text-xs text-muted-foreground">
                 {selectedHooks.length + selectedTopics.length === 0
@@ -1354,16 +1386,16 @@ function TestStudioInner() {
               </span>
             </div>
           )}
-          {phase >= 4 && (
+          {!onExtractStep && (
             <div className="mt-4">
               <StageLlmGenerate
-                label="Generate topics and hooks"
+                label="Generate copy"
                 busy={false}
                 disabled
                 runConfig={runConfig}
                 onRunConfigChange={applyRunConfig}
                 onGenerate={() => undefined}
-                testId="test-regen-extract-llm-later"
+                testId="test-generate-copy-llm-later"
               />
             </div>
           )}
@@ -1401,14 +1433,12 @@ function TestStudioInner() {
             <CopyEditor carousels={displayCarousels} onChangeSlideText={onChangeSlideText} />
           </div>
 
-          {phase === 4 && (
+          {onCopyStep && (
             <div className="mt-5 flex flex-wrap gap-3">
               <StageLlmGenerate
                 label="Generate copy"
                 busy={copyLoading}
-                disabled={
-                  copyComplete || (!selectedHooks.length && !selectedTopics.length)
-                }
+                disabled={!selectedHooks.length && !selectedTopics.length}
                 runConfig={runConfig}
                 onRunConfigChange={applyRunConfig}
                 onGenerate={(cfg) => generateCopy({ force: true, runConfig: cfg })}
@@ -1432,7 +1462,7 @@ function TestStudioInner() {
               </button>
             </div>
           )}
-          {phase > 4 && (
+          {!onCopyStep && (
             <div className="mt-5">
               <StageLlmGenerate
                 label="Generate copy"
@@ -1486,12 +1516,12 @@ function TestStudioInner() {
             )}
           </div>
 
-          {phase === 5 && (
+          {onImagesStep && (
             <div className="mt-5 flex flex-wrap gap-3">
               <StageLlmGenerate
                 label="Generate images"
                 busy={imagesLoading}
-                disabled={!carousels.length || imagesComplete}
+                disabled={!carousels.length}
                 runConfig={runConfig}
                 onRunConfigChange={applyRunConfig}
                 onGenerate={(cfg) => selectImages({ force: true, runConfig: cfg })}

@@ -1585,7 +1585,7 @@ async def carousel_pipeline_extract(
 ) -> dict[str, Any]:
     """Phase 3–4: contextual hooks + theme-generated topics + preview markers + intent.
 
-    Hooks prefer English: parallel English caption track when available, else Gemini translate.
+    Hooks prefer English: parallel English caption track when available, else LLM translate.
     Accepts one theme (legacy fields) or multiple `themes` merged in time order.
 
     Cache-first: without ``force``/``generate``, return a matching save or an empty miss.
@@ -1882,8 +1882,14 @@ async def _carousel_pipeline_extract_impl(
         hooks=[h["text"] for h in hooks],
         topics=[t["text"] for t in topics if not t.get("is_subtopic")],
         search_entity=(body.search_entity or "").strip() or None,
-        api_key=settings.gemini_api_key,
-        model=settings.gemini_model,
+        api_key=llm["api_key"],
+        model=llm["model"],
+        claude_api_key=llm["claude_api_key"],
+        claude_model=llm["claude_model"],
+        provider=llm["provider"],
+        openrouter_api_key=llm["openrouter_api_key"],
+        openrouter_model=llm["openrouter_model"],
+        openrouter_base_url=llm["openrouter_base_url"],
     )
     # Aggregate per-theme transcript diagnostics (from extract helpers).
     # Structural proof: never ship topic_tree sections with empty hooks arrays.
@@ -2643,10 +2649,14 @@ async def carousel_pipeline_intent(body: PipelineIntentRequest) -> dict[str, Any
         hooks=list(body.hooks or []),
         topics=list(body.topics or []),
         search_entity=(body.search_entity or "").strip() or None,
-        # Intent's current structured implementation is Gemini-only. Never
-        # silently route a Claude/OpenRouter run through Gemini.
-        api_key=llm["api_key"] if llm["provider"] == "gemini" else None,
+        api_key=llm["api_key"],
         model=llm["model"],
+        claude_api_key=llm["claude_api_key"],
+        claude_model=llm["claude_model"],
+        provider=llm["provider"],
+        openrouter_api_key=llm["openrouter_api_key"],
+        openrouter_model=llm["openrouter_model"],
+        openrouter_base_url=llm["openrouter_base_url"],
     )
     return {
         "intent": intent.get("intent"),
@@ -2896,6 +2906,27 @@ async def carousel_pipeline_generate(
         await _release_carousel(session, drive_file_id, token)
 
 
+def _carousel_llm_pack(
+    llm: dict[str, Any] | None = None,
+    *,
+    api_key: str | None = None,
+    model: str | None = None,
+) -> dict[str, Any]:
+    """Studio LLM pack, or a heuristic-only empty pack when tests pass no keys."""
+    if llm:
+        return llm
+    return {
+        "provider": "auto",
+        "api_key": (api_key or "").strip(),
+        "model": (model or "").strip(),
+        "claude_api_key": "",
+        "claude_model": "",
+        "openrouter_api_key": "",
+        "openrouter_model": "",
+        "openrouter_base_url": "",
+    }
+
+
 async def _build_hook_carousels(
     *,
     unique_hooks: list["TimedPick"],
@@ -2905,8 +2936,9 @@ async def _build_hook_carousels(
     min_slides: int,
     max_slides: int,
     select_images: bool,
-    api_key: str | None,
-    model: str | None,
+    llm: dict[str, Any] | None = None,
+    api_key: str | None = None,
+    model: str | None = None,
     copy_refs: list[str] | None = None,
     image_ref_bytes: list[bytes] | None = None,
     references: list[dict[str, Any]] | None = None,
@@ -2932,8 +2964,7 @@ async def _build_hook_carousels(
             hook=anchored,
             min_slides=min_slides,
             max_slides=max_slides,
-            api_key=api_key,
-            model=model,
+            llm=_carousel_llm_pack(llm, api_key=api_key, model=model),
             reserved_texts=reserved_texts,
             reserved_starts=reserved_starts,
             copy_refs=copy_refs,
@@ -3013,8 +3044,9 @@ async def _carousel_pipeline_generate_impl(
 ) -> dict[str, Any]:
     """Generate Instagram-style carousels: exactly one hook (or topic) per request.
 
-    Each hook gets ≥6 one-line slides of *exact* VTT text. Gemini (when available)
-    only proposes cut timestamps; the server never displays rewritten copy.
+    Each hook gets ≥6 one-line slides of *exact* VTT text. The studio-selected
+    LLM (Claude / OpenRouter / Gemini / auto) only proposes cut timestamps;
+    the server never displays rewritten copy.
 
     Cache-first: without ``force``/``generate``, return a matching save or empty miss.
     """
@@ -3205,8 +3237,7 @@ async def _carousel_pipeline_generate_impl(
         min_slides=min_slides,
         max_slides=max_slides,
         select_images=select_images,
-        api_key=settings.gemini_api_key,
-        model=settings.gemini_model,
+        llm=llm,
         copy_refs=copy_refs,
         image_ref_bytes=image_ref_bytes,
         references=attached_refs,
@@ -3226,8 +3257,7 @@ async def _carousel_pipeline_generate_impl(
             min_slides=min_slides,
             max_slides=max_slides,
             select_images=select_images,
-            api_key=settings.gemini_api_key,
-            model=settings.gemini_model,
+            llm=llm,
             copy_refs=copy_refs,
             image_ref_bytes=image_ref_bytes,
             references=attached_refs,
@@ -3246,8 +3276,7 @@ async def _carousel_pipeline_generate_impl(
     carousels, translate_meta = await _ensure_english_carousel_slides(
         carousels,
         drive_file_id=drive_file_id,
-        api_key=settings.gemini_api_key,
-        model=settings.gemini_model,
+        llm=llm,
         used_english_track=used_english_track,
     )
     copy_provider = "verbatim"
@@ -3322,6 +3351,7 @@ async def _carousel_pipeline_generate_impl(
         "intent": (body.intent or "").strip() or None,
         "transcript_language": translate_meta,
         "copy_source": copy_provider,
+        "llm_model": llm_cache_id,
         "transcript_guard": transcript_guard,
         "cache_hit": False,
         "generated": True,
@@ -4396,11 +4426,15 @@ async def _ensure_english_carousel_slides(
     carousels: list[dict[str, Any]],
     *,
     drive_file_id: str,
-    api_key: str | None,
-    model: str | None,
     used_english_track: bool,
+    llm: dict[str, Any] | None = None,
+    api_key: str | None = None,
+    model: str | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Translate non-English slide one-liners to English for display (faithful, cached)."""
+    from app.search.carousel_pipeline import _llm_has_any_key
+
+    pack = _carousel_llm_pack(llm, api_key=api_key, model=model)
     meta: dict[str, Any] = {
         "source": "english" if used_english_track else "indexed",
         "translated_slides": 0,
@@ -4414,7 +4448,7 @@ async def _ensure_english_carousel_slides(
     pending: list[str] = []
     pending_keys: list[str] = []
     cache = _load_translate_cache()
-    model_key = (model or "default").strip()
+    model_key = carousel_llm_cache_id(pack)
 
     def cache_key(text: str) -> str:
         raw = f"{model_key}|{drive_file_id}|{text.strip()}"
@@ -4441,7 +4475,13 @@ async def _ensure_english_carousel_slides(
             pending.append(text)
             pending_keys.append(ck)
 
-    if pending and api_key and model:
+    can_translate = pending and _llm_has_any_key(
+        api_key=pack.get("api_key"),
+        claude_api_key=pack.get("claude_api_key"),
+        openrouter_api_key=pack.get("openrouter_api_key"),
+        openrouter_model=str(pack.get("openrouter_model") or ""),
+    )
+    if can_translate:
         # Deduplicate strings for the LLM batch.
         unique: list[str] = []
         uniq_index: dict[str, int] = {}
@@ -4451,7 +4491,15 @@ async def _ensure_english_carousel_slides(
                 unique.append(line)
         try:
             translated = await _llm_translate_lines(
-                unique, api_key=api_key, model=model
+                unique,
+                api_key=pack.get("api_key"),
+                model=str(pack.get("model") or ""),
+                claude_api_key=pack.get("claude_api_key"),
+                claude_model=str(pack.get("claude_model") or ""),
+                provider=str(pack.get("provider") or "auto"),
+                openrouter_api_key=pack.get("openrouter_api_key"),
+                openrouter_model=str(pack.get("openrouter_model") or ""),
+                openrouter_base_url=str(pack.get("openrouter_base_url") or ""),
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("carousel slide translate failed: %s", exc)
@@ -4493,8 +4541,11 @@ async def _ensure_english_carousel_slides(
     return carousels, meta
 
 
-_ONELINE_MAX_WORDS = 14
-_ONELINE_MIN_WORDS = 4
+# One complete spoken thought — not a 3–12 word chip, and not a paragraph.
+_ONELINE_MAX_WORDS = 28
+_ONELINE_MIN_WORDS = 6
+# Finished punctuated sentences can be a bit shorter ("Welcome to Physics Wallah.").
+_ONELINE_TERMINATED_MIN_WORDS = 4
 # Latin + Hindi danda / double danda (common in Indic captions).
 _SENTENCE_END = r"[.!?…।॥]"
 _DANGLING_ENDS = {
@@ -4634,6 +4685,13 @@ def _line_starts_clean(text: str) -> bool:
     cleaned = re.sub(r"^\[[^\]]+\]\s*", "", (text or "").strip())
     if not cleaned:
         return False
+    words = [re.sub(r"[^\w']", "", w.lower()) for w in cleaned.split()]
+    first = words[0] if words else ""
+    # "And / But / So …" is a continuation even when YouTube capitalizes it.
+    if not first or first in _MIDCLAUSE_OPENERS:
+        return False
+    if first in _PRONOUN_OPENERS and len(words) > 1 and words[1] in _MIDCLAUSE_OPENERS:
+        return False
     c = cleaned[0]
     if c in "\"'“‘(":
         return True
@@ -4646,17 +4704,8 @@ def _line_starts_clean(text: str) -> bool:
     # Hinglish cues sometimes start with a Latin brand in lowercase ("youtube's …").
     if c.islower() and _is_indic_or_non_latin_heavy(cleaned):
         return True
-    # Auto-caption tracks are entirely lowercase, so casing carries no signal;
-    # only reject openers that are bare clause continuations.
+    # Auto-caption tracks are entirely lowercase, so casing carries no signal.
     if _RELAXED_CUE_LINES.get():
-        words = [re.sub(r"[^\w']", "", w.lower()) for w in cleaned.split()]
-        first = words[0] if words else ""
-        if not first or first in _MIDCLAUSE_OPENERS:
-            return False
-        # "you for the true business World…" — a pronoun followed by a
-        # preposition is always a fragment of the previous clause.
-        if first in _PRONOUN_OPENERS and len(words) > 1 and words[1] in _MIDCLAUSE_OPENERS:
-            return False
         return True
     return False
 
@@ -4664,7 +4713,8 @@ def _line_starts_clean(text: str) -> bool:
 def _line_complete_enough(text: str) -> bool:
     """Require a finished spoken unit — punctuation for English; cue-sized for Indic."""
     t = (text or "").strip()
-    if not t or len(t.split()) < _ONELINE_MIN_WORDS:
+    n = len(t.split())
+    if not t or n < _ONELINE_TERMINATED_MIN_WORDS:
         return False
     ends = re.findall(_SENTENCE_END, t)
     if ends:
@@ -4675,13 +4725,15 @@ def _line_complete_enough(text: str) -> bool:
             return False
         last = t.split()[-1].lower().rstrip(".,;:…।॥\"')")
         return last not in _DANGLING_ENDS
+    if n < _ONELINE_MIN_WORDS:
+        return False
     # Many Hindi/Hinglish VTTs and all ASR tracks omit terminators — accept a
     # short clean cue line instead of dropping the transcript wholesale.
     if (_is_indic_or_non_latin_heavy(t) or _RELAXED_CUE_LINES.get()) and _line_starts_clean(t):
         last = t.split()[-1].lower().rstrip(".,;:…।॥\"')")
         if last in _DANGLING_ENDS:
             return False
-        return len(t.split()) <= _ONELINE_MAX_WORDS + 2
+        return n <= _ONELINE_MAX_WORDS + 2
     return False
 
 
@@ -4692,14 +4744,14 @@ def _trim_to_oneline(text: str, *, max_words: int = _ONELINE_MAX_WORDS) -> str:
         return ""
     # Prefer a single complete sentence/question (never pack multiple thoughts).
     qm = re.search(r"^(.{8,}?[?])(?:\s|$)", cleaned)
-    if qm and _ONELINE_MIN_WORDS <= len(qm.group(1).split()) <= max_words + 2:
+    if qm and _ONELINE_TERMINATED_MIN_WORDS <= len(qm.group(1).split()) <= max_words + 2:
         return qm.group(1).strip()
     sm = re.search(rf"^(.{{8,}}?[.!…।॥])(?:\s|$)", cleaned)
-    if sm and _ONELINE_MIN_WORDS <= len(sm.group(1).split()) <= max_words + 2:
+    if sm and _ONELINE_TERMINATED_MIN_WORDS <= len(sm.group(1).split()) <= max_words + 2:
         return sm.group(1).strip()
     # If multiple sentences remain, keep only the first finished one.
     multi = re.match(rf"^(.+?{_SENTENCE_END})\s+\S", cleaned)
-    if multi and _ONELINE_MIN_WORDS <= len(multi.group(1).split()) <= max_words + 4:
+    if multi and _ONELINE_TERMINATED_MIN_WORDS <= len(multi.group(1).split()) <= max_words + 4:
         return multi.group(1).strip()
     # Drop leading mid-clause residue after a sentence end inside the cue.
     m0 = re.search(rf"{_SENTENCE_END}\s+(\S.*)$", cleaned)
@@ -5129,72 +5181,89 @@ def _plan_hook_oneline_spans_heuristic(
         if _ONELINE_MIN_WORDS <= len(merged.split()) <= _ONELINE_MAX_WORDS:
             add_candidate(merged, float(a["s"]), float(b["e"]))
 
-    # Seed first from cues overlapping the spoken hook span (±1 cue window).
-    span_lo, span_hi = hs, he
-    if catalog:
-        # Expand to neighboring cue boundaries when present.
-        near = [c for c in catalog if float(c["e"]) >= hs - 2.0 and float(c["s"]) <= he + 2.0]
-        if near:
-            span_lo = min(float(c["s"]) for c in near)
-            span_hi = max(float(c["e"]) for c in near)
-
-    def _cand_key(c: dict[str, float | str]) -> tuple:
-        start = float(c["start_sec"])
-        in_span = 0 if span_lo <= start <= span_hi else 1
-        return (
-            in_span,
-            -_cue_relevance(str(c["text"]), hook_toks),
-            abs(start - hs),
-            start,
-        )
-
-    # Prefer: in hook span, then relevant to hook, then near hook time.
-    candidates.sort(key=_cand_key)
+    # Walk the talk forward: keep complete standalone lines, skip junk, never go back.
+    complete = [
+        c
+        for c in candidates
+        if _line_starts_clean(str(c["text"])) and _line_complete_enough(str(c["text"]))
+    ]
+    complete.sort(key=lambda c: float(c["start_sec"]))
     picked: list[dict[str, float]] = []
     seen_txt: set[str] = set()
-    min_gap = 2.0  # Instagram-style: one idea per slide, no overlapping clips
-    for c in candidates:
-        key = str(c["text"]).lower()
+    min_gap = 2.0
+    running_toks = set(hook_toks)
+
+    def _follows(text: str, *, is_first: bool) -> bool:
+        score = _cue_relevance(text, running_toks if running_toks else hook_toks)
+        if is_first:
+            return (not hook_toks) or score >= _MIN_CUE_RELEVANCE or score == 0.0
+        if not running_toks:
+            return True
+        return score >= _MIN_CUE_RELEVANCE * 0.5
+
+    for c in complete:
+        text = str(c["text"])
+        key = text.lower()
+        start = float(c["start_sec"])
         if key in seen_txt or any(key in s0 or s0 in key for s0 in seen_txt if len(s0) >= 12):
             continue
-        if any(abs(float(c["start_sec"]) - p["start_sec"]) < min_gap for p in picked):
+        if any(abs(start - p["start_sec"]) < min_gap for p in picked):
             continue
-        # Prefer mild relevance once we have a couple of slides — never starve.
-        score = _cue_relevance(str(c["text"]), hook_toks)
-        if (
-            hook_toks
-            and score < _MIN_CUE_RELEVANCE
-            and len(picked) >= max(2, min_slides // 2)
-        ):
+        if picked and start + 0.05 < float(picked[-1]["start_sec"]):
+            continue
+        if not _follows(text, is_first=not picked):
             continue
         seen_txt.add(key)
-        picked.append({"start_sec": float(c["start_sec"]), "end_sec": float(c["end_sec"])})
+        running_toks |= _content_tokens(text, min_len=3)
+        picked.append({"start_sec": start, "end_sec": float(c["end_sec"])})
         if len(picked) >= max(max_slides, min_slides):
             break
+
+    # If cohesion skipped too aggressively, fill remaining gaps in time order only.
+    if len(picked) < min_slides:
+        for c in complete:
+            if len(picked) >= min_slides:
+                break
+            text = str(c["text"])
+            key = text.lower()
+            start = float(c["start_sec"])
+            if key in seen_txt or any(key in s0 or s0 in key for s0 in seen_txt if len(s0) >= 12):
+                continue
+            if any(abs(start - p["start_sec"]) < min_gap for p in picked):
+                continue
+            if picked and start + 0.05 < float(picked[-1]["start_sec"]):
+                continue
+            seen_txt.add(key)
+            picked.append({"start_sec": start, "end_sec": float(c["end_sec"])})
+
     picked.sort(key=lambda c: c["start_sec"])
     return picked[: max(max_slides, min_slides)]
 
 
-async def _plan_hook_oneline_spans_gemini(
+async def _plan_hook_oneline_spans_llm(
     cues: list[tuple[float, float | None, str]],
     *,
     hook: "TimedPick",
     min_slides: int,
     max_slides: int,
-    api_key: str,
-    model: str,
+    llm: dict[str, Any],
     reserved_texts: set[str] | None = None,
     reserved_starts: set[float] | None = None,
     copy_refs: list[str] | None = None,
     image_ref_bytes: list[bytes] | None = None,
-) -> list[dict[str, float]] | None:
-    """Gemini proposes cut timestamps only; text is filled verbatim later."""
+) -> tuple[list[dict[str, float]] | None, str]:
+    """Any selected carousel LLM proposes cut timestamps; text is filled verbatim later."""
     import json
 
-    from google import genai
-    from google.genai import types
+    from app.search.carousel_pipeline import _llm_complete_json, _llm_has_any_key
 
-    from app.search.carousel_frame_select import _downscale_jpeg
+    if not _llm_has_any_key(
+        api_key=llm.get("api_key"),
+        claude_api_key=llm.get("claude_api_key"),
+        openrouter_api_key=llm.get("openrouter_api_key"),
+        openrouter_model=str(llm.get("openrouter_model") or ""),
+    ):
+        return None, "none"
 
     catalog = _cues_near_hook(
         cues,
@@ -5216,7 +5285,7 @@ async def _plan_hook_oneline_spans_gemini(
             reserved_starts=reserved_starts,
         )
     if len(catalog) < min_slides:
-        return None
+        return None, "none"
 
     reserved_note = ""
     if reserved_starts:
@@ -5236,62 +5305,65 @@ async def _plan_hook_oneline_spans_gemini(
         )
 
     image_note = ""
-    image_bytes = list(image_ref_bytes or [])[:4]
-    if image_bytes:
+    if image_ref_bytes:
         image_note = (
-            "\nAttached IMAGE references follow this prompt as multimodal parts. "
-            "Use them as visual/mood inspiration when choosing which transcript cuts "
-            "best support this hook (still: never invent spoken words).\n"
+            "\nIMAGE references were attached in studio as mood/visual inspiration. "
+            "Use that only when choosing which transcript cuts best support this hook "
+            "(still: never invent spoken words).\n"
         )
 
     prompt = (
-        "You plan Instagram carousel CUT POINTS from a video transcript.\n"
-        "Carousel best practice: 6–10 slides, ONE idea per slide, short readable lines,\n"
-        "hook meaning built across the sequence — never repeat another hook's lines.\n"
-        "You must NOT rewrite, paraphrase, or invent spoken words.\n"
+        "You pick Instagram carousel CUTS from a video transcript catalog.\n"
+        "Text on each slide is filled later from THESE exact catalog rows — never rewrite words.\n"
+        "Carousel: 6–10 slides. Sequence 1→N must read as ONE argument "
+        "(setup → point → consequence), not random chronological chips.\n"
         "Return ONLY JSON: {\"spans\":[{\"start_sec\":number,\"end_sec\":number,\"cue_i\":number}]}\n"
-        f"Hook / goal to convey (intent only — do not output this as slide text): {hook.text}\n"
+        f"Hook / topic the user selected (intent only — do not output this as slide text): {hook.text}\n"
         f"Topic context: {getattr(hook, 'topic_text', None) or ''}\n"
         f"{copy_note}"
         f"{image_note}"
-        f"Produce between {min_slides} and {max_slides} ordered spans.\n"
-        "Rules for each span:\n"
-        "- Short enough for ONE carousel line (~3–12 spoken words)\n"
-        "- start_sec/end_sec must align to the cue catalog times (use cue_i when possible)\n"
-        "- Sequence together must convey THIS hook's meaning in full (not a different hook)\n"
-        "- Prefer sentence/clause starts (no mid-clause fragments like starting with 'than'/'and'/'your')\n"
-        "- Prefer the most important lines for this hook; skip filler and unrelated tangents\n"
-        "- Spans must be chronological with ≥2s gap between starts; no overlapping clips\n"
+        f"Produce between {min_slides} and {max_slides} spans.\n"
+        "Rules:\n"
+        "- Each span is ONE complete spoken sentence (typically 8–24 words). "
+        "Never a 3–6 word mid-thought fragment.\n"
+        "- Skip catalog rows that start with And/But/So/Because/Then, or that only "
+        "make sense attached to the previous line.\n"
+        "- You MAY skip ahead in the catalog when the next cue is filler or a "
+        "tangent. Do NOT go backwards in time.\n"
+        "- start_sec must be strictly increasing (≥2s gap); no overlapping clips.\n"
+        "- start_sec/end_sec must match catalog times (use cue_i).\n"
+        "- Stay on THIS hook/theme; timestamps must be accurate to the spoken line.\n"
+        "- If you cannot build a meaningful 6-line arc from the catalog, return "
+        "fewer good spans rather than dummy cuts.\n"
         f"{reserved_note}\n"
         f"Cue catalog JSON:\n{json.dumps(catalog, ensure_ascii=False)}"
     )
     try:
-        parts: list[Any] = [types.Part(text=prompt)]
-        for i, raw in enumerate(image_bytes):
-            try:
-                jpeg = _downscale_jpeg(raw)
-            except Exception:  # noqa: BLE001
-                jpeg = raw
-            parts.append(types.Part(text=f"Visual reference {i + 1}:"))
-            parts.append(types.Part.from_bytes(data=jpeg, mime_type="image/jpeg"))
-        client = genai.Client(api_key=api_key)
-        resp = await __import__("asyncio").to_thread(
-            client.models.generate_content,
-            model=model,
-            contents=[types.Content(role="user", parts=parts)],
-            config=types.GenerateContentConfig(
-                temperature=0.2,
-                response_mime_type="application/json",
+        raw, used = await _llm_complete_json(
+            prompt=prompt,
+            system=(
+                "You plan carousel cuts from a transcript catalog. "
+                "Return ONLY valid JSON. Never invent spoken words."
             ),
+            temperature=0.2,
+            max_tokens=2500,
+            api_key=llm.get("api_key"),
+            model=str(llm.get("model") or ""),
+            claude_api_key=llm.get("claude_api_key"),
+            claude_model=str(llm.get("claude_model") or ""),
+            provider=str(llm.get("provider") or "auto"),
+            openrouter_api_key=llm.get("openrouter_api_key"),
+            openrouter_model=str(llm.get("openrouter_model") or ""),
+            openrouter_base_url=str(llm.get("openrouter_base_url") or ""),
         )
-        raw = (resp.text or "").strip()
-        if not raw:
-            return None
-        m = re.search(r"\{[\s\S]*\}", raw)
-        parsed = json.loads(m.group() if m else raw)
+        text = (raw or "").strip()
+        if not text:
+            return None, used
+        m = re.search(r"\{[\s\S]*\}", text)
+        parsed = json.loads(m.group() if m else text)
         rows = parsed.get("spans") if isinstance(parsed, dict) else None
         if not isinstance(rows, list):
-            return None
+            return None, used
         by_i = {int(c["i"]): c for c in catalog}
         spans: list[dict[str, float]] = []
         for row in rows:
@@ -5309,27 +5381,23 @@ async def _plan_hook_oneline_spans_gemini(
                     continue
             if e <= s:
                 e = s + 2.0
-            # Snap to nearest catalog cue starts when far off
             if catalog and min(abs(s - float(c["s"])) for c in catalog) > 2.5:
                 nearest = min(catalog, key=lambda c: abs(float(c["s"]) - s))
                 s, e = float(nearest["s"]), float(nearest["e"])
-            if reserved_starts and any(
-                abs(s - x) < 1.8 for x in reserved_starts
-            ):
+            if reserved_starts and any(abs(s - x) < 1.8 for x in reserved_starts):
                 continue
             spans.append({"start_sec": s, "end_sec": e})
             if len(spans) >= max_slides:
                 break
-        # Dedupe near-identical starts (≥2s for one-idea-per-slide)
         uniq: list[dict[str, float]] = []
         for sp in sorted(spans, key=lambda x: x["start_sec"]):
             if any(abs(sp["start_sec"] - u["start_sec"]) < 2.0 for u in uniq):
                 continue
             uniq.append(sp)
-        return uniq if len(uniq) >= 2 else None
+        return (uniq if len(uniq) >= 2 else None), used
     except Exception as exc:  # noqa: BLE001
-        logger.warning("hook oneline span plan (gemini) failed: %s", exc)
-        return None
+        logger.warning("hook oneline span plan (llm) failed: %s", exc)
+        return None, "failed"
 
 
 def _merge_span_lists(
@@ -5355,18 +5423,23 @@ async def _plan_hook_oneline_spans(
     hook: "TimedPick",
     min_slides: int,
     max_slides: int,
-    api_key: str | None,
-    model: str | None,
+    llm: dict[str, Any] | None = None,
+    api_key: str | None = None,
+    model: str | None = None,
     reserved_texts: set[str] | None = None,
     reserved_starts: set[float] | None = None,
     copy_refs: list[str] | None = None,
     image_ref_bytes: list[bytes] | None = None,
 ) -> dict[str, Any]:
     """Plan ≥6 short exact-transcript spans that convey a hook's goal."""
+    from app.search.carousel_pipeline import _llm_has_any_key
+
     source = "heuristic"
     spans: list[dict[str, float]] = []
     hs = float(hook.start_sec or 0)
     he = float(hook.end_sec) if hook.end_sec is not None else hs + 15.0
+    pack = _carousel_llm_pack(llm, api_key=api_key, model=model)
+    llm_used = "none"
 
     def _localize(cands: list[dict[str, float]], forward: float) -> list[dict[str, float]]:
         local_lo = max(0.0, hs - 12.0)
@@ -5374,29 +5447,34 @@ async def _plan_hook_oneline_spans(
         local = [sp for sp in cands if local_lo <= float(sp["start_sec"]) <= local_hi]
         return local
 
-    if api_key and model and cues:
-        gem = await _plan_hook_oneline_spans_gemini(
+    if cues and _llm_has_any_key(
+        api_key=pack.get("api_key"),
+        claude_api_key=pack.get("claude_api_key"),
+        openrouter_api_key=pack.get("openrouter_api_key"),
+        openrouter_model=str(pack.get("openrouter_model") or ""),
+    ):
+        planned, llm_used = await _plan_hook_oneline_spans_llm(
             cues,
             hook=hook,
             min_slides=min_slides,
             max_slides=max_slides,
-            api_key=api_key,
-            model=model,
+            llm=pack,
             reserved_texts=reserved_texts,
             reserved_starts=reserved_starts,
             copy_refs=copy_refs,
             image_ref_bytes=image_ref_bytes,
         )
-        if gem:
+        if planned:
             # Prefer cuts near the hook; widen only if the tight window is thin.
             for fwd in (55.0, 90.0, 140.0):
-                local = _localize(gem, fwd)
+                local = _localize(planned, fwd)
                 if len(local) >= min(min_slides, 4) or fwd == 140.0:
-                    spans = local if local else gem
+                    spans = local if local else planned
                     break
-            source = "gemini_cuts"
+            tag = llm_used if llm_used not in ("none", "failed") else "llm"
+            source = f"{tag}_cuts"
 
-    # Always run heuristic — either as primary or to top up Gemini's short lists.
+    # Always run heuristic — either as primary or to top up the LLM's short lists.
     heur = _plan_hook_oneline_spans_heuristic(
         cues,
         hook_start=hs,
@@ -5412,7 +5490,8 @@ async def _plan_hook_oneline_spans(
         source = "heuristic"
     elif len(spans) < min_slides:
         spans = _merge_span_lists(spans, heur, limit=max_slides)
-        source = "gemini+heuristic"
+        tag = llm_used if llm_used not in ("none", "failed") else "llm"
+        source = f"{tag}+heuristic"
 
     # Wider window top-up if still thin (still respect reserved pool).
     if len(spans) < min_slides:
@@ -5427,8 +5506,9 @@ async def _plan_hook_oneline_spans(
             hook=hook,
         )
         spans = _merge_span_lists(spans, wider, limit=max_slides)
-        if source == "gemini_cuts":
-            source = "gemini+heuristic"
+        if source.endswith("_cuts"):
+            tag = llm_used if llm_used not in ("none", "failed") else "llm"
+            source = f"{tag}+heuristic"
     return {"spans": spans[:max_slides], "source": source}
 
 
@@ -5493,7 +5573,23 @@ def _slides_from_exact_spans(
         e = float(sp.get("end_sec") or s + 2.5)
         text = _exact_text_for_span(cues, s, e)
         if not text or len(text.split()) < _ONELINE_MIN_WORDS:
-            continue
+            expanded, es, ee = _verbatim_passage_for_span(
+                cues,
+                s,
+                e,
+                goal_text=None,
+                min_words=_ONELINE_MIN_WORDS,
+                target_sentences=1,
+                max_sentences=1,
+                max_words=_ONELINE_MAX_WORDS,
+                max_back_sec=6.0,
+                max_forward_sec=18.0,
+                max_span_sec=22.0,
+            )
+            if expanded:
+                text, s, e = expanded, es, float(ee if ee is not None else s + 2.5)
+            else:
+                continue
         if not _line_starts_clean(text):
             repaired = _exact_text_for_span(cues, max(0.0, s - 2.5), e)
             if repaired and _line_starts_clean(repaired):

@@ -527,7 +527,7 @@ async def extract_hooks_and_topics_async(
 ) -> dict[str, Any]:
     """Topics → subtopics → hooks (one topic at a time), with English preference.
 
-    Prefers Claude when ``claude_api_key`` is set; otherwise Gemini via ``api_key``.
+        Honors studio LLM selectability (Claude / OpenRouter / Gemini / auto).
     """
     has_llm = _llm_has_any_key(
         api_key=api_key,
@@ -885,6 +885,12 @@ async def extract_hooks_and_topics_async(
         english_cues=english_cues,
         api_key=api_key,
         model=model,
+        claude_api_key=claude_api_key,
+        claude_model=claude_model,
+        provider=provider,
+        openrouter_api_key=openrouter_api_key,
+        openrouter_model=openrouter_model,
+        openrouter_base_url=openrouter_base_url,
     )
     return base
 
@@ -1389,6 +1395,12 @@ async def ensure_english_display_texts(
     english_cues: list[tuple[float, float | None, str]] | None = None,
     api_key: str | None,
     model: str,
+    claude_api_key: str | None = None,
+    claude_model: str = "",
+    provider: str = "auto",
+    openrouter_api_key: str | None = None,
+    openrouter_model: str = "",
+    openrouter_base_url: str = "",
 ) -> dict[str, Any]:
     """Translate remaining non-English hooks/topics to natural English for display."""
     hooks = [dict(h) for h in (payload.get("hooks") or [])]
@@ -1409,12 +1421,23 @@ async def ensure_english_display_texts(
             to_translate.append(("topic", i, text))
 
     translations: list[str] = []
-    if to_translate and api_key:
+    if to_translate and _llm_has_any_key(
+        api_key=api_key,
+        claude_api_key=claude_api_key,
+        openrouter_api_key=openrouter_api_key,
+        openrouter_model=openrouter_model,
+    ):
         try:
             translations = await _llm_translate_lines(
                 [text for _, _, text in to_translate],
                 api_key=api_key,
                 model=model,
+                claude_api_key=claude_api_key,
+                claude_model=claude_model,
+                provider=provider,
+                openrouter_api_key=openrouter_api_key,
+                openrouter_model=openrouter_model,
+                openrouter_base_url=openrouter_base_url,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("hook/topic English translation failed: %s", exc)
@@ -1462,17 +1485,25 @@ async def ensure_english_display_texts(
 async def _llm_translate_lines(
     lines: list[str],
     *,
-    api_key: str,
-    model: str,
+    api_key: str | None = None,
+    model: str = "",
+    claude_api_key: str | None = None,
+    claude_model: str = "",
+    provider: str = "auto",
+    openrouter_api_key: str | None = None,
+    openrouter_model: str = "",
+    openrouter_base_url: str = "",
 ) -> list[str]:
     """Translate lines to natural English; returns list aligned to input order."""
-    import asyncio
-
-    from google import genai
-    from google.genai import types
-
     if not lines:
         return []
+    if not _llm_has_any_key(
+        api_key=api_key,
+        claude_api_key=claude_api_key,
+        openrouter_api_key=openrouter_api_key,
+        openrouter_model=openrouter_model,
+    ):
+        return [""] * len(lines)
 
     numbered = [{"i": i, "text": line} for i, line in enumerate(lines)]
     prompt = (
@@ -1483,23 +1514,22 @@ async def _llm_translate_lines(
         "- Return ONLY a JSON array of objects: {\"i\": number, \"text\": \"English\"}.\n\n"
         f"Lines:\n{json.dumps(numbered, ensure_ascii=False)}"
     )
-    client = genai.Client(
+    raw_text, _used = await _llm_complete_json(
+        prompt=prompt,
+        system="You faithfully translate spoken video captions. Return ONLY valid JSON.",
+        temperature=0.2,
+        max_tokens=2500,
         api_key=api_key,
-        http_options=types.HttpOptions(timeout=_LLM_REQUEST_TIMEOUT_MS),
-    )
-    resp = await asyncio.to_thread(
-        client.models.generate_content,
         model=model,
-        contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
-        config=types.GenerateContentConfig(
-            temperature=0.2,
-            response_mime_type="application/json",
-        ),
+        claude_api_key=claude_api_key,
+        claude_model=claude_model,
+        provider=provider,
+        openrouter_api_key=openrouter_api_key,
+        openrouter_model=openrouter_model,
+        openrouter_base_url=openrouter_base_url,
     )
-    raw = json.loads((resp.text or "").strip() or "[]")
+    raw = _loads_json_array(raw_text)
     out = [""] * len(lines)
-    if not isinstance(raw, list):
-        return out
     for row in raw:
         if not isinstance(row, dict):
             continue
@@ -2987,19 +3017,25 @@ async def deduce_directional_intent(
     search_entity: str | None,
     api_key: str | None,
     model: str,
+    claude_api_key: str | None = None,
+    claude_model: str = "",
+    provider: str = "auto",
+    openrouter_api_key: str | None = None,
+    openrouter_model: str = "",
+    openrouter_base_url: str = "",
 ) -> dict[str, Any]:
     """Intent discovery only — does not write a script."""
     entity = (search_entity or "").strip()
     fallback_label = _fallback_intent(theme_title, hooks, topics, entity)
-    if not api_key:
+    if not _llm_has_any_key(
+        api_key=api_key,
+        claude_api_key=claude_api_key,
+        openrouter_api_key=openrouter_api_key,
+        openrouter_model=openrouter_model,
+    ):
         return {"intent": fallback_label, "intent_score": 0.55, "source": "fallback"}
 
     try:
-        import asyncio
-
-        from google import genai
-        from google.genai import types
-
         prompt = (
             "Deduce the creator's directional intent for a video carousel segment. "
             "Do NOT write a script. Return ONLY JSON: "
@@ -3008,27 +3044,35 @@ async def deduce_directional_intent(
             f"Entity: {entity or '(none)'}\n"
             f"Hooks (verbatim): {hooks}\nTopics (verbatim): {topics}\n"
         )
-        client = genai.Client(
-            api_key=api_key,
-            http_options=types.HttpOptions(timeout=_LLM_REQUEST_TIMEOUT_MS),
-        )
-        resp = await asyncio.to_thread(
-            client.models.generate_content,
-            model=model,
-            contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
-            config=types.GenerateContentConfig(
-                temperature=0.2,
-                response_mime_type="application/json",
+        raw, used = await _llm_complete_json(
+            prompt=prompt,
+            system=(
+                "You deduce carousel intent from themes and transcript hooks. "
+                "Return ONLY valid JSON."
             ),
+            temperature=0.2,
+            max_tokens=400,
+            api_key=api_key,
+            model=model,
+            claude_api_key=claude_api_key,
+            claude_model=claude_model,
+            provider=provider,
+            openrouter_api_key=openrouter_api_key,
+            openrouter_model=openrouter_model,
+            openrouter_base_url=openrouter_base_url,
         )
-        parsed = json.loads((resp.text or "").strip() or "{}")
+        text = (raw or "").strip()
+        m = re.search(r"\{[\s\S]*\}", text)
+        parsed = json.loads(m.group() if m else text or "{}")
+        if not isinstance(parsed, dict):
+            parsed = {}
         intent = str(parsed.get("intent") or fallback_label).strip()[:400]
         score = parsed.get("intent_score", 0.7)
         try:
             score_f = max(0.0, min(1.0, float(score)))
         except (TypeError, ValueError):
             score_f = 0.7
-        return {"intent": intent, "intent_score": score_f, "source": "llm"}
+        return {"intent": intent, "intent_score": score_f, "source": used or "llm"}
     except Exception as exc:  # noqa: BLE001
         logger.warning("intent deduction failed: %s", exc)
         return {"intent": fallback_label, "intent_score": 0.5, "source": "fallback"}

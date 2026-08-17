@@ -33,6 +33,10 @@ def test_english_validators_unchanged():
     assert not _line_complete_enough("Welcome to Physics Wallah")  # no terminator
     assert not _line_starts_clean("youtube is great.")
     assert not _line_complete_enough("and then we keep talking about it more")
+    # Continuation chips — even capitalized — must not become a slide.
+    assert not _line_starts_clean("And it all fits on one screen on your monitor.")
+    assert not _line_starts_clean("But it actually does scale to millions of users.")
+    assert not _line_starts_clean("So there's a few ways you can misuse dot plots.")
 
 
 def test_trim_respects_danda():

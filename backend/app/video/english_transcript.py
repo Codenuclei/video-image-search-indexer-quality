@@ -519,13 +519,43 @@ async def ensure_english_transcript(
                 message=f"{MSG_ALREADY_ENGLISH} ({len(sentences)} sentences).",
             )
 
+    def _from_stored(*, source: str, message: str) -> EnglishTranscriptResult:
+        stored = [
+            TimedSentence(
+                start_sec=float(s.start_sec),
+                end_sec=float(s.end_sec) if s.end_sec is not None else None,
+                text=" ".join((s.text or "").split()).strip(),
+            )
+            for s in old_segments
+            if (s.text or "").strip()
+        ]
+        return EnglishTranscriptResult(
+            drive_file_id=file_id,
+            media_id=media.id,
+            cue_count=len(stored),
+            translated=False,
+            already_english=True,
+            language="en",
+            source=source,
+            segments=stored,
+            message=message,
+        )
+
     cue_tuples = [
         (float(s.start_sec), float(s.end_sec) if s.end_sec is not None else None, s.text or "")
         for s in old_segments
     ]
     stitched = stitch_complete_sentences(cue_tuples)
     if not stitched:
-        raise EnglishTranscriptError(MSG_INCOMPLETE)
+        logger.warning(
+            "ensure-english stitch empty for %s; keeping %d stored cues",
+            file_id,
+            len(old_segments),
+        )
+        return _from_stored(
+            source="stored_en",
+            message=f"{MSG_ALREADY_ENGLISH} ({len(old_segments)} sentences).",
+        )
 
     needs_translate = cues_need_english(
         (s.start_sec, s.end_sec, s.text) for s in stitched
@@ -550,7 +580,21 @@ async def ensure_english_transcript(
         already_english = True
         source = "stitched_en"
 
-    validate_english_sentences(sentences)
+    try:
+        validate_english_sentences(sentences)
+    except EnglishTranscriptError:
+        if needs_translate:
+            raise
+        # Spoken English captions are often unpunctuated fragments. Do not
+        # block carousel when a usable transcript is already stored.
+        logger.warning(
+            "ensure-english validation skipped for %s; keeping stored cues",
+            file_id,
+        )
+        return _from_stored(
+            source="stored_en",
+            message=f"{MSG_ALREADY_ENGLISH} ({len(old_segments)} sentences).",
+        )
 
     deleted = await _replace_text_segments(
         session,
