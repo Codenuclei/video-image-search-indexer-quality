@@ -174,7 +174,6 @@ export default function ReviewPage() {
           </button>
         </div>
       )}
-      )}
       {initialLoading && (
         <p className="text-muted-foreground">
           <LoadingLabel size={16}>Loading review queue…</LoadingLabel>

@@ -551,13 +551,13 @@ async function api<T>(
       error.name === "AbortError"
     ) {
       if (external?.aborted) throw error;
-      throwApiError(
+      return throwApiError(
         `Request timed out after ${Math.round(timeout / 1000)}s. The API may be busy — retry in a moment.`,
         undefined,
         silent
       );
     }
-    throwApiError(error, undefined, silent);
+    return throwApiError(error, undefined, silent);
   } finally {
     clearTimeout(timer);
     if (external) external.removeEventListener("abort", onAbort);

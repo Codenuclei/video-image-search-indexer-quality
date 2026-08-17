@@ -318,8 +318,6 @@ export default function OfficialImageSearchLabPage() {
         </label>
       </Card>
 
-      )}
-
       {lensResult && (
         <div className="space-y-4">
           <Card className="space-y-3">

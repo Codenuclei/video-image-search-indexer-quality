@@ -237,8 +237,6 @@ export default function PeoplePage() {
         </p>
       </div>
 
-      </div>
-
       {loading && (
         <p className="text-sm text-muted-foreground">
           <LoadingLabel size={16}>Loading people…</LoadingLabel>
