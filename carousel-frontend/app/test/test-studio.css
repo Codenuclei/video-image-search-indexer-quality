@@ -455,8 +455,7 @@
   overflow-y: auto;
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
-  scrollbar-width: thin;
-  scrollbar-color: #cbd5e1 transparent;
+  scrollbar-width: none;
 }
 
 .carousel-studio .thd-orphans .thd-col-label {
@@ -1129,4 +1128,16 @@
     right: 0;
     width: auto;
   }
+}
+
+/* Hide every /test Studio scrollbar; wheel and trackpad still scroll. */
+.carousel-studio,
+.carousel-studio * {
+  scrollbar-width: none !important;
+  -ms-overflow-style: none !important;
+}
+.carousel-studio *::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
 }

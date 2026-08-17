@@ -2161,3 +2161,15 @@
   margin-right: 0.35rem;
   margin-bottom: 0.45rem;
 }
+
+/* Hide every Studio scrollbar (lists, Drive picker, topics). Wheel/trackpad still scroll. */
+.carousel-studio,
+.carousel-studio * {
+  scrollbar-width: none !important;
+  -ms-overflow-style: none !important;
+}
+.carousel-studio *::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+}

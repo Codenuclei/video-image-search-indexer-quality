@@ -14,7 +14,6 @@ import {
   Check,
   Clapperboard,
   ImageIcon,
-  Loader2,
   Sparkles,
   Target,
   Upload,
@@ -1158,23 +1157,20 @@ function TestStudioInner() {
               className="studio-btn studio-btn-primary studio-btn-continue"
               onClick={() => void continueToThemes()}
               disabled={!onVideoStep || themesLoading || transcriptBusy}
+              aria-busy={themesLoading}
               title={
                 !onVideoStep
                   ? "Move back to this step to generate themes again"
                   : transcriptBusy
                     ? "Wait for the transcript to finish preparing"
-                    : undefined
+                    : themesLoading
+                      ? "Themes are generating"
+                      : undefined
               }
               data-testid="test-continue-themes"
             >
-              {themesLoading ? (
-                "Loading themes…"
-              ) : (
-                <>
-                  Continue to themes
-                  <ArrowRight size={14} className="studio-btn-continue-arrow" />
-                </>
-              )}
+              Continue to themes
+              <ArrowRight size={14} className="studio-btn-continue-arrow" />
             </button>
           </div>
         )}
@@ -1258,20 +1254,12 @@ function TestStudioInner() {
                 className="studio-btn studio-btn-primary studio-btn-continue"
                 onClick={() => void extractFromSelectedThemes({ force: false })}
                 disabled={extractLoading || !selectedThemes.length}
+                aria-busy={extractLoading}
                 data-testid="test-continue-selection"
               >
-                {extractLoading ? (
-                  <>
-                    <Loader2 size={14} className="animate-spin" aria-hidden />
-                    Extracting topics & hooks…
-                  </>
-                ) : (
-                  <>
-                    Extract from {selectedThemes.length || 0} theme
-                    {selectedThemes.length === 1 ? "" : "s"}
-                    <ArrowRight size={14} className="studio-btn-continue-arrow" />
-                  </>
-                )}
+                Extract from {selectedThemes.length || 0} theme
+                {selectedThemes.length === 1 ? "" : "s"}
+                <ArrowRight size={14} className="studio-btn-continue-arrow" />
               </button>
               <StageLlmGenerate
                 label="Generate topics and hooks"
@@ -1359,16 +1347,11 @@ function TestStudioInner() {
                 disabled={
                   copyLoading || (!selectedHooks.length && !selectedTopics.length)
                 }
+                aria-busy={copyLoading}
                 data-testid="test-generate-copy"
               >
-                {copyLoading ? (
-                  "Generating copy…"
-                ) : (
-                  <>
-                    Generate copy
-                    <ArrowRight size={14} className="studio-btn-continue-arrow" />
-                  </>
-                )}
+                Generate copy
+                <ArrowRight size={14} className="studio-btn-continue-arrow" />
               </button>
               <StageLlmGenerate
                 label="Generate copy"

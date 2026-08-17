@@ -787,7 +787,7 @@ export function DriveFolderPanel({
           <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
             Previously indexed folders
           </p>
-          <ul className="mt-2 max-h-36 space-y-1.5 overflow-y-auto">
+          <ul className="studio-scroll-fade mt-2 max-h-36 space-y-1.5 overflow-y-auto">
             {indexedFolders.slice(0, 12).map((f) => (
               <li
                 key={f.id}
