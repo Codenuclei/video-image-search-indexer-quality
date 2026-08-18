@@ -43,7 +43,7 @@ _MAX_MERGED_TOPICS = 24
 # Per-chunk transcript budget for Gemini (full timed cues; chunk+merge for long talks).
 _TOPIC_CHUNK_CHARS = 12_000
 _TOPIC_CHUNK_OVERLAP_CUES = 6
-THEME_PROMPT_VERSION = "themes-v3-business-chunked-quality"
+THEME_PROMPT_VERSION = "themes-v4-openrouter-structured-output"
 _THEME_CHUNK_CHARS = 14_000
 _THEME_CHUNK_OVERLAP_CUES = 3
 # Gemini requests run in worker threads and the SDK does not time out by default,
@@ -503,7 +503,14 @@ async def build_harmonized_themes(
                     openrouter_base_url=openrouter_base_url,
                     json_root="array",
                 )
-                candidates.extend(_parse_themes_json(text))
+                parsed = _parse_themes_json(text)
+                if not parsed:
+                    _raise_theme_parse_error(
+                        text,
+                        source=llm_source,
+                        stage=f"chunk {index + 1}",
+                    )
+                candidates.extend(parsed)
 
             outline = _condense_transcript_outline(usable_cues, max_chars=10_000)
             themes = candidates
@@ -528,6 +535,12 @@ async def build_harmonized_themes(
                     json_root="array",
                 )
                 themes = _parse_themes_json(text)
+                if not themes:
+                    _raise_theme_parse_error(
+                        text,
+                        source=llm_source,
+                        stage="full-talk synthesis",
+                    )
 
             if themes:
                 themes = snap_themes_to_cues(themes, cues)
@@ -727,6 +740,21 @@ def _parse_themes_json(text: str) -> list[dict[str, Any]]:
         if len(out) >= _MAX_THEMES:
             break
     return out
+
+
+def _raise_theme_parse_error(text: str, *, source: str, stage: str) -> None:
+    """Log a safe response excerpt and prevent silent transcript-bucket fallback."""
+    excerpt = " ".join((text or "").split())[:500]
+    logger.warning(
+        "Carousel theme parse failed provider=%s stage=%s response=%r",
+        source,
+        stage,
+        excerpt,
+    )
+    raise RuntimeError(
+        f"{source or 'LLM'} returned no valid themes during {stage}; "
+        "the response was not valid theme JSON"
+    )
 
 
 def extract_hooks_and_topics(

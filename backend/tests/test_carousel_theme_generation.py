@@ -136,3 +136,33 @@ async def test_theme_generation_reads_every_chunk_and_synthesizes(monkeypatch) -
     assert len(themes) == 3
     assert source == "openrouter"
     assert warning is None
+
+
+@pytest.mark.asyncio
+async def test_theme_generation_reports_invalid_llm_json(monkeypatch) -> None:
+    async def fake_complete(**_kwargs):
+        return "I could not produce the requested structure.", "openrouter"
+
+    monkeypatch.setattr(
+        "app.search.carousel_pipeline._llm_complete_json",
+        fake_complete,
+    )
+    cues = [
+        (0.0, 10.0, "The founder explains the product and its customer."),
+        (10.0, 20.0, "The company then improves distribution and margins."),
+    ]
+
+    themes, source, warning = await build_harmonized_themes(
+        cues=cues,
+        video_name="Founder interview",
+        api_key="",
+        model="",
+        openrouter_api_key="configured",
+        openrouter_model="test-model",
+        provider="openrouter",
+    )
+
+    assert themes
+    assert source == "fallback"
+    assert warning is not None
+    assert "returned no valid themes" in warning

@@ -265,7 +265,7 @@ async def test_openrouter_complete_json_mocks_httpx(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_openrouter_array_root_omits_object_response_format(monkeypatch):
+async def test_openrouter_array_root_uses_wrapped_structured_output(monkeypatch):
     from app.llm import openrouter as or_mod
 
     calls: list[dict] = []
@@ -275,7 +275,11 @@ async def test_openrouter_array_root_omits_object_response_format(monkeypatch):
         text = ""
 
         def json(self):
-            return {"choices": [{"message": {"content": '[{"title":"ok"}]'}}]}
+            return {
+                "choices": [
+                    {"message": {"content": '{"items":[{"title":"ok"}]}'}},
+                ]
+            }
 
     class _Client:
         def __init__(self, *args, **kwargs):
@@ -300,8 +304,8 @@ async def test_openrouter_array_root_omits_object_response_format(monkeypatch):
     )
 
     assert text.startswith("[")
-    assert "response_format" not in calls[0]
-    assert "top-level JSON array" in calls[0]["messages"][0]["content"]
+    assert calls[0]["response_format"]["type"] == "json_object"
+    assert '"items"' in calls[0]["messages"][0]["content"]
 
 
 @pytest.mark.asyncio
