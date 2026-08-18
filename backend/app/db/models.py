@@ -524,3 +524,24 @@ class CarouselItemReference(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class SearchQueryCache(Base):
+    """Folder-scoped search result cache shared across Gunicorn workers."""
+
+    __tablename__ = "search_query_cache"
+
+    cache_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    query_text: Mapped[str] = mapped_column(Text, nullable=False)
+    query_embedding: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    folder_path: Mapped[str] = mapped_column(String, nullable=False, default="", index=True)
+    person: Mapped[str] = mapped_column(String, nullable=False, default="", index=True)
+    mime: Mapped[str] = mapped_column(String(16), nullable=False, default="all")
+    captions: Mapped[bool] = mapped_column(default=False, nullable=False)
+    rerank: Mapped[bool] = mapped_column(default=True, nullable=False)
+    response_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    folder_fp: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    cluster_fp: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    cluster_ids: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+

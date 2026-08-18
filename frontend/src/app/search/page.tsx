@@ -4,22 +4,23 @@ import { useEffect, useRef, useState } from "react";
 import { ExternalLink, Play, X } from "lucide-react";
 import {
   apiAssetUrl,
-  apiClient,
-  formatApiError,
-  API_BASE,
   driveFileDownloadUrl,
   driveFilePreviewUrl,
   driveGoogleViewUrl,
   driveVideoStreamUrl,
-  type FolderContext,
-  type Person,
   type SearchMoment,
-  type SearchResponse,
-  type SearchResultFile,
 } from "@/lib/api";
 import { Button, Card, DownloadButton, FilePreview, IconButton, IconLink, Input, LoadingLabel, PersonTags } from "@/components/ui";
 import { ModalOverlay } from "@/components/modal";
-import { toastApiError } from "@/lib/toast-api-error";
+import {
+  hydrateSearchCatalogs,
+  hydrateSearchSettings,
+  patchSearchSession,
+  persistSearchCaptions,
+  persistSearchRerank,
+  runSearch,
+  useSearchSession,
+} from "@/lib/search-session";
 
 function formatTimestamp(sec: number): string {
   const m = Math.floor(sec / 60);
@@ -67,77 +68,30 @@ function seekVideoTo(video: HTMLVideoElement, timestampSec: number) {
 }
 
 export default function SearchPage() {
-  const [q, setQ] = useState("");
-  const [person, setPerson] = useState("");
-  const [mime, setMime] = useState("all");
-  const [folderPath, setFolderPath] = useState("");
-  const [rerank, setRerank] = useState(true);
-  const [useCaptions, setUseCaptions] = useState(false);
-  const [persons, setPersons] = useState<Person[]>([]);
-  const [folderContexts, setFolderContexts] = useState<FolderContext[]>([]);
-  const [results, setResults] = useState<SearchResponse | null>(null);
-  const [lastSearchMode, setLastSearchMode] = useState<{ captions: boolean; rerank: boolean } | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [previewFile, setPreviewFile] = useState<SearchResultFile | null>(null);
-  const [previewMoment, setPreviewMoment] = useState<SearchMoment | null>(null);
-  const [linkedinMap, setLinkedinMap] = useState<Record<string, string>>({});
+  const {
+    q,
+    person,
+    mime,
+    folderPath,
+    rerank,
+    useCaptions,
+    persons,
+    folderContexts,
+    results,
+    lastSearchMode,
+    loading,
+    previewFile,
+    previewMoment,
+    linkedinMap,
+  } = useSearchSession();
 
   useEffect(() => {
-    apiClient.persons().then(setPersons).catch(() => setPersons([]));
-    apiClient.reidLinkedinMap().then(setLinkedinMap).catch(() => {});
-    apiClient.folderContexts().then(setFolderContexts).catch(() => {});
-    apiClient
-      .settings()
-      .then((s) => {
-        setRerank(s.search_rerank_enabled);
-        setUseCaptions(s.search_use_captions);
-      })
-      .catch(() => {});
+    hydrateSearchCatalogs();
+    hydrateSearchSettings();
   }, []);
 
-  async function setRerankPersist(value: boolean) {
-    setRerank(value);
-    try {
-      await apiClient.updateSettings({ search_rerank_enabled: value });
-    } catch {
-      /* keep local toggle; settings page can fix */
-    }
-  }
-
-  async function setCaptionsPersist(value: boolean) {
-    setUseCaptions(value);
-    try {
-      await apiClient.updateSettings({ search_use_captions: value });
-    } catch {
-      /* keep local toggle */
-    }
-  }
-
-  async function search() {
-    if (!q.trim()) return;
-    setLoading(true);
-    setPreviewFile(null);
-    setPreviewMoment(null);
-    setLastSearchMode({ captions: useCaptions, rerank });
-    try {
-      const safeMime = mime === "video" ? "all" : mime;
-      if (mime === "video") setMime("all");
-      const params = new URLSearchParams({ q: q.trim() });
-      if (person) params.set("person", person);
-      // Video mime filter is disabled on main Search.
-      if (safeMime !== "all") params.set("mime", safeMime);
-      if (folderPath) params.set("folder_path", folderPath);
-      if (!rerank) params.set("rerank", "false");
-      if (useCaptions) params.set("captions", "true");
-      const res = await fetch(`${API_BASE}/search?${params}`, { cache: "no-store" });
-      if (!res.ok) throw new Error(await res.text());
-      setResults(await res.json());
-    } catch (e) {
-      toastApiError(formatApiError(e, "Search failed"));
-      setResults(null);
-    } finally {
-      setLoading(false);
-    }
+  function search() {
+    void runSearch();
   }
 
   const files = (results?.files ?? []).filter(
@@ -159,14 +113,14 @@ export default function SearchPage() {
           className="w-full"
           placeholder="Search (e.g. wine glass, smiling, party, people)..."
           value={q}
-          onChange={(e) => setQ(e.target.value)}
+          onChange={(e) => patchSearchSession({ q: e.target.value })}
           onKeyDown={(e) => e.key === "Enter" && search()}
         />
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
           <select
             className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-ring"
             value={mime === "video" ? "all" : mime}
-            onChange={(e) => setMime(e.target.value)}
+            onChange={(e) => patchSearchSession({ mime: e.target.value })}
           >
             <option value="all">All files</option>
             <option value="image">Images only</option>
@@ -175,7 +129,7 @@ export default function SearchPage() {
           <select
             className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-ring"
             value={person}
-            onChange={(e) => setPerson(e.target.value)}
+            onChange={(e) => patchSearchSession({ person: e.target.value })}
             disabled={persons.length === 0}
           >
             <option value="">All people</option>
@@ -188,7 +142,7 @@ export default function SearchPage() {
           <select
             className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-ring sm:col-span-2"
             value={folderPath}
-            onChange={(e) => setFolderPath(e.target.value)}
+            onChange={(e) => patchSearchSession({ folderPath: e.target.value })}
             title={folderPath && folderContexts.find(f => f.folder_path === folderPath)?.description}
           >
             <option value="">All folders</option>
@@ -206,7 +160,7 @@ export default function SearchPage() {
           </Button>
           <button
             type="button"
-            onClick={() => setCaptionsPersist(!useCaptions)}
+            onClick={() => void persistSearchCaptions(!useCaptions)}
             title={useCaptions ? "Caption search ON — fuses indexed image descriptions" : "Caption search OFF — visual embeddings only"}
             className={`w-full rounded-md border px-3 py-2 text-xs font-medium transition-colors sm:w-auto ${
               useCaptions
@@ -218,7 +172,7 @@ export default function SearchPage() {
           </button>
           <button
             type="button"
-            onClick={() => setRerankPersist(!rerank)}
+            onClick={() => void persistSearchRerank(!rerank)}
             title={rerank ? "AI re-ranking ON — click to disable" : "AI re-ranking OFF — click to enable"}
             className={`w-full rounded-md border px-3 py-2 text-xs font-medium transition-colors sm:w-auto ${
               rerank
@@ -257,6 +211,13 @@ export default function SearchPage() {
                 ? "Re-rank ON — results are re-ordered by AI relevance (images)."
                 : "Re-rank OFF — raw vector similarity order (no AI re-ordering)."}
             </li>
+            {results.cache === "exact" || results.cache === "semantic" ? (
+              <li>
+                {results.cache === "exact"
+                  ? "Cached — same query and folder; skipped AI re-rank."
+                  : "Cached — similar query in this folder; skipped AI re-rank."}
+              </li>
+            ) : null}
           </ul>
         </Card>
       )}
@@ -282,7 +243,7 @@ export default function SearchPage() {
                         driveFileId={file.drive_file_id}
                         name={file.name}
                         mimeType={file.mime_type}
-                        onClick={isImage ? () => setPreviewFile(file) : undefined}
+                        onClick={isImage ? () => patchSearchSession({ previewFile: file }) : undefined}
                       />
                     </div>
                     <div className="flex flex-col gap-2 px-3 py-3 text-sm">
@@ -335,14 +296,14 @@ export default function SearchPage() {
         </Card>
       )}
 
-      <ModalOverlay open={!!previewFile} onClose={() => setPreviewFile(null)}>
+      <ModalOverlay open={!!previewFile} onClose={() => patchSearchSession({ previewFile: null })}>
         {previewFile && (
           <div className="relative flex max-h-[min(88dvh,720px)] flex-col overflow-hidden rounded-lg bg-card shadow-2xl">
             <div className="relative flex shrink-0 items-center justify-center bg-black">
               <IconButton
                 icon={X}
                 label="Close"
-                onClick={() => setPreviewFile(null)}
+                onClick={() => patchSearchSession({ previewFile: null })}
                 className="absolute right-3 top-3 z-10 bg-black/60 text-white hover:bg-black/80 hover:text-white"
               />
               {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -383,9 +344,9 @@ export default function SearchPage() {
           </div>
         )}
       </ModalOverlay>
-      <ModalOverlay open={!!previewMoment} onClose={() => setPreviewMoment(null)}>
+      <ModalOverlay open={!!previewMoment} onClose={() => patchSearchSession({ previewMoment: null })}>
         {previewMoment && (
-          <MomentPreviewPanel moment={previewMoment} onClose={() => setPreviewMoment(null)} />
+          <MomentPreviewPanel moment={previewMoment} onClose={() => patchSearchSession({ previewMoment: null })} />
         )}
       </ModalOverlay>
     </div>

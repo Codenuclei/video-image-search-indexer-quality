@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import {
   ArrowLeft,
   Check,
@@ -17,15 +17,22 @@ import {
   apiClient,
   formatApiError,
   driveFilePreviewUrl,
-  type FaceCrawlResponse,
   type FaceSearchAppearance,
   type FaceSearchMatch,
   type FaceSearchResponse,
   type LeadershipPerson,
-  type LeadershipRoster,
 } from "@/lib/api";
 import { Button, Card, ConfirmDialog, FaceThumb, LoadingLabel } from "@/components/ui";
 import { cn } from "@/lib/utils";
+import {
+  hydrateLeadershipRoster,
+  patchReverseFaceSession,
+  runReverseFaceCrawl,
+  runReverseFaceSearch,
+  selectReverseFaceLeader,
+  setReverseFaceFile,
+  useReverseFaceSession,
+} from "@/lib/reverse-face-session";
 
 function collectAppearances(matches: FaceSearchMatch[]): FaceSearchAppearance[] {
   const seen = new Set<string>();
@@ -281,95 +288,38 @@ function ResultsSidePanel({
 
 export default function ReverseFaceLabPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [dragOver, setDragOver] = useState(false);
-  const [file, setFile] = useState<File | null>(null);
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-  const [searching, setSearching] = useState(false);
-  const [result, setResult] = useState<FaceSearchResponse | null>(null);
-  const [crawlUrls, setCrawlUrls] = useState("");
-  const [crawling, setCrawling] = useState(false);
-  const [crawlResult, setCrawlResult] = useState<FaceCrawlResponse | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  const [roster, setRoster] = useState<LeadershipRoster | null>(null);
-  const [rosterLoading, setRosterLoading] = useState(true);
-  const [selectedLeader, setSelectedLeader] = useState<LeadershipPerson | null>(null);
-  const [tagging, setTagging] = useState(false);
-  const [tagMessage, setTagMessage] = useState<string | null>(null);
-  const [confirmTagOpen, setConfirmTagOpen] = useState(false);
-
-  const loadRoster = useCallback(async () => {
-    setRosterLoading(true);
-    setError(null);
-    try {
-      const res = await apiClient.leadershipRoster("executive");
-      setRoster(res);
-    } catch (e) {
-      setError(formatApiError(e, "Failed to load Executive Leaders"));
-      setRoster(null);
-    } finally {
-      setRosterLoading(false);
-    }
-  }, []);
+  const {
+    dragOver,
+    file,
+    previewUrl,
+    searching,
+    result,
+    crawlUrls,
+    crawling,
+    crawlResult,
+    error,
+    roster,
+    rosterLoading,
+    selectedLeader,
+    tagging,
+    tagMessage,
+    confirmTagOpen,
+  } = useReverseFaceSession();
 
   useEffect(() => {
-    void loadRoster();
-  }, [loadRoster]);
+    void hydrateLeadershipRoster();
+  }, []);
 
   const setSelectedFile = useCallback((next: File | null) => {
-    setFile(next);
-    setResult(null);
-    setError(null);
-    setTagMessage(null);
-    setSelectedLeader(null);
-    setPreviewUrl((prev) => {
-      if (prev) URL.revokeObjectURL(prev);
-      return next ? URL.createObjectURL(next) : null;
-    });
+    setReverseFaceFile(next);
   }, []);
 
   async function runSearch(upload?: File) {
-    const target = upload ?? file;
-    if (!target) return;
-    setSearching(true);
-    setError(null);
-    setTagMessage(null);
-    setSelectedLeader(null);
-    try {
-      const res = await apiClient.searchUploadedFace(target, 20);
-      setResult(res);
-    } catch (e) {
-      setError(formatApiError(e, "Face search failed"));
-      setResult(null);
-    } finally {
-      setSearching(false);
-    }
+    await runReverseFaceSearch(upload);
   }
 
   async function selectLeader(person: LeadershipPerson) {
-    if (!person.image_url) {
-      setError(`No portrait URL for ${person.name}`);
-      return;
-    }
-    setSelectedLeader(person);
-    setFile(null);
-    setPreviewUrl((prev) => {
-      if (prev) URL.revokeObjectURL(prev);
-      return null;
-    });
-    setSearching(true);
-    setError(null);
-    setTagMessage(null);
-    setResult(null);
-    try {
-      const res = await apiClient.searchFaceByUrl(person.image_url, 20);
-      setResult(res);
-    } catch (e) {
-      setError(formatApiError(e, "Leader face search failed"));
-      setResult(null);
-    } finally {
-      setSearching(false);
-    }
+    await selectReverseFaceLeader(person);
   }
 
   async function runNameTag() {
@@ -391,14 +341,14 @@ export default function ReverseFaceLabPage() {
       .map((m) => m.face_id);
 
     if (!clusterIds.length && !faceIds.length) {
-      setTagMessage("Nothing to tag — matches already have person links.");
-      setConfirmTagOpen(false);
+      patchReverseFaceSession({
+        tagMessage: "Nothing to tag — matches already have person links.",
+        confirmTagOpen: false,
+      });
       return;
     }
 
-    setTagging(true);
-    setError(null);
-    setConfirmTagOpen(false);
+    patchReverseFaceSession({ tagging: true, error: null, confirmTagOpen: false });
     try {
       const res = await apiClient.leadershipNameTag({
         name: selectedLeader.name,
@@ -407,37 +357,22 @@ export default function ReverseFaceLabPage() {
         face_ids: faceIds,
       });
       const okCount = res.actions.filter((a) => a.ok).length;
-      setTagMessage(
-        `Tagged as “${res.person.name}” (person #${res.person.id}) · ${okCount} action(s) · ${res.person.occurrence_count} appearances`
-      );
+      patchReverseFaceSession({
+        tagMessage: `Tagged as “${res.person.name}” (person #${res.person.id}) · ${okCount} action(s) · ${res.person.occurrence_count} appearances`,
+      });
       if (selectedLeader.image_url) {
         const refreshed = await apiClient.searchFaceByUrl(selectedLeader.image_url, 20);
-        setResult(refreshed);
+        patchReverseFaceSession({ result: refreshed });
       }
     } catch (e) {
-      setError(formatApiError(e, "Name-tag failed"));
+      patchReverseFaceSession({ error: formatApiError(e, "Name-tag failed") });
     } finally {
-      setTagging(false);
+      patchReverseFaceSession({ tagging: false });
     }
   }
 
   async function runCrawl() {
-    const urls = crawlUrls
-      .split(/[\n,]+/)
-      .map((s) => s.trim())
-      .filter(Boolean);
-    if (!urls.length) return;
-    setCrawling(true);
-    setError(null);
-    try {
-      const res = await apiClient.crawlFaceUrls(urls);
-      setCrawlResult(res);
-    } catch (e) {
-      setError(formatApiError(e, "Crawl failed"));
-      setCrawlResult(null);
-    } finally {
-      setCrawling(false);
-    }
+    await runReverseFaceCrawl();
   }
 
   return (
@@ -478,7 +413,7 @@ export default function ReverseFaceLabPage() {
               {roster ? ` · ${roster.count} leaders` : ""}. Select a card to reverse-lookup.
             </p>
           </div>
-          <Button variant="secondary" onClick={() => void loadRoster()} disabled={rosterLoading} className="px-2.5 py-1.5 text-xs">
+          <Button variant="secondary" onClick={() => void hydrateLeadershipRoster(true)} disabled={rosterLoading} className="px-2.5 py-1.5 text-xs">
             {rosterLoading ? <LoadingLabel>Loading…</LoadingLabel> : "Refresh roster"}
           </Button>
         </div>
@@ -551,12 +486,12 @@ export default function ReverseFaceLabPage() {
           )}
           onDragOver={(e) => {
             e.preventDefault();
-            setDragOver(true);
+            patchReverseFaceSession({ dragOver: true });
           }}
-          onDragLeave={() => setDragOver(false)}
+          onDragLeave={() => patchReverseFaceSession({ dragOver: false })}
           onDrop={(e) => {
             e.preventDefault();
-            setDragOver(false);
+            patchReverseFaceSession({ dragOver: false });
             const dropped = e.dataTransfer.files?.[0];
             if (dropped) setSelectedFile(dropped);
           }}
@@ -612,7 +547,7 @@ export default function ReverseFaceLabPage() {
           leader={selectedLeader}
           tagging={tagging}
           tagMessage={tagMessage}
-          onNameTag={() => setConfirmTagOpen(true)}
+          onNameTag={() => patchReverseFaceSession({ confirmTagOpen: true })}
         />
       )}
 
@@ -627,7 +562,7 @@ export default function ReverseFaceLabPage() {
         confirmLabel="Name-tag"
         variant="primary"
         onConfirm={() => void runNameTag()}
-        onCancel={() => setConfirmTagOpen(false)}
+        onCancel={() => patchReverseFaceSession({ confirmTagOpen: false })}
       />
 
       <Card>
@@ -642,7 +577,7 @@ export default function ReverseFaceLabPage() {
           className="min-h-[88px] w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
           placeholder={"https://example.com/photo.jpg\nhttps://cdn.example.com/headshot.png"}
           value={crawlUrls}
-          onChange={(e) => setCrawlUrls(e.target.value)}
+          onChange={(e) => patchReverseFaceSession({ crawlUrls: e.target.value })}
         />
         <div className="mt-3">
           <Button onClick={runCrawl} disabled={crawling || !crawlUrls.trim()}>

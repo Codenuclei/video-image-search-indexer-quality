@@ -291,6 +291,7 @@ class SearchResponse(BaseModel):
     citations: list[SearchCitationOut]
     files: list[SearchResultFile] = []
     moments: list[SearchMoment] = []
+    cache: str | None = None
 
 
 class IndexedFolderOut(BaseModel):

@@ -69,6 +69,18 @@ async def prepare_image_media(
 
     # Validate decode early so face workers do not claim corrupt jobs.
     await run_cpu_bound(decode_image_bgr, raw_bytes, file_name=drive_file.name)
+    from app.drive.image_thumbs import write_image_thumbnail
+
+    try:
+        await run_cpu_bound(
+            write_image_thumbnail,
+            cache_path,
+            drive_file.id,
+            settings,
+            drive_file.name,
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("image thumb write failed for %s", drive_file.id, exc_info=True)
 
     media = Media(drive_file_id=drive_file.id, type=MediaType.IMAGE)
     session.add(media)

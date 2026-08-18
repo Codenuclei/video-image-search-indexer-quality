@@ -441,6 +441,7 @@ export type SearchResponse = {
   citations: SearchCitation[];
   files: SearchResultFile[];
   moments: SearchMoment[];
+  cache?: "exact" | "semantic" | "miss" | null;
 };
 
 export type CarouselPresetItem = {
@@ -980,15 +981,17 @@ export const faceThumbnailUrl = (faceId: number | null) =>
 export const driveGoogleViewUrl = (driveFileId: string) =>
   `https://drive.google.com/file/d/${driveFileId}/view`;
 
-/** Image/PDF previews served by Google Drive (not proxied through Railway). */
+/** Compressed JPEG for grids. Never Drive; never the original stream. */
+export const driveFileThumbnailUrl = (driveFileId: string) =>
+  `${API_BASE}/drive/files/${encodeURIComponent(driveFileId)}/thumbnail`;
+
+/** Full preview via backend stream/cache. Use only after click-to-enlarge. */
 export const driveFilePreviewUrl = (driveFileId: string, mimeType?: string) => {
-  if (mimeType?.startsWith("image/")) {
-    return `https://drive.google.com/thumbnail?id=${encodeURIComponent(driveFileId)}&sz=w1200`;
-  }
-  if (mimeType === "application/pdf") {
-    return `https://drive.google.com/file/d/${driveFileId}/preview`;
-  }
-  return driveGoogleViewUrl(driveFileId);
+  // Keep every preview on our backend, including callers that do not have a
+  // MIME type (for example reverse-face results). Never expose Drive URLs as
+  // an image source because Google evaluates the browser user's account.
+  void mimeType;
+  return `${API_BASE}/drive/files/${encodeURIComponent(driveFileId)}/preview`;
 };
 
 export const driveFileDownloadUrl = (driveFileId: string) =>

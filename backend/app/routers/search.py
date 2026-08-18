@@ -185,6 +185,44 @@ async def search(
     if source_filter == "all":
         source_filter = None
 
+    from app.search.query_cache import lookup_exact, lookup_semantic, store_search_cache
+    from app.gemini.video_embeddings import embed_text_sync
+
+    cache_folder = folder_path
+    cache_person = person
+    cache_captions = bool(captions)
+    cache_rerank = bool(rerank)
+
+    cached = await lookup_exact(
+        session,
+        query=query,
+        person=cache_person,
+        mime=mime_filter,
+        folder_path=cache_folder,
+        captions=cache_captions,
+        rerank=cache_rerank,
+    )
+    if cached is not None:
+        return cached
+
+    query_embedding: list[float] | None = None
+    try:
+        query_embedding = await asyncio.to_thread(embed_text_sync, query)
+        if query_embedding:
+            cached = await lookup_semantic(
+                session,
+                query_embedding=query_embedding,
+                person=cache_person,
+                mime=mime_filter,
+                folder_path=cache_folder,
+                captions=cache_captions,
+                rerank=cache_rerank,
+            )
+            if cached is not None:
+                return cached
+    except Exception:  # noqa: BLE001
+        logger.debug("search cache embed/semantic lookup skipped", exc_info=True)
+
     effective_persons, visual_query, role_ctx = await resolve_search_context(session, query, person)
 
     student_role_action = (
@@ -243,13 +281,29 @@ async def search(
             effective_persons=effective_persons,
             role_ctx=role_ctx,
         )
-        return SearchResponse(
+        video_response = SearchResponse(
             query=query,
             answer="",
             files=[],
             citations=[],
             moments=moments,
+            cache="miss",
         )
+        try:
+            await store_search_cache(
+                session,
+                query=query,
+                person=cache_person,
+                mime=mime_filter,
+                folder_path=cache_folder,
+                captions=cache_captions,
+                rerank=cache_rerank,
+                response=video_response,
+                query_embedding=query_embedding,
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning("search cache store failed", exc_info=True)
+        return video_response
 
     vector_text = query if person_focused else (visual_query or query)
     session_factory = get_session_factory()
@@ -507,10 +561,26 @@ async def search(
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Caption LLM filter failed, keeping unfiltered results: %s", exc)
 
-    return SearchResponse(
+    response = SearchResponse(
         query=query,
         answer="",
         files=files,
         citations=[],
         moments=moments,
+        cache="miss",
     )
+    try:
+        await store_search_cache(
+            session,
+            query=query,
+            person=cache_person,
+            mime=mime_filter,
+            folder_path=cache_folder,
+            captions=cache_captions,
+            rerank=cache_rerank,
+            response=response,
+            query_embedding=query_embedding,
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("search cache store failed", exc_info=True)
+    return response

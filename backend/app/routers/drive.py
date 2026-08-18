@@ -424,6 +424,54 @@ async def delete_drive_file(file_id: str, session: AsyncSession = Depends(get_db
     await session.commit()
 
 
+@router.get("/files/{file_id}/thumbnail")
+async def thumbnail_drive_file(
+    file_id: str,
+    session: AsyncSession = Depends(get_db),
+) -> Response:
+    """Serve a compressed JPEG thumb from disk. Never contacts Drive."""
+    from app.config import get_settings
+    from app.drive.image_thumbs import image_thumb_path, write_image_thumbnail
+    from app.drive.media_cache import resolve_cache_path
+    from app.pipelines.common import is_image_mime, is_video_mime
+
+    drive_file = await session.get(DriveFile, file_id)
+    if drive_file is None:
+        raise HTTPException(status_code=404, detail="File not found")
+    if is_video_mime(drive_file.mime_type) or not is_image_mime(
+        drive_file.mime_type, drive_file.name
+    ):
+        raise HTTPException(status_code=404, detail="No image thumbnail")
+
+    settings = get_settings()
+    dest = image_thumb_path(settings, drive_file.id)
+    if not dest.is_file() or dest.stat().st_size <= 0:
+        cached = resolve_cache_path(settings, drive_file)
+        if cached is None:
+            raise HTTPException(status_code=404, detail="Thumbnail not ready")
+        try:
+            dest = await asyncio.to_thread(
+                write_image_thumbnail,
+                cached,
+                drive_file.id,
+                settings,
+                drive_file.name,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("thumbnail generate failed for %s: %s", file_id, exc)
+            raise HTTPException(status_code=404, detail="Thumbnail not ready") from exc
+
+    return FileResponse(
+        dest,
+        media_type="image/jpeg",
+        filename=f"{drive_file.id}.jpg",
+        headers={
+            "Cache-Control": "public, max-age=604800",
+            "Content-Disposition": f'inline; filename="{drive_file.id}.jpg"',
+        },
+    )
+
+
 @router.get("/files/{file_id}/preview")
 async def preview_drive_file(
     file_id: str,
@@ -450,6 +498,21 @@ async def preview_drive_file(
             filename=drive_file.name,
             headers={"Accept-Ranges": "bytes", "Content-Disposition": f'inline; filename="{drive_file.name}"'},
         )
+
+    # Images are served from the durable indexed-media cache when available.
+    # This avoids browser requests to drive.google.com, whose thumbnail endpoint
+    # applies the viewer's Google account and returns 403 for other accounts.
+    if not is_video_mime(drive_file.mime_type):
+        from app.drive.media_cache import resolve_cache_path
+
+        cached_path = resolve_cache_path(settings, drive_file)
+        if cached_path is not None:
+            return FileResponse(
+                cached_path,
+                media_type=drive_file.mime_type or "application/octet-stream",
+                filename=drive_file.name,
+                headers={"Content-Disposition": f'inline; filename="{drive_file.name}"'},
+            )
 
     if is_youtube_source(drive_file):
         if local_path.is_file():

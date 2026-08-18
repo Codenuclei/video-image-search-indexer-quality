@@ -18,6 +18,7 @@ import {
   apiClient,
   driveFileDownloadUrl,
   driveFilePreviewUrl,
+  driveFileThumbnailUrl,
   driveGoogleViewUrl,
   driveVideoStreamUrl,
   type LibraryFile,
@@ -191,6 +192,30 @@ function FolderTreeItem({
           />
         ))}
     </div>
+  );
+}
+
+function ExpandableLibraryImage({
+  fileId,
+  mimeType,
+  name,
+}: {
+  fileId: string;
+  mimeType: string;
+  name: string;
+}) {
+  const [full, setFull] = useState(false);
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={full ? driveFilePreviewUrl(fileId, mimeType) : driveFileThumbnailUrl(fileId)}
+      alt={name}
+      onClick={() => setFull(true)}
+      className={cn(
+        "w-full rounded-lg border border-border object-cover",
+        !full && "cursor-pointer"
+      )}
+    />
   );
 }
 
@@ -539,11 +564,10 @@ export default function LibraryPage() {
                     fileName={selectedFile.name}
                   />
                 ) : (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    src={driveFilePreviewUrl(selectedFile.id, selectedFile.mime_type)}
-                    alt={selectedFile.name}
-                    className="w-full rounded-lg border border-border object-cover"
+                  <ExpandableLibraryImage
+                    fileId={selectedFile.id}
+                    mimeType={selectedFile.mime_type}
+                    name={selectedFile.name}
                   />
                 )
               )}

@@ -4,7 +4,7 @@ import { useState } from "react";
 import type { LucideIcon } from "lucide-react";
 import { Download, ExternalLink } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { API_BASE, driveFileDownloadUrl, driveFilePreviewUrl, driveGoogleViewUrl, formatApiError, isServiceUnavailableMessage } from "@/lib/api";
+import { API_BASE, driveFileDownloadUrl, driveFilePreviewUrl, driveFileThumbnailUrl, driveGoogleViewUrl, formatApiError, isServiceUnavailableMessage } from "@/lib/api";
 import { downloadFromUrl } from "@/lib/download";
 import { BackendDisconnectedOverlay } from "@/components/backend-disconnected-overlay";
 import { LoadingLabel, Spinner } from "@/components/spinner";
@@ -387,7 +387,8 @@ export function FilePreview({
   onClick?: () => void;
 }) {
   const previewUrl = driveFilePreviewUrl(driveFileId, mimeType);
-  const driveViewUrl = `https://drive.google.com/file/d/${driveFileId}/view`;
+  const thumbUrl = driveFileThumbnailUrl(driveFileId);
+  const driveViewUrl = driveGoogleViewUrl(driveFileId);
   const isImage = mimeType.startsWith("image/");
   const isPdf = mimeType === "application/pdf";
   const [loaded, setLoaded] = useState(false);
@@ -403,21 +404,22 @@ export function FilePreview({
           </div>
         )}
         {failed ? (
-          <div className="flex h-full w-full flex-col items-center justify-center gap-2 p-4 text-center text-xs text-muted-foreground">
-            <span>Preview unavailable</span>
-            <IconLink
-              href={driveViewUrl}
-              icon={ExternalLink}
-              label="Open in Drive"
-              target="_blank"
-              rel="noopener noreferrer"
-            />
-          </div>
+          <button
+            type="button"
+            onClick={onClick}
+            className={cn(
+              "flex h-full w-full flex-col items-center justify-center gap-2 p-4 text-center text-xs text-muted-foreground",
+              onClick && "cursor-pointer hover:bg-black/10"
+            )}
+          >
+            <span>Thumbnail unavailable</span>
+            {onClick ? <span>Click to load full image</span> : null}
+          </button>
         ) : (
           <>
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
-              src={previewUrl}
+              src={thumbUrl}
               alt={name}
               loading="lazy"
               decoding="async"
