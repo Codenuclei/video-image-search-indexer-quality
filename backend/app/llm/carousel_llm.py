@@ -37,6 +37,7 @@ CLAUDE_DIRECT_MODEL_OPTIONS: list[dict[str, str]] = [
 
 OPENROUTER_MODEL_OPTIONS: list[dict[str, str]] = [
     {"id": "anthropic/claude-sonnet-4.5", "label": "Claude Sonnet 4.5", "provider": "openrouter"},
+    {"id": "anthropic/claude-sonnet-4", "label": "Claude Sonnet 4", "provider": "openrouter"},
     {"id": "google/gemini-2.5-pro", "label": "Gemini 2.5 Pro", "provider": "openrouter"},
     {"id": "openai/gpt-4.1", "label": "GPT-4.1", "provider": "openrouter"},
 ]

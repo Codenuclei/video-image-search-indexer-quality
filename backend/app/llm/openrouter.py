@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -27,8 +28,9 @@ async def complete_json(
 ) -> str:
     """POST ``{base}/chat/completions`` and return assistant text.
 
-    Uses ``response_format: json_object`` when accepted; on format rejection
-    retries without it (JSON still requested in the system/user prompt).
+    Uses ``response_format: json_object`` when accepted; array responses are
+    requested through an ``{"items": [...]}`` wrapper and unwrapped before
+    returning. On format rejection, retries without structured output.
     """
     key = (api_key or "").strip()
     model_id = (model or "").strip()
@@ -48,8 +50,11 @@ async def complete_json(
     if "json" not in sys_msg.lower():
         sys_msg = f"{sys_msg} Return ONLY valid JSON."
     root = "array" if (json_root or "").strip().lower() == "array" else "object"
-    if root == "array" and "top-level json array" not in sys_msg.lower():
-        sys_msg = f"{sys_msg} The response must be a top-level JSON array."
+    if root == "array":
+        sys_msg = (
+            f"{sys_msg} Return a top-level JSON object with exactly one key, "
+            '"items", whose value is the requested JSON array.'
+        )
 
     messages: list[dict[str, str]] = [
         {"role": "system", "content": sys_msg},
@@ -62,20 +67,28 @@ async def complete_json(
         "max_tokens": max_tokens,
     }
 
-    request_body = (
-        base_body
-        if root == "array"
-        else {**base_body, "response_format": {"type": "json_object"}}
-    )
+    request_body = {**base_body, "response_format": {"type": "json_object"}}
     async with httpx.AsyncClient(timeout=timeout) as client:
         text = await _post_once(
             client,
             url,
             headers=headers,
             body=request_body,
-            allow_format_retry=root == "object",
+            allow_format_retry=True,
             retry_body=base_body,
         )
+    if root == "array":
+        try:
+            wrapped = json.loads(text)
+        except json.JSONDecodeError:
+            return text
+        if isinstance(wrapped, list):
+            return text
+        if isinstance(wrapped, dict):
+            for key in ("items", "themes", "results"):
+                items = wrapped.get(key)
+                if isinstance(items, list):
+                    return json.dumps(items, ensure_ascii=False)
     return text
 
 
