@@ -312,11 +312,6 @@ export default function SearchPage() {
                 alt={previewFile.name}
                 className="block max-h-[min(48dvh,420px)] w-full object-contain"
               />
-              <DownloadButton
-                url={driveFileDownloadUrl(previewFile.drive_file_id)}
-                filename={previewFile.name}
-                className="absolute bottom-3 left-3 z-10 bg-black/75 px-2.5 py-1.5 text-white shadow-sm backdrop-blur-sm hover:bg-black/90 hover:brightness-100"
-              />
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto border-t border-border px-4 py-3">
               <p className="break-all text-sm font-medium text-foreground">{previewFile.name}</p>

@@ -4,7 +4,7 @@ import { useState } from "react";
 import type { LucideIcon } from "lucide-react";
 import { Download, ExternalLink } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { API_BASE, driveFileDownloadUrl, driveFilePreviewUrl, driveFileThumbnailUrl, driveGoogleViewUrl, formatApiError, isServiceUnavailableMessage } from "@/lib/api";
+import { API_BASE, driveFilePreviewUrl, driveFileThumbnailUrl, driveGoogleViewUrl, formatApiError, isServiceUnavailableMessage } from "@/lib/api";
 import { downloadFromUrl } from "@/lib/download";
 import { BackendDisconnectedOverlay } from "@/components/backend-disconnected-overlay";
 import { LoadingLabel, Spinner } from "@/components/spinner";
@@ -395,7 +395,6 @@ export function FilePreview({
   const [failed, setFailed] = useState(false);
 
   if (isImage) {
-    const downloadUrl = driveFileDownloadUrl(driveFileId);
     return (
       <div className={cn("relative h-full w-full bg-black/30", className)}>
         {!loaded && !failed && (
@@ -431,11 +430,6 @@ export function FilePreview({
                 loaded ? "opacity-100" : "opacity-0",
                 onClick && "cursor-pointer"
               )}
-            />
-            <DownloadButton
-              url={downloadUrl}
-              filename={name}
-              className="absolute bottom-2 right-2 z-10 bg-black/75 px-2 py-1 text-[11px] text-white shadow-sm backdrop-blur-sm hover:bg-black/90 hover:brightness-100"
             />
           </>
         )}
