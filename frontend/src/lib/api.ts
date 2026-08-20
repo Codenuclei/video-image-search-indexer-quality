@@ -46,6 +46,7 @@ function resolveApiBase(): string {
 }
 
 export const API_BASE = resolveApiBase();
+export const LIBRARY_READER_BASE = API_BASE;
 
 export const SERVICE_UNAVAILABLE_MESSAGE =
   "Can't reach the DFI service right now. It may be starting up or temporarily unavailable.";
@@ -309,21 +310,6 @@ export type LeadershipNameTagResponse = {
   }[];
 };
 
-export type YoutubeRegisterResult = {
-  drive_file_id: string;
-  name: string;
-  youtube_video_id: string | null;
-  linked_to_drive: boolean;
-  download_queued?: boolean;
-  message: string;
-};
-
-export type YoutubeRegisterResponse = {
-  ok: boolean;
-  registered: YoutubeRegisterResult[];
-  index_scheduled: boolean;
-};
-
 export type IndexLaneSlots = {
   active: number;
   max: number;
@@ -354,6 +340,24 @@ export type IndexStatus = {
   go_indexer_enabled?: boolean;
   go_indexer_alive?: boolean;
   go_files_per_sec?: number | null;
+  revision?: string | null;
+};
+
+export type ControlReaderStatus = {
+  paused: boolean;
+  auto_index_enabled: boolean;
+  watcher_alive: boolean;
+  watcher_heartbeat_age_seconds: number | null;
+  active_image_jobs: number | null;
+  active_video_jobs: number | null;
+  cancelled_jobs: number;
+  reader: {
+    generation: number;
+    thread_alive: boolean;
+    thread_id: number | null;
+    uptime_seconds: number;
+    max_workers: number;
+  };
 };
 
 export type GoIndexerStatus = {
@@ -899,9 +903,32 @@ export type LibraryResponse = {
     /** pending + errors + missing_captions — excludes skipped / no double-count. */
     needs_work?: number;
     caption_pct: number;
+    /** False when shell omitted Qdrant caption/embed stats. */
+    caption_stats_ready?: boolean;
   };
   maintenance: LibraryMaintenance;
   paused_folders: string[];
+  revision?: string | null;
+};
+
+export type LibraryFolderPage = {
+  path: string;
+  files: LibraryFile[];
+  total: number;
+  limit: number;
+  next_cursor: string | null;
+  revision?: string | null;
+};
+
+export type DriveCacheStatus = {
+  warm: boolean;
+  count: number;
+  file_count: number;
+  cached_at: string | null;
+  age_seconds?: number | null;
+  source?: string;
+  from_db?: boolean;
+  refresh_in_flight?: boolean;
 };
 
 export type CaptionStats = {
@@ -923,9 +950,9 @@ export type DriveTokenResponse = {
 
 async function api<T>(
   path: string,
-  init?: RequestInit & { timeoutMs?: number; silent?: boolean }
+  init?: RequestInit & { timeoutMs?: number; silent?: boolean; baseUrl?: string }
 ): Promise<T> {
-  const { timeoutMs, silent, signal: external, ...rest } = init ?? {};
+  const { timeoutMs, silent, baseUrl = API_BASE, signal: external, ...rest } = init ?? {};
   let controller: AbortController | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let signal = external;
@@ -939,10 +966,14 @@ async function api<T>(
     timer = setTimeout(() => controller!.abort(), timeoutMs);
   }
   try {
-    const res = await fetch(`${API_BASE}${path}`, {
+    const headers = new Headers(rest.headers);
+    if (rest.body != null && !headers.has("Content-Type")) {
+      headers.set("Content-Type", "application/json");
+    }
+    const res = await fetch(`${baseUrl}${path}`, {
       ...rest,
       signal,
-      headers: { "Content-Type": "application/json", ...rest.headers },
+      headers,
       cache: "no-store",
     });
     if (!res.ok) {
@@ -1186,6 +1217,49 @@ export const apiClient = {
     return api<DriveFilesPage>(`/drive/files/page${qs ? `?${qs}` : ""}`);
   },
   driveLibrary: () => api<LibraryResponse>("/drive/library"),
+  driveLibraryRevision: () =>
+    api<{ revision: string }>("/drive/library/revision", {
+      silent: true,
+      baseUrl: LIBRARY_READER_BASE,
+    }),
+  driveLibraryShell: () =>
+    api<LibraryResponse>("/drive/library/shell", {
+      silent: true,
+      baseUrl: LIBRARY_READER_BASE,
+    }),
+  driveLibraryFolder: (path: string, opts?: { limit?: number; cursor?: string | null }) => {
+    const params = new URLSearchParams();
+    params.set("path", path || "/");
+    if (opts?.limit) params.set("limit", String(opts.limit));
+    if (opts?.cursor) params.set("cursor", opts.cursor);
+    return api<LibraryFolderPage>(`/drive/library/folder?${params}`, {
+      silent: true,
+      baseUrl: LIBRARY_READER_BASE,
+    });
+  },
+  controlReaderStatus: () =>
+    api<ControlReaderStatus>("/control/status", {
+      silent: true,
+      baseUrl: LIBRARY_READER_BASE,
+    }),
+  pauseAllIndexing: () =>
+    api<{ ok: boolean; paused: boolean; drive_files_mutated: number }>(
+      "/control/indexing/pause",
+      { method: "POST", baseUrl: LIBRARY_READER_BASE }
+    ),
+  resumeAllIndexing: () =>
+    api<{ ok: boolean; paused: boolean; drive_files_mutated: number }>(
+      "/control/indexing/resume",
+      { method: "POST", baseUrl: LIBRARY_READER_BASE }
+    ),
+  restartLibraryReader: () =>
+    api<{ ok: boolean; revision: string }>("/control/reader/restart", {
+      method: "POST",
+      baseUrl: LIBRARY_READER_BASE,
+    }),
+  cacheStatus: () => api<DriveCacheStatus>("/api/cache/status", { silent: true }),
+  personsRevision: () =>
+    api<{ revision: string; count: number }>("/persons/revision", { silent: true }),
   pauseFolderIndexing: (folder_path: string) =>
     api<{ ok: boolean; stopped: number; cancelled: number }>("/drive/library/folders/pause", {
       method: "POST",
@@ -1202,12 +1276,6 @@ export const apiClient = {
   backfillCaptions: () => api<{ ok: boolean; scheduled: boolean }>("/backfill/image-captions", { method: "POST" }),
   retryDriveFile: (id: string) => api<DriveFile>(`/drive/files/${id}/retry`, { method: "POST" }),
   removeDriveFile: (id: string) => api<void>(`/drive/files/${id}`, { method: "DELETE" }),
-  youtubeVideos: () => api<DriveFile[]>("/youtube/videos"),
-  addYoutubeVideos: (urls: string[], indexNow = true, downloadLocal = true) =>
-    api<YoutubeRegisterResponse>("/youtube/videos", {
-      method: "POST",
-      body: JSON.stringify({ urls, index_now: indexNow, download_local: downloadLocal }),
-    }),
   indexStatus: () => api<IndexStatus>("/index", { silent: true }),
   goIndexerStatus: () => api<GoIndexerStatus>("/index/go/status", { silent: true }),
   skipStats: () => api<SkipStats>("/index/skip-stats", { silent: true }),
@@ -1599,6 +1667,8 @@ export const apiClient = {
     }
   },
   settings: () => api<Settings>("/settings"),
+  settingsRevision: () =>
+    api<{ revision: string }>("/settings/revision", { silent: true }),
   updateSettings: (body: Partial<Settings>) => api<Settings>("/settings", { method: "PUT", body: JSON.stringify(body) }),
   facesForFile: (driveFileId: string) => api<FileFace[]>(`/faces/by-file/${encodeURIComponent(driveFileId)}`),
   tagFace: (faceId: number, name: string) =>
@@ -1640,6 +1710,8 @@ export const apiClient = {
       : null;
   },
   folderContexts: () => api<FolderContext[]>("/folder-contexts"),
+  folderContextsRevision: () =>
+    api<{ revision: string; count: number }>("/folder-contexts/revision", { silent: true }),
   upsertFolderContext: (folder_path: string, description: string) =>
     api<FolderContext>("/folder-contexts", {
       method: "PUT",

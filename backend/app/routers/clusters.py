@@ -58,6 +58,85 @@ async def _build_cluster_out(session: AsyncSession, cluster: FaceCluster) -> Clu
     )
 
 
+async def _build_cluster_outs(
+    session: AsyncSession, clusters: list[FaceCluster]
+) -> list[ClusterOut]:
+    """Serialize a page in batches instead of two queries per cluster."""
+    if not clusters:
+        return []
+
+    cluster_ids = [cluster.id for cluster in clusters]
+    occurrence_rows = (
+        await session.execute(
+            select(
+                Face.cluster_id,
+                Media.id,
+                DriveFile.id,
+                DriveFile.name,
+                DriveFile.path,
+                Media.type,
+                func.min(Face.frame_timestamp),
+            )
+            .join(Media, Face.media_id == Media.id)
+            .join(DriveFile, DriveFile.id == Media.drive_file_id)
+            .where(Face.cluster_id.in_(cluster_ids))
+            .group_by(
+                Face.cluster_id,
+                Media.id,
+                DriveFile.id,
+                DriveFile.name,
+                DriveFile.path,
+                Media.type,
+            )
+        )
+    ).all()
+    occurrences: dict[int, list[MediaOccurrence]] = {cluster_id: [] for cluster_id in cluster_ids}
+    for cluster_id, media_id, drive_id, name, path, media_type, frame_timestamp in occurrence_rows:
+        if cluster_id is None:
+            continue
+        occurrences[int(cluster_id)].append(
+            MediaOccurrence(
+                media_id=media_id,
+                drive_file_id=drive_id,
+                name=name,
+                path=path,
+                media_type=media_type.value,
+                frame_timestamp=frame_timestamp,
+            )
+        )
+
+    representative_ids = [
+        cluster.representative_face_id
+        for cluster in clusters
+        if cluster.representative_face_id is not None
+    ]
+    confidences: dict[int, float] = {}
+    if representative_ids:
+        confidences = {
+            int(face_id): float(confidence)
+            for face_id, confidence in (
+                await session.execute(
+                    select(Face.id, Face.detection_confidence).where(
+                        Face.id.in_(representative_ids)
+                    )
+                )
+            ).all()
+        }
+
+    return [
+        ClusterOut(
+            id=cluster.id,
+            status=cluster.status.value,
+            member_count=cluster.member_count,
+            representative_face_id=cluster.representative_face_id,
+            representative_confidence=confidences.get(cluster.representative_face_id),
+            appears_in=occurrences.get(cluster.id, []),
+            created_at=cluster.created_at,
+        )
+        for cluster in clusters
+    ]
+
+
 @router.get("", response_model=ClusterListResponse)
 async def list_clusters(
     include_ignored: bool = False,
@@ -94,7 +173,7 @@ async def list_clusters(
         .limit(limit)
     )
     clusters = (await session.execute(stmt)).scalars().all()
-    items = [await _build_cluster_out(session, c) for c in clusters]
+    items = await _build_cluster_outs(session, list(clusters))
     return ClusterListResponse(items=items, total=total, offset=offset, limit=limit)
 
 

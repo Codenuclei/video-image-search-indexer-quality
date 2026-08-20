@@ -21,6 +21,7 @@ from app.db.models import (
     VideoSegment,
 )
 from app.drive.cleanup import remove_drive_file, restore_archived_when_index_complete
+from app.drive.indexing_pause import set_folder_pause_flag
 from app.drive.library_tree import build_library_tree
 from app.drive.schemas import ConnectorFile, ConnectorFolder, ConnectorFolderListing
 from app.workers.indexer import IndexingWorker
@@ -88,6 +89,32 @@ def _session_factory(db_session: AsyncSession) -> async_sessionmaker:
 
 def _fail_if_qdrant_delete(*_a, **_k):
     raise AssertionError("Qdrant delete must never run on folder switch / soft-archive")
+
+
+@requires_postgres
+@pytest.mark.asyncio
+async def test_global_control_pause_is_flag_only(db_session):
+    row = DriveFile(
+        id="pause-preserves",
+        name="pause-preserves.jpg",
+        path="/pause-preserves.jpg",
+        mime_type="image/jpeg",
+        status=DriveFileStatus.PROCESSING,
+        error_message="must remain unchanged",
+    )
+    db_session.add(row)
+    await db_session.flush()
+
+    with (
+        patch("app.qdrant.images.delete_image_sync", side_effect=_fail_if_qdrant_delete),
+        patch("app.qdrant.image_captions.delete_caption_sync", side_effect=_fail_if_qdrant_delete),
+    ):
+        await set_folder_pause_flag(db_session, "/", paused=True)
+        await set_folder_pause_flag(db_session, "/", paused=False)
+
+    await db_session.refresh(row)
+    assert row.status == DriveFileStatus.PROCESSING
+    assert row.error_message == "must remain unchanged"
 
 
 @requires_postgres

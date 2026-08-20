@@ -34,7 +34,7 @@ export const FAQ_CATEGORIES: FaqCategory[] = [
         id: "first-run",
         question: "What should I do on first use?",
         answer:
-          "1) Open Folders and connect Google Drive. 2) Pick the folder to index. 3) Click Start Index (or enable auto-index in Settings). 4) Open Review Queue and name unknown faces. 5) Use Search or People once indexing has processed files.",
+          "1) Open Folders and connect Google Drive. 2) Pick the folder to index. 3) Open Admin and click Start Index (or enable auto-index in Settings). 4) Open Review Queue and name unknown faces. 5) Use Search or People once indexing has processed files.",
         href: "/folders",
       },
     ],
@@ -55,15 +55,15 @@ export const FAQ_CATEGORIES: FaqCategory[] = [
         id: "pick-folder",
         question: "How do I choose which folder to index?",
         answer:
-          "On Folders, use the folder picker (Choose folder / change folder). You can pick folders from My Drive or Shared drives. After selecting, run Start Index or wait for auto-index if it is enabled.",
+          "On Folders, use the folder picker (Choose folder / change folder). You can pick folders from My Drive or Shared drives. After selecting, open Admin → Start Index or wait for auto-index if it is enabled.",
         href: "/folders",
       },
       {
         id: "start-index",
         question: "How do I start indexing?",
         answer:
-          "On Folders, click Start Index. The button shows Indexing… while a run is active. Progress appears in the status summary and the indexing queue. Dashboard also shows counts by status (processed, pending, processing, error, skipped).",
-        href: "/folders",
+          "Open Admin and click Start Index. Files whose content hash is already indexed are skipped. Progress appears in the sidebar banner and Dashboard. Use Backfill missing only for incomplete rows.",
+        href: "/admin",
       },
       {
         id: "folder-context",
@@ -76,7 +76,7 @@ export const FAQ_CATEGORIES: FaqCategory[] = [
         id: "index-queue",
         question: "How do I view the indexing queue?",
         answer:
-          "On Folders, open the indexing queue to browse files by status (All, Pending, Active, Completed, Failed, Skipped). From Failed items you can Retry a single file. Use filters and paging to find stuck items.",
+          "On Folders, open the indexing queue to browse files by status. From Failed items you can Retry a single file. Bulk skip-reason retries are on Admin.",
         href: "/folders",
       },
     ],
@@ -90,15 +90,15 @@ export const FAQ_CATEGORIES: FaqCategory[] = [
         id: "youtube-add",
         question: "How do I index YouTube videos?",
         answer:
-          "On Folders, find YouTube videos. Paste one or more YouTube URLs or video IDs, then submit. Missing videos are downloaded (yt-dlp) into the shared download location and queued for indexing. Use Start Index or auto-sync if they stay pending.",
-        href: "/folders",
+          "YouTube videos can be registered into the shared library and indexed like Drive media (transcript, frames, visual search). Paste YouTube URLs or video IDs when the YouTube register control is available, then run Start Index from Admin (or wait for auto-sync) if they stay pending.",
+        href: "/help",
       },
       {
         id: "youtube-status",
         question: "YouTube register succeeded but I see nothing in search yet — why?",
         answer:
-          "Registration only queues downloads/index work. Wait until the file shows as processed in the queue or Dashboard. Large videos take longer. Check Failed in the queue and Retry if needed.",
-        href: "/folders",
+          "Registration only queues downloads/index work. Wait until the file shows as processed in the queue or Dashboard. Large videos take longer. Check Failed in the Library or queue and Retry if needed.",
+        href: "/library",
       },
     ],
   },

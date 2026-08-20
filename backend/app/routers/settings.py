@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -8,6 +9,7 @@ from app.db.app_settings_store import (
     refresh_runtime_settings_from_db,
     save_runtime_settings_to_db,
 )
+from app.db.models import AppSettings
 from app.db.session import get_db
 from app.llm.carousel_llm import carousel_llm_settings_public_live
 from app.runtime_settings import get_runtime_settings, update_runtime_settings
@@ -49,6 +51,29 @@ async def _settings_out() -> SettingsOut:
 async def read_settings(session: AsyncSession = Depends(get_db)) -> SettingsOut:
     await refresh_runtime_settings_from_db(session)
     return await _settings_out()
+
+
+@router.get("/revision")
+async def settings_revision(session: AsyncSession = Depends(get_db)) -> dict[str, str]:
+    """Cheap settings freshness token; avoids rebuilding provider/model payloads."""
+    row = (
+        await session.execute(
+            select(AppSettings.id, AppSettings.updated_at).where(AppSettings.id == 1)
+        )
+    ).one_or_none()
+    settings = get_settings()
+    updated = row.updated_at.isoformat() if row and row.updated_at else ""
+    # Environment-backed display values change only on deploy, but must invalidate
+    # browser caches even when the singleton DB row did not change.
+    env_part = "|".join(
+        (
+            settings.gemini_model,
+            settings.gemini_file_search_store_display_name,
+            settings.openrouter_model,
+            settings.claude_model,
+        )
+    )
+    return {"revision": f"{updated}:{env_part}"}
 
 
 @router.get("/carousel-llm-models")

@@ -4,6 +4,7 @@ import { Toaster } from "@/components/sonner";
 import "./globals.css";
 import { Sidebar } from "@/components/sidebar";
 import { AuthGate } from "@/components/auth-gate";
+import { CacheSyncBoot } from "@/components/cache-sync-boot";
 
 const inter = Inter({ subsets: ["latin"] });
 
@@ -31,6 +32,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en">
       <body className={inter.className}>
+        <CacheSyncBoot />
         <AuthGate>
           <div className="flex min-h-screen flex-col md:h-screen md:flex-row md:overflow-hidden">
             <Sidebar />

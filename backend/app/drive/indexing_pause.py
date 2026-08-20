@@ -53,6 +53,41 @@ async def load_paused_folder_paths(session: AsyncSession) -> list[str]:
     return [normalize_folder_path(p) for p in rows]
 
 
+async def set_folder_pause_flag(
+    session: AsyncSession,
+    folder_path: str,
+    *,
+    paused: bool,
+) -> bool:
+    """Change only the persistent pause flag; never scan or mutate DriveFile rows."""
+    norm = normalize_folder_path(folder_path)
+    existing = (
+        await session.execute(
+            select(IndexingFolderPause).where(IndexingFolderPause.folder_path == norm)
+        )
+    ).scalar_one_or_none()
+    if paused:
+        if existing is not None:
+            return False
+        session.add(IndexingFolderPause(folder_path=norm))
+        await session.flush()
+        return True
+    if existing is None:
+        return False
+    await session.delete(existing)
+    await session.flush()
+    return True
+
+
+async def global_indexing_is_paused(session: AsyncSession) -> bool:
+    row = await session.scalar(
+        select(IndexingFolderPause.id)
+        .where(IndexingFolderPause.folder_path == "/")
+        .limit(1)
+    )
+    return row is not None
+
+
 def is_file_indexing_paused(file_path: str, paused_paths: list[str]) -> bool:
     return any(file_under_folder(file_path, prefix) for prefix in paused_paths)
 

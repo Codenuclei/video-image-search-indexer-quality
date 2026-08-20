@@ -109,7 +109,7 @@ class DriveFile(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True)  # Google Drive file id
     name: Mapped[str] = mapped_column(String, nullable=False)
     mime_type: Mapped[str] = mapped_column(String, nullable=False)
-    path: Mapped[str] = mapped_column(String, nullable=False)
+    path: Mapped[str] = mapped_column(String, nullable=False, index=True)
     modified_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     size: Mapped[int | None] = mapped_column(Integer, nullable=True)
     status: Mapped[DriveFileStatus] = mapped_column(
@@ -331,6 +331,21 @@ class IndexingFolderPause(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     folder_path: Mapped[str] = mapped_column(String, nullable=False, unique=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class IndexControlState(Base):
+    """Heartbeat published by the elected indexer for the isolated control service."""
+
+    __tablename__ = "index_control_state"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    active_image_jobs: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    active_video_jobs: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    cancelled_jobs: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    watcher_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
 
 # Gemini Embedding 2 vectors (body crops) are 3072-dimensional.

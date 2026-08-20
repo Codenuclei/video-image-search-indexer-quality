@@ -10,18 +10,19 @@ import {
   type IndexStatus,
   type DriveSession,
   type Settings,
-  type SkipStats,
   type IndexedFolder,
+  type DriveCacheStatus,
   API_BASE,
 } from "@/lib/api";
-import { Button, Card, ConfirmDialog, Input, LoadingLabel, Spinner } from "@/components/ui";
-import { IndexErrorCard } from "@/components/index-error-card";
+import { Button, Card, Input, LoadingLabel, Spinner } from "@/components/ui";
 import { ModalOverlay } from "@/components/modal";
-import { formatCount, humanizeIndexError, sanitizeUserFacingError, skipReasonMeta } from "@/lib/index-errors";
+import { formatCount, humanizeIndexError } from "@/lib/index-errors";
 import { formatDate } from "@/lib/utils";
-import { trackYoutubeDownloads } from "@/lib/youtube-download-toast";
 import { toastApiError } from "@/lib/toast-api-error";
 import { toast } from "sonner";
+import { getCachedIndexStatus, pollIndexStatus, useIndexStatusStore } from "@/lib/index-status-store";
+import { useCachedResource } from "@/lib/use-cached-resource";
+import { cacheStatusRevision, indexStatusRevision } from "@/lib/fingerprints";
 
 declare global {
   interface Window {
@@ -49,11 +50,16 @@ const statusColor: Record<string, string> = {
   skipped: "text-muted-foreground",
 };
 
+type FoldersSnapshot = {
+  folderContexts: FolderContext[];
+  driveSession: DriveSession | null;
+  settings: Settings | null;
+  indexedFolders: IndexedFolder[];
+};
+
 export default function FoldersPage() {
+  const { status: sharedStatus } = useIndexStatusStore();
   const [status, setStatus] = useState<IndexStatus | null>(null);
-  const [skipStats, setSkipStats] = useState<SkipStats | null>(null);
-  const [indexErrorItems, setIndexErrorItems] = useState<DriveFile[]>([]);
-  const [indexErrorTotal, setIndexErrorTotal] = useState(0);
   const [folderContexts, setFolderContexts] = useState<FolderContext[]>([]);
   const [driveSession, setDriveSession] = useState<DriveSession | null>(null);
   const [busy, setBusy] = useState(false);
@@ -61,9 +67,6 @@ export default function FoldersPage() {
   const [editingFolder, setEditingFolder] = useState<string | null>(null);
   const [editDescription, setEditDescription] = useState("");
   const [savingFolder, setSavingFolder] = useState<string | null>(null);
-  const [youtubeInput, setYoutubeInput] = useState("");
-  const [youtubeBusy, setYoutubeBusy] = useState(false);
-  const [youtubeMsg, setYoutubeMsg] = useState<string | null>(null);
   const [settings, setSettings] = useState<Settings | null>(null);
   const shortcutsBusyRef = useRef(false);
   const [indexedFolders, setIndexedFolders] = useState<IndexedFolder[]>([]);
@@ -74,45 +77,62 @@ export default function FoldersPage() {
   const [queueTotal, setQueueTotal] = useState(0);
   const [queueItems, setQueueItems] = useState<DriveFile[]>([]);
   const [queueLoading, setQueueLoading] = useState(false);
-  const [retryingReason, setRetryingReason] = useState<string | null>(null);
-  const [confirmRetry, setConfirmRetry] = useState<{ reason: string; count: number; label: string } | null>(
-    null
-  );
-
-  async function load() {
-    try {
-      const [s, skips, errs, fc, ds, st, foldersRes] = await Promise.all([
-        apiClient.indexStatus(),
-        apiClient.skipStats().catch(() => null as SkipStats | null),
-        apiClient.indexErrors(30, 0).catch(() => null),
+  const foldersResource = useCachedResource<FoldersSnapshot>({
+    key: "foldersPage",
+    fetcher: async () => {
+      const [fc, ds, st, foldersRes] = await Promise.all([
         apiClient.folderContexts().catch(() => [] as FolderContext[]),
         apiClient.driveSession().catch(() => null as DriveSession | null),
         apiClient.settings().catch(() => null as Settings | null),
         apiClient.indexedFolders().catch(() => ({ folders: [] as IndexedFolder[], total: 0 })),
       ]);
-      setStatus(s);
-      setSkipStats(skips);
-      if (errs) {
-        setIndexErrorItems(errs.items);
-        setIndexErrorTotal(errs.total);
-      } else {
-        setIndexErrorItems([]);
-        setIndexErrorTotal(0);
+      return {
+        folderContexts: Array.isArray(fc) ? fc : [],
+        driveSession: ds,
+        settings: st,
+        indexedFolders: foldersRes.folders ?? [],
+      };
+    },
+    getRevision: async () => {
+      const [cacheStatus, settingsRev, contextsRev] = await Promise.all([
+        apiClient.cacheStatus().catch(() => null as DriveCacheStatus | null),
+        apiClient.settingsRevision().catch(() => null),
+        apiClient.folderContextsRevision().catch(() => null),
+      ]);
+      const index = getCachedIndexStatus();
+      return [
+        cacheStatus ? cacheStatusRevision(cacheStatus) : "drive:unknown",
+        settingsRev?.revision ?? "settings:unknown",
+        contextsRev?.revision ?? "contexts:unknown",
+        index?.revision ?? (index ? indexStatusRevision(index) : "index:unknown"),
+      ].join("|");
+    },
+    pollMs: 30000,
+  });
+
+  const load = useCallback(
+    async (force = true) => {
+      await foldersResource.refresh(force);
+      void pollIndexStatus();
+    },
+    [foldersResource.refresh]
+  );
+
+  useEffect(() => {
+    const snapshot = foldersResource.data;
+    if (!snapshot) return;
+    setFolderContexts(snapshot.folderContexts);
+    setDriveSession(snapshot.driveSession);
+    setSettings((prev) => {
+      const st = snapshot.settings;
+      if (!st) return prev;
+      if (shortcutsBusyRef.current && prev) {
+        return { ...st, follow_shortcut_folders: prev.follow_shortcut_folders };
       }
-      setFolderContexts(Array.isArray(fc) ? fc : []);
-      setDriveSession(ds);
-      setSettings((prev) => {
-        if (!st) return prev;
-        if (shortcutsBusyRef.current && prev) {
-          return { ...st, follow_shortcut_folders: prev.follow_shortcut_folders };
-        }
-        return st;
-      });
-      setIndexedFolders(foldersRes.folders ?? []);
-    } catch {
-      /* indexStatus is silent; IndexStatusBanner surfaces unreachable */
-    }
-  }
+      return st;
+    });
+    setIndexedFolders(snapshot.indexedFolders);
+  }, [foldersResource.data]);
 
   const loadQueue = useCallback(async (statusFilter: string, offset: number) => {
     setQueueLoading(true);
@@ -247,20 +267,14 @@ export default function FoldersPage() {
   }
 
   useEffect(() => {
-    load();
-    const t = setInterval(load, 12000);
-    return () => clearInterval(t);
-  }, []);
+    if (sharedStatus) setStatus(sharedStatus);
+  }, [sharedStatus]);
 
   async function retryFile(id: string, name?: string, source?: string) {
     setBusy(true);
     try {
       await apiClient.retryDriveFile(id);
-      if (source === "youtube") {
-        trackYoutubeDownloads([{ driveFileId: id, name: name || id }]);
-      } else {
-        toast.success("Retry queued", { description: name || id });
-      }
+      toast.success("Retry queued", { description: name || id });
       await load();
       if (queueOpen) await loadQueue(queueStatus, queueOffset);
     } catch {
@@ -268,57 +282,6 @@ export default function FoldersPage() {
     } finally {
       setBusy(false);
     }
-  }
-
-  async function retryAllForReason(reason: string) {
-    setRetryingReason(reason);
-    setConfirmRetry(null);
-    try {
-      const res = await apiClient.retrySkippedByReason(reason);
-      if (res.action === "unsupported") {
-        toast.message(skipReasonMeta(reason).label, {
-          description: sanitizeUserFacingError(res.message, "These files cannot be indexed."),
-        });
-      } else if (res.requeued > 0) {
-        toast.success(
-          res.action === "resume_paused" ? "Folders resumed" : "Requeued for indexing",
-          {
-            description:
-              res.message
-                ? sanitizeUserFacingError(
-                    res.message,
-                    `${formatCount(res.requeued)} file${res.requeued === 1 ? "" : "s"} queued`
-                  )
-                : `${formatCount(res.requeued)} file${res.requeued === 1 ? "" : "s"} queued`,
-          }
-        );
-      } else {
-        toast.message("Nothing to retry", {
-          description: sanitizeUserFacingError(res.message, "No eligible files for this skip reason."),
-        });
-      }
-      await load();
-      if (queueOpen) await loadQueue(queueStatus, queueOffset);
-    } catch {
-      /* api() already toasted */
-    } finally {
-      setRetryingReason(null);
-    }
-  }
-
-  function requestRetryAll(reason: string, count: number) {
-    const meta = skipReasonMeta(reason);
-    if (!meta.retryable) {
-      toast.message(meta.label, {
-        description: "These skips cannot be requeued for indexing.",
-      });
-      return;
-    }
-    if (count > 100) {
-      setConfirmRetry({ reason, count, label: meta.label });
-      return;
-    }
-    void retryAllForReason(reason);
   }
 
   async function removeFile(id: string) {
@@ -334,97 +297,7 @@ export default function FoldersPage() {
     }
   }
 
-  async function runIndex(reindex = false) {
-    setBusy(true);
-    try {
-      await (reindex ? apiClient.triggerReindex() : apiClient.triggerIndex());
-      await load();
-    } catch {
-      /* api() already toasted */
-    } finally {
-      setBusy(false);
-    }
-  }
 
-  async function addYoutubeVideos(urls: string[]) {
-    setYoutubeBusy(true);
-    setYoutubeMsg(null);
-    const toastId = `yt-add-${Date.now()}`;
-    toast.loading("Registering YouTube…", {
-      id: toastId,
-      description: `${urls.length} link(s)`,
-      duration: Infinity,
-    });
-    try {
-      const res = await apiClient.addYoutubeVideos(urls, true);
-      const registered = res.registered.filter((r) => r.drive_file_id);
-      const failed = res.registered.filter((r) => !r.drive_file_id);
-      const downloads = registered.filter((r) => r.download_queued);
-
-      if (!registered.length) {
-        const why = sanitizeUserFacingError(
-          failed.map((r) => r.message).filter(Boolean).join("; ") || "",
-          "Could not register those YouTube links."
-        );
-        toast.error("YouTube register failed", {
-          id: toastId,
-          description: why,
-          duration: 12_000,
-        });
-        setYoutubeMsg(why);
-        return;
-      }
-
-      if (downloads.length > 0 || res.index_scheduled) {
-        trackYoutubeDownloads(
-          registered.map((r) => ({
-            driveFileId: r.drive_file_id,
-            name: r.name || r.youtube_video_id || r.drive_file_id,
-          })),
-          { toastId },
-        );
-        setYoutubeMsg(null);
-      } else {
-        toast.success(`Registered ${registered.length} video(s)`, {
-          id: toastId,
-          description:
-            failed.length > 0 ? `${failed.length} link(s) failed` : undefined,
-          duration: 8_000,
-        });
-        setYoutubeMsg(null);
-      }
-
-      if (failed.length > 0 && registered.length > 0) {
-        toast.warning(`${failed.length} link(s) failed`, {
-          description: sanitizeUserFacingError(
-            failed
-              .map((r) => r.message)
-              .filter(Boolean)
-              .slice(0, 2)
-              .join("; "),
-            `${failed.length} link(s) could not be registered.`
-          ),
-          duration: 10_000,
-        });
-      }
-
-      setYoutubeInput("");
-      await load();
-    } catch {
-      toast.dismiss(toastId);
-    } finally {
-      setYoutubeBusy(false);
-    }
-  }
-
-  async function feedYoutubeFromInput() {
-    const urls = youtubeInput
-      .split(/[\n,]+/)
-      .map((s) => s.trim())
-      .filter(Boolean);
-    if (!urls.length) return;
-    await addYoutubeVideos(urls);
-  }
 
   async function saveFolderContext(folderPath: string) {
     setSavingFolder(folderPath);
@@ -459,8 +332,6 @@ export default function FoldersPage() {
   }, [folderContexts]);
 
   const counts = status?.counts_by_status ?? {};
-  const topSkipReasons = (skipStats?.by_reason ?? []).slice(0, 8);
-  const maxSkipCount = Math.max(1, ...topSkipReasons.map((r) => r.count));
   const queuePageStart = queueTotal === 0 ? 0 : queueOffset + 1;
   const queuePageEnd = Math.min(queueOffset + QUEUE_PAGE_SIZE, queueTotal);
 
@@ -479,20 +350,12 @@ export default function FoldersPage() {
           <h2 className="text-2xl font-semibold">Folders</h2>
           <p className="text-sm text-muted-foreground">Drive files tracked from your connected folder</p>
         </div>
-        <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
-          <Button className="w-full sm:w-auto" onClick={() => runIndex(false)} disabled={busy || status?.is_running}>
-            {status?.is_running || busy ? <LoadingLabel>Indexing…</LoadingLabel> : "Start Index"}
-          </Button>
-          <Button
-            className="w-full sm:w-auto"
-            variant="secondary"
-            onClick={() => runIndex(true)}
-            disabled={busy || status?.is_running}
-            title="Queues ERROR files and PROCESSED images missing Media — never bulk-wipes indexed files"
-          >
-            Backfill missing
-          </Button>
-        </div>
+        <Link
+          href="/admin"
+          className="text-sm font-medium text-blue-600 underline-offset-2 hover:underline dark:text-blue-400"
+        >
+          Indexing controls → Admin
+        </Link>
       </div>
 
       <Card>
@@ -603,49 +466,6 @@ export default function FoldersPage() {
         )}
       </Card>
 
-      <Card className="border-blue-900/40 bg-blue-950/10">
-        <h3 className="mb-1 font-medium text-sm">YouTube videos</h3>
-        <p className="mb-4 text-xs text-muted-foreground">
-          Paste YouTube URLs or video IDs. Missing videos are downloaded with yt-dlp to the shared
-          Railway volume (team library — not your personal Drive). Then indexed: transcript, frames,
-          and visual search. Videos already in the company Drive folder are linked automatically.
-        </p>
-
-        <div className="mb-4 grid gap-2 sm:grid-cols-3">
-          <div className="rounded-lg border border-border/60 bg-background/40 px-3 py-2">
-            <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">1 · Add URL</p>
-            <p className="mt-1 text-xs text-muted-foreground">Paste links below and download to the library.</p>
-          </div>
-          <div className="rounded-lg border border-border/60 bg-background/40 px-3 py-2">
-            <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">2 · Index</p>
-            <p className="mt-1 text-xs text-muted-foreground">
-              {status?.is_running ? "Indexing now…" : "Use Start Index or wait for auto-sync."}
-            </p>
-          </div>
-          <div className="rounded-lg border border-border/60 bg-background/40 px-3 py-2">
-            <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">3 · Search</p>
-            <div className="mt-1 flex flex-wrap gap-2 text-xs">
-              <Link href="/search" className="text-sky-600 underline-offset-2 hover:underline dark:text-sky-400">
-                Search
-              </Link>
-            </div>
-          </div>
-        </div>
-
-        <textarea
-          className="min-h-[88px] w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
-          placeholder="https://youtube.com/watch?v=VIDEO_ID"
-          value={youtubeInput}
-          onChange={(e) => setYoutubeInput(e.target.value)}
-        />
-        <div className="mt-3 flex flex-wrap gap-2">
-          <Button onClick={feedYoutubeFromInput} disabled={youtubeBusy || !youtubeInput.trim()}>
-            {youtubeBusy ? "Working…" : "Download to library & index"}
-          </Button>
-        </div>
-        {youtubeMsg && <p className="mt-3 text-xs text-zinc-400">{youtubeMsg}</p>}
-      </Card>
-
       <Card className={status?.is_running ? "border-blue-800 bg-blue-950/20" : ""}>
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
@@ -682,7 +502,7 @@ export default function FoldersPage() {
               <p className="text-sm text-muted-foreground">
                 {status?.auto_index_enabled
                   ? `Auto-sync every ${status.auto_index_interval_seconds}s`
-                  : "Click Start Index or enable auto-index in Settings"}
+                  : "Use Admin → Start Index or enable auto-index in Settings"}
                 {status?.last_run_at ? ` · last sync ${formatDate(status.last_run_at)}` : ""}
               </p>
             )}
@@ -713,7 +533,7 @@ export default function FoldersPage() {
                 key: "skipped",
                 label: "Skipped",
                 className: "text-muted-foreground",
-                count: counts.skipped ?? skipStats?.total_skipped ?? 0,
+                count: counts.skipped ?? 0,
               },
             ] as const
           ).map((card) => (
@@ -729,120 +549,16 @@ export default function FoldersPage() {
             </button>
           ))}
         </div>
-        {(topSkipReasons.length > 0 || status?.last_run) && (
+        {status?.last_run && (
           <div className="mt-4 border-t border-border/50 pt-4">
-            {topSkipReasons.length > 0 && (
-              <>
-                <div className="mb-3 flex flex-wrap items-end justify-between gap-2">
-                  <div>
-                    <p className="text-sm font-medium text-foreground">Top skip reasons</p>
-                    <p className="text-xs text-muted-foreground">
-                      Why files were skipped
-                      {skipStats?.total_skipped != null
-                        ? ` · ${formatCount(skipStats.total_skipped)} total`
-                        : ""}
-                      {" · "}retry a reason to requeue those files
-                    </p>
-                  </div>
-                </div>
-                <ul className="divide-y divide-border/50 overflow-hidden rounded-lg border border-border/60 bg-muted/10">
-                  {topSkipReasons.map((r) => {
-                    const meta = skipReasonMeta(r.reason);
-                    const pct = Math.max(6, Math.round((r.count / maxSkipCount) * 100));
-                    const rowBusy = retryingReason === r.reason;
-                    const anyBusy = retryingReason != null;
-                    return (
-                      <li
-                        key={r.reason}
-                        className="relative px-3 py-2.5 transition-colors hover:bg-muted/25"
-                      >
-                        <div
-                          className="pointer-events-none absolute inset-y-0 left-0 bg-muted-foreground/10"
-                          style={{ width: `${pct}%` }}
-                          aria-hidden
-                        />
-                        <div className="relative flex flex-wrap items-center gap-2 sm:gap-3">
-                          <div className="min-w-0 flex-1">
-                            <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-                              <p className="truncate text-sm font-medium text-foreground">
-                                {meta.label}
-                              </p>
-                              <span className="shrink-0 rounded-md bg-background/80 px-1.5 py-0.5 text-xs font-semibold tabular-nums text-foreground ring-1 ring-border/60">
-                                {formatCount(r.count)}
-                              </span>
-                            </div>
-                            <p className="mt-0.5 truncate text-xs text-muted-foreground">
-                              {meta.hint}
-                            </p>
-                          </div>
-                          {meta.retryable ? (
-                            <Button
-                              variant="secondary"
-                              className="shrink-0 px-2.5 py-1.5 text-xs"
-                              disabled={anyBusy || busy}
-                              onClick={() => requestRetryAll(r.reason, r.count)}
-                            >
-                              {rowBusy ? (
-                                <LoadingLabel>{meta.retryLabel}…</LoadingLabel>
-                              ) : (
-                                meta.retryLabel
-                              )}
-                            </Button>
-                          ) : (
-                            <span
-                              className="shrink-0 rounded-md px-2 py-1 text-[11px] text-muted-foreground"
-                              title={meta.hint}
-                            >
-                              {meta.retryLabel}
-                            </span>
-                          )}
-                        </div>
-                      </li>
-                    );
-                  })}
-                </ul>
-              </>
-            )}
-            {status?.last_run && (
-              <p className={`text-xs text-muted-foreground ${topSkipReasons.length > 0 ? "mt-3" : ""}`}>
-                Last completed run: {formatCount(status.last_run.discovered)} discovered ·{" "}
-                {formatCount(status.last_run.processed)} processed · {formatCount(status.last_run.skipped)}{" "}
-                skipped · {formatCount(status.last_run.errored)} errors
-              </p>
-            )}
+            <p className="text-xs text-muted-foreground">
+              Last completed run: {formatCount(status.last_run.discovered)} discovered ·{" "}
+              {formatCount(status.last_run.processed)} processed · {formatCount(status.last_run.skipped)}{" "}
+              skipped · {formatCount(status.last_run.errored)} errors. Retry controls are in Admin.
+            </p>
           </div>
         )}
       </Card>
-
-      {(indexErrorTotal > 0 || indexErrorItems.length > 0) && (
-        <Card className="border-red-900/40 bg-red-950/10">
-          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-            <div>
-              <h3 className="text-sm font-medium">Indexing Errors</h3>
-              <p className="text-xs text-muted-foreground">
-                {formatCount(indexErrorTotal)} file{indexErrorTotal === 1 ? "" : "s"} failed · showing{" "}
-                {indexErrorItems.length}
-              </p>
-            </div>
-            <Button variant="secondary" onClick={() => openQueue("error")}>
-              Open in queue
-            </Button>
-          </div>
-          <div className="max-h-[min(50dvh,22rem)] space-y-2 overflow-y-auto pr-1">
-            {indexErrorItems.map((f) => (
-              <IndexErrorCard
-                key={f.id}
-                name={f.name}
-                path={f.path}
-                errorMessage={f.error_message}
-                busy={busy}
-                onRetry={() => retryFile(f.id, f.name, f.source)}
-                onDismiss={() => removeFile(f.id)}
-              />
-            ))}
-          </div>
-        </Card>
-      )}
 
       {uniqueFolders.length > 0 && (
         <Card>
@@ -944,7 +660,7 @@ export default function FoldersPage() {
               const tabCount =
                 tab.value === ""
                   ? Object.values(counts).reduce((a, b) => a + (typeof b === "number" ? b : 0), 0)
-                  : (counts[tab.value] ?? (tab.value === "skipped" ? skipStats?.total_skipped : 0) ?? 0);
+                  : (counts[tab.value] ?? 0);
               return (
                 <button
                   key={tab.value || "all"}
@@ -1016,7 +732,7 @@ export default function FoldersPage() {
                                 : "bg-muted text-muted-foreground"
                             }`}
                           >
-                            {f.source === "youtube" ? "YouTube" : "Drive"}
+                            {f.source === "youtube" ? "Other" : "Drive"}
                           </span>
                         </td>
                         <td className={`p-3 ${statusColor[f.status] ?? ""}`}>{f.status}</td>
@@ -1078,20 +794,6 @@ export default function FoldersPage() {
           </div>
         </Card>
       </ModalOverlay>
-
-      <ConfirmDialog
-        open={confirmRetry != null}
-        title={`Retry ${confirmRetry?.label ?? "skipped files"}?`}
-        message={`This will requeue ${formatCount(confirmRetry?.count ?? 0)} file${
-          (confirmRetry?.count ?? 0) === 1 ? "" : "s"
-        }. Large batches can keep the indexer busy for a while.`}
-        confirmLabel="Retry all"
-        variant="primary"
-        onCancel={() => setConfirmRetry(null)}
-        onConfirm={() => {
-          if (confirmRetry) void retryAllForReason(confirmRetry.reason);
-        }}
-      />
     </div>
   );
 }

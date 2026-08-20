@@ -29,8 +29,28 @@ import { Button, Card, DownloadButton, IconLink, Input, LoadingLabel, Spinner, S
 import { ManualFaceTagger } from "@/components/manual-face-tagger";
 import { humanizeIndexError } from "@/lib/index-errors";
 import { cn } from "@/lib/utils";
+import { readCache, writeCache, hydrateKeyFromDisk } from "@/lib/data-cache";
 
-type FilterMode = "all" | "processed" | "skipped" | "archived" | "missing_caption" | "missing_embed" | "pending" | "error";
+type FilterMode = "all" | "processed" | "failed" | "skipped" | "archived" | "missing_caption" | "missing_embed";
+
+const SHELL_CACHE_KEY = "driveLibraryShell";
+const FOLDER_CACHE_PREFIX = "driveLibrary:folder:";
+const FOLDER_PAGE_SIZE = 150;
+
+function folderCacheKey(path: string) {
+  return `${FOLDER_CACHE_PREFIX}${path || "/"}`;
+}
+
+function isFailedLibraryFile(f: LibraryFile): boolean {
+  if (f.status === "error") return true;
+  const msg = (f.error_message || "").toLowerCase();
+  return (
+    msg.includes("corrupt") ||
+    msg.includes("decode") ||
+    msg.includes("decode_exhausted") ||
+    msg.includes("corrupt_file")
+  );
+}
 
 /** Shared header + row template so Name / Index / Caption / Embed / Size stay aligned. */
 const FILE_TABLE_COLS =
@@ -67,15 +87,6 @@ function findFolder(node: LibraryFolder, path: string): LibraryFolder | null {
     if (hit) return hit;
   }
   return null;
-}
-
-/** Flatten files under a folder tree (Library root should show every tracked file). */
-function collectFilesDeep(folder: LibraryFolder): LibraryFile[] {
-  const out: LibraryFile[] = [...folder.files];
-  for (const child of folder.folders) {
-    out.push(...collectFilesDeep(child));
-  }
-  return out;
 }
 
 function FolderTreeItem({
@@ -134,7 +145,7 @@ function FolderTreeItem({
           <Folder size={14} className={cn("shrink-0", folder.indexing_paused ? "text-muted-foreground" : "text-amber-500")} />
           <span className="min-w-0 flex-1 truncate">{folder.name}</span>
           <span className="shrink-0 text-[10px] text-muted-foreground">
-            {folder.image_count > 0 ? (
+            {folder.captioned_count > 0 && folder.image_count > 0 ? (
               <>
                 {folder.captioned_count}/{folder.image_count}
                 {missingCaps > 0 && (
@@ -289,13 +300,28 @@ export default function LibraryPage() {
   const [filter, setFilter] = useState<FilterMode>("all");
   const [search, setSearch] = useState("");
   const [folderActionBusy, setFolderActionBusy] = useState<string | null>(null);
-  const [skipBusy, setSkipBusy] = useState(false);
   const [manualFaceTag, setManualFaceTag] = useState(false);
+  const [folderFiles, setFolderFiles] = useState<LibraryFile[]>([]);
+  const [folderFilesLoading, setFolderFilesLoading] = useState(false);
+  const [folderNextCursor, setFolderNextCursor] = useState<string | null>(null);
+  const [folderTotal, setFolderTotal] = useState(0);
 
-  const load = useCallback(async () => {
+  const loadShell = useCallback(async (force = false) => {
     try {
-      const lib = await apiClient.driveLibrary();
-      setData(lib);
+      if (!force) {
+        const revRes = await apiClient.driveLibraryRevision().catch(() => null);
+        const rev = revRes?.revision ?? null;
+        const prev = readCache<LibraryResponse>(SHELL_CACHE_KEY);
+        if (rev && prev?.revision === rev && prev.data) {
+          setData(prev.data);
+          setLoading(false);
+          return;
+        }
+      }
+      const shell = await apiClient.driveLibraryShell();
+      const writeRev = shell.revision ?? String(Date.now());
+      writeCache(SHELL_CACHE_KEY, shell, writeRev, true);
+      setData(shell);
     } catch {
       /* api() already toasted */
     } finally {
@@ -303,11 +329,96 @@ export default function LibraryPage() {
     }
   }, []);
 
+  const loadFolderFiles = useCallback(
+    async (path: string, opts?: { append?: boolean; cursor?: string | null; force?: boolean }) => {
+      if (!path || path === "/") {
+        setFolderFiles([]);
+        setFolderNextCursor(null);
+        setFolderTotal(0);
+        setFolderFilesLoading(false);
+        return;
+      }
+      const key = folderCacheKey(path);
+      if (!opts?.append && !opts?.force) {
+        const cached = readCache<{ files: LibraryFile[]; next_cursor: string | null; total: number }>(key);
+        const shellRev = readCache<LibraryResponse>(SHELL_CACHE_KEY)?.revision;
+        if (cached?.data && shellRev && cached.revision === shellRev) {
+          setFolderFiles(cached.data.files);
+          setFolderNextCursor(cached.data.next_cursor);
+          setFolderTotal(cached.data.total);
+          setFolderFilesLoading(false);
+          return;
+        }
+      }
+      setFolderFilesLoading(true);
+      try {
+        const page = await apiClient.driveLibraryFolder(path, {
+          limit: FOLDER_PAGE_SIZE,
+          cursor: opts?.append ? opts.cursor ?? null : null,
+        });
+        setFolderFiles((prev) => {
+          const next = opts?.append ? [...prev, ...page.files] : page.files;
+          writeCache(
+            key,
+            { files: next, next_cursor: page.next_cursor, total: page.total },
+            page.revision ?? String(Date.now()),
+            true
+          );
+          return next;
+        });
+        setFolderNextCursor(page.next_cursor);
+        setFolderTotal(page.total);
+      } catch {
+        if (!opts?.append) setFolderFiles([]);
+      } finally {
+        setFolderFilesLoading(false);
+      }
+    },
+    []
+  );
+
   useEffect(() => {
-    load();
-    const t = setInterval(load, 8000);
-    return () => clearInterval(t);
-  }, [load]);
+    const cached = hydrateKeyFromDisk(SHELL_CACHE_KEY) as import("@/lib/data-cache").CacheEntry<LibraryResponse> | null;
+    if (cached?.data) {
+      setData(cached.data);
+      setLoading(false);
+    }
+
+    let cancelled = false;
+    async function tick(force = false) {
+      try {
+        const revRes = await apiClient.driveLibraryRevision().catch(() => null);
+        if (cancelled) return;
+        const rev = revRes?.revision ?? null;
+        const prev = readCache<LibraryResponse>(SHELL_CACHE_KEY);
+        if (!force && rev && prev?.revision === rev && prev.data) {
+          setData(prev.data);
+          setLoading(false);
+          return;
+        }
+        const shell = await apiClient.driveLibraryShell();
+        if (cancelled) return;
+        const writeRev = shell.revision ?? rev ?? String(Date.now());
+        writeCache(SHELL_CACHE_KEY, shell, writeRev, true);
+        setData(shell);
+        setLoading(false);
+      } catch {
+        if (!cancelled) setLoading(false);
+      }
+    }
+
+    void tick(false);
+    const t = setInterval(() => void tick(false), 20000);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
+  }, []);
+
+  useEffect(() => {
+    setSelectedFileId(null);
+    void loadFolderFiles(selectedFolderPath, { force: false });
+  }, [selectedFolderPath, loadFolderFiles]);
 
   useEffect(() => {
     apiClient
@@ -321,13 +432,6 @@ export default function LibraryPage() {
     return findFolder(data.tree, selectedFolderPath) ?? data.tree;
   }, [data, selectedFolderPath]);
 
-  const folderFiles = useMemo(() => {
-    if (!selectedFolder) return [];
-    // Root = all tracked files across every indexed subtree (not only direct children).
-    if (selectedFolder.path === "/") return collectFilesDeep(selectedFolder);
-    return selectedFolder.files;
-  }, [selectedFolder]);
-
   const filteredFiles = useMemo(() => {
     let files = folderFiles;
     const q = search.trim().toLowerCase();
@@ -336,16 +440,14 @@ export default function LibraryPage() {
       files = files.filter((f) => f.is_image && f.status === "processed" && !f.has_caption);
     } else if (filter === "missing_embed") {
       files = files.filter((f) => f.is_image && f.status === "processed" && !f.has_embedding);
-    } else if (filter === "pending") {
-      files = files.filter((f) => f.status === "pending" || f.status === "processing");
+    } else if (filter === "failed") {
+      files = files.filter((f) => isFailedLibraryFile(f));
     } else if (filter === "processed") {
       files = files.filter((f) => f.status === "processed");
     } else if (filter === "skipped") {
       files = files.filter((f) => f.status === "skipped");
     } else if (filter === "archived") {
       files = files.filter((f) => f.status === "archived");
-    } else if (filter === "error") {
-      files = files.filter((f) => f.status === "error");
     }
     return files;
   }, [folderFiles, filter, search]);
@@ -357,6 +459,7 @@ export default function LibraryPage() {
 
   const maintenance = data?.maintenance;
   const summary = data?.summary;
+  const captionStatsReady = Boolean(summary?.caption_stats_ready);
   const backfillActive = maintenance?.caption_backfill_running || maintenance?.embed_backfill_running;
 
   function toggleExpand(path: string) {
@@ -368,11 +471,22 @@ export default function LibraryPage() {
     });
   }
 
+  function selectFolder(path: string) {
+    if (path === selectedFolderPath) return;
+    setSelectedFileId(null);
+    setFolderFiles([]);
+    setFolderNextCursor(null);
+    setFolderTotal(0);
+    setFolderFilesLoading(path !== "/");
+    setSelectedFolderPath(path);
+  }
+
   async function pauseFolder(path: string) {
     setFolderActionBusy(path);
     try {
       await apiClient.pauseFolderIndexing(path);
-      await load();
+      await loadShell(true);
+      await loadFolderFiles(selectedFolderPath, { force: true });
     } catch {
       /* api() already toasted */
     } finally {
@@ -384,23 +498,12 @@ export default function LibraryPage() {
     setFolderActionBusy(path);
     try {
       await apiClient.resumeFolderIndexing(path);
-      await load();
+      await loadShell(true);
+      await loadFolderFiles(selectedFolderPath, { force: true });
     } catch {
       /* api() already toasted */
     } finally {
       setFolderActionBusy(null);
-    }
-  }
-
-  async function skipCorrupt() {
-    setSkipBusy(true);
-    try {
-      await apiClient.skipCorruptFiles();
-      await load();
-    } catch {
-      /* api() already toasted */
-    } finally {
-      setSkipBusy(false);
     }
   }
 
@@ -415,12 +518,17 @@ export default function LibraryPage() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <Button variant="secondary" onClick={() => { setLoading(true); load(); }} disabled={loading}>
+          <Button
+            variant="secondary"
+            onClick={() => {
+              setLoading(true);
+              void loadShell(true);
+              void loadFolderFiles(selectedFolderPath, { force: true });
+            }}
+            disabled={loading}
+          >
             <RefreshCw size={14} className={cn("mr-1.5 inline", loading && "animate-spin")} />
             Refresh
-          </Button>
-          <Button variant="secondary" onClick={skipCorrupt} disabled={skipBusy}>
-            {skipBusy ? <LoadingLabel>Skipping…</LoadingLabel> : "Skip corrupt files"}
           </Button>
         </div>
       </div>
@@ -442,27 +550,34 @@ export default function LibraryPage() {
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
           <StatCard label="Total files" value={summary.total_files} />
           <StatCard label="Images" value={summary.images} hint={`${summary.videos} videos`} />
+          {captionStatsReady ? (
+            <>
+              <StatCard
+                label="Captioned"
+                value={`${summary.captioned}/${summary.images}`}
+                hint={`${summary.caption_pct}% complete`}
+              />
+              <StatCard label="Embedded" value={`${summary.embedded}/${summary.images}`} />
+            </>
+          ) : (
+            <>
+              <StatCard label="Pending" value={summary.pending} hint="Open a folder for file names" />
+              <StatCard label="Errors" value={summary.errors} />
+            </>
+          )}
           <StatCard
-            label="Captioned"
-            value={`${summary.captioned}/${summary.images}`}
-            hint={`${summary.caption_pct}% complete`}
-          />
-          <StatCard label="Embedded" value={`${summary.embedded}/${summary.images}`} />
-          <StatCard
-            label="Needs work"
+            label="Failed"
             value={
-              summary.needs_work ??
-              summary.pending +
-                summary.errors +
-                (summary.missing_captions ?? 0)
+              selectedFolderPath !== "/"
+                ? folderFiles.filter((f) => isFailedLibraryFile(f)).length
+                : summary.errors
             }
-            hint={`${summary.pending} pending · ${summary.errors} errors · ${summary.missing_captions ?? 0} need captions`}
+            hint="Corrupt + failed to decode (merged)"
           />
         </div>
       )}
 
       <div className="flex min-h-[520px] flex-col overflow-hidden rounded-xl border border-border bg-card lg:flex-row">
-        {/* Folder tree — FTP-style left pane */}
         <aside className="w-full shrink-0 border-b border-border bg-muted/20 lg:w-64 lg:border-b-0 lg:border-r">
           <div className="border-b border-border px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
             Folders
@@ -473,7 +588,7 @@ export default function LibraryPage() {
                 folder={data.tree}
                 selectedPath={selectedFolderPath}
                 expanded={expanded}
-                onSelect={setSelectedFolderPath}
+                onSelect={selectFolder}
                 onToggle={toggleExpand}
                 onPause={pauseFolder}
                 onResume={resumeFolder}
@@ -483,18 +598,21 @@ export default function LibraryPage() {
           </div>
         </aside>
 
-        {/* File list — center pane */}
         <section className="flex min-w-0 flex-1 flex-col">
           <div className="space-y-2 border-b border-border px-3 py-2">
             <p className="min-w-0 text-sm font-medium">
               <span className="text-foreground">
                 {selectedFolderPath === "/"
-                  ? "All tracked folders"
+                  ? "Select a folder"
                   : folderDisplayName(selectedFolder, selectedFolderPath)}
               </span>
-              <span className="ml-2 text-muted-foreground">
-                ({filteredFiles.length} file{filteredFiles.length === 1 ? "" : "s"})
-              </span>
+              {selectedFolderPath !== "/" && (
+                <span className="ml-2 text-muted-foreground">
+                  ({filteredFiles.length}
+                  {folderTotal > filteredFiles.length ? ` of ${folderTotal}` : ""} file
+                  {filteredFiles.length === 1 ? "" : "s"})
+                </span>
+              )}
             </p>
             <div className="flex flex-col gap-2 sm:flex-row sm:items-stretch">
               <select
@@ -504,19 +622,19 @@ export default function LibraryPage() {
                 className="h-9 w-full min-w-0 basis-1/2 rounded-md border border-input bg-background px-2.5 text-xs sm:flex-1"
               >
                 <option value="all">All files</option>
-                <option value="processed">Processed</option>
+                <option value="processed">Ready</option>
+                <option value="failed">Failed (corrupt / decode)</option>
                 <option value="skipped">Skipped</option>
-                <option value="archived">Archived (detached)</option>
+                <option value="archived">Archived</option>
                 <option value="missing_caption">Missing caption</option>
                 <option value="missing_embed">Missing embed</option>
-                <option value="pending">Pending / processing</option>
-                <option value="error">Errors</option>
               </select>
               <Input
                 placeholder="Search in folder…"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 className="h-9 w-full min-w-0 basis-1/2 py-0 text-xs sm:flex-1"
+                disabled={selectedFolderPath === "/"}
               />
             </div>
           </div>
@@ -530,26 +648,51 @@ export default function LibraryPage() {
           </div>
 
           <div className="min-h-0 flex-1 overflow-y-auto">
-            {loading && !data ? (
+            {selectedFolderPath === "/" ? (
+              <p className="py-16 text-center text-sm text-muted-foreground">
+                Choose a folder on the left to load file names
+              </p>
+            ) : loading && !data ? (
               <div className="flex items-center justify-center py-16 text-sm text-muted-foreground">
                 <LoadingLabel size={18}>Loading library…</LoadingLabel>
+              </div>
+            ) : folderFilesLoading && folderFiles.length === 0 ? (
+              <div className="flex items-center justify-center py-16 text-sm text-muted-foreground">
+                <LoadingLabel size={18}>Loading files…</LoadingLabel>
               </div>
             ) : filteredFiles.length === 0 ? (
               <p className="py-16 text-center text-sm text-muted-foreground">No files in this view</p>
             ) : (
-              filteredFiles.map((file) => (
-                <FileRow
-                  key={file.id}
-                  file={file}
-                  selected={selectedFileId === file.id}
-                  onSelect={() => setSelectedFileId(file.id)}
-                />
-              ))
+              <>
+                {filteredFiles.map((file) => (
+                  <FileRow
+                    key={file.id}
+                    file={file}
+                    selected={selectedFileId === file.id}
+                    onSelect={() => setSelectedFileId(file.id)}
+                  />
+                ))}
+                {folderNextCursor && (
+                  <div className="flex justify-center border-t border-border p-3">
+                    <Button
+                      variant="secondary"
+                      disabled={folderFilesLoading}
+                      onClick={() =>
+                        void loadFolderFiles(selectedFolderPath, {
+                          append: true,
+                          cursor: folderNextCursor,
+                        })
+                      }
+                    >
+                      {folderFilesLoading ? <LoadingLabel>Loading…</LoadingLabel> : "Load more"}
+                    </Button>
+                  </div>
+                )}
+              </>
             )}
           </div>
         </section>
 
-        {/* Detail pane — right */}
         <aside className="w-full shrink-0 border-t border-border bg-muted/10 lg:w-72 lg:border-l lg:border-t-0">
           <div className="border-b border-border px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
             Details
@@ -601,7 +744,7 @@ export default function LibraryPage() {
                 <div className="flex justify-between gap-2">
                   <dt className="text-muted-foreground">Status</dt>
                   <dd className={cn("rounded px-1.5 py-0.5 font-medium uppercase", statusBadge(selectedFile.status))}>
-                    {selectedFile.status}
+                    {isFailedLibraryFile(selectedFile) ? "failed" : selectedFile.status}
                   </dd>
                 </div>
                 <div className="flex justify-between gap-2">
@@ -612,33 +755,15 @@ export default function LibraryPage() {
                   <dt className="text-muted-foreground">Size</dt>
                   <dd>{formatBytes(selectedFile.size)}</dd>
                 </div>
-                {selectedFile.is_image && (
-                  <>
-                    <div className="flex justify-between gap-2">
-                      <dt className="text-muted-foreground">Caption</dt>
-                      <dd>{selectedFile.has_caption ? "Yes" : "Missing"}</dd>
-                    </div>
-                    <div className="flex justify-between gap-2">
-                      <dt className="text-muted-foreground">Embedding</dt>
-                      <dd>{selectedFile.has_embedding ? "Yes" : "Missing"}</dd>
-                    </div>
-                  </>
-                )}
               </dl>
-              {selectedFile.caption_preview && (
-                <div className="rounded-lg border border-border bg-background p-2 text-xs leading-relaxed text-muted-foreground">
-                  <p className="mb-1 font-medium text-foreground">Caption</p>
-                  {selectedFile.caption_preview}
-                </div>
-              )}
-              {selectedFile.error_message && (
+              {isFailedLibraryFile(selectedFile) && selectedFile.error_message && (
                 <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-2 text-xs text-destructive">
                   {humanizeIndexError(selectedFile.error_message).summary}
                 </div>
               )}
             </div>
           ) : (
-            <p className="p-4 text-xs text-muted-foreground">Select a file to see caption and index details</p>
+            <p className="p-4 text-xs text-muted-foreground">Select a file for details</p>
           )}
         </aside>
       </div>

@@ -9,6 +9,10 @@ import {
   type LeadershipPerson,
   type LeadershipRoster,
 } from "@/lib/api";
+import { hydrateKeyFromDisk, readCache, writeCache } from "@/lib/data-cache";
+import { stableJsonHash } from "@/lib/fingerprints";
+
+const LEADERSHIP_ROSTER_CACHE_KEY = "leadershipRoster:executive";
 
 export type ReverseFaceSession = {
   dragOver: boolean;
@@ -77,14 +81,30 @@ export function useReverseFaceSession(): ReverseFaceSession {
 
 export async function hydrateLeadershipRoster(force = false) {
   if (state.rosterHydrated && !force) return;
-  patchReverseFaceSession({ rosterLoading: true, error: null });
+  let cachedRoster: LeadershipRoster | null = null;
+  if (!force) {
+    hydrateKeyFromDisk(LEADERSHIP_ROSTER_CACHE_KEY);
+    cachedRoster = readCache<LeadershipRoster>(LEADERSHIP_ROSTER_CACHE_KEY)?.data ?? null;
+  }
+  patchReverseFaceSession({
+    roster: cachedRoster ?? state.roster,
+    rosterLoading: !cachedRoster,
+    rosterHydrated: Boolean(cachedRoster),
+    error: null,
+  });
   try {
     const roster = await apiClient.leadershipRoster("executive");
+    writeCache(
+      LEADERSHIP_ROSTER_CACHE_KEY,
+      roster,
+      stableJsonHash(roster),
+      true
+    );
     patchReverseFaceSession({ roster, rosterLoading: false, rosterHydrated: true });
   } catch (e) {
     patchReverseFaceSession({
       error: formatApiError(e, "Failed to load Executive Leaders"),
-      roster: null,
+      roster: cachedRoster ?? state.roster,
       rosterLoading: false,
       rosterHydrated: true,
     });
