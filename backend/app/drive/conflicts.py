@@ -36,9 +36,9 @@ async def find_by_content_hash(
 ) -> DriveFile | None:
     """Find another file whose identical bytes are already claimed or indexed.
 
-    PENDING peers are ignored — matching them autoskipped copies against a twin
-    that has not finished yet, and (worse) could demote a PROCESSED row when a
-    hash is attached for the first time during Drive sync.
+    Prefers PROCESSED, then PROCESSING. PENDING peers are ignored here — use
+    ``find_older_pending_same_hash`` at claim time so only one PENDING runner
+    starts the pipeline for a given hash.
     """
     row = (
         await session.execute(
@@ -67,6 +67,34 @@ async def find_by_content_hash(
         )
     ).scalar_one_or_none()
     return row
+
+
+async def find_older_pending_same_hash(
+    session: AsyncSession,
+    *,
+    algo: str,
+    digest: str,
+    exclude_id: str,
+    created_at,
+) -> DriveFile | None:
+    """Older PENDING twin with the same content — let that row own the pipeline."""
+    if created_at is None:
+        return None
+    return (
+        await session.execute(
+            select(DriveFile)
+            .where(
+                DriveFile.content_hash == digest.strip().lower(),
+                DriveFile.content_hash_algo == algo,
+                DriveFile.id != exclude_id,
+                DriveFile.status == DriveFileStatus.PENDING,
+                DriveFile.error_message.is_distinct_from("folder_marker"),
+                DriveFile.created_at < created_at,
+            )
+            .order_by(DriveFile.created_at.asc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
 
 
 async def find_by_same_name(
@@ -338,11 +366,18 @@ async def resolve_conflict(
         return conflict
 
     if action == "merge":
-        # Keep existing indexed media; incoming stays skipped as a known duplicate/alias.
+        # Align with autoskip: incoming is search-ready via the twin — no re-pipeline.
         if incoming is not None:
-            incoming.status = DriveFileStatus.SKIPPED
+            twin_id = conflict.existing_file_id
+            same_name = bool(
+                existing
+                and incoming
+                and (incoming.name or "").strip().lower() == (existing.name or "").strip().lower()
+            )
+            incoming.status = DriveFileStatus.PROCESSED
             incoming.error_message = (
-                f"{DUPLICATE_CONTENT_PREFIX} merged with {conflict.existing_file_id}"
+                f"{DUPLICATE_CONTENT_PREFIX} merged with {twin_id}"
+                + ("" if same_name else f" (also named {existing.name!r})" if existing else "")
             )
         conflict.status = STATUS_MERGED
         conflict.resolved_at = now

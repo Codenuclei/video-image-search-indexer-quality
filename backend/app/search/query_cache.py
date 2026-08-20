@@ -9,7 +9,7 @@ import hashlib
 import json
 import logging
 import math
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,6 +21,10 @@ logger = logging.getLogger(__name__)
 
 # Balanced paraphrases in the same folder (e.g. "wine glass" ≈ "glass of wine").
 SEMANTIC_MIN_COSINE = 0.88
+# Exact repeats should stay fast while the indexer is continuously changing the
+# global library fingerprint. After this grace window, full fingerprint
+# validation restores freshness.
+EXACT_FRESH_TTL = timedelta(minutes=10)
 
 
 def normalize_folder_path(folder_path: str | None) -> str:
@@ -164,6 +168,16 @@ def response_from_row(row: SearchQueryCache, *, cache: str) -> SearchResponse:
     return SearchResponse.model_validate(payload)
 
 
+def exact_row_is_fresh(row: SearchQueryCache, now: datetime | None = None) -> bool:
+    created = row.created_at
+    if created is None:
+        return False
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
+    current = now or datetime.now(timezone.utc)
+    return current - created.astimezone(timezone.utc) <= EXACT_FRESH_TTL
+
+
 async def lookup_exact(
     session: AsyncSession,
     *,
@@ -185,6 +199,9 @@ async def lookup_exact(
     row = await session.get(SearchQueryCache, key)
     if row is None:
         return None
+    if exact_row_is_fresh(row):
+        logger.info("search_cache exact fresh hit folder=%s", row.folder_path or "*")
+        return response_from_row(row, cache="exact")
     folder_fp = await folder_fingerprint(session, row.folder_path)
     cluster_fp = await cluster_fingerprint(session, list(row.cluster_ids or []))
     if not fingerprints_valid(row, folder_fp, cluster_fp):

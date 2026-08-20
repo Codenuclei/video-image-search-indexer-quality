@@ -502,9 +502,13 @@ async def maintenance_tick(worker: IndexingWorker) -> None:
     floor; we never run fewer caption batches than ``image_caption_batch_parallel``.
     """
     from app.drive.cleanup import restore_archived_when_index_complete
+    from app.drive.indexing_pause import global_indexing_is_paused
 
     session_factory = get_session_factory()
     async with session_factory() as session:
+        if await global_indexing_is_paused(session):
+            logger.info("Maintenance skipped: global indexing pause is active")
+            return
         saved = await restore_archived_when_index_complete(session)
         if saved:
             await session.commit()

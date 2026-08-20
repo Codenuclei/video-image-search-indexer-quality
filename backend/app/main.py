@@ -26,6 +26,8 @@ from app.routers import (
     cache as cache_router,
     carousel_script,
     clusters,
+    control_reader,
+    diagnostics,
     drive,
     drive_oauth,
     faces,
@@ -85,6 +87,13 @@ async def lifespan(app: FastAPI):
     except Exception:  # noqa: BLE001
         logger.exception("Startup: failed to bind default executor")
 
+    # Keep the latency-sensitive Library Qdrant executor alive inside this API
+    # worker. It never uses the indexing/default thread pool.
+    from app.drive.library_reader_runtime import get_library_reader_runtime
+
+    library_reader = get_library_reader_runtime()
+    await library_reader.warm()
+
     # Yield ASAP so Railway /health can pass. Prior deploys hung forever on the
     # first DB call (ensure_schema) after cookies — ASGI never accepted traffic,
     # healthcheck timed out, and the proxy returned 502.
@@ -105,6 +114,16 @@ async def lifespan(app: FastAPI):
                     await ensure_schema(get_engine())
                     logger.info("Startup: loading runtime settings…")
                     await load_runtime_settings_from_db(get_session_factory())
+                    # Warm every API worker's local revision cache before it is
+                    # marked ready. Otherwise the first user routed to each
+                    # Gunicorn worker can inherit indexer DB-pool contention.
+                    try:
+                        from app.drive.library_shell_cache import compute_library_revision_sql
+
+                        async with get_session_factory()() as session:
+                            await compute_library_revision_sql(session)
+                    except Exception:  # noqa: BLE001
+                        logger.exception("Startup: library revision cache warm failed")
                     last_exc = None
                     break
                 except Exception as exc:  # noqa: BLE001
@@ -165,28 +184,8 @@ async def lifespan(app: FastAPI):
             if corrupt_skipped:
                 logger.info("Startup: skipped %d corrupt/unreadable file(s)", corrupt_skipped)
 
-            # Drop legacy AppleDouble / .DS_Store rows so they never count or queue.
-            from sqlalchemy import delete, or_
-
-            from app.db.models import DriveFile
-            from app.drive.content_hash import APPLEDOUBLE_SKIP_PREFIX
-
-            async with get_session_factory()() as session:
-                result = await session.execute(
-                    delete(DriveFile).where(
-                        or_(
-                            DriveFile.name.like("._%"),
-                            DriveFile.name == ".DS_Store",
-                            DriveFile.name.like(".DS_Store%"),
-                            DriveFile.error_message.like(f"{APPLEDOUBLE_SKIP_PREFIX}%"),
-                            DriveFile.error_message.like("appledouble_junk%"),
-                        )
-                    )
-                )
-                await session.commit()
-                purged = int(result.rowcount or 0)
-            if purged:
-                logger.info("Startup: purged %d Apple junk row(s) from drive_files", purged)
+            # AppleDouble/.DS_Store rows are filtered and skipped by the indexer.
+            # Never delete historical DriveFile rows during startup.
 
             from app.drive.conflicts import promote_duplicate_content_skips
 
@@ -286,10 +285,19 @@ async def lifespan(app: FastAPI):
             if not is_background_leader():
                 logger.info("Skipping indexer loops — not leader")
             else:
+                from app.workers.index_control import index_control_watch_loop
+
                 auto_task = asyncio.create_task(auto_index_loop(worker, stop_event))
-                maintenance_task = asyncio.create_task(startup_maintenance(worker))
+                control_task = asyncio.create_task(
+                    index_control_watch_loop(worker, stop_event),
+                    name="index-control-watcher",
+                )
+                maintenance_task = asyncio.create_task(
+                    startup_maintenance(worker),
+                    name="startup-maintenance",
+                )
                 backup_task = asyncio.create_task(backup_loop(stop_event))
-                worker_tasks.extend([auto_task, maintenance_task, backup_task])
+                worker_tasks.extend([auto_task, control_task, maintenance_task, backup_task])
         else:
             logger.info("Skipping indexer loops — RUN_INDEXER=false")
 
@@ -318,6 +326,7 @@ async def lifespan(app: FastAPI):
         except asyncio.CancelledError:
             pass
     await release_background_leader()
+    library_reader.shutdown()
     await dispose_engine()
 
 
@@ -377,6 +386,7 @@ async def _require_boot_ready(request, call_next):
 
 app.include_router(drive_oauth.router)
 app.include_router(drive.router)
+app.include_router(control_reader.router)
 app.include_router(cache_router.router)
 app.include_router(index.router)
 app.include_router(search.router)
@@ -394,6 +404,7 @@ app.include_router(youtube.router)
 app.include_router(transcripts.router)
 app.include_router(reid.router)
 app.include_router(help_router.router)
+app.include_router(diagnostics.router)
 
 
 @app.get("/health")

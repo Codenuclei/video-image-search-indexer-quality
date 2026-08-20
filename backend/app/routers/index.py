@@ -757,13 +757,18 @@ async def _build_index_status(worker: IndexingWorker, session: AsyncSession) -> 
         elif listed < db_processing:
             image_active += db_processing - listed
 
+    is_running = (
+        worker.is_running
+        or image_active > 0
+        or video_active > 0
+        or db_processing > 0
+    )
+    counts_part = ",".join(f"{k}:{counts[k]}" for k in sorted(counts.keys()))
+    last_run_token = worker.last_run_at.isoformat() if worker.last_run_at else ""
+    revision = f"{last_run_token}|{int(is_running)}|{pending_count}|{counts_part}"
+
     return IndexStatus(
-        is_running=(
-            worker.is_running
-            or image_active > 0
-            or video_active > 0
-            or db_processing > 0
-        ),
+        is_running=is_running,
         counts_by_status=counts,
         last_run=last_run,
         last_run_at=worker.last_run_at,
@@ -781,6 +786,7 @@ async def _build_index_status(worker: IndexingWorker, session: AsyncSession) -> 
         go_indexer_enabled=runtime.go_indexer_enabled,
         go_indexer_alive=go_alive,
         go_files_per_sec=go_stats.files_per_sec if go_stats.reported_at else None,
+        revision=revision,
     )
 
 

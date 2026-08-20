@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Any
 
 from app.db.models import DriveFile
+from app.drive.indexing_pause import normalize_file_path, normalize_folder_path
 
 
 @dataclass
@@ -227,6 +230,118 @@ def build_library_tree(
         summary["caption_pct"] = 0.0
 
     return root, all_files, summary
+
+
+def compute_library_revision(drive_files: list[DriveFile]) -> str:
+    """Cheap freshness token: file count + max last_synced_at + status histogram."""
+    max_synced: datetime | None = None
+    status_hist: dict[str, int] = {}
+    for df in drive_files:
+        key = df.status.value if hasattr(df.status, "value") else str(df.status)
+        status_hist[key] = status_hist.get(key, 0) + 1
+        if df.last_synced_at is not None and (max_synced is None or df.last_synced_at > max_synced):
+            max_synced = df.last_synced_at
+    hist_part = ",".join(f"{k}:{status_hist[k]}" for k in sorted(status_hist.keys()))
+    return f"{len(drive_files)}:{max_synced.isoformat() if max_synced else ''}:{hist_part}"
+
+
+def file_folder_path(file_path: str) -> str:
+    """Parent folder path for a DriveFile.path (same rules as build_library_tree)."""
+    parts = [p for p in normalize_file_path(file_path).split("/") if p]
+    folder_parts = parts[:-1] if len(parts) > 1 else []
+    return _folder_path(folder_parts)
+
+
+def is_direct_child_of_folder(file_path: str, folder_path: str) -> bool:
+    """True when file is a direct child of folder_path (not nested deeper)."""
+    return file_folder_path(file_path) == normalize_folder_path(folder_path)
+
+
+def build_library_shell(
+    drive_files: list[DriveFile],
+    *,
+    paused_folder_paths: list[str] | None = None,
+) -> tuple[LibraryFolderNode, dict[str, Any]]:
+    """Folder tree + DB status counts only — no file lists, no Qdrant."""
+    root, all_files, summary = build_library_tree(
+        drive_files,
+        captioned_ids=set(),
+        embedded_ids=set(),
+        caption_texts={},
+        paused_folder_paths=paused_folder_paths,
+    )
+    # Drop file lists from every node (shell payload).
+    def _strip_files(node: LibraryFolderNode) -> None:
+        node.files = []
+        for child in node.folders.values():
+            _strip_files(child)
+
+    _strip_files(root)
+    # Caption/embed stats require Qdrant — mark unknown for the client.
+    summary["captioned"] = 0
+    summary["embedded"] = 0
+    summary["missing_captions"] = 0
+    summary["caption_pct"] = 0.0
+    summary["caption_stats_ready"] = False
+    summary["needs_work"] = summary["pending"] + summary["errors"]
+    return root, summary
+
+
+def folder_node_to_shell_dict(node: LibraryFolderNode) -> dict[str, Any]:
+    """Serialize folder tree without files[] (and without reason tallies to keep small)."""
+    return {
+        "name": node.name,
+        "path": node.path,
+        "file_count": node.file_count,
+        "image_count": node.image_count,
+        "captioned_count": node.captioned_count,
+        "embedded_count": node.embedded_count,
+        "pending_count": node.pending_count,
+        "processed_count": node.processed_count,
+        "processing_count": node.processing_count,
+        "error_count": node.error_count,
+        "skipped_count": node.skipped_count,
+        "archived_count": node.archived_count,
+        "indexing_paused": node.indexing_paused,
+        "folders": [
+            folder_node_to_shell_dict(child)
+            for child in sorted(node.folders.values(), key=lambda n: n.name.lower())
+        ],
+        "files": [],
+    }
+
+
+def thin_file_dict(
+    df: DriveFile,
+    *,
+    has_caption: bool = False,
+    has_embedding: bool = False,
+) -> dict[str, Any]:
+    """List-row file payload — no caption_preview; short error only for failed/skipped."""
+    is_image = df.mime_type.startswith("image/")
+    is_video = df.mime_type.startswith("video/")
+    folder_path = file_folder_path(df.path)
+    status = df.status.value if hasattr(df.status, "value") else str(df.status)
+    err: str | None = None
+    if status in ("error", "skipped") and df.error_message:
+        msg = df.error_message.strip()
+        err = (msg[:160] + "…") if len(msg) > 160 else msg
+    return {
+        "id": df.id,
+        "name": df.name,
+        "path": df.path,
+        "folder_path": folder_path,
+        "mime_type": df.mime_type,
+        "status": status,
+        "size": df.size,
+        "source": df.source or "drive",
+        "is_image": is_image,
+        "is_video": is_video,
+        "has_caption": has_caption,
+        "has_embedding": has_embedding,
+        "caption_preview": None,
+        "error_message": err,
+    }
 
 
 def folder_node_to_dict(node: LibraryFolderNode) -> dict:

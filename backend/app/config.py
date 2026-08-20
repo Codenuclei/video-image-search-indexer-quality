@@ -136,6 +136,12 @@ class Settings(BaseSettings):
     decode_max_attempts: int = 1
 
     webhook_secret: str = ""
+    # Secret-gated production diagnostics. Disabled by default; POST /tests
+    # runs a fixed DB-free suite plus read-only live checks.
+    production_tests_enabled: bool = False
+    production_tests_token: str = ""
+    production_tests_timeout_seconds: int = 90
+    production_tests_cooldown_seconds: int = 30
 
     # Google Drive push notifications → in-memory file-list cache.
     # Set DRIVE_WEBHOOK_URL to the public HTTPS endpoint Google will POST to

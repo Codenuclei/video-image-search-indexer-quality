@@ -3,8 +3,8 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query, Request
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from starlette.background import BackgroundTask
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,13 +18,24 @@ from app.dependencies import get_indexing_worker
 from app.drive.client import DriveConnectorError
 from app.drive.google_client import DriveDirectClient, DriveDirectError
 from app.drive.cleanup import remove_drive_file
+from app.drive.library_tree import (
+    build_library_shell,
+    build_library_tree,
+    compute_library_revision,
+    folder_node_to_dict,
+    folder_node_to_shell_dict,
+    is_direct_child_of_folder,
+    thin_file_dict,
+)
+from app.drive.library_shell_cache import compute_library_revision_sql, get_library_shell_cache
+from app.drive.library_reader_runtime import get_library_reader_runtime
 from app.drive.indexing_pause import (
     load_paused_folder_paths,
+    normalize_folder_path,
     pause_folder_indexing,
     resume_folder_indexing,
     skip_corrupt_files,
 )
-from app.drive.library_tree import build_library_tree, folder_node_to_dict
 from app.gemini.service import get_gemini_service
 from app.pipelines.common import download_to_memory
 from app.schemas import DriveFileOut
@@ -272,6 +283,186 @@ async def lookup_file_faces(
     }
 
 
+@router.get("/library/revision")
+async def drive_library_revision(session: AsyncSession = Depends(get_db)) -> dict[str, str]:
+    """Cheap freshness check — SQL aggregates only, no tree build, no Qdrant."""
+    return {"revision": await compute_library_revision_sql(session)}
+
+
+@router.get("/library/shell")
+async def drive_library_shell(
+    session: AsyncSession = Depends(get_db),
+    if_none_match: str | None = Header(default=None, alias="If-None-Match"),
+) -> Response:
+    """Folder tree + DB status counts only (no files[], no Qdrant). Shared process cache.
+
+    Revision is computed with SQL aggregates first so cache hits / 304 skip the full row load.
+    """
+    from app.workers.maintenance import maintenance_status
+
+    revision = await compute_library_revision_sql(session)
+    etag = f'"{revision}"'
+
+    if if_none_match and if_none_match.strip() in (etag, revision, f"W/{etag}"):
+        return Response(
+            status_code=304,
+            headers={"ETag": etag, "Cache-Control": "private, max-age=5"},
+        )
+
+    cache = get_library_shell_cache()
+    cached = cache.get(revision)
+    if cached is not None:
+        return JSONResponse(
+            content=cached,
+            headers={
+                "ETag": etag,
+                "Cache-Control": "private, max-age=5",
+                "X-Library-Cache": "hit",
+            },
+        )
+
+    # Cache miss — load rows and build shell once for this revision.
+    rows = list(
+        (await session.execute(select(DriveFile).order_by(DriveFile.path))).scalars().all()
+    )
+    paused_paths = await load_paused_folder_paths(session)
+    root, summary = build_library_shell(rows, paused_folder_paths=paused_paths)
+    payload: dict[str, object] = {
+        "tree": folder_node_to_shell_dict(root),
+        "summary": summary,
+        "maintenance": maintenance_status(),
+        "paused_folders": paused_paths,
+        "revision": revision,
+    }
+    cache.put(revision, payload)
+    return JSONResponse(
+        content=payload,
+        headers={
+            "ETag": etag,
+            "Cache-Control": "private, max-age=5",
+            "X-Library-Cache": "miss",
+        },
+    )
+
+
+@router.get("/library/folder")
+async def drive_library_folder(
+    path: str = Query(default="/"),
+    limit: int = Query(default=150, ge=1, le=500),
+    cursor: str | None = Query(default=None),
+) -> dict[str, object]:
+    """Serve one folder entirely on the reserved Library thread + DB connection."""
+    reader = get_library_reader_runtime()
+    return await reader.run(_drive_library_folder_sync, path, limit, cursor)
+
+
+def _drive_library_folder_sync(
+    path: str,
+    limit: int,
+    cursor: str | None,
+) -> dict[str, object]:
+    """Blocking folder read. Runs only on LibraryReaderRuntime's single thread."""
+    from app.drive.library_filters import is_apple_junk_row, is_folder_marker_row
+    from app.qdrant.image_captions import valid_caption_ids_sync
+    from app.qdrant.images import existing_image_ids_sync
+    from sqlalchemy import and_, func, not_, or_
+
+    folder = normalize_folder_path(path)
+
+    if folder == "/":
+        # Historical rows exist both with and without a leading slash.
+        # Direct root children are "/name" or "name", with no nested slash.
+        path_filter = or_(
+            and_(DriveFile.path.like("/%"), not_(DriveFile.path.like("/%/%"))),
+            not_(DriveFile.path.like("%/%")),
+        )
+    else:
+        # Direct children may be stored as "/folder/name" or "folder/name".
+        relative_folder = folder.lstrip("/")
+        path_filter = or_(
+            and_(
+                DriveFile.path.like(f"{folder}/%"),
+                not_(DriveFile.path.like(f"{folder}/%/%")),
+            ),
+            and_(
+                DriveFile.path.like(f"{relative_folder}/%"),
+                not_(DriveFile.path.like(f"{relative_folder}/%/%")),
+            ),
+        )
+
+    reader = get_library_reader_runtime()
+    with reader.session() as session:
+        rows = list(
+            session.execute(
+                select(DriveFile).where(path_filter).order_by(DriveFile.name)
+            ).scalars().all()
+        )
+
+        children: list[DriveFile] = []
+        for df in rows:
+            if is_apple_junk_row(name=df.name, error_message=df.error_message):
+                continue
+            if is_folder_marker_row(mime_type=df.mime_type, error_message=df.error_message):
+                continue
+            if is_direct_child_of_folder(df.path, folder):
+                children.append(df)
+
+        children.sort(key=lambda d: (d.name or "").lower())
+
+        start = 0
+        if cursor:
+            for i, df in enumerate(children):
+                if df.id == cursor:
+                    start = i + 1
+                    break
+
+        page = children[start : start + limit]
+        image_ids = [df.id for df in page if df.mime_type.startswith("image/")]
+        captioned_ids = valid_caption_ids_sync(image_ids) if image_ids else set()
+        embedded_ids = existing_image_ids_sync(image_ids) if image_ids else set()
+
+        files = [
+            thin_file_dict(
+                df,
+                has_caption=df.id in captioned_ids,
+                has_embedding=df.id in embedded_ids,
+            )
+            for df in page
+        ]
+
+        cache = get_library_shell_cache()
+        revision = cache.get_recent_revision(60.0)
+        if revision is None:
+            count = int(session.scalar(select(func.count()).select_from(DriveFile)) or 0)
+            max_synced = session.scalar(select(func.max(DriveFile.last_synced_at)))
+            hist_rows = session.execute(
+                select(DriveFile.status, func.count()).group_by(DriveFile.status)
+            ).all()
+            status_hist = {
+                status.value if hasattr(status, "value") else str(status): int(n)
+                for status, n in hist_rows
+            }
+            hist_part = ",".join(
+                f"{key}:{status_hist[key]}" for key in sorted(status_hist)
+            )
+            revision = f"{count}:{max_synced.isoformat() if max_synced else ''}:{hist_part}"
+            cache.put_revision(revision)
+
+        next_cursor = (
+            page[-1].id
+            if len(page) == limit and (start + limit) < len(children)
+            else None
+        )
+        return {
+            "path": folder,
+            "files": files,
+            "total": len(children),
+            "limit": limit,
+            "next_cursor": next_cursor,
+            "revision": revision,
+        }
+
+
 @router.get("/library")
 async def drive_library(session: AsyncSession = Depends(get_db)) -> dict[str, object]:
     """Global historical library tree — all indexed roots, including soft-archived.
@@ -279,6 +470,8 @@ async def drive_library(session: AsyncSession = Depends(get_db)) -> dict[str, ob
     Not scoped to the current Drive OAuth session or active folder selection.
     Soft-archived files remain visible so folder switch / disconnect never hides
     previously indexed media, captions, or embeddings.
+
+    Prefer /library/shell + /library/folder for UI (faster TTFB).
     """
     from app.qdrant.image_captions import get_captions_by_ids_sync, valid_caption_ids_sync
     from app.qdrant.images import existing_image_ids_sync
@@ -311,11 +504,14 @@ async def drive_library(session: AsyncSession = Depends(get_db)) -> dict[str, ob
         paused_folder_paths=paused_paths,
     )
 
+    revision = compute_library_revision(rows)
+
     return {
         "tree": folder_node_to_dict(root),
         "summary": summary,
         "maintenance": maintenance_status(),
         "paused_folders": paused_paths,
+        "revision": revision,
     }
 
 
@@ -349,6 +545,7 @@ async def pause_folder(
     stopped = await pause_folder_indexing(session, body.folder_path)
     await session.commit()
     cancelled = await worker.cancel_indexing_under_folder(body.folder_path)
+    get_library_shell_cache().invalidate()
     return {"ok": True, "folder_path": body.folder_path, "stopped": stopped, "cancelled": cancelled}
 
 
@@ -360,6 +557,7 @@ async def resume_folder(
     """Re-enable indexing for a paused library folder."""
     resumed = await resume_folder_indexing(session, body.folder_path)
     await session.commit()
+    get_library_shell_cache().invalidate()
     return {"ok": True, "folder_path": body.folder_path, "resumed": resumed}
 
 

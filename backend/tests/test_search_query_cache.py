@@ -22,6 +22,7 @@ from app.schemas import SearchResponse, SearchResultFile
 from app.search.query_cache import (
     SEMANTIC_MIN_COSINE,
     cosine_similarity,
+    exact_row_is_fresh,
     fingerprints_valid,
     lookup_exact,
     lookup_semantic,
@@ -92,6 +93,12 @@ def test_cosine_similarity_balanced_paraphrase_bar() -> None:
     unrelated = [0.0, 0.0, 1.0]
     assert cosine_similarity(wine, glass_of_wine) >= SEMANTIC_MIN_COSINE
     assert cosine_similarity(wine, unrelated) < SEMANTIC_MIN_COSINE
+
+
+def test_exact_cache_freshness_window() -> None:
+    now = datetime(2026, 8, 20, 14, 0, tzinfo=timezone.utc)
+    assert exact_row_is_fresh(SimpleNamespace(created_at=now - timedelta(minutes=9)), now)
+    assert not exact_row_is_fresh(SimpleNamespace(created_at=now - timedelta(minutes=11)), now)
 
 
 def test_fingerprints_folder_vs_global_person() -> None:

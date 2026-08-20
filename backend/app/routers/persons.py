@@ -52,6 +52,20 @@ async def _serialize_person(session: AsyncSession, person: Person) -> PersonOut:
     )
 
 
+@router.get("/revision")
+async def persons_revision(session: AsyncSession = Depends(get_db)) -> dict[str, object]:
+    """Lightweight freshness token for client cache (no full person payloads)."""
+    count = (await session.execute(select(func.count()).select_from(Person))).scalar_one()
+    max_id = (await session.execute(select(func.max(Person.id)))).scalar_one()
+    occ_sum = (
+        await session.execute(
+            select(func.count()).select_from(Face).where(Face.person_id.isnot(None))
+        )
+    ).scalar_one()
+    revision = f"{int(count or 0)}:{int(max_id or 0)}:{int(occ_sum or 0)}"
+    return {"revision": revision, "count": int(count or 0)}
+
+
 @router.get("", response_model=list[PersonOut])
 async def list_persons(session: AsyncSession = Depends(get_db)) -> list[PersonOut]:
     persons = (await session.execute(select(Person).order_by(Person.name))).scalars().all()

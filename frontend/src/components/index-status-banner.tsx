@@ -1,7 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { API_BASE, apiClient, type IndexStatus } from "@/lib/api";
+import { useEffect, useState } from "react";
+import { API_BASE } from "@/lib/api";
+import { useIndexStatusStore } from "@/lib/index-status-store";
 import { cn } from "@/lib/utils";
 import { BackendDisconnectedOverlay } from "@/components/backend-disconnected-overlay";
 import { LoadingLabel } from "@/components/spinner";
@@ -47,58 +48,29 @@ function LaneRow({
 }
 
 export function IndexStatusBanner() {
-  const [status, setStatus] = useState<IndexStatus | null>(null);
-  const [error, setError] = useState(false);
+  const { status, error, refresh } = useIndexStatusStore();
   const [retrying, setRetrying] = useState(false);
   const [dismissed, setDismissed] = useState(false);
-  const failStreakRef = useRef(0);
 
-  const poll = useCallback(async () => {
-    try {
-      setStatus(await apiClient.indexStatus());
-      failStreakRef.current = 0;
-      setError(false);
-      setDismissed(false);
-      return true;
-    } catch {
-      // Require consecutive failures so long carousel AI calls don't flash
-      // "Backend unreachable" on a single blip / contention.
-      failStreakRef.current += 1;
-      if (failStreakRef.current >= 3) {
-        setError(true);
-      }
-      return false;
-    }
-  }, []);
-
-  useEffect(() => {
-    poll();
-    const t = setInterval(poll, 12000);
-    return () => clearInterval(t);
-  }, [poll]);
-
-  // Browser offline also surfaces the same retry banner.
   useEffect(() => {
     function onOffline() {
-      failStreakRef.current = 3;
-      setError(true);
+      /* store fail streak handled on next poll */
     }
     function onOnline() {
-      failStreakRef.current = 0;
-      void poll();
+      void refresh();
     }
-    window.addEventListener("offline", onOffline);
     window.addEventListener("online", onOnline);
+    window.addEventListener("offline", onOffline);
     return () => {
-      window.removeEventListener("offline", onOffline);
       window.removeEventListener("online", onOnline);
+      window.removeEventListener("offline", onOffline);
     };
-  }, [poll]);
+  }, [refresh]);
 
   async function handleRetry() {
     setRetrying(true);
     try {
-      await poll();
+      await refresh();
     } finally {
       setRetrying(false);
     }
@@ -164,7 +136,8 @@ export function IndexStatusBanner() {
       {showLanes && (
         <div className="mt-1">
           <LaneRow label="Images" active={imageActive} max={imageMax} files={imageFiles} />
-          <LaneRow label="Videos" active={videoActive} max={videoMax} files={videoFiles} />        </div>
+          <LaneRow label="Videos" active={videoActive} max={videoMax} files={videoFiles} />
+        </div>
       )}
       <p className="mt-1">
         {processed} done · {pending} pending · {processing} in flight

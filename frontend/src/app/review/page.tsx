@@ -2,11 +2,18 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { FileImage, Gauge, ScanFace, Tag, Users } from "lucide-react";
-import { apiClient, formatApiError, type Cluster, type Person } from "@/lib/api";
+import {
+  apiClient,
+  formatApiError,
+  type Cluster,
+  type ClusterListResponse,
+  type Person,
+} from "@/lib/api";
 import { Button, Card, FaceThumb, Input, LoadingLabel } from "@/components/ui";
 import { PersonMergeSearch } from "@/components/person-merge-search";
 import { AnimatedTrash } from "@/components/animated-trash";
 import { cn } from "@/lib/utils";
+import { hydrateKeyFromDisk, readCache, writeCache } from "@/lib/data-cache";
 
 function confidenceBadgeClass(pct: number) {
   if (pct >= 90) return "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300";
@@ -15,6 +22,7 @@ function confidenceBadgeClass(pct: number) {
 }
 
 const CLUSTER_PAGE_SIZE = 100;
+const FIRST_CLUSTER_PAGE_CACHE_KEY = "reviewQueue:firstPage";
 
 type ClusterAction =
   | { type: "name"; clusterId: number }
@@ -47,18 +55,37 @@ export default function ReviewPage() {
 
   const load = useCallback(
     async ({ initial = false, offset = clusterOffset }: { initial?: boolean; offset?: number } = {}) => {
-      if (initial) setInitialLoading(true);
+      let paintedCache = false;
+      if (initial && offset === 0) {
+        hydrateKeyFromDisk(FIRST_CLUSTER_PAGE_CACHE_KEY);
+        const cached = readCache<ClusterListResponse>(FIRST_CLUSTER_PAGE_CACHE_KEY);
+        if (cached?.data) {
+          setClusters(cached.data.items);
+          setClusterTotal(cached.data.total);
+          setInitialLoading(false);
+          paintedCache = true;
+        }
+      }
+      if (initial && !paintedCache) setInitialLoading(true);
       else setRefreshing(true);
       try {
         const response = await apiClient.clusters({ limit: CLUSTER_PAGE_SIZE, offset });
         setClusters(response.items);
         setClusterTotal(response.total);
+        if (offset === 0) {
+          const revision = [
+            response.total,
+            response.items[0]?.id ?? 0,
+            response.items.reduce((sum, cluster) => sum + cluster.member_count, 0),
+          ].join(":");
+          writeCache(FIRST_CLUSTER_PAGE_CACHE_KEY, response, revision, true);
+        }
         setError(null);
       } catch (e) {
         setError(formatApiError(e, "Failed to load"));
       } finally {
         if (initial) setInitialLoading(false);
-        else setRefreshing(false);
+        setRefreshing(false);
       }
     },
     [clusterOffset]

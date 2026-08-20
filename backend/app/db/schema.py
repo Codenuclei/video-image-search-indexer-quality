@@ -83,6 +83,9 @@ async def ensure_schema(engine: AsyncEngine) -> None:
             )
         )
         await conn.execute(
+            text("CREATE INDEX IF NOT EXISTS ix_drive_files_path ON drive_files (path)")
+        )
+        await conn.execute(
             text("ALTER TABLE persons ADD COLUMN IF NOT EXISTS role VARCHAR(32)")
         )
         await conn.execute(

@@ -449,7 +449,10 @@ class IndexingWorker:
                     continue
                 # Skip known content/name conflicts without occupying an Active slot.
                 if drive_file.content_hash and drive_file.content_hash_algo:
-                    from app.drive.conflicts import apply_dedupe_on_upsert
+                    from app.drive.conflicts import (
+                        apply_dedupe_on_upsert,
+                        find_older_pending_same_hash,
+                    )
 
                     skip_key = await apply_dedupe_on_upsert(
                         session,
@@ -460,6 +463,16 @@ class IndexingWorker:
                     if skip_key:
                         _log_skip(drive_file, skip_key)
                         dirty = True
+                        continue
+                    # Only the oldest PENDING per content hash should run the pipeline.
+                    older = await find_older_pending_same_hash(
+                        session,
+                        algo=drive_file.content_hash_algo,
+                        digest=drive_file.content_hash,
+                        exclude_id=drive_file.id,
+                        created_at=drive_file.created_at,
+                    )
+                    if older is not None:
                         continue
                 claimed_ids.append(drive_file.id)
                 occupied.add(drive_file.id)
@@ -486,6 +499,8 @@ class IndexingWorker:
     async def cancel_indexing_under_folder(self, folder_path: str) -> int:
         """Cancel in-flight index jobs for files under a folder path."""
         norm = normalize_folder_path(folder_path)
+        if norm == "/":
+            return await self.cancel_all_indexing_tasks()
         cancelled = 0
         async with self._session_factory() as session:
             for fid, task in list(self._image_tasks.items()):
@@ -505,6 +520,22 @@ class IndexingWorker:
         if cancelled:
             logger.info("Cancelled %d in-flight index job(s) under %s", cancelled, norm)
         return cancelled
+
+    async def cancel_all_indexing_tasks(self) -> int:
+        """Cancel local image/video jobs without querying or changing DriveFile rows."""
+        tasks = [
+            task
+            for task in (*self._image_tasks.values(), *self._video_tasks.values())
+            if not task.done()
+        ]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+            logger.info("Cancelled %d in-flight indexing job(s)", len(tasks))
+        self._prune_image_tasks()
+        self._prune_video_tasks()
+        return len(tasks)
 
     async def _run_image_index_job(self, file_id: str) -> None:
         gemini = get_gemini_service()
@@ -1590,6 +1621,12 @@ class IndexingWorker:
             removed,
             listing.truncated,
         )
+        try:
+            from app.drive.library_shell_cache import get_library_shell_cache
+
+            get_library_shell_cache().invalidate()
+        except Exception:  # noqa: BLE001
+            pass
         return seen
 
     async def _upsert_folder_placeholder(self, session: AsyncSession, entry: ConnectorFile) -> None:

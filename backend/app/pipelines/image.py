@@ -39,16 +39,34 @@ async def prepare_image_media(
 
     await clear_existing_media(session, drive_file.id)
 
+    from app.drive.conflicts import apply_dedupe_on_upsert
     from app.drive.content_hash import sha256_bytes
     from app.drive.media_cache import ensure_media_cached, read_cached_bytes
+
+    # If Drive already gave us a content hash, skip known-indexed twins before download.
+    if drive_file.content_hash and drive_file.content_hash_algo:
+        skip_key = await apply_dedupe_on_upsert(
+            session,
+            drive_file,
+            algo=drive_file.content_hash_algo,
+            digest=drive_file.content_hash,
+        )
+        if skip_key:
+            logger.info(
+                "index_skip reason=%s file_id=%s mime=%s size=%s name=%s (pre-download)",
+                skip_key,
+                drive_file.id,
+                drive_file.mime_type,
+                drive_file.size,
+                drive_file.name,
+            )
+            return None
 
     cache_path = await ensure_media_cached(client, drive_file, settings)
     raw_bytes = await run_cpu_bound(read_cached_bytes, cache_path)
     if not drive_file.content_hash:
         drive_file.content_hash = sha256_bytes(raw_bytes)
         drive_file.content_hash_algo = "sha256"
-
-    from app.drive.conflicts import apply_dedupe_on_upsert
 
     skip_key = await apply_dedupe_on_upsert(
         session,

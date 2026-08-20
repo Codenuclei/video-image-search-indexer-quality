@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Script from "next/script";
 import { LoadingLabel } from "@/components/spinner";
+import { clearAllDataCache } from "@/lib/data-cache";
 
 const ALLOWED_DOMAIN = "mastersunion.org";
 const STORAGE_KEY = "dfi_auth";
@@ -65,6 +66,7 @@ export function getAuthEmail(): string | null {
 
 export function signOut() {
   clearStoredAuth();
+  clearAllDataCache();
   window.location.reload();
 }
 

@@ -8,6 +8,9 @@ import { Button, Card, ConfirmDialog, FaceThumb, Input, LoadingLabel } from "@/c
 import { RoleSelector } from "@/components/role-selector";
 import { AnimatedTrash } from "@/components/animated-trash";
 import { cn } from "@/lib/utils";
+import { useCachedResource } from "@/lib/use-cached-resource";
+import { writeCache } from "@/lib/data-cache";
+import { personsRevision } from "@/lib/fingerprints";
 
 function PersonCard({
   person,
@@ -207,25 +210,24 @@ function PersonCard({
 }
 
 export default function PeoplePage() {
-  const [persons, setPersons] = useState<Person[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const {
+    data: persons,
+    loading,
+    error: cacheError,
+    refresh,
+  } = useCachedResource<Person[]>({
+    key: "persons",
+    fetcher: () => apiClient.persons(),
+    getRevision: async () => {
+      const meta = await apiClient.personsRevision();
+      return meta.revision;
+    },
+    revisionFromData: (items) => personsRevision(items),
+    pollMs: 60000,
+  });
 
-  const load = useCallback(() => {
-    setLoading(true);
-    apiClient
-      .persons()
-      .then((items) => {
-        setPersons(items);
-        setError(null);
-      })
-      .catch((e) => setError(formatApiError(e, "Failed to load people")))
-      .finally(() => setLoading(false));
-  }, []);
-
-  useEffect(() => {
-    load();
-  }, [load]);
+  const list = persons ?? [];
+  const error = cacheError;
 
   return (
     <div className="space-y-6">
@@ -244,24 +246,31 @@ export default function PeoplePage() {
       )}
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-        {persons.map((p) => (
+        {list.map((p) => (
           <PersonCard
             key={p.id}
             person={p}
-            onRenamed={(updated) =>
-              setPersons((prev) => prev.map((item) => (item.id === updated.id ? updated : item)))
-            }
-            onDeleted={(id) => setPersons((prev) => prev.filter((item) => item.id !== id))}
-            onDeleteFailed={(restored) =>
-              setPersons((prev) =>
-                prev.some((item) => item.id === restored.id) ? prev : [...prev, restored].sort((a, b) => a.name.localeCompare(b.name))
-              )
-            }
+            onRenamed={(updated) => {
+              const next = list.map((item) => (item.id === updated.id ? updated : item));
+              writeCache("persons", next, personsRevision(next), true);
+              void refresh(true);
+            }}
+            onDeleted={(id) => {
+              const next = list.filter((item) => item.id !== id);
+              writeCache("persons", next, personsRevision(next), true);
+              void refresh(true);
+            }}
+            onDeleteFailed={(restored) => {
+              const next = list.some((item) => item.id === restored.id)
+                ? list
+                : [...list, restored].sort((a, b) => a.name.localeCompare(b.name));
+              writeCache("persons", next, personsRevision(next), true);
+            }}
           />
         ))}
       </div>
 
-      {!loading && persons.length === 0 && !error && (
+      {!loading && list.length === 0 && !error && (
         <Card>
           <p className="text-muted-foreground">No people named yet.</p>
         </Card>

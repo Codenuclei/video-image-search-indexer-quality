@@ -1,37 +1,44 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import Link from "next/link";
 import { apiClient, formatApiError, type Settings } from "@/lib/api";
 import { Button, Card, Input, LoadingLabel } from "@/components/ui";
+import { useCachedResource } from "@/lib/use-cached-resource";
+import { writeCache } from "@/lib/data-cache";
+import { stableJsonHash } from "@/lib/fingerprints";
 
 export default function SettingsPage() {
-  const [settings, setSettings] = useState<Settings | null>(null);
+  const {
+    data: settings,
+    loading,
+    error: loadError,
+    refresh,
+  } = useCachedResource<Settings>({
+    key: "settings",
+    fetcher: () => apiClient.settings(),
+    getRevision: async () => (await apiClient.settingsRevision()).revision,
+  });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
-
-  useEffect(() => {
-    apiClient
-      .settings()
-      .then(setSettings)
-      .catch((e) => setError(formatApiError(e, "Failed to load settings")));
-  }, []);
 
   const persist = useCallback(async (patch: Partial<Settings>) => {
     setSaving(true);
     setError(null);
     try {
       const updated = await apiClient.updateSettings(patch);
-      setSettings(updated);
+      const revision = await apiClient.settingsRevision().catch(() => null);
+      writeCache("settings", updated, revision?.revision ?? stableJsonHash(updated), true);
       setSaved(true);
       setTimeout(() => setSaved(false), 1500);
+      void refresh(true);
     } catch (e) {
       setError(formatApiError(e, "Failed to save"));
     } finally {
       setSaving(false);
     }
-  }, []);
+  }, [refresh]);
 
   async function saveInterval() {
     if (!settings) return;
@@ -41,7 +48,7 @@ export default function SettingsPage() {
   if (!settings) {
     return (
       <p className="text-muted-foreground">
-        {error ?? <LoadingLabel size={16}>Loading…</LoadingLabel>}
+        {error ?? loadError ?? (loading ? <LoadingLabel size={16}>Loading…</LoadingLabel> : null)}
       </p>
     );
   }
@@ -84,7 +91,7 @@ export default function SettingsPage() {
               disabled={saving}
               onChange={(e) => {
                 const v = e.target.checked;
-                setSettings({ ...settings, gemini_file_search_search_enabled: v });
+                writeCache("settings", { ...settings, gemini_file_search_search_enabled: v }, stableJsonHash({ ...settings, gemini_file_search_search_enabled: v }), true);
                 persist({ gemini_file_search_search_enabled: v });
               }}
               className="mt-0.5 h-4 w-4 shrink-0 rounded border-border bg-background accent-blue-500"
@@ -103,7 +110,7 @@ export default function SettingsPage() {
               disabled={saving}
               onChange={(e) => {
                 const v = e.target.checked;
-                setSettings({ ...settings, search_parallel_variants_enabled: v });
+                writeCache("settings", { ...settings, search_parallel_variants_enabled: v }, stableJsonHash({ ...settings, search_parallel_variants_enabled: v }), true);
                 persist({ search_parallel_variants_enabled: v });
               }}
               className="mt-0.5 h-4 w-4 shrink-0 rounded border-border bg-background accent-blue-500"
@@ -122,7 +129,7 @@ export default function SettingsPage() {
               disabled={saving}
               onChange={(e) => {
                 const v = e.target.checked;
-                setSettings({ ...settings, search_use_captions: v });
+                writeCache("settings", { ...settings, search_use_captions: v }, stableJsonHash({ ...settings, search_use_captions: v }), true);
                 persist({ search_use_captions: v });
               }}
               className="mt-0.5 h-4 w-4 shrink-0 rounded border-border bg-background accent-blue-500"
@@ -141,7 +148,7 @@ export default function SettingsPage() {
               disabled={saving}
               onChange={(e) => {
                 const v = e.target.checked;
-                setSettings({ ...settings, search_rerank_enabled: v });
+                writeCache("settings", { ...settings, search_rerank_enabled: v }, stableJsonHash({ ...settings, search_rerank_enabled: v }), true);
                 persist({ search_rerank_enabled: v });
               }}
               className="mt-0.5 h-4 w-4 shrink-0 rounded border-border bg-background accent-blue-500"
@@ -164,7 +171,7 @@ export default function SettingsPage() {
               disabled={saving}
               onChange={(e) => {
                 const v = e.target.checked;
-                setSettings({ ...settings, auto_index_enabled: v });
+                writeCache("settings", { ...settings, auto_index_enabled: v }, stableJsonHash({ ...settings, auto_index_enabled: v }), true);
                 persist({ auto_index_enabled: v });
               }}
               className="h-4 w-4 rounded border-border bg-background accent-blue-500"
@@ -178,7 +185,7 @@ export default function SettingsPage() {
               disabled={saving}
               onChange={(e) => {
                 const v = e.target.checked;
-                setSettings({ ...settings, reindex_errored_files: v });
+                writeCache("settings", { ...settings, reindex_errored_files: v }, stableJsonHash({ ...settings, reindex_errored_files: v }), true);
                 persist({ reindex_errored_files: v });
               }}
               className="mt-0.5 h-4 w-4 shrink-0 rounded border-border bg-background accent-blue-500"
@@ -197,7 +204,7 @@ export default function SettingsPage() {
               disabled={saving}
               onChange={(e) => {
                 const v = e.target.checked;
-                setSettings({ ...settings, reindex_skipped_files: v });
+                writeCache("settings", { ...settings, reindex_skipped_files: v }, stableJsonHash({ ...settings, reindex_skipped_files: v }), true);
                 persist({ reindex_skipped_files: v });
               }}
               className="mt-0.5 h-4 w-4 shrink-0 rounded border-border bg-background accent-blue-500"
@@ -215,7 +222,7 @@ export default function SettingsPage() {
               checked={settings.follow_shortcut_folders}
               onChange={(e) => {
                 const v = e.target.checked;
-                setSettings({ ...settings, follow_shortcut_folders: v });
+                writeCache("settings", { ...settings, follow_shortcut_folders: v }, stableJsonHash({ ...settings, follow_shortcut_folders: v }), true);
                 persist({ follow_shortcut_folders: v });
               }}
               className="mt-0.5 h-4 w-4 shrink-0 rounded border-border bg-background accent-blue-500"
@@ -235,7 +242,7 @@ export default function SettingsPage() {
               disabled={saving}
               onChange={(e) => {
                 const v = e.target.checked;
-                setSettings({ ...settings, go_indexer_enabled: v });
+                writeCache("settings", { ...settings, go_indexer_enabled: v }, stableJsonHash({ ...settings, go_indexer_enabled: v }), true);
                 persist({ go_indexer_enabled: v });
               }}
               className="mt-0.5 h-4 w-4 shrink-0 rounded border-border bg-background accent-blue-500"
@@ -260,7 +267,7 @@ export default function SettingsPage() {
               min="30"
               value={settings.auto_index_interval_seconds}
               onChange={(e) =>
-                setSettings({ ...settings, auto_index_interval_seconds: Number(e.target.value) })
+                writeCache("settings", { ...settings, auto_index_interval_seconds: Number(e.target.value) }, stableJsonHash({ ...settings, auto_index_interval_seconds: Number(e.target.value) }), true)
               }
             />
           </div>
@@ -278,7 +285,7 @@ export default function SettingsPage() {
               disabled={saving}
               onChange={(e) => {
                 const v = e.target.checked;
-                setSettings({ ...settings, experimental_manual_face_tag: v });
+                writeCache("settings", { ...settings, experimental_manual_face_tag: v }, stableJsonHash({ ...settings, experimental_manual_face_tag: v }), true);
                 persist({ experimental_manual_face_tag: v });
               }}
               className="mt-0.5 h-4 w-4 shrink-0 rounded border-border bg-background accent-blue-500"

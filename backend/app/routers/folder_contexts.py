@@ -16,7 +16,7 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import FolderContext
@@ -78,6 +78,19 @@ async def _embed_and_store(folder_path: str, description: str) -> None:
 async def list_folder_contexts(session: AsyncSession = Depends(get_db)):
     rows = (await session.execute(select(FolderContext).order_by(FolderContext.folder_path))).scalars().all()
     return rows
+
+
+@router.get("/revision")
+async def folder_contexts_revision(session: AsyncSession = Depends(get_db)) -> dict[str, str | int]:
+    """Cheap freshness token for search/folder context catalogs."""
+    count, max_updated = (
+        await session.execute(
+            select(func.count(FolderContext.id), func.max(FolderContext.updated_at))
+        )
+    ).one()
+    total = int(count or 0)
+    revision = f"{total}:{max_updated.isoformat() if max_updated else ''}"
+    return {"revision": revision, "count": total}
 
 
 @router.put("", response_model=FolderContextOut)

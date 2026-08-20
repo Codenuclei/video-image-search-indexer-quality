@@ -53,6 +53,8 @@ class IndexStatus(BaseModel):
     go_indexer_enabled: bool = False
     go_indexer_alive: bool = False
     go_files_per_sec: float | None = None
+    # Cheap client freshness token: last_run_at + counts + running + pending.
+    revision: str | None = None
 
 
 class GoIndexerClaimItem(BaseModel):

@@ -1,5 +1,6 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
@@ -14,23 +15,30 @@ import {
   ScanFace,
   Search,
   Settings,
+  Shield,
   UserCheck,
   Users,
   X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { IndexStatusBanner } from "@/components/index-status-banner";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { ConfirmDialog } from "@/components/ui";
 import { getAuthEmail, signOut } from "@/components/auth-gate";
 import { supportMailto } from "@/lib/support";
+import { isAdminEmail } from "@/lib/admin";
 
+/** Defer index polling — never load on the front page. */
+const IndexStatusBanner = dynamic(
+  () => import("@/components/index-status-banner").then((m) => m.IndexStatusBanner),
+  { ssr: false, loading: () => null }
+);
 type NavLink = {
   href: string;
   label: string;
   icon: typeof Home;
   mobile: boolean;
   section?: "find";
+  adminOnly?: boolean;
 };
 
 const links: NavLink[] = [
@@ -42,6 +50,7 @@ const links: NavLink[] = [
   { href: "/labs/reverse-face", label: "Reverse Face", icon: ScanFace, mobile: false, section: "find" },
   { href: "/library", label: "Library", icon: HardDrive, mobile: true },
   { href: "/folders", label: "Folders", icon: FolderOpen, mobile: true },
+  { href: "/admin", label: "Admin", icon: Shield, mobile: false, adminOnly: true },
   { href: "/help", label: "How to / FAQ", icon: CircleHelp, mobile: false },
   { href: "/settings", label: "Settings", icon: Settings, mobile: false },
 ];
@@ -88,6 +97,7 @@ function NavItem({
   return (
     <Link
       href={href}
+      prefetch={href === "/library" || href === "/folders" || href === "/people" || href === "/admin" ? false : undefined}
       onClick={onNavigate}
       className={cn(
         vertical
@@ -119,7 +129,10 @@ function NavLinks({
   vertical?: boolean;
   mobileOnly?: boolean;
 }) {
-  const items = mobileOnly ? links.filter((l) => l.mobile) : links;
+  const admin = isAdminEmail(getAuthEmail());
+  const items = (mobileOnly ? links.filter((l) => l.mobile) : links).filter(
+    (l) => !l.adminOnly || admin
+  );
 
   if (!vertical) {
     return (
@@ -240,7 +253,8 @@ export function Sidebar() {
 
   const currentPage =
     links.find((l) => navActive(pathname, l.href) && l.href !== "/")?.label ??
-    (pathname === "/" ? "Dashboard" : "DriveFaceIndexer");
+    (pathname === "/" ? "Home" : "DriveFaceIndexer");
+  const showIndexBanner = pathname !== "/";
 
   return (
     <>
@@ -251,7 +265,7 @@ export function Sidebar() {
             <BrandMark />
           </div>
           <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
-            <IndexStatusBanner />
+            {showIndexBanner ? <IndexStatusBanner /> : null}
             <NavLinks pathname={pathname} />
           </div>
           <div className="mt-4 shrink-0">
@@ -297,7 +311,7 @@ export function Sidebar() {
                 <X size={18} />
               </button>
             </div>
-            <IndexStatusBanner />
+            {showIndexBanner ? <IndexStatusBanner /> : null}
             <NavLinks pathname={pathname} onNavigate={() => setMenuOpen(false)} />
             <div className="mt-auto">
               <SidebarFooter email={email} onNavigate={() => setMenuOpen(false)} />

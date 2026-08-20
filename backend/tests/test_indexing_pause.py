@@ -11,6 +11,7 @@ from app.drive.indexing_pause import (
     is_file_indexing_paused,
     pause_folder_indexing,
     resume_folder_indexing,
+    set_folder_pause_flag,
     skip_corrupt_files,
 )
 
@@ -53,6 +54,31 @@ async def test_pause_and_resume_folder(session):
     await session.refresh(f1)
     assert f1.status == DriveFileStatus.PENDING
     assert f1.error_message is None
+
+
+@pytest.mark.asyncio
+async def test_global_pause_flag_never_mutates_drive_files(session):
+    session.add(
+        DriveFile(
+            id="keep-processing",
+            name="keep.jpg",
+            path="/keep.jpg",
+            mime_type="image/jpeg",
+            status=DriveFileStatus.PROCESSING,
+            error_message="existing state",
+        )
+    )
+    await session.flush()
+
+    assert await set_folder_pause_flag(session, "/", paused=True)
+    row = await session.get(DriveFile, "keep-processing")
+    assert row.status == DriveFileStatus.PROCESSING
+    assert row.error_message == "existing state"
+
+    assert await set_folder_pause_flag(session, "/", paused=False)
+    await session.refresh(row)
+    assert row.status == DriveFileStatus.PROCESSING
+    assert row.error_message == "existing state"
 
 
 @pytest.mark.asyncio

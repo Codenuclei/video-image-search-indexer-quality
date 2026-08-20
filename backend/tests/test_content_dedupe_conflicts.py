@@ -1,7 +1,9 @@
 """Tests for content-hash dedupe, name conflicts, and skip-reason keys."""
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 import pytest
+from unittest.mock import AsyncMock, patch
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,6 +23,7 @@ from app.drive.conflicts import (
     STATUS_PENDING,
     STATUS_REPLACED,
     apply_dedupe_on_upsert,
+    find_older_pending_same_hash,
     resolve_conflict,
 )
 from app.drive.indexed_folders import list_indexed_folders, record_indexed_folder
@@ -251,6 +254,93 @@ def test_first_hash_attach_is_not_hash_changed() -> None:
     assert newly_hashed is True
     content_changed = False or hash_changed
     assert content_changed is False
+
+
+@pytest.mark.asyncio
+async def test_known_processed_hash_stops_before_download_or_pipeline() -> None:
+    """Index click invariant: a known twin never downloads/decodes/creates Media."""
+    from app.config import Settings
+    from app.pipelines.image import prepare_image_media
+
+    incoming = DriveFile(
+        id="known-twin",
+        name="copy.jpg",
+        mime_type="image/jpeg",
+        path="/copy.jpg",
+        status=DriveFileStatus.PENDING,
+        content_hash="knownhash",
+        content_hash_algo="md5",
+    )
+    session = AsyncMock(spec=AsyncSession)
+    client = AsyncMock()
+
+    with (
+        patch("app.pipelines.image.file_has_media", new=AsyncMock(return_value=False)),
+        patch("app.pipelines.image.clear_existing_media", new=AsyncMock()),
+        patch(
+            "app.drive.conflicts.apply_dedupe_on_upsert",
+            new=AsyncMock(return_value="duplicate_content"),
+        ) as dedupe,
+        patch("app.drive.media_cache.ensure_media_cached", new=AsyncMock()) as download,
+        patch("app.pipelines.image.decode_image_bgr") as decode,
+    ):
+        result = await prepare_image_media(session, incoming, client, Settings())
+
+    assert result is None
+    dedupe.assert_awaited_once()
+    download.assert_not_awaited()
+    decode.assert_not_called()
+    session.add.assert_not_called()
+
+
+@requires_postgres
+@pytest.mark.asyncio
+async def test_only_oldest_pending_same_hash_is_claimable(db_session: AsyncSession) -> None:
+    now = datetime.now(timezone.utc)
+    older = DriveFile(
+        id="older-pending",
+        name="older.jpg",
+        mime_type="image/jpeg",
+        path="/older.jpg",
+        status=DriveFileStatus.PENDING,
+        content_hash="same-pending-hash",
+        content_hash_algo="md5",
+        created_at=now,
+    )
+    newer = DriveFile(
+        id="newer-pending",
+        name="newer.jpg",
+        mime_type="image/jpeg",
+        path="/newer.jpg",
+        status=DriveFileStatus.PENDING,
+        content_hash="same-pending-hash",
+        content_hash_algo="md5",
+        created_at=now + timedelta(seconds=1),
+    )
+    db_session.add(older)
+    await db_session.flush()
+    db_session.add(newer)
+    await db_session.flush()
+
+    peer = await find_older_pending_same_hash(
+        db_session,
+        algo="md5",
+        digest="same-pending-hash",
+        exclude_id=newer.id,
+        created_at=newer.created_at,
+    )
+    assert peer is not None
+    assert peer.id == older.id
+    assert (
+        await find_older_pending_same_hash(
+            db_session,
+            algo="md5",
+            digest="same-pending-hash",
+            exclude_id=older.id,
+            created_at=older.created_at,
+        )
+        is None
+    )
 
 
 @requires_postgres
