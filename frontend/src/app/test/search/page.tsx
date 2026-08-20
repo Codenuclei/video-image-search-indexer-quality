@@ -1,7 +1,7 @@
 "use client";
 
 import { SearchPage } from "@/components/views/search-view";
-import { ReverseFaceLabPage } from "@/components/views/reverse-face-view";
+import { ImageSearchPanel } from "@/components/image-search-panel";
 import { DriveSessionBar } from "@/components/drive-session-bar";
 import { TestIndexStatus } from "@/components/test-index-status";
 import { useIndexStatusStore } from "@/lib/index-status-store";
@@ -32,9 +32,9 @@ export default function TestSearchPage() {
 
           <section id="reverse-face" className="rounded-2xl border border-border bg-card p-4 shadow-sm md:p-5">
             <h2 className="mb-3 text-sm font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-              Reverse face
+              Search by image
             </h2>
-            <ReverseFaceLabPage embedded />
+            <ImageSearchPanel />
           </section>
         </div>
 
