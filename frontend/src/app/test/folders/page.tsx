@@ -128,7 +128,7 @@ export default function TestFoldersPage() {
 
   const loadShell = useCallback(async () => {
     try {
-      setShell(await apiClient.driveLibraryShell());
+      setShell(await apiClient.driveLibrary());
     } catch {
       /* toasted by api() */
     } finally {
