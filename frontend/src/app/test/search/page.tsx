@@ -20,9 +20,6 @@ export default function TestSearchPage() {
             All Photos{processed ? ` · ${formatCount(processed)} Assets` : ""}
           </p>
         </div>
-        <div className="w-full max-w-sm">
-          <TestIndexStatus compact />
-        </div>
       </div>
 
       <DriveSessionBar />

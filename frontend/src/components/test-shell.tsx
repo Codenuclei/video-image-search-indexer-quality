@@ -9,14 +9,14 @@ import {
   HardDrive,
   Image as ImageIcon,
   ImagePlus,
+  LogOut,
   Search,
   Settings,
-  Sparkles,
   Users,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { getAuthEmail } from "@/components/auth-gate";
+import { getAuthEmail, signOut } from "@/components/auth-gate";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { DriveSessionBar } from "@/components/drive-session-bar";
 import { Spinner } from "@/components/ui";
@@ -108,23 +108,36 @@ export function TestShell({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const {
     q,
-    person,
     mime,
     folderPath,
     rerank,
     useCaptions,
-    persons,
     folderContexts,
     loading,
   } = useSearchSession();
   const [email, setEmail] = useState<string | null>(null);
   const [headerQuery, setHeaderQuery] = useState("");
+  const [accountOpen, setAccountOpen] = useState(false);
   const uploadRef = useRef<HTMLInputElement>(null);
+  const accountRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setEmail(getAuthEmail());
     hydrateSearchCatalogs();
     hydrateSearchSettings();
+  }, []);
+
+  useEffect(() => {
+    if (!rerank) void persistSearchRerank(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rerank]);
+
+  useEffect(() => {
+    function onDocClick(e: MouseEvent) {
+      if (!accountRef.current?.contains(e.target as Node)) setAccountOpen(false);
+    }
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
   }, []);
 
   useEffect(() => {
@@ -254,21 +267,6 @@ export function TestShell({ children }: { children: React.ReactNode }) {
                   <option value="pdf">PDFs</option>
                 </IconSelect>
                 <IconSelect
-                  icon={Users}
-                  title={person ? `Person: ${person}` : "All people"}
-                  value={person}
-                  active={person !== ""}
-                  disabled={persons.length === 0}
-                  onChange={(v) => patchSearchSession({ person: v })}
-                >
-                  <option value="">All people</option>
-                  {persons.map((p) => (
-                    <option key={p.id} value={p.name}>
-                      {p.name}
-                    </option>
-                  ))}
-                </IconSelect>
-                <IconSelect
                   icon={FolderOpen}
                   title={folderPath ? `Folder: ${folderPath}` : "All folders"}
                   value={folderPath}
@@ -287,12 +285,6 @@ export function TestShell({ children }: { children: React.ReactNode }) {
                   title={useCaptions ? "Captions on" : "Captions off"}
                   active={useCaptions}
                   onClick={() => void persistSearchCaptions(!useCaptions)}
-                />
-                <IconToggle
-                  icon={Sparkles}
-                  title={rerank ? "Re-rank on" : "Re-rank off"}
-                  active={rerank}
-                  onClick={() => void persistSearchRerank(!rerank)}
                 />
               </div>
               <button
@@ -322,11 +314,30 @@ export function TestShell({ children }: { children: React.ReactNode }) {
           </form>
           <DriveSessionBar compact />
           <ThemeToggle />
-          <div
-            className="flex h-10 w-10 items-center justify-center rounded-full bg-muted text-xs font-semibold text-foreground"
-            title={email ?? "Signed in"}
-          >
-            {(email ?? "U").slice(0, 1).toUpperCase()}
+          <div ref={accountRef} className="relative">
+            <button
+              type="button"
+              onClick={() => setAccountOpen((v) => !v)}
+              className="flex h-10 w-10 items-center justify-center rounded-full bg-muted text-xs font-semibold text-foreground transition-colors hover:bg-accent"
+              title={email ?? "Account"}
+            >
+              {(email ?? "U").slice(0, 1).toUpperCase()}
+            </button>
+            {accountOpen && (
+              <div className="absolute right-0 top-12 z-30 w-56 overflow-hidden rounded-xl border border-border bg-card shadow-lg">
+                <p className="truncate border-b border-border px-4 py-3 text-xs text-muted-foreground">
+                  {email ?? "Signed in"}
+                </p>
+                <button
+                  type="button"
+                  onClick={signOut}
+                  className="flex w-full items-center gap-2 px-4 py-2.5 text-sm text-foreground transition-colors hover:bg-accent"
+                >
+                  <LogOut size={14} />
+                  Sign out
+                </button>
+              </div>
+            )}
           </div>
         </header>
 
