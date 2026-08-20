@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { getAuthEmail, signOut } from "@/components/auth-gate";
+import { apiClient } from "@/lib/api";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { DriveSessionBar } from "@/components/drive-session-bar";
 import { Spinner } from "@/components/ui";
@@ -118,6 +119,7 @@ export function TestShell({ children }: { children: React.ReactNode }) {
   const [email, setEmail] = useState<string | null>(null);
   const [headerQuery, setHeaderQuery] = useState("");
   const [accountOpen, setAccountOpen] = useState(false);
+  const [confirmAction, setConfirmAction] = useState<"signout" | "drive" | null>(null);
   const uploadRef = useRef<HTMLInputElement>(null);
   const accountRef = useRef<HTMLDivElement>(null);
 
@@ -134,11 +136,23 @@ export function TestShell({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     function onDocClick(e: MouseEvent) {
-      if (!accountRef.current?.contains(e.target as Node)) setAccountOpen(false);
+      if (!accountRef.current?.contains(e.target as Node)) {
+        setAccountOpen(false);
+        setConfirmAction(null);
+      }
     }
     document.addEventListener("mousedown", onDocClick);
     return () => document.removeEventListener("mousedown", onDocClick);
   }, []);
+
+  async function disconnectDrive() {
+    try {
+      await apiClient.driveLogout();
+    } catch {
+      /* toasted by api() */
+    }
+    window.location.reload();
+  }
 
   useEffect(() => {
     if (pathname === "/test/search" || pathname === "/test") {
@@ -324,17 +338,47 @@ export function TestShell({ children }: { children: React.ReactNode }) {
               {(email ?? "U").slice(0, 1).toUpperCase()}
             </button>
             {accountOpen && (
-              <div className="absolute right-0 top-12 z-30 w-56 overflow-hidden rounded-xl border border-border bg-card shadow-lg">
+              <div className="absolute right-0 top-12 z-30 w-60 overflow-hidden rounded-xl border border-border bg-card shadow-lg">
                 <p className="truncate border-b border-border px-4 py-3 text-xs text-muted-foreground">
                   {email ?? "Signed in"}
                 </p>
                 <button
                   type="button"
-                  onClick={signOut}
-                  className="flex w-full items-center gap-2 px-4 py-2.5 text-sm text-foreground transition-colors hover:bg-accent"
+                  onClick={() => {
+                    if (confirmAction === "drive") {
+                      void disconnectDrive();
+                    } else {
+                      setConfirmAction("drive");
+                    }
+                  }}
+                  className={cn(
+                    "flex w-full items-center gap-2 px-4 py-2.5 text-sm transition-colors",
+                    confirmAction === "drive"
+                      ? "bg-red-500/10 font-medium text-red-600 dark:text-red-400"
+                      : "text-foreground hover:bg-accent"
+                  )}
+                >
+                  <HardDrive size={14} />
+                  {confirmAction === "drive" ? "Confirm disconnect Drive?" : "Disconnect Drive"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (confirmAction === "signout") {
+                      signOut();
+                    } else {
+                      setConfirmAction("signout");
+                    }
+                  }}
+                  className={cn(
+                    "flex w-full items-center gap-2 px-4 py-2.5 text-sm transition-colors",
+                    confirmAction === "signout"
+                      ? "bg-red-500/10 font-medium text-red-600 dark:text-red-400"
+                      : "text-foreground hover:bg-accent"
+                  )}
                 >
                   <LogOut size={14} />
-                  Sign out
+                  {confirmAction === "signout" ? "Confirm sign out?" : "Sign out"}
                 </button>
               </div>
             )}
