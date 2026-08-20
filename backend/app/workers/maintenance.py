@@ -490,6 +490,27 @@ async def run_embedding_backfill(worker: IndexingWorker, *, max_items: int | Non
         _embed_running = False
 
 
+async def _recover_status_from_qdrant() -> None:
+    """Mark files PROCESSED when Qdrant already has their vectors.
+
+    Cheap append-only repair (scrolls Qdrant, updates Postgres) — run before
+    backfill/indexing so we never re-process files that are already embedded.
+    """
+    from app.qdrant.recover import recover_from_qdrant
+
+    try:
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            result = await recover_from_qdrant(session, dry_run=False)
+        if result.status_marked_processed:
+            logger.info(
+                "Qdrant recovery: marked %d file(s) PROCESSED from existing vectors",
+                result.status_marked_processed,
+            )
+    except Exception:
+        logger.exception("Qdrant status recovery failed (continuing)")
+
+
 async def maintenance_tick(worker: IndexingWorker) -> None:
     """Advance caption/embed backfill in bounded parallel chunks.
 
@@ -520,6 +541,8 @@ async def maintenance_tick(worker: IndexingWorker) -> None:
     settings = get_settings()
     batches_per_tick = max(1, settings.maintenance_batches_per_tick)
     caption_batches = max(batches_per_tick, max(1, settings.image_caption_batch_parallel))
+
+    await _recover_status_from_qdrant()
 
     missing_embed = await count_missing_embeddings()
     if missing_embed > 0 and not _embed_running:
