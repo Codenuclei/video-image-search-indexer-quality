@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import { Toaster } from "@/components/sonner";
 import "./globals.css";
-import { Sidebar } from "@/components/sidebar";
+import { AppChrome } from "@/components/app-chrome";
 import { AuthGate } from "@/components/auth-gate";
 import { CacheSyncBoot } from "@/components/cache-sync-boot";
 
@@ -30,16 +30,18 @@ export const viewport = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
+      <head>
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `try{var t=localStorage.getItem("theme");var d=t==="dark"||(!t&&matchMedia("(prefers-color-scheme: dark)").matches);if(d)document.documentElement.classList.add("dark")}catch(e){}`,
+          }}
+        />
+      </head>
       <body className={inter.className}>
         <CacheSyncBoot />
         <AuthGate>
-          <div className="flex min-h-screen flex-col md:h-screen md:flex-row md:overflow-hidden">
-            <Sidebar />
-            <main className="flex-1 overflow-x-hidden overflow-y-auto px-4 pb-[calc(4.5rem+env(safe-area-inset-bottom))] pt-[calc(3.5rem+env(safe-area-inset-top))] md:min-h-0 md:overflow-y-auto md:p-8">
-              {children}
-            </main>
-          </div>
+          <AppChrome>{children}</AppChrome>
         </AuthGate>
         <Toaster />
       </body>

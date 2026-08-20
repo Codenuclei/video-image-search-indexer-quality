@@ -53,11 +53,13 @@ const links: NavLink[] = [
   { href: "/admin", label: "Admin", icon: Shield, mobile: false, adminOnly: true },
   { href: "/help", label: "How to / FAQ", icon: CircleHelp, mobile: false },
   { href: "/settings", label: "Settings", icon: Settings, mobile: false },
+  { href: "/test/search", label: "UI Test", icon: ScanFace, mobile: false },
 ];
 
 function navActive(pathname: string, href: string): boolean {
   if (href === "/") return pathname === "/";
   if (href === "/search") return pathname === "/search";
+  if (href === "/test/search") return pathname.startsWith("/test");
   return pathname === href || pathname.startsWith(`${href}/`);
 }
 
