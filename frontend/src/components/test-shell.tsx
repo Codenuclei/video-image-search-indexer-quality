@@ -2,39 +2,124 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
+  FileText,
   FolderOpen,
   HardDrive,
+  Image as ImageIcon,
+  ImagePlus,
   Search,
   Settings,
-  Upload,
+  Sparkles,
   Users,
+  type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { getAuthEmail } from "@/components/auth-gate";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { DriveSessionBar } from "@/components/drive-session-bar";
-import { Input } from "@/components/ui";
+import { Spinner } from "@/components/ui";
 import {
   hydrateSearchCatalogs,
   hydrateSearchSettings,
   patchSearchSession,
+  persistSearchCaptions,
+  persistSearchRerank,
   runSearch,
   useSearchSession,
 } from "@/lib/search-session";
+import { runReverseFaceSearch, setReverseFaceFile } from "@/lib/reverse-face-session";
 
 const libraryLinks = [
   { href: "/test/folders", label: "Indexed Folders", icon: FolderOpen },
   { href: "/test/people", label: "People Directory", icon: Users },
 ];
 
+function IconSelect({
+  icon: Icon,
+  title,
+  value,
+  active,
+  disabled,
+  onChange,
+  children,
+}: {
+  icon: LucideIcon;
+  title: string;
+  value: string;
+  active: boolean;
+  disabled?: boolean;
+  onChange: (value: string) => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <label
+      title={title}
+      className={cn(
+        "relative flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors",
+        active ? "bg-primary/10 text-primary" : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+        disabled && "opacity-40"
+      )}
+    >
+      <Icon size={15} />
+      <select
+        aria-label={title}
+        className="absolute inset-0 h-full w-full cursor-pointer appearance-none opacity-0"
+        value={value}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.value)}
+      >
+        {children}
+      </select>
+    </label>
+  );
+}
+
+function IconToggle({
+  icon: Icon,
+  title,
+  active,
+  onClick,
+}: {
+  icon: LucideIcon;
+  title: string;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      title={title}
+      aria-pressed={active}
+      onClick={onClick}
+      className={cn(
+        "flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors",
+        active ? "bg-primary/10 text-primary" : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+      )}
+    >
+      <Icon size={15} />
+    </button>
+  );
+}
+
 export function TestShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
-  const { q } = useSearchSession();
+  const {
+    q,
+    person,
+    mime,
+    folderPath,
+    rerank,
+    useCaptions,
+    persons,
+    folderContexts,
+    loading,
+  } = useSearchSession();
   const [email, setEmail] = useState<string | null>(null);
   const [headerQuery, setHeaderQuery] = useState("");
+  const uploadRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     setEmail(getAuthEmail());
@@ -57,7 +142,19 @@ export function TestShell({ children }: { children: React.ReactNode }) {
     void runSearch();
   }
 
+  function onUploadPicked(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    setReverseFaceFile(file);
+    if (pathname !== "/test/search") {
+      router.push("/test/search#reverse-face");
+    }
+    void runReverseFaceSearch(file);
+  }
+
   const searchActive = pathname === "/test/search" || pathname === "/test";
+  const mimeValue = mime === "video" ? "all" : mime;
 
   return (
     <div className="flex min-h-screen bg-muted/40 text-foreground">
@@ -133,27 +230,97 @@ export function TestShell({ children }: { children: React.ReactNode }) {
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="sticky top-0 z-20 flex items-center gap-3 border-b border-border bg-card/90 px-4 py-3 backdrop-blur md:px-6">
           <form onSubmit={submitHeaderSearch} className="min-w-0 flex-1">
-            <div className="relative">
-              <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-              <Input
+            <div className="flex h-11 items-center gap-1 rounded-full border border-border bg-muted/60 pl-3.5 pr-1.5 transition-colors focus-within:border-ring">
+              <Search size={16} className="shrink-0 text-muted-foreground" />
+              <input
                 value={headerQuery}
                 onChange={(e) => {
                   setHeaderQuery(e.target.value);
                   patchSearchSession({ q: e.target.value });
                 }}
                 placeholder="Search photos, folders, or metadata..."
-                className="h-11 rounded-full border-border bg-muted/60 pl-9"
+                className="min-w-0 flex-1 bg-transparent px-2 text-sm text-foreground outline-none placeholder:text-muted-foreground"
               />
+              <div className="hidden items-center gap-0.5 sm:flex">
+                <IconSelect
+                  icon={ImageIcon}
+                  title={`Type: ${mimeValue}`}
+                  value={mimeValue}
+                  active={mimeValue !== "all"}
+                  onChange={(v) => patchSearchSession({ mime: v })}
+                >
+                  <option value="all">All types</option>
+                  <option value="image">Images</option>
+                  <option value="pdf">PDFs</option>
+                </IconSelect>
+                <IconSelect
+                  icon={Users}
+                  title={person ? `Person: ${person}` : "All people"}
+                  value={person}
+                  active={person !== ""}
+                  disabled={persons.length === 0}
+                  onChange={(v) => patchSearchSession({ person: v })}
+                >
+                  <option value="">All people</option>
+                  {persons.map((p) => (
+                    <option key={p.id} value={p.name}>
+                      {p.name}
+                    </option>
+                  ))}
+                </IconSelect>
+                <IconSelect
+                  icon={FolderOpen}
+                  title={folderPath ? `Folder: ${folderPath}` : "All folders"}
+                  value={folderPath}
+                  active={folderPath !== ""}
+                  onChange={(v) => patchSearchSession({ folderPath: v })}
+                >
+                  <option value="">All folders</option>
+                  {folderContexts.map((f) => (
+                    <option key={f.folder_path} value={f.folder_path} title={f.description}>
+                      {f.folder_path.split("/").filter(Boolean).pop() ?? f.folder_path}
+                    </option>
+                  ))}
+                </IconSelect>
+                <IconToggle
+                  icon={FileText}
+                  title={useCaptions ? "Captions on" : "Captions off"}
+                  active={useCaptions}
+                  onClick={() => void persistSearchCaptions(!useCaptions)}
+                />
+                <IconToggle
+                  icon={Sparkles}
+                  title={rerank ? "Re-rank on" : "Re-rank off"}
+                  active={rerank}
+                  onClick={() => void persistSearchRerank(!rerank)}
+                />
+              </div>
+              <button
+                type="button"
+                title="Search by image"
+                onClick={() => uploadRef.current?.click()}
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+              >
+                <ImagePlus size={15} />
+              </button>
+              <input
+                ref={uploadRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={onUploadPicked}
+              />
+              <button
+                type="submit"
+                title="Search"
+                disabled={loading}
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-600 text-white shadow-sm transition-colors hover:bg-blue-500 disabled:opacity-60"
+              >
+                {loading ? <Spinner size={14} /> : <Search size={14} />}
+              </button>
             </div>
           </form>
           <DriveSessionBar compact />
-          <Link
-            href="/test/search#reverse-face"
-            className="hidden h-11 w-11 items-center justify-center rounded-full border border-border text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground md:inline-flex"
-            title="Reverse face"
-          >
-            <Upload size={16} />
-          </Link>
           <ThemeToggle />
           <div
             className="flex h-10 w-10 items-center justify-center rounded-full bg-muted text-xs font-semibold text-foreground"

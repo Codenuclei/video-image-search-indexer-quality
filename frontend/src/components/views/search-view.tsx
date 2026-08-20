@@ -116,8 +116,8 @@ export function SearchPage({
         </div>
       )}
 
+      {!hideSearchBar && (
       <div className="max-w-3xl space-y-2">
-        {!hideSearchBar && (
         <Input
           className="w-full"
           placeholder="Search (e.g. wine glass, smiling, party, people)..."
@@ -125,7 +125,6 @@ export function SearchPage({
           onChange={(e) => patchSearchSession({ q: e.target.value })}
           onKeyDown={(e) => e.key === "Enter" && search()}
         />
-        )}
         <div className="flex flex-wrap items-center gap-2">
           <label className="relative inline-flex items-center">
             <ImageIcon size={14} className="pointer-events-none absolute left-2.5 text-muted-foreground" />
@@ -197,11 +196,12 @@ export function SearchPage({
                 : "border-border bg-card text-muted-foreground"
             }`}
           >
-            <Sparkles size={13} />
-            Re-rank
+          <Sparkles size={13} />
+          Re-rank
           </button>
         </div>
       </div>
+      )}
 
       {folderPath && folderContexts.find(f => f.folder_path === folderPath)?.description && (
         <p className="text-xs text-muted-foreground">
