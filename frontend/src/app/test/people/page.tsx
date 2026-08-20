@@ -5,7 +5,6 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { PeoplePage } from "@/components/views/people-view";
 import { ReviewPage } from "@/components/views/review-view";
 import { ReverseFaceLabPage } from "@/components/views/reverse-face-view";
-import { TestIndexStatus } from "@/components/test-index-status";
 import { LoadingLabel } from "@/components/ui";
 import { cn } from "@/lib/utils";
 
@@ -56,15 +55,10 @@ function PeopleDirectory() {
         ))}
       </div>
 
-      <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_20rem]">
-        <div className="min-w-0 rounded-2xl border border-border bg-card p-4 shadow-sm md:p-6">
-          {tab === "indexed" && <PeoplePage embedded />}
-          {tab === "mu" && <ReverseFaceLabPage embedded />}
-          {tab === "unindexed" && <ReviewPage embedded />}
-        </div>
-        <div className="space-y-4 xl:sticky xl:top-24 xl:self-start">
-          <TestIndexStatus />
-        </div>
+      <div className="rounded-2xl border border-border bg-card p-4 shadow-sm md:p-6">
+        {tab === "indexed" && <PeoplePage embedded />}
+        {tab === "mu" && <ReverseFaceLabPage embedded />}
+        {tab === "unindexed" && <ReviewPage embedded />}
       </div>
     </div>
   );
