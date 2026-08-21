@@ -224,6 +224,18 @@ async def ensure_schema(engine: AsyncEngine) -> None:
         )
         await conn.execute(
             text(
+                "ALTER TABLE drive_files ADD COLUMN IF NOT EXISTS processing_started_at TIMESTAMPTZ"
+            )
+        )
+        await conn.execute(
+            text("ALTER TABLE drive_files ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ")
+        )
+        # Large camera videos exceed int32 (~2.1GB); widen size so folder sync can insert them.
+        await conn.execute(
+            text("ALTER TABLE drive_files ALTER COLUMN size TYPE BIGINT USING size::bigint")
+        )
+        await conn.execute(
+            text(
                 "CREATE INDEX IF NOT EXISTS ix_drive_files_content_hash "
                 "ON drive_files (content_hash)"
             )
@@ -418,3 +430,40 @@ async def recover_aborted_transaction_errors(
                 count,
             )
         return count
+
+
+# Seeded once at schema ensure — manage via DB / ops after that (not frontend env).
+_DEFAULT_APP_ADMINS = (
+    "amisha.sharma@mastersunion.org",
+    "dhananjay.jain@mastersunion.org",
+    "sudeep.purwar@mastersunion.org",
+    "abhishek.ghosh1@mastersunion.org",
+)
+
+
+async def ensure_app_admins_seed(engine: AsyncEngine) -> None:
+    """Create app_admins rows for the initial operator set (idempotent)."""
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS app_admins (
+                    email VARCHAR(320) PRIMARY KEY,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    created_by VARCHAR(320)
+                )
+                """
+            )
+        )
+        for email in _DEFAULT_APP_ADMINS:
+            await conn.execute(
+                text(
+                    """
+                    INSERT INTO app_admins (email, created_by)
+                    VALUES (:email, 'schema_seed')
+                    ON CONFLICT (email) DO NOTHING
+                    """
+                ),
+                {"email": email.strip().lower()},
+            )
+    logger.info("app_admins seed ensured (%d emails)", len(_DEFAULT_APP_ADMINS))

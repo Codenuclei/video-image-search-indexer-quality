@@ -23,6 +23,7 @@ import { toast } from "sonner";
 import { getCachedIndexStatus, pollIndexStatus, useIndexStatusStore } from "@/lib/index-status-store";
 import { useCachedResource } from "@/lib/use-cached-resource";
 import { cacheStatusRevision, indexStatusRevision } from "@/lib/fingerprints";
+import { useAuthSession } from "@/components/auth-gate";
 
 declare global {
   interface Window {
@@ -64,6 +65,7 @@ export function FoldersPage({
   embedded?: boolean;
   indexedLayout?: "list" | "cards";
 } = {}) {
+  const { isAdmin } = useAuthSession();
   const { status: sharedStatus } = useIndexStatusStore();
   const [status, setStatus] = useState<IndexStatus | null>(null);
   const [folderContexts, setFolderContexts] = useState<FolderContext[]>([]);
@@ -357,12 +359,14 @@ export function FoldersPage({
           <h2 className="text-2xl font-semibold">Folders</h2>
           <p className="text-sm text-muted-foreground">Drive files tracked from your connected folder</p>
         </div>
-        <Link
-          href="/admin"
-          className="text-sm font-medium text-blue-600 underline-offset-2 hover:underline dark:text-blue-400"
-        >
-          Indexing controls → Admin
-        </Link>
+        {isAdmin ? (
+          <Link
+            href="/admin"
+            className="text-sm font-medium text-blue-600 underline-offset-2 hover:underline dark:text-blue-400"
+          >
+            Indexing controls → Admin
+          </Link>
+        ) : null}
       </div>
       )}
 

@@ -158,6 +158,21 @@ export type SkipStats = {
   by_reason: { reason: string; count: number }[];
 };
 
+export type IndexTatKindStats = {
+  count: number;
+  min_ms: number;
+  max_ms: number;
+  avg_ms: number;
+};
+
+export type IndexTatStats = {
+  image: IndexTatKindStats;
+  video: IndexTatKindStats;
+  sample_window: string;
+  metric?: string;
+  done_means?: string;
+};
+
 export type CacheCleanupResult = {
   ok: boolean;
   dry_run: boolean;
@@ -1294,6 +1309,11 @@ export const apiClient = {
   indexStatus: () => api<IndexStatus>("/index", { silent: true }),
   goIndexerStatus: () => api<GoIndexerStatus>("/index/go/status", { silent: true }),
   skipStats: () => api<SkipStats>("/index/skip-stats", { silent: true }),
+  indexTatStats: () => api<IndexTatStats>("/index/tat-stats", { silent: true }),
+  resetIndexTatStats: () =>
+    api<{ cleared: number; stats: IndexTatStats }>("/index/tat-stats/reset", {
+      method: "POST",
+    }),
   indexedFolders: () =>
     api<{ folders: IndexedFolder[]; total: number }>("/index/folders"),
   indexConflicts: (status: string | null = "pending", limit = 50, offset = 0) => {

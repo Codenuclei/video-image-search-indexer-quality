@@ -1,6 +1,13 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useState,
+  type ReactNode,
+} from "react";
 import Script from "next/script";
 import { LoadingLabel } from "@/components/spinner";
 import { clearAllDataCache } from "@/lib/data-cache";
@@ -11,14 +18,30 @@ const LEGACY_STORAGE_KEY = "dfi_auth_email";
 /** Keep sign-in across browser restarts (90 days). */
 const AUTH_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
 
+const CLIENT_ID = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID ?? "";
+
 type AuthRecord = { email: string; at: number };
+
+type AuthContextValue = {
+  email: string | null;
+  isAdmin: boolean;
+  refreshAdmin: () => Promise<void>;
+};
+
+const AuthSessionContext = createContext<AuthContextValue>({
+  email: null,
+  isAdmin: false,
+  refreshAdmin: async () => {},
+});
+
+let cachedEmail: string | null = null;
+let cachedIsAdmin = false;
 
 function readStoredAuth(): string | null {
   if (typeof window === "undefined") return null;
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) {
-      // Migrate one-time from old sessionStorage key
       const legacy = sessionStorage.getItem(LEGACY_STORAGE_KEY);
       if (legacy) {
         writeStoredAuth(legacy);
@@ -49,8 +72,6 @@ function clearStoredAuth() {
   sessionStorage.removeItem(LEGACY_STORAGE_KEY);
 }
 
-const CLIENT_ID = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID ?? "";
-
 function parseJwt(token: string): Record<string, string> | null {
   try {
     const base64 = token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
@@ -61,26 +82,93 @@ function parseJwt(token: string): Record<string, string> | null {
 }
 
 export function getAuthEmail(): string | null {
-  return readStoredAuth();
+  return cachedEmail ?? readStoredAuth();
 }
 
-export function signOut() {
+export function getIsAdmin(): boolean {
+  return cachedIsAdmin;
+}
+
+export function useAuthSession(): AuthContextValue {
+  return useContext(AuthSessionContext);
+}
+
+/** Best-effort: set httpOnly cookie used only by /admin middleware. */
+async function syncAdminCookie(credential: string): Promise<boolean> {
+  try {
+    const res = await fetch("/api/auth/session", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ credential }),
+    });
+    if (!res.ok) return false;
+    const data = (await res.json()) as { isAdmin?: boolean };
+    return Boolean(data.isAdmin);
+  } catch {
+    return false;
+  }
+}
+
+async function fetchAdminFlag(): Promise<boolean> {
+  try {
+    const res = await fetch("/api/auth/session", {
+      method: "GET",
+      credentials: "same-origin",
+      cache: "no-store",
+    });
+    if (!res.ok) return false;
+    const data = (await res.json()) as { isAdmin?: boolean };
+    return Boolean(data.isAdmin);
+  } catch {
+    return false;
+  }
+}
+
+export async function signOut() {
+  try {
+    await fetch("/api/auth/session", { method: "DELETE", credentials: "same-origin" });
+  } catch {
+    /* ignore — app logout still clears localStorage */
+  }
   clearStoredAuth();
   clearAllDataCache();
+  cachedEmail = null;
+  cachedIsAdmin = false;
   window.location.reload();
 }
 
-export function AuthGate({ children }: { children: React.ReactNode }) {
+export function AuthGate({ children }: { children: ReactNode }) {
   const [email, setEmail] = useState<string | null>(null);
+  const [isAdmin, setIsAdmin] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [gsiReady, setGsiReady] = useState(false);
   const [mounted, setMounted] = useState(false);
 
+  const applyEmail = useCallback((next: string | null, admin = false) => {
+    cachedEmail = next;
+    cachedIsAdmin = admin;
+    setEmail(next);
+    setIsAdmin(admin);
+  }, []);
+
+  const refreshAdmin = useCallback(async () => {
+    const admin = await fetchAdminFlag();
+    cachedIsAdmin = admin;
+    setIsAdmin(admin);
+  }, []);
+
   useEffect(() => {
     setMounted(true);
     const stored = readStoredAuth();
-    if (stored) setEmail(stored);
-  }, []);
+    if (stored) {
+      applyEmail(stored, false);
+      void fetchAdminFlag().then((admin) => {
+        cachedIsAdmin = admin;
+        setIsAdmin(admin);
+      });
+    }
+  }, [applyEmail]);
 
   useEffect(() => {
     if (!gsiReady || !mounted || email) return;
@@ -99,9 +187,14 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
           setError(`Access is restricted to @${ALLOWED_DOMAIN} accounts only.`);
           return;
         }
+        // Existing app gate: localStorage. Cookie is only for /admin middleware.
         writeStoredAuth(userEmail);
-        setEmail(userEmail);
+        applyEmail(userEmail, false);
         setError(null);
+        void syncAdminCookie(response.credential).then((admin) => {
+          cachedIsAdmin = admin;
+          setIsAdmin(admin);
+        });
       },
       hd: ALLOWED_DOMAIN,
     });
@@ -117,9 +210,14 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
       });
     }
     (window as any).google.accounts.id.prompt();
-  }, [gsiReady, mounted, email]);
+  }, [gsiReady, mounted, email, applyEmail]);
 
-  // Still hydrating
+  const ctx: AuthContextValue = {
+    email,
+    isAdmin,
+    refreshAdmin,
+  };
+
   if (!mounted) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-background">
@@ -130,10 +228,10 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
     );
   }
 
-  // Authenticated — render the full app
-  if (email) return <>{children}</>;
+  if (email) {
+    return <AuthSessionContext.Provider value={ctx}>{children}</AuthSessionContext.Provider>;
+  }
 
-  // Sign-in wall
   return (
     <div className="flex min-h-screen items-center justify-center bg-background px-4">
       <Script
@@ -143,7 +241,6 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
       />
 
       <div className="flex w-full max-w-sm flex-col items-center gap-6 rounded-2xl border border-border bg-card p-6 shadow-md text-center sm:p-10">
-        {/* Brand */}
         <div className="flex flex-col items-center gap-3">
           <div className="inline-flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-amber-400 to-orange-500 shadow">
             <span className="text-xl font-bold text-white">DFI</span>
@@ -156,14 +253,12 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
           </div>
         </div>
 
-        {/* Error */}
         {error && (
           <div className="w-full rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
             {error}
           </div>
         )}
 
-        {/* GSI button rendered here */}
         {!gsiReady && (
           <p className="text-sm text-muted-foreground">
             <LoadingLabel size={14}>Loading sign-in…</LoadingLabel>
