@@ -17,7 +17,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { getAuthEmail, signOut } from "@/components/auth-gate";
-import { apiClient } from "@/lib/api";
+import { apiClient, type DriveSession } from "@/lib/api";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { DriveSessionBar } from "@/components/drive-session-bar";
 import { Spinner } from "@/components/ui";
@@ -116,17 +116,26 @@ export function TestShell({ children }: { children: React.ReactNode }) {
     folderContexts,
     loading,
   } = useSearchSession();
-  const [email, setEmail] = useState<string | null>(null);
+  const [authEmail, setAuthEmail] = useState<string | null>(null);
+  const [driveSession, setDriveSession] = useState<DriveSession | null>(null);
   const [headerQuery, setHeaderQuery] = useState("");
   const [accountOpen, setAccountOpen] = useState(false);
   const [confirmAction, setConfirmAction] = useState<"signout" | "drive" | null>(null);
   const uploadRef = useRef<HTMLInputElement>(null);
   const accountRef = useRef<HTMLDivElement>(null);
 
+  /** Profile shows Drive account email, not the app login email. */
+  const driveEmail = driveSession?.email?.trim() || null;
+  const profileEmail = driveEmail ?? authEmail;
+
   useEffect(() => {
-    setEmail(getAuthEmail());
+    setAuthEmail(getAuthEmail());
     hydrateSearchCatalogs();
     hydrateSearchSettings();
+    void apiClient
+      .driveSession()
+      .then((s) => setDriveSession(s))
+      .catch(() => setDriveSession(null));
   }, []);
 
   useEffect(() => {
@@ -333,15 +342,25 @@ export function TestShell({ children }: { children: React.ReactNode }) {
               type="button"
               onClick={() => setAccountOpen((v) => !v)}
               className="flex h-10 w-10 items-center justify-center rounded-full bg-muted text-xs font-semibold text-foreground transition-colors hover:bg-accent"
-              title={email ?? "Account"}
+              title={profileEmail ?? "Account"}
             >
-              {(email ?? "U").slice(0, 1).toUpperCase()}
+              {(profileEmail ?? "U").slice(0, 1).toUpperCase()}
             </button>
             {accountOpen && (
-              <div className="absolute right-0 top-12 z-30 w-60 overflow-hidden rounded-xl border border-border bg-card shadow-lg">
-                <p className="truncate border-b border-border px-4 py-3 text-xs text-muted-foreground">
-                  {email ?? "Signed in"}
-                </p>
+              <div className="absolute right-0 top-12 z-30 w-64 overflow-hidden rounded-xl border border-border bg-card shadow-lg">
+                <div className="border-b border-border px-4 py-3">
+                  <p className="truncate text-xs font-medium text-foreground" title={driveEmail ?? undefined}>
+                    {driveEmail ?? "Drive not connected"}
+                  </p>
+                  {driveSession?.selected_folder?.name && (
+                    <p
+                      className="mt-0.5 truncate text-[10px] text-muted-foreground"
+                      title={driveSession.selected_folder.name}
+                    >
+                      {driveSession.selected_folder.name}
+                    </p>
+                  )}
+                </div>
                 <button
                   type="button"
                   onClick={() => {
