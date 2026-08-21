@@ -650,12 +650,16 @@ async def delete_drive_file(file_id: str, session: AsyncSession = Depends(get_db
 @router.get("/files/{file_id}/thumbnail")
 async def thumbnail_drive_file(
     file_id: str,
+    request: Request,
     session: AsyncSession = Depends(get_db),
 ) -> Response:
-    """Serve a compressed JPEG thumb from disk. Never contacts Drive."""
+    """Serve a grid thumb when already on disk; otherwise stream from Drive.
+
+    Browser never talks to Google — server OAuth only (auth-free for the user).
+    Does not write media_cache or new thumb files for on-demand display.
+    """
     from app.config import get_settings
-    from app.drive.image_thumbs import image_thumb_path, write_image_thumbnail
-    from app.drive.media_cache import resolve_cache_path
+    from app.drive.image_thumbs import image_thumb_path
     from app.pipelines.common import is_image_mime, is_video_mime
 
     drive_file = await session.get(DriveFile, file_id)
@@ -668,31 +672,19 @@ async def thumbnail_drive_file(
 
     settings = get_settings()
     dest = image_thumb_path(settings, drive_file.id)
-    if not dest.is_file() or dest.stat().st_size <= 0:
-        cached = resolve_cache_path(settings, drive_file)
-        if cached is None:
-            raise HTTPException(status_code=404, detail="Thumbnail not ready")
-        try:
-            dest = await asyncio.to_thread(
-                write_image_thumbnail,
-                cached,
-                drive_file.id,
-                settings,
-                drive_file.name,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("thumbnail generate failed for %s: %s", file_id, exc)
-            raise HTTPException(status_code=404, detail="Thumbnail not ready") from exc
+    if dest.is_file() and dest.stat().st_size > 0:
+        return FileResponse(
+            dest,
+            media_type="image/jpeg",
+            filename=f"{drive_file.id}.jpg",
+            headers={
+                "Cache-Control": "public, max-age=604800",
+                "Content-Disposition": f'inline; filename="{drive_file.id}.jpg"',
+            },
+        )
 
-    return FileResponse(
-        dest,
-        media_type="image/jpeg",
-        filename=f"{drive_file.id}.jpg",
-        headers={
-            "Cache-Control": "public, max-age=604800",
-            "Content-Disposition": f'inline; filename="{drive_file.id}.jpg"',
-        },
-    )
+    # No durable thumb (e.g. media_cache reclaimed) — stream live, do not store.
+    return await _stream_drive_file(file_id, drive_file, request, settings)
 
 
 @router.get("/files/{file_id}/preview")
@@ -722,9 +714,8 @@ async def preview_drive_file(
             headers={"Accept-Ranges": "bytes", "Content-Disposition": f'inline; filename="{drive_file.name}"'},
         )
 
-    # Images are served from the durable indexed-media cache when available.
-    # This avoids browser requests to drive.google.com, whose thumbnail endpoint
-    # applies the viewer's Google account and returns 403 for other accounts.
+    # Prefer existing local bytes when present (index scratch / video cache).
+    # Never download+persist here for display — miss falls through to live stream.
     if not is_video_mime(drive_file.mime_type):
         from app.drive.media_cache import resolve_cache_path
 
@@ -748,6 +739,16 @@ async def preview_drive_file(
             )
         raise HTTPException(status_code=404, detail="YouTube local file not on volume yet")
 
+    return await _stream_drive_file(file_id, drive_file, request, settings)
+
+
+async def _stream_drive_file(
+    file_id: str,
+    drive_file: DriveFile,
+    request: Request,
+    settings,
+) -> StreamingResponse:
+    """Proxy Drive bytes with server OAuth. Nothing written to disk."""
     from app.db.session import get_session_factory
 
     client = DriveDirectClient(session_factory=get_session_factory(), settings=settings)
@@ -765,6 +766,8 @@ async def preview_drive_file(
     headers = {
         "Accept-Ranges": upstream.headers.get("accept-ranges", "bytes"),
         "Content-Disposition": f'inline; filename="{drive_file.name}"',
+        # Browser may cache the response; we never persist a server copy for display.
+        "Cache-Control": "private, max-age=300",
     }
     for name in ("content-range", "content-length", "etag", "last-modified"):
         value = upstream.headers.get(name)

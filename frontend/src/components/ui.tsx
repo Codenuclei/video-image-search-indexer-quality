@@ -4,7 +4,7 @@ import { useState } from "react";
 import type { LucideIcon } from "lucide-react";
 import { Download, ExternalLink } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { API_BASE, driveFilePreviewUrl, driveFileThumbnailUrl, driveGoogleViewUrl, formatApiError, isServiceUnavailableMessage } from "@/lib/api";
+import { API_BASE, driveFilePreviewUrl, driveGoogleViewUrl, formatApiError, isServiceUnavailableMessage } from "@/lib/api";
 import { downloadFromUrl } from "@/lib/download";
 import { BackendDisconnectedOverlay } from "@/components/backend-disconnected-overlay";
 import { LoadingLabel, Spinner } from "@/components/spinner";
@@ -386,8 +386,9 @@ export function FilePreview({
   className?: string;
   onClick?: () => void;
 }) {
+  // Stream via backend preview (server Drive OAuth). Browser never hits Google —
+  // avoids cross-account 403. Do not depend on media_cache / durable thumbs.
   const previewUrl = driveFilePreviewUrl(driveFileId, mimeType);
-  const thumbUrl = driveFileThumbnailUrl(driveFileId);
   const driveViewUrl = driveGoogleViewUrl(driveFileId);
   const isImage = mimeType.startsWith("image/");
   const isPdf = mimeType === "application/pdf";
@@ -411,14 +412,14 @@ export function FilePreview({
               onClick && "cursor-pointer hover:bg-black/10"
             )}
           >
-            <span>Thumbnail unavailable</span>
-            {onClick ? <span>Click to load full image</span> : null}
+            <span>Image unavailable</span>
+            {onClick ? <span>Click to retry</span> : null}
           </button>
         ) : (
           <>
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
-              src={thumbUrl}
+              src={previewUrl}
               alt={name}
               loading="lazy"
               decoding="async"
