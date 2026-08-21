@@ -5,7 +5,7 @@ import json
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -150,6 +150,22 @@ async def purge_file_search(
     )
     await session.commit()
     return {"ok": True, **result}
+
+
+@router.get("/admin/cache-cleanup")
+async def cache_cleanup_dry_run() -> dict[str, object]:
+    """Dry-run: count Drive media_cache/videos files safe to delete (PROCESSED + Media)."""
+    from app.drive.cache_cleanup import run_cache_cleanup
+
+    return await run_cache_cleanup(apply=False)
+
+
+@router.post("/admin/cache-cleanup")
+async def cache_cleanup_apply(apply: bool = Query(False)) -> dict[str, object]:
+    """Apply safe Drive cache cleanup. Pass apply=true; default is dry-run."""
+    from app.drive.cache_cleanup import run_cache_cleanup
+
+    return await run_cache_cleanup(apply=apply)
 
 
 @router.post("/backfill/image-embeddings")

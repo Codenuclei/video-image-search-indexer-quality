@@ -104,12 +104,18 @@ async def ensure_media_cached(
     client: "DriveConnectorClient",
     drive_file: "DriveFile",
     settings: Settings | None = None,
+    *,
+    allow_redownload: bool = False,
 ) -> Path:
     """
     Ensure Drive media bytes exist at a stable cache path.
 
     Pattern matches video caching: stream → temp → shutil.move (atomic on same FS).
     Never leaves a truncated final path: writes to ``*.partial`` then renames.
+
+    By default never re-downloads PROCESSED files (scratch cache may have been
+    reclaimed after Media/Qdrant were written). Pass ``allow_redownload=True`` for
+    explicit caption/embed backfill repair only.
     """
     settings = settings or get_settings()
     existing = resolve_cache_path(settings, drive_file)
@@ -129,6 +135,14 @@ async def ensure_media_cached(
     if existing is not None:
         drive_file.cache_rel_path = cache_rel_path_for(settings, existing)
         return existing
+
+    status = getattr(drive_file, "status", None)
+    status_val = status.value if hasattr(status, "value") else str(status or "")
+    if status_val == "processed" and not allow_redownload:
+        raise FileNotFoundError(
+            f"media_cache reclaimed for PROCESSED file {getattr(drive_file, 'id', '')}; "
+            "refusing Drive re-download (use allow_redownload for backfill repair)"
+        )
 
     dest = media_cache_path(settings, drive_file)
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -194,10 +208,11 @@ def unlink_drive_source_cache(
     *,
     clear_rel_path: bool = True,
 ) -> bool:
-    """Remove Drive download leftovers after Media exists or on ERROR.
+    """Remove Drive download leftovers after indexing no longer needs local bytes.
 
     Never deletes upload/YouTube source bytes (irreplaceable). Clears
-    ``cache_rel_path`` when a file was removed so the next index re-downloads.
+    ``cache_rel_path`` when a file was removed. PROCESSED files must not be
+    re-downloaded afterward — see ``ensure_media_cached``.
     """
     settings = settings or get_settings()
     if not _is_drive_sourced(drive_file):
@@ -209,6 +224,14 @@ def unlink_drive_source_cache(
     resolved = resolve_cache_path(settings, drive_file)
     if resolved is not None:
         candidates.append(resolved)
+
+    # Also try canonical media_cache path even if cache_rel_path is stale/missing.
+    try:
+        primary = media_cache_path(settings, drive_file)
+        if primary.is_file() and primary.stat().st_size > 0:
+            candidates.append(primary)
+    except Exception:  # noqa: BLE001
+        pass
 
     # Video pipeline stores under video_cache_dir (often only the basename in cache_rel_path).
     try:
@@ -255,6 +278,28 @@ def unlink_drive_source_cache(
     if clear_rel_path and removed:
         drive_file.cache_rel_path = None
     return removed
+
+
+async def unlink_drive_cache_now(
+    file_id: str,
+    settings: Settings | None = None,
+) -> bool:
+    """Load one DriveFile and unlink its scratch cache immediately (commit rel_path clear)."""
+    from app.db.models import DriveFile
+    from app.db.session import get_session_factory
+
+    settings = settings or get_settings()
+    if not file_id:
+        return False
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        row = await session.get(DriveFile, file_id)
+        if row is None:
+            return False
+        removed = unlink_drive_source_cache(row, settings)
+        if removed:
+            await session.commit()
+        return removed
 
 
 async def unlink_drive_caches_for_ids(

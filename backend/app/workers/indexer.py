@@ -731,6 +731,19 @@ class IndexingWorker:
                 return True
             if drive_file.status != DriveFileStatus.PENDING:
                 return False
+            if drive_file.content_hash and drive_file.content_hash_algo:
+                from app.drive.conflicts import apply_dedupe_on_upsert
+
+                skip_key = await apply_dedupe_on_upsert(
+                    session,
+                    drive_file,
+                    algo=drive_file.content_hash_algo,
+                    digest=drive_file.content_hash,
+                )
+                if skip_key:
+                    _log_skip(drive_file, skip_key)
+                    await session.commit()
+                    return True
             n = await bulk_claim_files(session, [fid])
             await session.commit()
             if not n:
@@ -847,6 +860,7 @@ class IndexingWorker:
                 ).scalars().all()
             )
 
+            dirty = False
             for drive_file in pending:
                 if len(claimed_ids) >= slots:
                     break
@@ -854,20 +868,49 @@ class IndexingWorker:
                     continue
                 if is_macos_junk_name(drive_file.name):
                     await session.delete(drive_file)
+                    dirty = True
                     continue
                 if is_file_indexing_paused(drive_file.path, paused_paths):
                     continue
                 if drive_file.id in occupied:
                     continue
+                # Skip known content/name conflicts without occupying a video slot.
+                if drive_file.content_hash and drive_file.content_hash_algo:
+                    from app.drive.conflicts import (
+                        apply_dedupe_on_upsert,
+                        find_older_pending_same_hash,
+                    )
+
+                    skip_key = await apply_dedupe_on_upsert(
+                        session,
+                        drive_file,
+                        algo=drive_file.content_hash_algo,
+                        digest=drive_file.content_hash,
+                    )
+                    if skip_key:
+                        _log_skip(drive_file, skip_key)
+                        dirty = True
+                        continue
+                    older = await find_older_pending_same_hash(
+                        session,
+                        algo=drive_file.content_hash_algo,
+                        digest=drive_file.content_hash,
+                        exclude_id=drive_file.id,
+                        created_at=drive_file.created_at,
+                    )
+                    if older is not None:
+                        continue
                 claimed_ids.append(drive_file.id)
                 occupied.add(drive_file.id)
 
             if claimed_ids:
                 claimed_ids = await bulk_claim_file_ids(session, claimed_ids)
                 n = len(claimed_ids)
+                dirty = True
                 logger.info("bulk_claim_videos count=%d rowcount=%d", len(claimed_ids), n)
-            # Commit junk skips + bulk claim in one transaction.
-            await session.commit()
+            # Commit junk/dedupe skips + bulk claim in one transaction.
+            if dirty or claimed_ids:
+                await session.commit()
 
         for file_id in claimed_ids:
             self._start_video_task(file_id)
@@ -962,6 +1005,20 @@ class IndexingWorker:
                     listing=listing,
                     gemini=gemini,
                 )
+                from app.drive.conflicts import is_duplicate_content_complete
+
+                # Twin already indexed — keep PROCESSED + twin pointer; no download/carousel.
+                if result is None or is_duplicate_content_complete(drive_file):
+                    drive_file.status = DriveFileStatus.PROCESSED
+                    drive_file.last_synced_at = datetime.now(timezone.utc)
+                    await session.commit()
+                    logger.info(
+                        "Video index skipped duplicate_content: %s (%s)",
+                        file_name,
+                        file_id,
+                    )
+                    return
+
                 drive_file.status = DriveFileStatus.PROCESSED
                 drive_file.error_message = None
                 drive_file.gemini_document_name = result.gemini_document_name
@@ -1515,6 +1572,19 @@ class IndexingWorker:
         return self._running
 
     async def sync_file_list(self, *, cache_source: str = "manual") -> int:
+        async with self._session_factory() as migrate_session:
+            try:
+                from app.drive.path_prefix_migrate import migrate_active_root_path_prefix
+
+                result = await migrate_active_root_path_prefix(migrate_session)
+                if result.get("rewritten_files"):
+                    await migrate_session.commit()
+                else:
+                    await migrate_session.rollback()
+            except Exception:  # noqa: BLE001
+                logger.exception("path_prefix_migrate_failed")
+                await migrate_session.rollback()
+
         listing = await self._client.list_folder_files()
         try:
             from app.drive.file_list_cache import get_file_list_cache
@@ -1645,8 +1715,10 @@ class IndexingWorker:
 
     async def _upsert_folder_placeholder(self, session: AsyncSession, entry: ConnectorFile) -> None:
         """Persist Drive folders (and folder-shortcut markers) so Library shows empty dirs."""
+        from app.drive.indexing_pause import normalize_folder_path
+
         existing = await session.get(DriveFile, entry.id)
-        folder_path = entry.path if entry.path.startswith("/") else f"/{entry.path}" if entry.path else "/"
+        folder_path = normalize_folder_path(entry.path or "/")
         # Store as a folder marker: path is the folder itself (no trailing file name).
         if existing is None:
             session.add(
@@ -1679,13 +1751,14 @@ class IndexingWorker:
         paused_paths: list[str] | None = None,
         root_folder_id: str | None = None,
     ) -> bool:
-        from app.drive.indexing_pause import INDEXING_PAUSED_PREFIX
+        from app.drive.indexing_pause import INDEXING_PAUSED_PREFIX, normalize_file_path
         from app.drive.content_hash import hash_from_connector_entry
         from app.drive.conflicts import apply_dedupe_on_upsert
 
         existing = await session.get(DriveFile, entry.id)
         inferred_mime = infer_image_mime(entry.mime_type, entry.name)
-        paused = is_file_indexing_paused(entry.path, paused_paths or [])
+        entry_path = normalize_file_path(entry.path or "/")
+        paused = is_file_indexing_paused(entry_path, paused_paths or [])
         hash_info = hash_from_connector_entry(entry)
         algo = hash_info[0] if hash_info else None
         digest = hash_info[1] if hash_info else None
@@ -1707,7 +1780,7 @@ class IndexingWorker:
                 id=entry.id,
                 name=entry.name,
                 mime_type=inferred_mime or entry.mime_type,
-                path=entry.path,
+                path=entry_path,
                 modified_time=entry.modified_time,
                 size=entry.size_bytes,
                 status=status,
@@ -1735,7 +1808,7 @@ class IndexingWorker:
         newly_hashed = bool(digest and not prev_hash)
         existing.name = entry.name
         existing.mime_type = infer_image_mime(entry.mime_type, entry.name) or entry.mime_type
-        existing.path = entry.path
+        existing.path = entry_path
         existing.modified_time = entry.modified_time
         existing.size = entry.size_bytes
         if root_folder_id:

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   apiClient,
+  type CacheCleanupResult,
   type ControlReaderStatus,
   type IndexStatus,
   type SkipStats,
@@ -13,6 +14,13 @@ import { isAdminEmail } from "@/lib/admin";
 import { useIndexStatusStore } from "@/lib/index-status-store";
 import { formatCount, skipReasonMeta } from "@/lib/index-errors";
 import { Button, Card, ConfirmDialog, LoadingLabel, StatCard } from "@/components/ui";
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
 
 export default function AdminPage() {
   const router = useRouter();
@@ -31,6 +39,10 @@ export default function AdminPage() {
     count: number;
     label: string;
   } | null>(null);
+  const [cachePreview, setCachePreview] = useState<CacheCleanupResult | null>(null);
+  const [cacheBusy, setCacheBusy] = useState(false);
+  const [confirmCacheClean, setConfirmCacheClean] = useState(false);
+  const [cacheResult, setCacheResult] = useState<CacheCleanupResult | null>(null);
 
   useEffect(() => {
     if (!allowed) router.replace("/");
@@ -128,6 +140,32 @@ export default function AdminPage() {
       /* toasted */
     } finally {
       setControlBusy(null);
+    }
+  }
+
+  async function previewCacheCleanup() {
+    setCacheBusy(true);
+    setCacheResult(null);
+    try {
+      setCachePreview(await apiClient.cacheCleanupDryRun());
+    } catch {
+      setCachePreview(null);
+    } finally {
+      setCacheBusy(false);
+    }
+  }
+
+  async function applyCacheCleanup() {
+    setCacheBusy(true);
+    try {
+      const res = await apiClient.cacheCleanupApply();
+      setCacheResult(res);
+      setCachePreview(res);
+    } catch {
+      /* toasted */
+    } finally {
+      setCacheBusy(false);
+      setConfirmCacheClean(false);
     }
   }
 
@@ -235,6 +273,57 @@ export default function AdminPage() {
         </div>
       </Card>
 
+      <Card className="space-y-3">
+        <div>
+          <h3 className="font-medium">Clean Drive media cache</h3>
+          <p className="text-sm text-muted-foreground">
+            Deletes temporary Drive downloads under media_cache/videos only when the file is
+            PROCESSED and already has a durable Media row. Never deletes Postgres Media, Qdrant,
+            thumbnails, YouTube, or upload sources. Index/auto-index will not re-pull those files.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-3">
+          <Button variant="secondary" disabled={cacheBusy} onClick={() => void previewCacheCleanup()}>
+            {cacheBusy && !confirmCacheClean ? (
+              <LoadingLabel>Scanning…</LoadingLabel>
+            ) : (
+              "Dry-run scan"
+            )}
+          </Button>
+          <Button
+            variant="secondary"
+            disabled={cacheBusy || !cachePreview || cachePreview.deletable_count === 0}
+            onClick={() => setConfirmCacheClean(true)}
+          >
+            Clean safe cache…
+          </Button>
+        </div>
+        {cachePreview && (
+          <div className="rounded-lg border border-border bg-muted/30 px-3 py-2 text-sm">
+            <p>
+              Safe to delete:{" "}
+              <span className="font-medium tabular-nums">
+                {formatCount(cachePreview.deletable_count)}
+              </span>{" "}
+              files ·{" "}
+              <span className="font-medium tabular-nums">
+                {formatBytes(cachePreview.deletable_bytes)}
+              </span>
+            </p>
+            <p className="text-xs text-muted-foreground">
+              Scanned {formatCount(cachePreview.total_files)} cache files (
+              {formatBytes(cachePreview.total_bytes)}) across media_cache + videos.
+            </p>
+            {cacheResult && !cacheResult.dry_run && (
+              <p className="mt-1 text-xs text-emerald-700 dark:text-emerald-400">
+                Deleted {formatCount(cacheResult.deleted_count)} files ·{" "}
+                {formatBytes(cacheResult.deleted_bytes)}
+              </p>
+            )}
+          </div>
+        )}
+      </Card>
+
       <Card>
         <h3 className="mb-3 font-medium">Skip reasons</h3>
         {topSkipReasons.length === 0 ? (
@@ -295,6 +384,19 @@ export default function AdminPage() {
         confirmLabel={confirmControl === "pause" ? "Pause indexing" : "Resume indexing"}
         onConfirm={() => confirmControl && void runControl(confirmControl)}
         onCancel={() => setConfirmControl(null)}
+      />
+
+      <ConfirmDialog
+        open={confirmCacheClean}
+        title="Clean Drive media cache?"
+        message={
+          cachePreview
+            ? `Delete ${formatCount(cachePreview.deletable_count)} temporary cache file(s) (${formatBytes(cachePreview.deletable_bytes)}). Only PROCESSED Drive files that already have Media. Indexed library data is not changed.`
+            : ""
+        }
+        confirmLabel="Delete safe cache"
+        onConfirm={() => void applyCacheCleanup()}
+        onCancel={() => setConfirmCacheClean(false)}
       />
 
       <ConfirmDialog

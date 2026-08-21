@@ -288,11 +288,14 @@ async def process_video_file(
     listing: ConnectorFolderListing | None = None,
     gemini: GeminiFileSearchService | None = None,
     engine: FaceEngine | None = None,
-) -> VideoIndexResult:
+) -> VideoIndexResult | None:
     """
     Self-hosted video index: cache file, parse VTT, sample frames with ffmpeg,
     detect faces, optional Gemini VLM captions, embed frames + transcript text
     into local Qdrant (no Google File Search).
+
+    Returns ``None`` when a known content-hash twin already covers this file
+    (pre-download skip — same invariant as ``prepare_image_media``).
     """
     settings = settings or get_settings()
     gemini = gemini or get_gemini_service()
@@ -313,6 +316,28 @@ async def process_video_file(
         return VideoIndexResult(media=media, gemini_document_name=None)
 
     await clear_existing_media(session, drive_file.id)
+
+    # Mirror images: skip Drive/YouTube download when a PROCESSED/PROCESSING twin
+    # already owns this content hash (sync may have set hash before claim).
+    if drive_file.content_hash and drive_file.content_hash_algo:
+        from app.drive.conflicts import apply_dedupe_on_upsert
+
+        skip_key = await apply_dedupe_on_upsert(
+            session,
+            drive_file,
+            algo=drive_file.content_hash_algo,
+            digest=drive_file.content_hash,
+        )
+        if skip_key:
+            logger.info(
+                "index_skip reason=%s file_id=%s mime=%s size=%s name=%s (pre-download)",
+                skip_key,
+                drive_file.id,
+                drive_file.mime_type,
+                drive_file.size,
+                drive_file.name,
+            )
+            return None
 
     dest = _video_cache_path(settings, drive_file)
     suffix = Path(dest).suffix or ".mp4"

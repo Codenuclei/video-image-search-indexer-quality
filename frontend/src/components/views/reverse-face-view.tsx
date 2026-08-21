@@ -14,8 +14,6 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import {
-  apiClient,
-  formatApiError,
   driveFilePreviewUrl,
   type FaceSearchAppearance,
   type FaceSearchMatch,
@@ -28,6 +26,7 @@ import {
   hydrateLeadershipRoster,
   patchReverseFaceSession,
   runReverseFaceCrawl,
+  runReverseFaceNameTag,
   runReverseFaceSearch,
   selectReverseFaceLeader,
   setReverseFaceFile,
@@ -324,51 +323,10 @@ export function ReverseFaceLabPage({ embedded = false }: { embedded?: boolean } 
 
   async function runNameTag() {
     if (!selectedLeader || !result?.matches.length) return;
-
-    const clusterIds = Array.from(
-      new Set(
-        result.matches
-          .filter(
-            (m) =>
-              m.cluster_id != null &&
-              ((m.cluster_status ?? "").toLowerCase() === "unknown" || m.person_id == null)
-          )
-          .map((m) => m.cluster_id as number)
-      )
-    );
-    const faceIds = result.matches
-      .filter((m) => m.person_id == null && (m.cluster_id == null || !clusterIds.includes(m.cluster_id)))
-      .map((m) => m.face_id);
-
-    if (!clusterIds.length && !faceIds.length) {
-      patchReverseFaceSession({
-        tagMessage: "Nothing to tag — matches already have person links.",
-        confirmTagOpen: false,
-      });
-      return;
-    }
-
-    patchReverseFaceSession({ tagging: true, error: null, confirmTagOpen: false });
-    try {
-      const res = await apiClient.leadershipNameTag({
-        name: selectedLeader.name,
-        role: selectedLeader.role || null,
-        cluster_ids: clusterIds,
-        face_ids: faceIds,
-      });
-      const okCount = res.actions.filter((a) => a.ok).length;
-      patchReverseFaceSession({
-        tagMessage: `Tagged as “${res.person.name}” (person #${res.person.id}) · ${okCount} action(s) · ${res.person.occurrence_count} appearances`,
-      });
-      if (selectedLeader.image_url) {
-        const refreshed = await apiClient.searchFaceByUrl(selectedLeader.image_url, 20);
-        patchReverseFaceSession({ result: refreshed });
-      }
-    } catch (e) {
-      patchReverseFaceSession({ error: formatApiError(e, "Name-tag failed") });
-    } finally {
-      patchReverseFaceSession({ tagging: false });
-    }
+    await runReverseFaceNameTag({
+      name: selectedLeader.name,
+      role: selectedLeader.role || null,
+    });
   }
 
   async function runCrawl() {

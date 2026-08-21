@@ -1,18 +1,41 @@
 "use client";
 
-import { useRef } from "react";
+import { useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { ExternalLink, ImagePlus, Linkedin } from "lucide-react";
 import { driveGoogleViewUrl, type FaceSearchMatch } from "@/lib/api";
-import { FaceThumb, LoadingLabel, Spinner } from "@/components/ui";
+import { Button, ConfirmDialog, FaceThumb, Input, LoadingLabel, Spinner } from "@/components/ui";
 import {
+  collectUnknownNameTagIds,
+  isUnknownFaceMatch,
+  runReverseFaceNameTag,
   runReverseFaceSearch,
   setReverseFaceFile,
   useReverseFaceSession,
 } from "@/lib/reverse-face-session";
 
-function MatchCard({ match }: { match: FaceSearchMatch }) {
+function MatchCard({ match, tagging }: { match: FaceSearchMatch; tagging: boolean }) {
   const appearances = match.appears_in ?? [];
+  const unknown = isUnknownFaceMatch(match);
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function submitName() {
+    const name = draft.trim();
+    if (!name || busy || tagging) return;
+    setBusy(true);
+    try {
+      const clusterIds =
+        match.cluster_id != null && unknown ? [match.cluster_id] : [];
+      const faceIds =
+        clusterIds.length === 0 && match.person_id == null ? [match.face_id] : [];
+      const ok = await runReverseFaceNameTag({ name, clusterIds, faceIds });
+      if (ok) setDraft("");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="rounded-xl border border-border/60 bg-muted/20 p-3">
       <div className="flex items-center gap-3">
@@ -22,7 +45,9 @@ function MatchCard({ match }: { match: FaceSearchMatch }) {
           <p className="text-[11px] text-muted-foreground">
             {Math.round(match.score * 100)}% match
             {match.cluster_id != null ? ` · cluster #${match.cluster_id}` : ""}
-            {appearances.length > 0 ? ` · ${appearances.length} file${appearances.length === 1 ? "" : "s"}` : ""}
+            {appearances.length > 0
+              ? ` · ${appearances.length} file${appearances.length === 1 ? "" : "s"}`
+              : ""}
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-1">
@@ -48,6 +73,28 @@ function MatchCard({ match }: { match: FaceSearchMatch }) {
           )}
         </div>
       </div>
+      {unknown && (
+        <div className="mt-2 flex items-center gap-2">
+          <Input
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            placeholder="Name this person"
+            className="h-8 text-xs"
+            disabled={busy || tagging}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void submitName();
+            }}
+          />
+          <Button
+            type="button"
+            className="h-8 shrink-0 px-3 text-xs"
+            disabled={!draft.trim() || busy || tagging}
+            onClick={() => void submitName()}
+          >
+            {busy ? <Spinner size={12} /> : "Name"}
+          </Button>
+        </div>
+      )}
       {appearances.length > 0 && (
         <div className="mt-2 flex flex-wrap gap-1">
           {appearances.slice(0, 6).map((a) => (
@@ -74,8 +121,16 @@ function MatchCard({ match }: { match: FaceSearchMatch }) {
 }
 
 export function ImageSearchPanel() {
-  const { previewUrl, searching, result, error } = useReverseFaceSession();
+  const { previewUrl, searching, result, error, tagging, tagMessage } = useReverseFaceSession();
   const uploadRef = useRef<HTMLInputElement>(null);
+  const [bulkName, setBulkName] = useState("");
+  const [confirmBulkOpen, setConfirmBulkOpen] = useState(false);
+
+  const unknownIds = useMemo(
+    () => collectUnknownNameTagIds(result?.matches ?? []),
+    [result?.matches]
+  );
+  const unknownCount = unknownIds.clusterIds.length + unknownIds.faceIds.length;
 
   function onPick(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -83,6 +138,18 @@ export function ImageSearchPanel() {
     if (!file) return;
     setReverseFaceFile(file);
     void runReverseFaceSearch(file);
+  }
+
+  async function applyBulkName() {
+    const name = bulkName.trim();
+    if (!name || unknownCount === 0) return;
+    setConfirmBulkOpen(false);
+    const ok = await runReverseFaceNameTag({
+      name,
+      clusterIds: unknownIds.clusterIds,
+      faceIds: unknownIds.faceIds,
+    });
+    if (ok) setBulkName("");
   }
 
   return (
@@ -115,22 +182,60 @@ export function ImageSearchPanel() {
               {result.matches.length > 0
                 ? ` · ${result.matches.length} match${result.matches.length === 1 ? "" : "es"}`
                 : " · no matches"}
+              {unknownCount > 0
+                ? ` · ${unknownCount} unknown to name`
+                : result.matches.length > 0
+                  ? " · all named"
+                  : ""}
             </p>
           ) : (
             <p>Upload a photo to find matching people across your library.</p>
           )}
           {error && <p className="mt-1 text-red-600 dark:text-red-400">{error}</p>}
+          {tagMessage && <p className="mt-1 text-emerald-700 dark:text-emerald-400">{tagMessage}</p>}
         </div>
-        {searching && <Spinner size={16} />}
+        {(searching || tagging) && <Spinner size={16} />}
       </div>
+
+      {unknownCount > 0 && (
+        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border/60 bg-muted/20 p-3">
+          <Input
+            value={bulkName}
+            onChange={(e) => setBulkName(e.target.value)}
+            placeholder={`Name all ${unknownCount} unknown${unknownCount === 1 ? "" : "s"}`}
+            className="h-8 min-w-[12rem] flex-1 text-xs"
+            disabled={tagging}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && bulkName.trim()) setConfirmBulkOpen(true);
+            }}
+          />
+          <Button
+            type="button"
+            className="h-8 px-3 text-xs"
+            disabled={!bulkName.trim() || tagging}
+            onClick={() => setConfirmBulkOpen(true)}
+          >
+            Name all unknowns ({unknownCount})
+          </Button>
+        </div>
+      )}
 
       {result && result.matches.length > 0 && (
         <div className="grid gap-2 sm:grid-cols-2">
           {result.matches.map((m) => (
-            <MatchCard key={m.face_id} match={m} />
+            <MatchCard key={m.face_id} match={m} tagging={tagging} />
           ))}
         </div>
       )}
+
+      <ConfirmDialog
+        open={confirmBulkOpen}
+        title="Name all unknowns"
+        message={`Apply “${bulkName.trim()}” to ${unknownCount} unknown match${unknownCount === 1 ? "" : "es"}?`}
+        confirmLabel={`Name ${unknownCount}`}
+        onConfirm={() => void applyBulkName()}
+        onCancel={() => setConfirmBulkOpen(false)}
+      />
     </div>
   );
 }
