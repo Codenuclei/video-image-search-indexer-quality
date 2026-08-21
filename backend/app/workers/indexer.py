@@ -1526,6 +1526,8 @@ class IndexingWorker:
         new_pending = 0
         removed = 0
         live_ids: set[str] = set()
+        touched_folders: set[str] = set()
+        new_file_ids: list[str] = []
         root_folder_id = listing.folder.id if listing.folder else None
         async with self._session_factory() as session:
             paused_paths = await load_paused_folder_paths(session)
@@ -1553,6 +1555,13 @@ class IndexingWorker:
                 )
                 if was_new:
                     new_pending += 1
+                    new_file_ids.append(entry.id)
+                    try:
+                        from app.drive.library_tree import file_folder_path
+
+                        touched_folders.add(file_folder_path(entry.path or "/"))
+                    except Exception:  # noqa: BLE001
+                        touched_folders.add("/")
 
             if root_folder_id:
                 try:
@@ -1622,9 +1631,14 @@ class IndexingWorker:
             listing.truncated,
         )
         try:
+            from app.drive.library_folder_media_cache import invalidate_folder_media_cache
             from app.drive.library_shell_cache import get_library_shell_cache
 
-            get_library_shell_cache().invalidate()
+            if touched_folders:
+                for folder in touched_folders:
+                    invalidate_folder_media_cache(folder, drive_file_ids=new_file_ids)
+            else:
+                get_library_shell_cache().invalidate()
         except Exception:  # noqa: BLE001
             pass
         return seen
