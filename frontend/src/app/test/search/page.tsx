@@ -2,8 +2,6 @@
 
 import { SearchPage } from "@/components/views/search-view";
 import { ImageSearchPanel } from "@/components/image-search-panel";
-import { DriveSessionBar } from "@/components/drive-session-bar";
-import { TestIndexStatus } from "@/components/test-index-status";
 import { useIndexStatusStore } from "@/lib/index-status-store";
 import { formatCount } from "@/lib/index-errors";
 
@@ -22,26 +20,24 @@ export default function TestSearchPage() {
         </div>
       </div>
 
-      <DriveSessionBar />
+      {/* DriveSessionBar moved to header (compact Change Folder + Drive email/folder). */}
+      {/* <DriveSessionBar /> */}
 
-      <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_20rem]">
-        <div className="min-w-0 space-y-6">
-          <section className="rounded-2xl border border-border bg-card p-4 shadow-sm md:p-5">
-            <SearchPage embedded hideSearchBar />
-          </section>
+      <div className="min-w-0 space-y-6">
+        <section className="rounded-2xl border border-border bg-card p-4 shadow-sm md:p-5">
+          <SearchPage embedded hideSearchBar />
+        </section>
 
-          <section id="reverse-face" className="rounded-2xl border border-border bg-card p-4 shadow-sm md:p-5">
-            <h2 className="mb-3 text-sm font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-              Search by image
-            </h2>
-            <ImageSearchPanel />
-          </section>
-        </div>
-
-        <div className="space-y-4 xl:sticky xl:top-24 xl:self-start">
-          <TestIndexStatus />
-        </div>
+        <section id="reverse-face" className="rounded-2xl border border-border bg-card p-4 shadow-sm md:p-5">
+          <h2 className="mb-3 text-sm font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+            Search by image
+          </h2>
+          <ImageSearchPanel />
+        </section>
       </div>
+
+      {/* AI Indexing Status sidebar removed — counts live elsewhere / idle noise only. */}
+      {/* <TestIndexStatus /> */}
     </div>
   );
 }

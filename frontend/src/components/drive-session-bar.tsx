@@ -106,25 +106,44 @@ export function DriveSessionBar({ compact = false }: { compact?: boolean }) {
   }
 
   if (compact) {
+    const driveEmail = driveSession?.email?.trim() || null;
+    const folderName = driveSession?.selected_folder?.name?.trim() || null;
     return (
       <>
         <Script src="https://apis.google.com/js/api.js" strategy="lazyOnload" />
         {driveSession?.connected ? (
-          <Button
-            variant="secondary"
-            onClick={() => void openPicker()}
-            disabled={pickerBusy}
-            className="inline-flex items-center gap-2"
-          >
-            <FolderOpen size={16} />
-            {pickerBusy ? (
-              <LoadingLabel>Opening…</LoadingLabel>
-            ) : driveSession.selected_folder ? (
-              "Change Folder"
-            ) : (
-              "Choose Folder"
-            )}
-          </Button>
+          <div className="flex max-w-[min(22rem,42vw)] items-center gap-2">
+            <div className="min-w-0 hidden text-right sm:block">
+              {folderName && (
+                <p className="truncate text-xs font-medium text-foreground" title={folderName}>
+                  {folderName}
+                </p>
+              )}
+              {driveEmail && (
+                <p className="truncate text-[10px] text-muted-foreground" title={driveEmail}>
+                  {driveEmail}
+                </p>
+              )}
+            </div>
+            <Button
+              variant="secondary"
+              onClick={() => void openPicker()}
+              disabled={pickerBusy}
+              className="inline-flex shrink-0 items-center gap-2"
+              title={
+                [folderName, driveEmail].filter(Boolean).join(" · ") || "Change folder"
+              }
+            >
+              <FolderOpen size={16} />
+              {pickerBusy ? (
+                <LoadingLabel>Opening…</LoadingLabel>
+              ) : folderName ? (
+                "Change Folder"
+              ) : (
+                "Choose Folder"
+              )}
+            </Button>
+          </div>
         ) : (
           <Button onClick={() => (window.location.href = driveConnectHref())} className="inline-flex items-center gap-2">
             Connect Google Drive
