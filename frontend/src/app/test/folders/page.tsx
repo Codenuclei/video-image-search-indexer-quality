@@ -14,15 +14,25 @@ import {
   apiClient,
   driveFileThumbnailUrl,
   driveGoogleViewUrl,
+  type DriveSession,
   type LibraryFile,
   type LibraryFolder,
+  type LibraryFolderPage,
   type LibraryResponse,
 } from "@/lib/api";
 import { LoadingLabel } from "@/components/ui";
 import { cn } from "@/lib/utils";
 import { formatCount } from "@/lib/index-errors";
+import { hydrateKeyFromDisk, readCache, writeCache } from "@/lib/data-cache";
 
 const PAGE_SIZE = 120;
+const SHELL_CACHE_KEY = "driveLibraryShell";
+const FOLDER_CACHE_PREFIX = "driveLibrary:folder:";
+const SESSION_CACHE_KEY = "driveSession:testFolders";
+
+function folderCacheKey(path: string) {
+  return `${FOLDER_CACHE_PREFIX}${path}`;
+}
 
 function findFolder(node: LibraryFolder, path: string): LibraryFolder | null {
   if (node.path === path) return node;
@@ -125,10 +135,24 @@ export default function TestFoldersPage() {
   const [filesLoading, setFilesLoading] = useState(false);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [total, setTotal] = useState(0);
+  const [email, setEmail] = useState<string | null>(null);
 
-  const loadShell = useCallback(async () => {
+  const loadShell = useCallback(async (force = false) => {
     try {
-      setShell(await apiClient.driveLibrary());
+      if (!force) {
+        const revRes = await apiClient.driveLibraryRevision().catch(() => null);
+        const rev = revRes?.revision ?? null;
+        const prev = readCache<LibraryResponse>(SHELL_CACHE_KEY);
+        if (rev && prev?.revision === rev && prev.data) {
+          setShell(prev.data);
+          setLoading(false);
+          return;
+        }
+      }
+      const next = await apiClient.driveLibraryShell();
+      const writeRev = next.revision ?? String(Date.now());
+      writeCache(SHELL_CACHE_KEY, next, writeRev, true);
+      setShell(next);
     } catch {
       /* toasted by api() */
     } finally {
@@ -137,20 +161,51 @@ export default function TestFoldersPage() {
   }, []);
 
   const loadFiles = useCallback(
-    async (folderPath: string, opts?: { append?: boolean }) => {
+    async (folderPath: string, opts?: { append?: boolean; force?: boolean }) => {
       if (folderPath === "/") {
         setFiles([]);
         setNextCursor(null);
         setTotal(0);
+        setFilesLoading(false);
         return;
+      }
+      const key = folderCacheKey(folderPath);
+      if (!opts?.append && !opts?.force) {
+        const fromDisk = hydrateKeyFromDisk(key) as
+          | import("@/lib/data-cache").CacheEntry<{
+              files: LibraryFile[];
+              next_cursor: string | null;
+              total: number;
+            }>
+          | null;
+        const cached =
+          fromDisk ??
+          readCache<{ files: LibraryFile[]; next_cursor: string | null; total: number }>(key);
+        const shellRev = readCache<LibraryResponse>(SHELL_CACHE_KEY)?.revision;
+        if (cached?.data && shellRev && cached.revision === shellRev) {
+          setFiles(cached.data.files);
+          setNextCursor(cached.data.next_cursor);
+          setTotal(cached.data.total);
+          setFilesLoading(false);
+          return;
+        }
       }
       setFilesLoading(true);
       try {
-        const page = await apiClient.driveLibraryFolder(folderPath, {
+        const page: LibraryFolderPage = await apiClient.driveLibraryFolder(folderPath, {
           limit: PAGE_SIZE,
           cursor: opts?.append ? nextCursor : null,
         });
-        setFiles((prev) => (opts?.append ? [...prev, ...page.files] : page.files));
+        setFiles((prev) => {
+          const next = opts?.append ? [...prev, ...page.files] : page.files;
+          writeCache(
+            key,
+            { files: next, next_cursor: page.next_cursor, total: page.total },
+            page.revision ?? readCache<LibraryResponse>(SHELL_CACHE_KEY)?.revision ?? String(Date.now()),
+            true
+          );
+          return next;
+        });
         setNextCursor(page.next_cursor);
         setTotal(page.total);
       } catch {
@@ -163,13 +218,34 @@ export default function TestFoldersPage() {
   );
 
   useEffect(() => {
-    void loadShell();
+    const cached = hydrateKeyFromDisk(SHELL_CACHE_KEY) as
+      | import("@/lib/data-cache").CacheEntry<LibraryResponse>
+      | null;
+    if (cached?.data) {
+      setShell(cached.data);
+      setLoading(false);
+    }
+    const sessionCached = hydrateKeyFromDisk(SESSION_CACHE_KEY) as
+      | import("@/lib/data-cache").CacheEntry<DriveSession>
+      | null;
+    if (sessionCached?.data?.email) setEmail(sessionCached.data.email);
+
+    void loadShell(false);
+    void apiClient
+      .driveSession()
+      .then((s) => {
+        if (s?.email) {
+          setEmail(s.email);
+          writeCache(SESSION_CACHE_KEY, s, s.email, true);
+        }
+      })
+      .catch(() => undefined);
   }, [loadShell]);
 
   useEffect(() => {
     setFiles([]);
     setNextCursor(null);
-    void loadFiles(path);
+    void loadFiles(path, { force: false });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [path]);
 
@@ -178,6 +254,7 @@ export default function TestFoldersPage() {
     [shell, path]
   );
   const subfolders = currentFolder?.folders ?? (path === "/" ? (shell?.tree?.folders ?? []) : []);
+  const totalFiles = shell?.summary?.total_files ?? 0;
 
   const crumbs = useMemo(() => {
     const parts = path.split("/").filter(Boolean);
@@ -192,19 +269,33 @@ export default function TestFoldersPage() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between gap-3">
-        <h1 className="text-2xl font-semibold tracking-tight">Indexed Folders</h1>
-        <button
-          type="button"
-          title="Refresh"
-          onClick={() => {
-            void loadShell();
-            void loadFiles(path);
-          }}
-          className="flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
-        >
-          <RefreshCw size={15} className={cn(loading && "animate-spin")} />
-        </button>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h1 className="text-2xl font-semibold tracking-tight">Indexed Folders</h1>
+          {email && (
+            <p className="mt-0.5 truncate text-xs text-muted-foreground" title={email}>
+              {email}
+            </p>
+          )}
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          {shell && (
+            <span className="tabular-nums text-sm font-medium text-foreground">
+              {formatCount(totalFiles)} files
+            </span>
+          )}
+          <button
+            type="button"
+            title="Refresh"
+            onClick={() => {
+              void loadShell(true);
+              void loadFiles(path, { force: true });
+            }}
+            className="flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+          >
+            <RefreshCw size={15} className={cn(loading && "animate-spin")} />
+          </button>
+        </div>
       </div>
 
       <nav className="flex min-w-0 items-center gap-1 overflow-x-auto rounded-xl border border-border bg-card px-3 py-2 text-sm">
