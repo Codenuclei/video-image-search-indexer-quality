@@ -212,3 +212,99 @@ export function runReverseFaceCrawl() {
   crawlJob = job;
   return job;
 }
+
+export function isUnknownFaceMatch(match: {
+  person_id: number | null;
+  cluster_id?: number | null;
+  cluster_status?: string | null;
+}): boolean {
+  const status = (match.cluster_status ?? "").toLowerCase();
+  return match.person_id == null || status === "unknown";
+}
+
+/** Collect cluster/face ids for name-tag (prefer clusters; leftover faces only). */
+export function collectUnknownNameTagIds(
+  matches: Array<{
+    face_id: number;
+    person_id: number | null;
+    cluster_id?: number | null;
+    cluster_status?: string | null;
+  }>
+): { clusterIds: number[]; faceIds: number[] } {
+  const clusterIds = Array.from(
+    new Set(
+      matches
+        .filter((m) => m.cluster_id != null && isUnknownFaceMatch(m))
+        .map((m) => m.cluster_id as number)
+    )
+  );
+  const faceIds = matches
+    .filter(
+      (m) =>
+        m.person_id == null &&
+        (m.cluster_id == null || !clusterIds.includes(m.cluster_id))
+    )
+    .map((m) => m.face_id);
+  return { clusterIds, faceIds };
+}
+
+export async function runReverseFaceNameTag(opts: {
+  name: string;
+  role?: string | null;
+  clusterIds?: number[];
+  faceIds?: number[];
+}): Promise<boolean> {
+  const name = (opts.name || "").trim();
+  if (!name) {
+    patchReverseFaceSession({ error: "Name cannot be empty" });
+    return false;
+  }
+
+  let clusterIds: number[];
+  let faceIds: number[];
+  if (opts.clusterIds === undefined && opts.faceIds === undefined) {
+    const collected = collectUnknownNameTagIds(state.result?.matches ?? []);
+    clusterIds = collected.clusterIds;
+    faceIds = collected.faceIds;
+  } else {
+    clusterIds = opts.clusterIds ?? [];
+    faceIds = opts.faceIds ?? [];
+  }
+
+  if (!clusterIds.length && !faceIds.length) {
+    patchReverseFaceSession({
+      tagMessage: "Nothing to tag — matches already have person links.",
+      confirmTagOpen: false,
+    });
+    return false;
+  }
+
+  patchReverseFaceSession({ tagging: true, error: null, confirmTagOpen: false, tagMessage: null });
+  try {
+    const res = await apiClient.leadershipNameTag({
+      name,
+      role: opts.role ?? null,
+      cluster_ids: clusterIds,
+      face_ids: faceIds,
+    });
+    const okCount = res.actions.filter((a) => a.ok).length;
+    patchReverseFaceSession({
+      tagMessage: `Tagged as “${res.person.name}” (person #${res.person.id}) · ${okCount} action(s) · ${res.person.occurrence_count} appearances`,
+    });
+
+    // Refresh matches so named people show up immediately.
+    if (state.selectedLeader?.image_url) {
+      const refreshed = await apiClient.searchFaceByUrl(state.selectedLeader.image_url, 20);
+      patchReverseFaceSession({ result: refreshed });
+    } else if (state.file) {
+      const refreshed = await apiClient.searchUploadedFace(state.file, 20);
+      patchReverseFaceSession({ result: refreshed });
+    }
+    return true;
+  } catch (e) {
+    patchReverseFaceSession({ error: formatApiError(e, "Name-tag failed") });
+    return false;
+  } finally {
+    patchReverseFaceSession({ tagging: false });
+  }
+}

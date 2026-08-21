@@ -191,7 +191,12 @@ async def run_caption_backfill(worker: IndexingWorker, *, max_batches: int | Non
                         if row is None:
                             return None
                         file_name = row.name or ""
-                        path = await ensure_media_cached(worker._client, row, settings)  # noqa: SLF001
+                        path = await ensure_media_cached(
+                            worker._client,  # noqa: SLF001
+                            row,
+                            settings,
+                            allow_redownload=True,
+                        )
                         await session.commit()
                     raw = await run_cpu_bound(read_cached_bytes, path)
                     if raw is None or (
@@ -364,7 +369,10 @@ async def run_embedding_backfill(worker: IndexingWorker, *, max_items: int | Non
                         file_name = row.name if row else ""
                         if drive_ok:
                             cache_path = await ensure_media_cached(
-                                worker._client, row, settings  # noqa: SLF001
+                                worker._client,  # noqa: SLF001
+                                row,
+                                settings,
+                                allow_redownload=True,
                             )
                             await session.commit()
                         else:

@@ -115,6 +115,15 @@ class ImageEmbedQueue:
                     file_name = row.name or ""
                     cache_path = resolve_cache_path(settings, row)
                     if cache_path is None:
+                        status_val = (
+                            row.status.value
+                            if hasattr(row.status, "value")
+                            else str(row.status or "")
+                        )
+                        if status_val == "processed":
+                            # Scratch cache already reclaimed; library is durable — finalize only.
+                            finalize_ids.append(fid)
+                            continue
                         cache_path = await ensure_media_cached(client, row, settings)
                         await session.commit()
                 raw = await run_cpu_bound(read_cached_bytes, cache_path)
@@ -150,3 +159,11 @@ class ImageEmbedQueue:
                     unlink_drive_cache=True,
                 )
             )
+            # Drop scratch bytes as soon as embed/Qdrant work is done — do not wait
+            # for the 100-row status batch flush.
+            try:
+                from app.drive.media_cache import unlink_drive_cache_now
+
+                await unlink_drive_cache_now(fid, settings)
+            except Exception:  # noqa: BLE001
+                logger.exception("embed_queue_immediate_unlink_failed file_id=%s", fid[:12])

@@ -167,7 +167,10 @@ class DriveDirectClient:
         visited_folders: set[str] = set()
         list_parallel = max(1, get_settings().drive_list_max_concurrent)
 
-        queue: list[tuple[str, list[str]]] = [(root_folder_id, [])]
+        # Prefix every relative path with the connected folder name so Library
+        # shows that folder as the top node (e.g. /Carousal Videos/…).
+        root_name = (meta.get("name") or "").strip() or "Library"
+        queue: list[tuple[str, list[str]]] = [(root_folder_id, [root_name])]
 
         async with httpx.AsyncClient(timeout=60) as client:
             while queue:

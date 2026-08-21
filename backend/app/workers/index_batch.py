@@ -149,6 +149,21 @@ class IndexStatusBatcher:
             self._queue.append(write)
             if flush_if_full and len(self._queue) >= self._batch_size:
                 await self._flush_unlocked()
+        # Reclaim scratch cache as soon as we know the file is final — do not wait
+        # for the 100-row DB status batch (that delay was filling media_cache).
+        if write.unlink_drive_cache or write.status in (
+            DriveFileStatus.PROCESSED,
+            DriveFileStatus.ERROR,
+        ):
+            try:
+                from app.drive.media_cache import unlink_drive_cache_now
+
+                await unlink_drive_cache_now(write.file_id)
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "status_enqueue_immediate_unlink_failed file_id=%s",
+                    write.file_id[:12],
+                )
 
     async def flush(self) -> int:
         async with self._lock:

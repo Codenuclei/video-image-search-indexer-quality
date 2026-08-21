@@ -293,6 +293,43 @@ async def test_known_processed_hash_stops_before_download_or_pipeline() -> None:
     session.add.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_known_processed_hash_stops_before_video_download() -> None:
+    """Video twin with known hash never downloads from Drive."""
+    from app.config import Settings
+    from app.pipelines.video import process_video_file
+
+    incoming = DriveFile(
+        id="known-video-twin",
+        name="copy.mp4",
+        mime_type="video/mp4",
+        path="/copy.mp4",
+        status=DriveFileStatus.PENDING,
+        content_hash="knownvideohash",
+        content_hash_algo="md5",
+    )
+    session = AsyncMock(spec=AsyncSession)
+    client = AsyncMock()
+
+    with (
+        patch("app.pipelines.common.file_has_media", new=AsyncMock(return_value=False)),
+        patch("app.pipelines.video.clear_existing_media", new=AsyncMock()),
+        patch(
+            "app.drive.conflicts.apply_dedupe_on_upsert",
+            new=AsyncMock(return_value="duplicate_content"),
+        ) as dedupe,
+        patch("app.pipelines.video.download_to_temp_file") as download,
+        patch("app.pipelines.video.is_youtube_source", return_value=False),
+        patch("app.pipelines.video._video_cache_path", return_value="/tmp/nope.mp4"),
+        patch("os.path.isfile", return_value=False),
+    ):
+        result = await process_video_file(session, incoming, client, Settings())
+
+    assert result is None
+    dedupe.assert_awaited_once()
+    download.assert_not_called()
+
+
 @requires_postgres
 @pytest.mark.asyncio
 async def test_only_oldest_pending_same_hash_is_claimable(db_session: AsyncSession) -> None:

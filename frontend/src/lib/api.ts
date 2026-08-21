@@ -158,6 +158,21 @@ export type SkipStats = {
   by_reason: { reason: string; count: number }[];
 };
 
+export type CacheCleanupResult = {
+  ok: boolean;
+  dry_run: boolean;
+  policy: string;
+  total_files: number;
+  total_bytes: number;
+  deletable_count: number;
+  deletable_bytes: number;
+  deleted_count: number;
+  deleted_bytes: number;
+  by_policy: Record<string, { files: number; bytes: number }>;
+  roots: { name: string; path: string; exists: boolean }[];
+  refused?: { path: string; reason: string }[];
+};
+
 export type IndexedFolder = {
   id: string;
   name: string;
@@ -1313,6 +1328,10 @@ export const apiClient = {
   },
   triggerIndex: () => api<IndexStatus>("/index", { method: "POST" }),
   triggerReindex: () => api<IndexStatus>("/reindex", { method: "POST" }),
+  cacheCleanupDryRun: () =>
+    api<CacheCleanupResult>("/admin/cache-cleanup", { silent: true }),
+  cacheCleanupApply: () =>
+    api<CacheCleanupResult>("/admin/cache-cleanup?apply=true", { method: "POST" }),
   howto: (page: string, question: string) =>
     api<HowToResponse>("/help/howto", {
       method: "POST",
