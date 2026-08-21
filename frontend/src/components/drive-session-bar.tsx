@@ -112,38 +112,33 @@ export function DriveSessionBar({ compact = false }: { compact?: boolean }) {
       <>
         <Script src="https://apis.google.com/js/api.js" strategy="lazyOnload" />
         {driveSession?.connected ? (
-          <div className="flex max-w-[min(22rem,42vw)] items-center gap-2">
-            <div className="min-w-0 hidden text-right sm:block">
-              {folderName && (
-                <p className="truncate text-xs font-medium text-foreground" title={folderName}>
-                  {folderName}
-                </p>
-              )}
-              {driveEmail && (
-                <p className="truncate text-[10px] text-muted-foreground" title={driveEmail}>
-                  {driveEmail}
-                </p>
-              )}
-            </div>
-            <Button
-              variant="secondary"
-              onClick={() => void openPicker()}
-              disabled={pickerBusy}
-              className="inline-flex shrink-0 items-center gap-2"
-              title={
-                [folderName, driveEmail].filter(Boolean).join(" · ") || "Change folder"
-              }
-            >
-              <FolderOpen size={16} />
-              {pickerBusy ? (
-                <LoadingLabel>Opening…</LoadingLabel>
-              ) : folderName ? (
-                "Change Folder"
-              ) : (
-                "Choose Folder"
-              )}
-            </Button>
-          </div>
+          <Button
+            variant="secondary"
+            onClick={() => void openPicker()}
+            disabled={pickerBusy}
+            className="inline-flex h-auto max-w-[min(18rem,40vw)] items-center gap-2 px-3 py-1.5"
+            title={
+              [folderName ?? "Choose folder", driveEmail, "Click to change folder"]
+                .filter(Boolean)
+                .join(" · ")
+            }
+          >
+            <FolderOpen size={16} className="shrink-0" />
+            {pickerBusy ? (
+              <LoadingLabel>Opening…</LoadingLabel>
+            ) : (
+              <span className="min-w-0 text-left">
+                <span className="block truncate text-xs font-medium leading-tight">
+                  {folderName ?? "Choose Folder"}
+                </span>
+                {driveEmail && (
+                  <span className="block truncate text-[10px] font-normal leading-tight text-muted-foreground">
+                    {driveEmail}
+                  </span>
+                )}
+              </span>
+            )}
+          </Button>
         ) : (
           <Button onClick={() => (window.location.href = driveConnectHref())} className="inline-flex items-center gap-2">
             Connect Google Drive
