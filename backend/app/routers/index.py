@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -695,6 +697,50 @@ async def index_status(
     session: AsyncSession = Depends(get_db),
 ) -> IndexStatus:
     return await _build_index_status(worker, session)
+
+
+@router.get("/index/events")
+async def index_events(request: Request) -> StreamingResponse:
+    """SSE: push when the cheap index revision changes (no client poll needed)."""
+
+    async def event_gen():
+        from app.index_status_events import cheap_index_revision
+
+        yield "retry: 2000\n\n"
+        last: str | None = None
+        idle_ticks = 0
+        factory = get_session_factory()
+        while True:
+            if await request.is_disconnected():
+                break
+            try:
+                async with factory() as session:
+                    rev, busy = await cheap_index_revision(session)
+            except Exception:
+                logger.exception("index/events revision check failed")
+                yield ": error\n\n"
+                await asyncio.sleep(5.0)
+                continue
+            if rev != last:
+                last = rev
+                idle_ticks = 0
+                yield f"event: revision\ndata: {json.dumps({'revision': rev})}\n\n"
+            else:
+                idle_ticks += 1
+                if idle_ticks % 12 == 0:
+                    yield ": ping\n\n"
+            # Busy → ~1s push latency; idle → 5s (still far below former 12s client poll).
+            await asyncio.sleep(1.0 if busy else 5.0)
+
+    return StreamingResponse(
+        event_gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 async def _build_index_status(worker: IndexingWorker, session: AsyncSession) -> IndexStatus:

@@ -340,7 +340,16 @@ export default function LibraryPage() {
       }
       const key = folderCacheKey(path);
       if (!opts?.append && !opts?.force) {
-        const cached = readCache<{ files: LibraryFile[]; next_cursor: string | null; total: number }>(key);
+        const fromDisk = hydrateKeyFromDisk(key) as
+          | import("@/lib/data-cache").CacheEntry<{
+              files: LibraryFile[];
+              next_cursor: string | null;
+              total: number;
+            }>
+          | null;
+        const cached =
+          fromDisk ??
+          readCache<{ files: LibraryFile[]; next_cursor: string | null; total: number }>(key);
         const shellRev = readCache<LibraryResponse>(SHELL_CACHE_KEY)?.revision;
         if (cached?.data && shellRev && cached.revision === shellRev) {
           setFolderFiles(cached.data.files);
@@ -408,10 +417,8 @@ export default function LibraryPage() {
     }
 
     void tick(false);
-    const t = setInterval(() => void tick(false), 20000);
     return () => {
       cancelled = true;
-      clearInterval(t);
     };
   }, []);
 
