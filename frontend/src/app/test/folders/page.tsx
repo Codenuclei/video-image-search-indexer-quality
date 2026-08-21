@@ -143,7 +143,13 @@ export default function TestFoldersPage() {
         const revRes = await apiClient.driveLibraryRevision().catch(() => null);
         const rev = revRes?.revision ?? null;
         const prev = readCache<LibraryResponse>(SHELL_CACHE_KEY);
-        if (rev && prev?.revision === rev && prev.data) {
+        // Refetch when shell lacked Qdrant caption/embed stats (zeros on hover).
+        if (
+          rev &&
+          prev?.revision === rev &&
+          prev.data &&
+          prev.data.summary?.caption_stats_ready
+        ) {
           setShell(prev.data);
           setLoading(false);
           return;

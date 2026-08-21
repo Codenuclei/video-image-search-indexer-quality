@@ -115,6 +115,12 @@ def upsert_caption_sync(*, drive_file_id: str, vector: list[float], caption: str
     for attempt in range(5):
         try:
             client.upsert(collection_name=collection, points=[point])
+            try:
+                from app.drive.library_folder_media_cache import note_media_presence
+
+                note_media_presence(drive_file_id, captioned=True)
+            except Exception:  # noqa: BLE001
+                pass
             return
         except Exception as exc:  # noqa: BLE001
             last_exc = exc

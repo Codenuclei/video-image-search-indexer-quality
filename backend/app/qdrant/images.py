@@ -52,6 +52,12 @@ def upsert_image_sync(*, drive_file_id: str, vector: list[float]) -> None:
             )
         ],
     )
+    try:
+        from app.drive.library_folder_media_cache import note_media_presence
+
+        note_media_presence(drive_file_id, embedded=True)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def delete_image_sync(drive_file_id: str) -> None:

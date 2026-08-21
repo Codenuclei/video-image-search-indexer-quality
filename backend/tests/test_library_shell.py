@@ -62,6 +62,25 @@ def test_build_library_shell_omits_files_and_qdrant_stats():
     assert shell["folders"][0]["file_count"] == 2
 
 
+def test_build_library_shell_with_caption_ids():
+    rows = [
+        _df(id="1", name="a.jpg", path="/Root/a.jpg", status=SimpleNamespace(value="processed")),
+        _df(id="2", name="b.jpg", path="/Root/b.jpg", status=SimpleNamespace(value="processed")),
+    ]
+    root, summary = build_library_shell(
+        rows,
+        captioned_ids={"1", "2"},
+        embedded_ids={"1"},
+        caption_stats_ready=True,
+    )
+    shell = folder_node_to_shell_dict(root)
+    assert summary["caption_stats_ready"] is True
+    assert summary["captioned"] == 2
+    assert summary["embedded"] == 1
+    assert shell["folders"][0]["captioned_count"] == 2
+    assert shell["folders"][0]["embedded_count"] == 1
+
+
 def test_library_shell_cache_hit_miss():
     cache = LibraryShellCache()
     assert cache.get("r1") is None

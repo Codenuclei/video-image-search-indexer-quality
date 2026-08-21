@@ -312,7 +312,12 @@ export default function LibraryPage() {
         const revRes = await apiClient.driveLibraryRevision().catch(() => null);
         const rev = revRes?.revision ?? null;
         const prev = readCache<LibraryResponse>(SHELL_CACHE_KEY);
-        if (rev && prev?.revision === rev && prev.data) {
+        if (
+          rev &&
+          prev?.revision === rev &&
+          prev.data &&
+          prev.data.summary?.caption_stats_ready
+        ) {
           setData(prev.data);
           setLoading(false);
           return;
@@ -400,7 +405,7 @@ export default function LibraryPage() {
         if (cancelled) return;
         const rev = revRes?.revision ?? null;
         const prev = readCache<LibraryResponse>(SHELL_CACHE_KEY);
-        if (!force && rev && prev?.revision === rev && prev.data) {
+        if (!force && rev && prev?.revision === rev && prev.data && prev.data.summary?.caption_stats_ready) {
           setData(prev.data);
           setLoading(false);
           return;

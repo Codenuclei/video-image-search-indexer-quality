@@ -321,14 +321,39 @@ async def drive_library_shell(
             },
         )
 
-    # Cache miss — load rows and build shell once for this revision.
+    # Cache miss — load rows and build shell with real caption/embed rollups (cached).
     rows = list(
         (await session.execute(select(DriveFile).order_by(DriveFile.path))).scalars().all()
     )
     paused_paths = await load_paused_folder_paths(session)
-    root, summary = build_library_shell(rows, paused_folder_paths=paused_paths)
+
+    from app.drive.library_folder_media_cache import (
+        collect_image_ids_by_folder,
+        get_folder_media_counts_cache,
+        get_media_presence_cache,
+    )
+
+    image_ids = [
+        df.id
+        for df in rows
+        if (df.mime_type or "").startswith("image/")
+    ]
+    captioned_ids, embedded_ids = await asyncio.to_thread(
+        get_media_presence_cache().resolve_sync, image_ids
+    )
+    root, summary = build_library_shell(
+        rows,
+        paused_folder_paths=paused_paths,
+        captioned_ids=captioned_ids,
+        embedded_ids=embedded_ids,
+        caption_stats_ready=True,
+    )
+    tree = folder_node_to_shell_dict(root)
+    get_folder_media_counts_cache().store_tree_counts(
+        tree, image_ids_by_path=collect_image_ids_by_folder(rows)
+    )
     payload: dict[str, object] = {
-        "tree": folder_node_to_shell_dict(root),
+        "tree": tree,
         "summary": summary,
         "maintenance": maintenance_status(),
         "paused_folders": paused_paths,

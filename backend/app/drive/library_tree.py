@@ -108,7 +108,11 @@ def build_library_tree(
 
         is_image = df.mime_type.startswith("image/")
         is_video = df.mime_type.startswith("video/")
-        has_cap = df.id in captioned_ids and bool((caption_texts.get(df.id) or "").strip())
+        # valid_caption_ids already quality-checked text; caption_texts only needed for preview.
+        if caption_texts:
+            has_cap = df.id in captioned_ids and bool((caption_texts.get(df.id) or "").strip())
+        else:
+            has_cap = df.id in captioned_ids
         has_emb = df.id in embedded_ids
         cap_text = (caption_texts.get(df.id) or "").strip() or None
         preview = (cap_text[:120] + "…") if cap_text and len(cap_text) > 120 else cap_text
@@ -261,12 +265,18 @@ def build_library_shell(
     drive_files: list[DriveFile],
     *,
     paused_folder_paths: list[str] | None = None,
+    captioned_ids: set[str] | None = None,
+    embedded_ids: set[str] | None = None,
+    caption_stats_ready: bool = False,
 ) -> tuple[LibraryFolderNode, dict[str, Any]]:
-    """Folder tree + DB status counts only — no file lists, no Qdrant."""
+    """Folder tree + status counts. Pass Qdrant id sets for real caption/embed rollups."""
+    caps = captioned_ids if captioned_ids is not None else set()
+    embs = embedded_ids if embedded_ids is not None else set()
+    ready = caption_stats_ready and (captioned_ids is not None or embedded_ids is not None)
     root, all_files, summary = build_library_tree(
         drive_files,
-        captioned_ids=set(),
-        embedded_ids=set(),
+        captioned_ids=caps,
+        embedded_ids=embs,
         caption_texts={},
         paused_folder_paths=paused_folder_paths,
     )
@@ -277,13 +287,16 @@ def build_library_shell(
             _strip_files(child)
 
     _strip_files(root)
-    # Caption/embed stats require Qdrant — mark unknown for the client.
-    summary["captioned"] = 0
-    summary["embedded"] = 0
-    summary["missing_captions"] = 0
-    summary["caption_pct"] = 0.0
-    summary["caption_stats_ready"] = False
-    summary["needs_work"] = summary["pending"] + summary["errors"]
+    if not ready:
+        # Structure-only shell (tests / callers that skip Qdrant).
+        summary["captioned"] = 0
+        summary["embedded"] = 0
+        summary["missing_captions"] = 0
+        summary["caption_pct"] = 0.0
+        summary["caption_stats_ready"] = False
+        summary["needs_work"] = summary["pending"] + summary["errors"]
+    else:
+        summary["caption_stats_ready"] = True
     return root, summary
 
 
