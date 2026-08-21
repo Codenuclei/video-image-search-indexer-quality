@@ -23,9 +23,8 @@ import {
 import { cn } from "@/lib/utils";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { ConfirmDialog } from "@/components/ui";
-import { getAuthEmail, signOut } from "@/components/auth-gate";
+import { signOut, useAuthSession } from "@/components/auth-gate";
 import { supportMailto } from "@/lib/support";
-import { isAdminEmail } from "@/lib/admin";
 
 /** Defer index polling — never load on the front page. */
 const IndexStatusBanner = dynamic(
@@ -131,9 +130,9 @@ function NavLinks({
   vertical?: boolean;
   mobileOnly?: boolean;
 }) {
-  const admin = isAdminEmail(getAuthEmail());
+  const { isAdmin } = useAuthSession();
   const items = (mobileOnly ? links.filter((l) => l.mobile) : links).filter(
-    (l) => !l.adminOnly || admin
+    (l) => !l.adminOnly || isAdmin
   );
 
   if (!vertical) {
@@ -235,12 +234,8 @@ function SidebarFooter({ email, onNavigate }: { email: string | null; onNavigate
 
 export function Sidebar() {
   const pathname = usePathname();
-  const [email, setEmail] = useState<string | null>(null);
+  const { email } = useAuthSession();
   const [menuOpen, setMenuOpen] = useState(false);
-
-  useEffect(() => {
-    setEmail(getAuthEmail());
-  }, []);
 
   useEffect(() => {
     setMenuOpen(false);

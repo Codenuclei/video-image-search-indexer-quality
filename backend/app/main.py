@@ -10,7 +10,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import get_settings
 from app.runtime_settings import get_runtime_settings
 from app.db.app_settings_store import load_runtime_settings_from_db
-from app.db.schema import ensure_schema, recover_aborted_transaction_errors, recover_stuck_processing_files
+from app.db.schema import (
+    ensure_schema,
+    ensure_app_admins_seed,
+    recover_aborted_transaction_errors,
+    recover_stuck_processing_files,
+)
 from app.pipelines.decode_recovery import (
     quarantine_stuck_decode_errors,
 )
@@ -23,6 +28,7 @@ from app.db.session import dispose_engine, get_engine, get_session_factory
 from app.dependencies import get_indexing_worker
 from app.fennec.client import get_fennec_client
 from app.routers import (
+    app_auth,
     cache as cache_router,
     carousel_script,
     clusters,
@@ -112,6 +118,7 @@ async def lifespan(app: FastAPI):
                 try:
                     logger.info("Startup: ensuring DB schema… (attempt %d/5)", attempt)
                     await ensure_schema(get_engine())
+                    await ensure_app_admins_seed(get_engine())
                     logger.info("Startup: loading runtime settings…")
                     await load_runtime_settings_from_db(get_session_factory())
                     # Warm every API worker's local revision cache before it is
@@ -384,6 +391,7 @@ async def _require_boot_ready(request, call_next):
         )
     return await call_next(request)
 
+app.include_router(app_auth.router)
 app.include_router(drive_oauth.router)
 app.include_router(drive.router)
 app.include_router(control_reader.router)

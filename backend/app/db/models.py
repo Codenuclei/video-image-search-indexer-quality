@@ -4,7 +4,18 @@ import enum
 from datetime import datetime
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import DateTime, Enum, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import (
+    BigInteger,
+    DateTime,
+    Enum,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -111,7 +122,8 @@ class DriveFile(Base):
     mime_type: Mapped[str] = mapped_column(String, nullable=False)
     path: Mapped[str] = mapped_column(String, nullable=False, index=True)
     modified_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    size: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Drive videos can exceed 2GiB; INTEGER overflows (AI Summit C0015.MP4 ~4.7GB).
+    size: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     status: Mapped[DriveFileStatus] = mapped_column(
         Enum(DriveFileStatus, name="drive_file_status"),
         default=DriveFileStatus.PENDING,
@@ -121,6 +133,15 @@ class DriveFile(Base):
     decode_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     gemini_document_name: Mapped[str | None] = mapped_column(String, nullable=True)
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Wall-clock start of the current index claim (PENDING→PROCESSING). Used for TAT.
+    processing_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Wall-clock when the file is fully done for search (captioned image / indexed
+    # video transcript, or ERROR). Claim→done TAT uses this vs processing_started_at.
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     source: Mapped[str] = mapped_column(String, nullable=False, default="drive", server_default="drive")
     # Carousel pipeline lock is deliberately separate from indexing status.
     # It guards generation/edit mutations without making cache reads wait on Drive indexing.
@@ -478,6 +499,18 @@ class CarouselItemFeedback(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class AppAdmin(Base):
+    """Allowlist of emails that may open the Admin UI (SSR/middleware gated)."""
+
+    __tablename__ = "app_admins"
+
+    email: Mapped[str] = mapped_column(String(320), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    created_by: Mapped[str | None] = mapped_column(String(320), nullable=True)
 
 
 class FaceJobStatus(str, enum.Enum):
