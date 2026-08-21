@@ -11,33 +11,22 @@ export default function TestSearchPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Search and Index</h1>
-          <p className="text-xs text-muted-foreground">
-            All Photos{processed ? ` · ${formatCount(processed)} Assets` : ""}
-          </p>
-        </div>
+      <div>
+        <h1 className="text-2xl font-semibold tracking-tight">Search and Index</h1>
+        <p className="text-xs text-muted-foreground">
+          All Photos{processed ? ` · ${formatCount(processed)} Assets` : ""}
+        </p>
       </div>
 
-      {/* DriveSessionBar moved to header (compact Change Folder + Drive email/folder). */}
-      {/* <DriveSessionBar /> */}
+      {/* Results only — no empty card chrome when the header search bar is used. */}
+      <SearchPage embedded hideSearchBar />
 
-      <div className="min-w-0 space-y-6">
-        <section className="rounded-2xl border border-border bg-card p-4 shadow-sm md:p-5">
-          <SearchPage embedded hideSearchBar />
-        </section>
-
-        <section id="reverse-face" className="rounded-2xl border border-border bg-card p-4 shadow-sm md:p-5">
-          <h2 className="mb-3 text-sm font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-            Search by image
-          </h2>
-          <ImageSearchPanel />
-        </section>
-      </div>
-
-      {/* AI Indexing Status sidebar removed — counts live elsewhere / idle noise only. */}
-      {/* <TestIndexStatus /> */}
+      <section id="reverse-face" className="rounded-2xl border border-border bg-card p-4 shadow-sm md:p-5">
+        <h2 className="mb-3 text-sm font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+          Search by image
+        </h2>
+        <ImageSearchPanel />
+      </section>
     </div>
   );
 }
