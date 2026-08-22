@@ -187,15 +187,21 @@ async def lifespan(app: FastAPI):
             # AppleDouble/.DS_Store rows are filtered and skipped by the indexer.
             # Never delete historical DriveFile rows during startup.
 
-            from app.drive.conflicts import promote_duplicate_content_skips
+            from app.drive.conflicts import promote_duplicate_content_skips, reconcile_name_conflict_skips
 
             async with get_session_factory()() as session:
                 promoted = await promote_duplicate_content_skips(session)
+                requeued = await reconcile_name_conflict_skips(session)
                 await session.commit()
             if promoted:
                 logger.info(
                     "Startup: promoted %d duplicate_content skip(s) → PROCESSED",
                     promoted,
+                )
+            if requeued:
+                logger.info(
+                    "Startup: requeued %d name_conflict skip(s) with disambiguated names",
+                    requeued,
                 )
 
             # A fresh process owns no carousel tasks, so any row still marked

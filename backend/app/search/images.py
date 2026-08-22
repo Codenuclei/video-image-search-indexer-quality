@@ -15,6 +15,7 @@ from app.gemini.tags import person_names_for_drive_file
 from app.gemini.video_embeddings import embed_text_sync
 from app.qdrant.image_captions import search_captions_sync
 from app.qdrant.images import search_images_sync
+from app.drive.display_name import drive_file_display_name
 from app.schemas import SearchResultFile
 
 logger = logging.getLogger(__name__)
@@ -206,7 +207,7 @@ async def search_image_files(
         results.append(
             SearchResultFile(
                 drive_file_id=drive_file_id,
-                name=drive_file.name,
+                name=drive_file_display_name(drive_file),
                 path=drive_file.path,
                 mime_type=drive_file.mime_type,
                 person_names=person_names,

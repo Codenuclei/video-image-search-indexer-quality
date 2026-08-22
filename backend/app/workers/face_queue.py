@@ -14,7 +14,7 @@ from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import Settings, get_settings
-from app.db.models import DriveFile, DriveFileStatus, FaceJob, FaceJobStatus, Media
+from app.db.models import DriveFile, DriveFileStatus, FaceJob, FaceJobStatus, Media, MediaType
 from app.db.session import get_session_factory
 from app.drive.media_cache import unlink_drive_source_cache
 from app.workers.index_batch import IndexStatusBatcher, StatusWrite
@@ -110,12 +110,26 @@ async def process_face_job(
     from app.dependencies import get_drive_client
     from app.faces.engine import get_face_engine
     from app.pipelines.image import apply_faces_to_prepared_image
+    from app.pipelines.video import apply_faces_to_prepared_video
 
     settings = settings or get_settings()
     drive_file = await session.get(DriveFile, job.drive_file_id)
     if drive_file is None:
         job.status = FaceJobStatus.DONE
         job.error_message = "drive_file_missing"
+        return
+
+    if drive_file.status == DriveFileStatus.PROCESSED:
+        job.status = FaceJobStatus.DONE
+        job.error_message = None
+        job.lock_token = None
+        job.locked_at = None
+        await session.commit()
+        logger.info(
+            "face_job_skip_already_processed job_id=%s file_id=%s",
+            job.id,
+            drive_file.id[:12],
+        )
         return
 
     try:
@@ -125,21 +139,45 @@ async def process_face_job(
         if media is None:
             raise RuntimeError("face_job_missing_media")
 
-        await apply_faces_to_prepared_image(
-            session,
-            drive_file,
-            media,
-            client=get_drive_client(),
-            settings=settings,
-            engine=get_face_engine(),
-        )
+        client = get_drive_client()
+        if media.type == MediaType.VIDEO:
+            await apply_faces_to_prepared_video(
+                session,
+                drive_file,
+                media,
+                client=client,
+                settings=settings,
+                engine=get_face_engine(),
+            )
+        else:
+            await apply_faces_to_prepared_image(
+                session,
+                drive_file,
+                media,
+                client=client,
+                settings=settings,
+                engine=get_face_engine(),
+            )
         job.status = FaceJobStatus.DONE
         job.error_message = None
         job.lock_token = None
         job.locked_at = None
         await session.commit()
 
-        if embed_queue is not None and settings.gemini_api_key:
+        if media.type == MediaType.VIDEO:
+            unlink_drive_source_cache(drive_file, settings)
+            if status_batcher is not None:
+                await status_batcher.enqueue(
+                    StatusWrite(
+                        file_id=drive_file.id,
+                        status=DriveFileStatus.PROCESSED,
+                        error_message=None,
+                        clear_gemini_document=True,
+                        bump_synced_at=True,
+                        unlink_drive_cache=True,
+                    )
+                )
+        elif embed_queue is not None and settings.gemini_api_key:
             await embed_queue.push(drive_file.id)
         elif status_batcher is not None:
             await status_batcher.enqueue(

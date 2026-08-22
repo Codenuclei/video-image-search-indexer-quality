@@ -86,7 +86,31 @@ async def prepare_image_media(
         return None
 
     # Validate decode early so face workers do not claim corrupt jobs.
-    await run_cpu_bound(decode_image_bgr, raw_bytes, file_name=drive_file.name)
+    image_bgr = await run_cpu_bound(decode_image_bgr, raw_bytes, file_name=drive_file.name)
+
+    from app.config import get_settings as _get_settings
+    from app.drive.conflicts import apply_visual_dedupe_on_image
+    from app.drive.perceptual_hash import dhash_hex_from_bgr
+
+    _settings = settings or _get_settings()
+    if _settings.visual_dedupe_enabled and (drive_file.mime_type or "").startswith("image/"):
+        drive_file.visual_hash = await run_cpu_bound(dhash_hex_from_bgr, image_bgr)
+        visual_skip = await apply_visual_dedupe_on_image(
+            session,
+            drive_file,
+            max_hamming=_settings.visual_dedupe_max_hamming,
+        )
+        if visual_skip:
+            logger.info(
+                "index_skip reason=%s file_id=%s mime=%s size=%s name=%s (visual twin)",
+                visual_skip,
+                drive_file.id,
+                drive_file.mime_type,
+                drive_file.size,
+                drive_file.name,
+            )
+            return None
+
     from app.drive.image_thumbs import write_image_thumbnail
 
     try:

@@ -1019,6 +1019,17 @@ class IndexingWorker:
                     )
                     return
 
+                if self._settings.face_jobs_enabled and result.face_job_queued:
+                    drive_file.status = DriveFileStatus.PROCESSING
+                    drive_file.error_message = None
+                    await session.commit()
+                    logger.info(
+                        "Video prepare complete (face job queued): %s (%s)",
+                        file_name,
+                        file_id,
+                    )
+                    return
+
                 drive_file.status = DriveFileStatus.PROCESSED
                 drive_file.error_message = None
                 drive_file.gemini_document_name = result.gemini_document_name

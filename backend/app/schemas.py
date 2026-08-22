@@ -16,6 +16,11 @@ class DriveFileOut(BaseModel):
     last_synced_at: datetime | None = None
     error_message: str | None = None
     source: str = "drive"
+    index_name: str | None = None
+
+    @property
+    def display_name(self) -> str:
+        return (self.index_name or self.name).strip()
 
     model_config = {"from_attributes": True}
 

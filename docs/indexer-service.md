@@ -36,7 +36,7 @@ INDEX_DISK_HIGH_WATER_BYTES=2147483648
 
 Replicas: **1** (volume + single `IndexStatusBatcher` owner). Mount the same `/app/data` volume.
 
-With `FACE_JOBS_ENABLED=true`, image prepare (cache/hash/Media) runs here and enqueues `face_jobs`; InsightFace does **not** run inline.
+With `FACE_JOBS_ENABLED=true`, image prepare (cache/hash/Media) runs here and enqueues `face_jobs`; InsightFace does **not** run inline. Video frame/transcript indexing also runs here; per-frame InsightFace is deferred to the face fleet when `FACE_JOBS_ENABLED=true`.
 
 ## Face worker fleet (`dfi-face-worker`)
 
