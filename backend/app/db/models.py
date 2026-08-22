@@ -142,9 +142,17 @@ class DriveFile(Base):
     # Soft-archive timestamp — set when file leaves live Drive listing / 404 / explicit detach.
     # Never implies deletion of Qdrant vectors, captions, thumbnails, or cached media.
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Search/index display name when Drive basename collides (e.g. "photo (1).jpg").
+    index_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    # 64-bit OpenCV dHash (16 hex chars) for cross-resolution visual dedupe.
+    visual_hash: Mapped[str | None] = mapped_column(String(16), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     media: Mapped["Media | None"] = relationship(back_populates="drive_file", uselist=False)
+
+    @property
+    def display_name(self) -> str:
+        return (self.index_name or self.name or "").strip()
 
 
 class Media(Base):

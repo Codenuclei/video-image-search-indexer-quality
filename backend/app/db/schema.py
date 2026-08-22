@@ -234,6 +234,18 @@ async def ensure_schema(engine: AsyncEngine) -> None:
                 "ON drive_files (root_folder_id)"
             )
         )
+        await conn.execute(
+            text("ALTER TABLE drive_files ADD COLUMN IF NOT EXISTS index_name VARCHAR")
+        )
+        await conn.execute(
+            text("ALTER TABLE drive_files ADD COLUMN IF NOT EXISTS visual_hash VARCHAR(16)")
+        )
+        await conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_drive_files_visual_hash "
+                "ON drive_files (visual_hash)"
+            )
+        )
         # Transcript language for English-ensure / non-English purge.
         await conn.execute(
             text("ALTER TABLE video_segments ADD COLUMN IF NOT EXISTS language VARCHAR(16)")

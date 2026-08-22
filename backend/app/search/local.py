@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import DriveFile, DriveFileStatus, Face, Media, MediaType, Person
 from app.gemini.tags import person_names_for_drive_file
-from app.schemas import SearchResultFile
+from app.drive.display_name import drive_file_display_name
 
 _PEOPLE_PATTERN = re.compile(
     r"\b(people|person|persons|human|humans|face|faces|portrait|portraits|selfie|selfies)\b",
@@ -986,7 +986,7 @@ async def find_files_by_role_context(
         results.append(
             SearchResultFile(
                 drive_file_id=drive_file.id,
-                name=drive_file.name,
+                name=drive_file_display_name(drive_file),
                 path=drive_file.path,
                 mime_type=drive_file.mime_type,
                 person_names=tagged,
@@ -1033,7 +1033,7 @@ async def find_matching_files(
         results.append(
             SearchResultFile(
                 drive_file_id=drive_file.id,
-                name=drive_file.name,
+                name=drive_file_display_name(drive_file),
                 path=drive_file.path,
                 mime_type=drive_file.mime_type,
                 person_names=names,
@@ -1067,7 +1067,7 @@ async def files_for_citation_names(
         results.append(
             SearchResultFile(
                 drive_file_id=drive_file.id,
-                name=drive_file.name,
+                name=drive_file_display_name(drive_file),
                 path=drive_file.path,
                 mime_type=drive_file.mime_type,
                 person_names=person_names,
@@ -1105,7 +1105,7 @@ async def files_for_drive_ids(
         results.append(
             SearchResultFile(
                 drive_file_id=drive_file.id,
-                name=drive_file.name,
+                name=drive_file_display_name(drive_file),
                 path=drive_file.path,
                 mime_type=drive_file.mime_type,
                 person_names=names,

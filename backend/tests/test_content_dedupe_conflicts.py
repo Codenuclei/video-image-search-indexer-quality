@@ -134,7 +134,7 @@ async def test_same_content_diff_name_autoskip_mergeable(db_session: AsyncSessio
 
 @requires_postgres
 @pytest.mark.asyncio
-async def test_same_name_diff_content_pending_replace(db_session: AsyncSession) -> None:
+async def test_same_name_diff_content_auto_disambiguate(db_session: AsyncSession) -> None:
     existing = DriveFile(
         id="exist3",
         name="shot.png",
@@ -157,24 +157,84 @@ async def test_same_name_diff_content_pending_replace(db_session: AsyncSession) 
     reason = await apply_dedupe_on_upsert(db_session, incoming, algo="md5", digest="222222")
     await db_session.flush()
 
-    assert reason == "name_conflict"
-    assert incoming.status == DriveFileStatus.SKIPPED
-    assert (incoming.error_message or "").startswith(NAME_CONFLICT_PREFIX)
+    assert reason is None
+    assert incoming.status == DriveFileStatus.PENDING
+    assert incoming.index_name == "shot (1).png"
+    assert (await db_session.execute(select(FileIndexConflict))).scalar_one_or_none() is None
 
-    conflict = (await db_session.execute(select(FileIndexConflict).limit(1))).scalar_one()
-    assert conflict.conflict_kind == KIND_SAME_NAME_DIFF_CONTENT
-    assert conflict.status == STATUS_PENDING
 
-    resolved = await resolve_conflict(db_session, conflict.id, action="replace")
-    assert resolved.status == STATUS_REPLACED
-    refreshed = await db_session.get(DriveFile, "new3")
-    assert refreshed is not None
-    assert refreshed.status == DriveFileStatus.PENDING
-    # Never-delete: existing is soft-archived, not hard-deleted.
-    existing_row = await db_session.get(DriveFile, "exist3")
-    assert existing_row is not None
-    assert existing_row.status == DriveFileStatus.ARCHIVED
-    assert existing_row.archived_at is not None
+@requires_postgres
+@pytest.mark.asyncio
+async def test_same_name_diff_content_increments_disambiguator(db_session: AsyncSession) -> None:
+    existing = DriveFile(
+        id="exist3b",
+        name="shot.png",
+        mime_type="image/png",
+        path="/shot.png",
+        status=DriveFileStatus.PROCESSED,
+        content_hash="111111",
+        content_hash_algo="md5",
+    )
+    taken = DriveFile(
+        id="exist3c",
+        name="shot.png",
+        index_name="shot (1).png",
+        mime_type="image/png",
+        path="/shot-copy.png",
+        status=DriveFileStatus.PROCESSED,
+        content_hash="333333",
+        content_hash_algo="md5",
+    )
+    incoming = DriveFile(
+        id="new3b",
+        name="shot.png",
+        mime_type="image/png",
+        path="/copy2/shot.png",
+        status=DriveFileStatus.PENDING,
+    )
+    db_session.add_all([existing, taken, incoming])
+    await db_session.flush()
+
+    reason = await apply_dedupe_on_upsert(db_session, incoming, algo="md5", digest="444444")
+    await db_session.flush()
+
+    assert reason is None
+    assert incoming.index_name == "shot (2).png"
+
+
+@requires_postgres
+@pytest.mark.asyncio
+async def test_legacy_name_conflict_reconcile_requeues(db_session: AsyncSession) -> None:
+    from app.drive.conflicts import reconcile_name_conflict_skips
+
+    existing = DriveFile(
+        id="exist_legacy",
+        name="dup.jpg",
+        mime_type="image/jpeg",
+        path="/dup.jpg",
+        status=DriveFileStatus.PROCESSED,
+        content_hash="aaaa",
+        content_hash_algo="md5",
+    )
+    skipped = DriveFile(
+        id="skip_legacy",
+        name="dup.jpg",
+        mime_type="image/jpeg",
+        path="/other/dup.jpg",
+        status=DriveFileStatus.SKIPPED,
+        error_message=f"{NAME_CONFLICT_PREFIX} same name as exist_legacy",
+        content_hash="bbbb",
+        content_hash_algo="md5",
+    )
+    db_session.add_all([existing, skipped])
+    await db_session.flush()
+
+    n = await reconcile_name_conflict_skips(db_session)
+    await db_session.flush()
+    assert n == 1
+    assert skipped.status == DriveFileStatus.PENDING
+    assert skipped.index_name == "dup (1).jpg"
+    assert skipped.error_message is None
 
 
 @requires_postgres

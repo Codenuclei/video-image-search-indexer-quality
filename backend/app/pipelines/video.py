@@ -40,6 +40,7 @@ logger = logging.getLogger(__name__)
 class VideoIndexResult:
     media: Media
     gemini_document_name: str | None
+    face_job_queued: bool = False
 
 
 async def _caption_frame(
@@ -250,6 +251,120 @@ async def _detect_faces_on_frame(
         await assign_face(session, face, detection.embedding)
 
 
+async def apply_faces_to_prepared_video(
+    session: AsyncSession,
+    drive_file: DriveFile,
+    media: Media,
+    *,
+    client: DriveConnectorClient,
+    settings: Settings | None = None,
+    engine: FaceEngine | None = None,
+) -> Media:
+    """Run InsightFace on sampled video frames (face-worker path; re-downloads video)."""
+    settings = settings or get_settings()
+    engine = engine or get_face_engine()
+
+    existing_face = await session.scalar(
+        select(Face.id)
+        .join(Media, Face.media_id == Media.id)
+        .where(Media.drive_file_id == drive_file.id)
+        .limit(1)
+    )
+    if existing_face is not None:
+        return media
+
+    segments = list(
+        (
+            await session.execute(
+                select(VideoSegment)
+                .where(VideoSegment.media_id == media.id)
+                .order_by(VideoSegment.start_sec.asc())
+            )
+        ).scalars().all()
+    )
+    timestamps = sorted(
+        {round(float(seg.start_sec or 0.0), 3) for seg in segments if seg.start_sec is not None}
+    )
+    if not timestamps:
+        logger.info("Video face job: no segment timestamps for %s", drive_file.id[:12])
+        return media
+
+    cache_path = await _ensure_video_bytes_for_faces(
+        client, drive_file, settings, session=session
+    )
+    tracker = LocalIdentityTracker(settings.media_dedup_similarity_threshold)
+
+    with tempfile.TemporaryDirectory(prefix="dfi-vfaces-") as tmpdir:
+        for ts in timestamps:
+            partial = os.path.join(tmpdir, f"{ts:.3f}.partial.jpg")
+            frame_path = os.path.join(tmpdir, f"{ts:.3f}.jpg")
+            ok = await run_cpu_bound(extract_frame_at, cache_path, ts, partial)
+            if not ok:
+                continue
+            os.replace(partial, frame_path)
+            image_bgr = cv2.imread(frame_path)
+            if image_bgr is not None:
+                await _detect_faces_on_frame(
+                    session, media, image_bgr, ts, engine, settings, tracker
+                )
+
+    from app.drive.display_name import drive_file_display_name
+
+    logger.info(
+        "Detected %d unique faces in video %s",
+        len(tracker._tracks),
+        drive_file_display_name(drive_file),
+    )
+    return media
+
+
+async def _ensure_video_bytes_for_faces(
+    client: DriveConnectorClient,
+    drive_file: DriveFile,
+    settings: Settings,
+    *,
+    session: AsyncSession,
+) -> str:
+    """Return a local video path for face extraction (face workers have no shared volume)."""
+    dest = _video_cache_path(settings, drive_file)
+    suffix = Path(dest).suffix or ".mp4"
+
+    if is_youtube_source(drive_file):
+        if not os.path.isfile(dest) or os.path.getsize(dest) <= 0:
+            from app.video.youtube_local import ensure_youtube_video_local
+            from app.video.youtube_registry import youtube_id_from_drive_file
+
+            yt_id = youtube_id_from_drive_file(drive_file)
+            if not yt_id:
+                raise FileNotFoundError(f"YouTube local cache missing for {drive_file.id}: {dest}")
+            await ensure_youtube_video_local(session, yt_id)
+            dest = _video_cache_path(settings, drive_file)
+        if not os.path.isfile(dest) or os.path.getsize(dest) <= 0:
+            raise FileNotFoundError(f"YouTube local cache missing for {drive_file.id}: {dest}")
+        return dest
+
+    if os.path.isfile(dest) and os.path.getsize(dest) > 0:
+        return dest
+
+    expected_size = drive_file.size if drive_file.size and drive_file.size > 0 else None
+    ensure_disk_space(dest, expected_size or 0)
+    partial = f"{dest}.partial"
+    try:
+        async with download_to_temp_file(
+            client,
+            drive_file.id,
+            settings,
+            suffix=suffix,
+            expected_size=expected_size,
+        ) as tmp:
+            shutil.move(tmp, partial)
+            os.replace(partial, dest)
+    finally:
+        if os.path.exists(partial):
+            os.remove(partial)
+    return dest
+
+
 async def _embed_video_frames_parallel(
     drive_file_id: str,
     frame_paths: dict[float, str],
@@ -453,7 +568,7 @@ async def process_video_file(
             continue
         frame_paths[ts] = frame_path
         image_bgr = cv2.imread(frame_path)
-        if image_bgr is not None:
+        if image_bgr is not None and not settings.face_jobs_enabled:
             await _detect_faces_on_frame(session, media, image_bgr, ts, engine, settings, tracker)
 
     if settings.gemini_api_key and frame_paths:
@@ -528,14 +643,26 @@ async def process_video_file(
             settings=settings,
         )
 
+    face_job_queued = False
+    if settings.face_jobs_enabled:
+        from app.workers.face_queue import enqueue_face_job
+
+        await enqueue_face_job(session, drive_file.id)
+        face_job_queued = True
+
     logger.info(
-        "Indexed video %s: %d segments, %d frames, %d faces (local Qdrant RAG)",
+        "Indexed video %s: %d segments, %d frames, %d faces (local Qdrant RAG)%s",
         drive_file.name,
         len(segments),
         len(frame_paths),
         len(tracker._tracks),
+        " face_job_queued" if face_job_queued else "",
     )
-    return VideoIndexResult(media=media, gemini_document_name=None)
+    return VideoIndexResult(
+        media=media,
+        gemini_document_name=None,
+        face_job_queued=face_job_queued,
+    )
 
 
 async def _index_transcripts_local(

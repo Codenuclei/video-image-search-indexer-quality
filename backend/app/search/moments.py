@@ -6,7 +6,7 @@ import logging
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import get_settings
+from app.drive.display_name import drive_file_display_name
 from app.runtime_settings import get_runtime_settings
 from app.db.models import DriveFile, Face, Media, MediaType, Person, VideoSegment
 from app.gemini.rerank import rerank_moments, rerank_transcript_moments
@@ -503,7 +503,7 @@ async def _gemini_moments(
         ts = f"{timestamp:.3f}"
         moments.append(SearchMoment(
             drive_file_id=drive_file_id,
-            name=drive_file.name,
+            name=drive_file_display_name(drive_file),
             path=drive_file.path,
             mime_type=drive_file.mime_type,
             timestamp_sec=timestamp,
@@ -580,7 +580,7 @@ async def _face_moments(
         ts_str = f"{ts:.3f}"
         moments.append(SearchMoment(
             drive_file_id=drive_file.id,
-            name=drive_file.name,
+            name=drive_file_display_name(drive_file),
             path=drive_file.path,
             mime_type=drive_file.mime_type,
             timestamp_sec=ts,
@@ -622,7 +622,7 @@ def _build_moment(
     ts = f"{timestamp_sec:.2f}"
     return SearchMoment(
         drive_file_id=drive_file.id,
-        name=drive_file.name,
+        name=drive_file_display_name(drive_file),
         path=drive_file.path,
         mime_type=drive_file.mime_type,
         timestamp_sec=timestamp_sec,
