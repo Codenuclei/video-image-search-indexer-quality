@@ -11,6 +11,7 @@ import {
   type SearchMoment,
 } from "@/lib/api";
 import { Button, Card, DownloadButton, FilePreview, IconButton, IconLink, Input, LoadingLabel, PersonTags } from "@/components/ui";
+import { FilterDropdown } from "@/components/filter-dropdown";
 import { ModalOverlay } from "@/components/modal";
 import {
   hydrateSearchCatalogs,
@@ -127,50 +128,40 @@ export function SearchPage({
           onKeyDown={(e) => e.key === "Enter" && search()}
         />
         <div className="flex flex-wrap items-center gap-2">
-          <label className="relative inline-flex items-center">
-            <ImageIcon size={14} className="pointer-events-none absolute left-3 z-10 text-muted-foreground" />
-            <select
-              className="h-9 cursor-pointer appearance-none rounded-full border border-border bg-card pl-9 pr-8 text-xs font-medium text-foreground shadow-sm outline-none transition-colors hover:border-muted-foreground/30 focus:border-ring focus:ring-2 focus:ring-ring/20"
-              value={mime === "video" ? "all" : mime}
-              onChange={(e) => patchSearchSession({ mime: e.target.value })}
-              title="File type"
-            >
-              <option value="all">All types</option>
-              <option value="image">Images</option>
-              <option value="pdf">PDFs</option>
-            </select>
-          </label>
-          <label className="relative inline-flex items-center">
-            <select
-              className="h-9 cursor-pointer appearance-none rounded-full border border-border bg-card pl-3.5 pr-8 text-xs font-medium text-foreground shadow-sm outline-none transition-colors hover:border-muted-foreground/30 focus:border-ring focus:ring-2 focus:ring-ring/20 disabled:cursor-not-allowed disabled:opacity-60"
-              value={person}
-              onChange={(e) => patchSearchSession({ person: e.target.value })}
-              disabled={persons.length === 0}
-              title="Person"
-            >
-              <option value="">All people</option>
-              {persons.map((p) => (
-                <option key={p.id} value={p.name}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="relative inline-flex items-center">
-            <select
-              className="h-9 max-w-[12rem] cursor-pointer appearance-none rounded-full border border-border bg-card pl-3.5 pr-8 text-xs font-medium text-foreground shadow-sm outline-none transition-colors hover:border-muted-foreground/30 focus:border-ring focus:ring-2 focus:ring-ring/20"
-              value={folderPath}
-              onChange={(e) => patchSearchSession({ folderPath: e.target.value })}
-              title={folderPath && folderContexts.find(f => f.folder_path === folderPath)?.description}
-            >
-              <option value="">All folders</option>
-              {folderContexts.map((f) => (
-                <option key={f.folder_path} value={f.folder_path} title={f.description}>
-                  {f.folder_path.split("/").filter(Boolean).pop() ?? f.folder_path}
-                </option>
-              ))}
-            </select>
-          </label>
+          <FilterDropdown
+            icon={ImageIcon}
+            title="File type"
+            value={mime === "video" ? "all" : mime}
+            onChange={(v) => patchSearchSession({ mime: v })}
+            options={[
+              { value: "all", label: "All types" },
+              { value: "image", label: "Images" },
+              { value: "pdf", label: "PDFs" },
+            ]}
+          />
+          <FilterDropdown
+            title="Person"
+            value={person}
+            disabled={persons.length === 0}
+            onChange={(v) => patchSearchSession({ person: v })}
+            options={[
+              { value: "", label: "All people" },
+              ...persons.map((p) => ({ value: p.name, label: p.name })),
+            ]}
+          />
+          <FilterDropdown
+            title={folderPath ? folderContexts.find(f => f.folder_path === folderPath)?.description : "Folder"}
+            value={folderPath}
+            onChange={(v) => patchSearchSession({ folderPath: v })}
+            options={[
+              { value: "", label: "All folders" },
+              ...folderContexts.map((f) => ({
+                value: f.folder_path,
+                label: f.folder_path.split("/").filter(Boolean).pop() ?? f.folder_path,
+                hint: f.description,
+              })),
+            ]}
+          />
           <Button className="h-9 rounded-full px-4" onClick={search} disabled={loading}>
             {loading ? <LoadingLabel>Searching…</LoadingLabel> : <span className="inline-flex items-center gap-1.5"><Search size={14} />Search</span>}
           </Button>

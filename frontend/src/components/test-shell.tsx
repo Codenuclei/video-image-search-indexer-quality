@@ -17,6 +17,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { FilterDropdown } from "@/components/filter-dropdown";
 import { getAuthEmail, signOut } from "@/components/auth-gate";
 import { apiClient, type DriveSession } from "@/lib/api";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -42,46 +43,6 @@ const libraryLinks = [
   { href: "/test/folders", label: "Indexed Folders", icon: FolderOpen },
   { href: "/test/people", label: "People Directory", icon: Users },
 ];
-
-function IconSelect({
-  icon: Icon,
-  title,
-  value,
-  active,
-  disabled,
-  onChange,
-  children,
-}: {
-  icon: LucideIcon;
-  title: string;
-  value: string;
-  active: boolean;
-  disabled?: boolean;
-  onChange: (value: string) => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <label
-      title={title}
-      className={cn(
-        "relative flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors",
-        active ? "bg-primary/10 text-primary" : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
-        disabled && "opacity-40"
-      )}
-    >
-      <Icon size={15} />
-      <select
-        aria-label={title}
-        className="absolute inset-0 h-full w-full cursor-pointer appearance-none opacity-0"
-        value={value}
-        disabled={disabled}
-        onChange={(e) => onChange(e.target.value)}
-      >
-        {children}
-      </select>
-    </label>
-  );
-}
 
 function IconToggle({
   icon: Icon,
@@ -290,31 +251,35 @@ export function TestShell({ children }: { children: React.ReactNode }) {
                 className="min-w-0 flex-1 bg-transparent px-2 text-sm text-foreground outline-none placeholder:text-muted-foreground"
               />
               <div className="hidden items-center gap-0.5 sm:flex">
-                <IconSelect
+                <FilterDropdown
+                  iconOnly
                   icon={ImageIcon}
                   title={`Type: ${mimeValue}`}
                   value={mimeValue}
                   active={mimeValue !== "all"}
                   onChange={(v) => patchSearchSession({ mime: v })}
-                >
-                  <option value="all">All types</option>
-                  <option value="image">Images</option>
-                  <option value="pdf">PDFs</option>
-                </IconSelect>
-                <IconSelect
+                  options={[
+                    { value: "all", label: "All types" },
+                    { value: "image", label: "Images" },
+                    { value: "pdf", label: "PDFs" },
+                  ]}
+                />
+                <FilterDropdown
+                  iconOnly
                   icon={FolderOpen}
                   title={folderPath ? `Folder: ${folderPath}` : "All folders"}
                   value={folderPath}
                   active={folderPath !== ""}
                   onChange={(v) => patchSearchSession({ folderPath: v })}
-                >
-                  <option value="">All folders</option>
-                  {folderContexts.map((f) => (
-                    <option key={f.folder_path} value={f.folder_path} title={f.description}>
-                      {f.folder_path.split("/").filter(Boolean).pop() ?? f.folder_path}
-                    </option>
-                  ))}
-                </IconSelect>
+                  options={[
+                    { value: "", label: "All folders" },
+                    ...folderContexts.map((f) => ({
+                      value: f.folder_path,
+                      label: f.folder_path.split("/").filter(Boolean).pop() ?? f.folder_path,
+                      hint: f.description,
+                    })),
+                  ]}
+                />
                 <IconToggle
                   icon={FileText}
                   title={useCaptions ? "Captions on" : "Captions off"}
