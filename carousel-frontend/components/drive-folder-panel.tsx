@@ -342,15 +342,6 @@ export function DriveFolderPanel({
       await ensureGooglePickerApi();
 
       const origin = `${window.location.protocol}//${window.location.host}`;
-      // My Drive tabs stay split (folders vs media). Pin enableDrives(false) so
-      // SUPPORT_DRIVES does not spawn a paired "Shared drives" tab per view.
-      const myDriveFolderView = new window.google.picker.DocsView(window.google.picker.ViewId.FOLDERS)
-        .setEnableDrives(false)
-        .setIncludeFolders(true)
-        .setSelectFolderEnabled(true)
-        .setMimeTypes(FOLDER_MIME)
-        .setLabel("My Drive folders");
-
       const myDriveMediaView = new window.google.picker.DocsView(
         window.google.picker.ViewId.DOCS_IMAGES_AND_VIDEOS
       )
@@ -359,7 +350,6 @@ export function DriveFolderPanel({
         .setSelectFolderEnabled(true)
         .setLabel("My Drive images & videos");
 
-      // Single Shared drives tab: all file types (docs + images/videos + folders).
       const sharedDriveView = new window.google.picker.DocsView(window.google.picker.ViewId.DOCS)
         .setEnableDrives(true)
         .setIncludeFolders(true)
@@ -370,7 +360,6 @@ export function DriveFolderPanel({
       const builder = new window.google.picker.PickerBuilder()
         .setTitle("Choose a folder to pull videos from")
         .setOrigin(origin)
-        .addView(myDriveFolderView)
         .addView(myDriveMediaView)
         .addView(sharedDriveView)
         .setOAuthToken(accessToken)
@@ -701,10 +690,13 @@ export function DriveFolderPanel({
           </p>
           {session?.connected ? (
             <p className="mt-0.5 text-xs text-slate-500">
-              {session.email}
-              {session.selected_folder
-                ? ` · Folder: ${session.selected_folder.name}`
-                : " · No folder selected yet"}
+              {busy && !pickerBusy
+                ? "Saving connected folder and syncing…"
+                : `${session.email}${
+                    session.selected_folder
+                      ? ` · Folder: ${session.selected_folder.name}`
+                      : " · No folder selected yet"
+                  }`}
             </p>
           ) : (
             <p className="mt-0.5 text-xs text-slate-500">
@@ -723,8 +715,14 @@ export function DriveFolderPanel({
                 onClick={() => void openPicker()}
                 data-testid={`${testIdPrefix}-change-folder`}
               >
-                <FolderOpen size={14} />
-                {pickerBusy ? (
+                {busy && !pickerBusy ? (
+                  <Loader2 size={14} className="animate-spin" />
+                ) : (
+                  <FolderOpen size={14} />
+                )}
+                {busy && !pickerBusy ? (
+                  "Switching folder…"
+                ) : pickerBusy ? (
                   "Opening…"
                 ) : session.selected_folder ? (
                   "Change folder"
