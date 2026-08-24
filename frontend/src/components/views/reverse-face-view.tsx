@@ -14,6 +14,7 @@ import {
   X,
 } from "lucide-react";
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import {
   driveFilePreviewUrl,
   type FaceSearchAppearance,
@@ -77,6 +78,8 @@ function collectClusters(matches: FaceSearchMatch[]) {
 }
 
 function MatchRow({ match }: { match: FaceSearchMatch }) {
+  const pathname = usePathname();
+  const personBase = pathname.startsWith("/test") ? "/test/people" : "/people";
   return (
     <div className="flex items-center gap-3 rounded-lg bg-muted/30 p-2.5">
       <FaceThumb faceId={match.face_id} className="h-12 w-12 shrink-0 rounded-md" />
@@ -101,7 +104,7 @@ function MatchRow({ match }: { match: FaceSearchMatch }) {
       </div>
       {match.person_id != null && (
         <Link
-          href={`/people/${match.person_id}`}
+          href={`${personBase}/${match.person_id}`}
           className="shrink-0 text-[11px] font-medium text-muted-foreground hover:text-foreground"
         >
           Profile

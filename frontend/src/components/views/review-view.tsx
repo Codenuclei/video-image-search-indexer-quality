@@ -236,18 +236,19 @@ export function ReviewPage({ embedded = false }: { embedded?: boolean } = {}) {
             <div
               key={c.id}
               className={cn(
-                "space-y-3 rounded-xl bg-muted/25 p-4 transition-shadow hover:shadow-sm",
+                "group flex flex-col gap-3 rounded-xl border border-border bg-card p-4 shadow-sm transition-all duration-200",
+                "hover:-translate-y-0.5 hover:shadow-[0_12px_40px_-18px_rgba(0,0,0,0.35)]",
                 vanishingIds.has(c.id) && "card-vanish"
               )}
             >
               <div className="flex gap-3">
                 <FaceThumb
                   faceId={c.representative_face_id}
-                  className="h-20 w-20 shrink-0 rounded-lg ring-1 ring-border"
+                  className="h-20 w-20 shrink-0 rounded-xl object-cover ring-1 ring-border transition-transform duration-200 group-hover:scale-[1.02]"
                 />
                 <div className="min-w-0 flex-1">
-                  <p className="flex items-center gap-1.5 font-medium">
-                    <ScanFace size={16} aria-hidden className="shrink-0 text-muted-foreground" />
+                  <p className="flex items-center gap-1.5 text-[15px] font-semibold tracking-tight text-foreground">
+                    <ScanFace size={15} aria-hidden className="shrink-0 text-muted-foreground" />
                     Cluster #{c.id}
                   </p>
                   <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
@@ -304,7 +305,7 @@ export function ReviewPage({ embedded = false }: { embedded?: boolean } = {}) {
                   )}
                 </Button>
               </div>
-              <div className="flex flex-wrap items-start gap-2 border-t border-border pt-3">
+              <div className="flex flex-wrap items-start gap-2 border-t border-border/60 pt-3">
                 <Button
                   variant="secondary"
                   className="group/trash shrink-0 hover:border-destructive/40 hover:text-destructive"
