@@ -14,33 +14,24 @@ import {
   apiClient,
   driveFileThumbnailUrl,
   driveGoogleViewUrl,
-  type DriveSession,
   type LibraryFile,
   type LibraryFolder,
   type LibraryFolderPage,
   type LibraryResponse,
 } from "@/lib/api";
 import { LoadingLabel } from "@/components/ui";
+import { DriveSessionBar } from "@/components/drive-session-bar";
 import { cn } from "@/lib/utils";
 import { formatCount } from "@/lib/index-errors";
 import { hydrateKeyFromDisk, readCache, writeCache } from "@/lib/data-cache";
+import { librarySubfoldersAtPath } from "@/lib/library-folders";
 
 const PAGE_SIZE = 120;
 const SHELL_CACHE_KEY = "driveLibraryShell";
 const FOLDER_CACHE_PREFIX = "driveLibrary:folder:";
-const SESSION_CACHE_KEY = "driveSession:testFolders";
 
 function folderCacheKey(path: string) {
   return `${FOLDER_CACHE_PREFIX}${path}`;
-}
-
-function findFolder(node: LibraryFolder, path: string): LibraryFolder | null {
-  if (node.path === path) return node;
-  for (const child of node.folders) {
-    const hit = findFolder(child, path);
-    if (hit) return hit;
-  }
-  return null;
 }
 
 function indexedCount(f: LibraryFolder): number {
@@ -135,7 +126,6 @@ export default function TestFoldersPage() {
   const [filesLoading, setFilesLoading] = useState(false);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [total, setTotal] = useState(0);
-  const [email, setEmail] = useState<string | null>(null);
 
   const loadShell = useCallback(async (force = false) => {
     try {
@@ -231,21 +221,8 @@ export default function TestFoldersPage() {
       setShell(cached.data);
       setLoading(false);
     }
-    const sessionCached = hydrateKeyFromDisk(SESSION_CACHE_KEY) as
-      | import("@/lib/data-cache").CacheEntry<DriveSession>
-      | null;
-    if (sessionCached?.data?.email) setEmail(sessionCached.data.email);
 
     void loadShell(false);
-    void apiClient
-      .driveSession()
-      .then((s) => {
-        if (s?.email) {
-          setEmail(s.email);
-          writeCache(SESSION_CACHE_KEY, s, s.email, true);
-        }
-      })
-      .catch(() => undefined);
   }, [loadShell]);
 
   useEffect(() => {
@@ -255,11 +232,10 @@ export default function TestFoldersPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [path]);
 
-  const currentFolder = useMemo(
-    () => (shell?.tree ? findFolder(shell.tree, path) : null),
+  const subfolders = useMemo(
+    () => librarySubfoldersAtPath(shell?.tree, path),
     [shell, path]
   );
-  const subfolders = currentFolder?.folders ?? (path === "/" ? (shell?.tree?.folders ?? []) : []);
   const totalFiles = shell?.summary?.total_files ?? 0;
 
   const crumbs = useMemo(() => {
@@ -275,16 +251,10 @@ export default function TestFoldersPage() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <h1 className="text-2xl font-semibold tracking-tight">Indexed Folders</h1>
-          {email && (
-            <p className="mt-0.5 truncate text-xs text-muted-foreground" title={email}>
-              {email}
-            </p>
-          )}
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <h1 className="text-2xl font-semibold tracking-tight">Indexed Folders</h1>
+        <div className="flex min-w-0 flex-wrap items-center justify-end gap-2 sm:gap-3">
+          <DriveSessionBar compact />
           {shell && (
             <span className="tabular-nums text-sm font-medium text-foreground">
               {formatCount(totalFiles)} files
@@ -297,7 +267,7 @@ export default function TestFoldersPage() {
               void loadShell(true);
               void loadFiles(path, { force: true });
             }}
-            className="flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
           >
             <RefreshCw size={15} className={cn(loading && "animate-spin")} />
           </button>

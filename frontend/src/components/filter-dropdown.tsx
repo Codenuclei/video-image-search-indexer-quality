@@ -2,12 +2,14 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Check, ChevronDown, type LucideIcon } from "lucide-react";
+import { FaceThumb } from "@/components/ui";
 import { cn } from "@/lib/utils";
 
 export type FilterDropdownOption = {
   value: string;
   label: string;
   hint?: string;
+  faceId?: number | null;
 };
 
 export function FilterDropdown({
@@ -54,6 +56,7 @@ export function FilterDropdown({
 
   const selected = options.find((o) => o.value === value);
   const isActive = active ?? (iconOnly ? value !== options[0]?.value : false);
+  const selectedFaceId = selected?.faceId ?? null;
 
   return (
     <div ref={rootRef} className={cn("relative", className)}>
@@ -67,7 +70,7 @@ export function FilterDropdown({
         className={cn(
           iconOnly
             ? cn(
-                "flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors",
+                "flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-full transition-colors",
                 isActive
                   ? "bg-primary/10 text-primary"
                   : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
@@ -79,9 +82,18 @@ export function FilterDropdown({
               )
         )}
       >
-        {Icon && <Icon size={iconOnly ? 15 : 14} className={iconOnly ? undefined : "shrink-0 text-muted-foreground"} />}
+        {iconOnly && selectedFaceId ? (
+          <FaceThumb faceId={selectedFaceId} className="h-7 w-7 rounded-full object-cover" />
+        ) : Icon ? (
+          <Icon size={iconOnly ? 15 : 14} className={iconOnly ? undefined : "shrink-0 text-muted-foreground"} />
+        ) : null}
         {!iconOnly && (
           <>
+            {!Icon && selectedFaceId ? (
+              <FaceThumb faceId={selectedFaceId} className="h-5 w-5 shrink-0 rounded-full object-cover" />
+            ) : Icon ? (
+              <Icon size={14} className="shrink-0 text-muted-foreground" />
+            ) : null}
             <span className="max-w-[10rem] truncate">{selected?.label ?? "Select"}</span>
             <ChevronDown
               size={13}
@@ -91,8 +103,12 @@ export function FilterDropdown({
         )}
       </button>
       {open && (
-        <div className="absolute left-0 top-full z-40 mt-1.5 w-52 max-w-[70vw] overflow-hidden rounded-xl border border-border bg-card py-1 shadow-lg">
-          <ul role="listbox" aria-label={title} className="max-h-64 overflow-y-auto">
+        <div className="absolute left-0 top-full z-40 mt-1.5 w-56 max-w-[70vw] overflow-hidden rounded-xl border border-border bg-card py-1 shadow-lg">
+          <ul
+            role="listbox"
+            aria-label={title}
+            className="scrollbar-hidden max-h-64 overflow-y-auto"
+          >
             {options.map((o) => {
               const isSel = o.value === value;
               return (
@@ -113,6 +129,16 @@ export function FilterDropdown({
                         : "text-foreground hover:bg-accent"
                     )}
                   >
+                    {o.faceId ? (
+                      <FaceThumb
+                        faceId={o.faceId}
+                        className="h-6 w-6 shrink-0 rounded-full object-cover ring-1 ring-border/60"
+                      />
+                    ) : o.value === "" ? (
+                      <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-muted text-[10px] text-muted-foreground">
+                        ···
+                      </span>
+                    ) : null}
                     <span className="min-w-0 flex-1 truncate">{o.label}</span>
                     {isSel && <Check size={13} className="shrink-0" aria-hidden />}
                   </button>

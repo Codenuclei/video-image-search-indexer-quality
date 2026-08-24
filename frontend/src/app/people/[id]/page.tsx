@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, usePathname, useRouter } from "next/navigation";
-import { ArrowLeft, Pencil } from "lucide-react";
-import { apiClient, formatApiError, type Person, type PersonRole } from "@/lib/api";
+import { ArrowLeft, ExternalLink, Pencil } from "lucide-react";
+import { apiClient, driveGoogleViewUrl, formatApiError, type Person, type PersonRole } from "@/lib/api";
 import { Button, Card, ConfirmDialog, FaceThumb, Input, LoadingLabel } from "@/components/ui";
 import { RoleSelector } from "@/components/role-selector";
 import { AnimatedTrash } from "@/components/animated-trash";
@@ -111,6 +111,17 @@ export default function PersonDetailPage() {
     setEditing(false);
   }
 
+  const mediaBreakdown = useMemo(() => {
+    let images = 0;
+    let videos = 0;
+    for (const m of media) {
+      const t = (m.media_type || "").toLowerCase();
+      if (t === "video") videos += 1;
+      else if (t === "image") images += 1;
+    }
+    return { images, videos };
+  }, [media]);
+
   if (!person) {
     return (
       <p className="text-muted-foreground">
@@ -195,13 +206,29 @@ export default function PersonDetailPage() {
       </div>
 
       <Card>
-        <h3 className="mb-3 font-medium">Appears in</h3>
+        <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
+          <h3 className="font-medium">Appears in</h3>
+          {media.length > 0 && (
+            <p className="text-xs text-muted-foreground tabular-nums">
+              {mediaBreakdown.images} image{mediaBreakdown.images === 1 ? "" : "s"}
+              {" · "}
+              {mediaBreakdown.videos} video{mediaBreakdown.videos === 1 ? "" : "s"}
+            </p>
+          )}
+        </div>
         <ul className="space-y-2">
           {media.map((m) => (
             <li key={m.media_id} className="rounded-md bg-muted/50 px-3 py-2 text-sm">
-              <span className="font-medium">{m.name}</span>
-              <span className="ml-2 text-muted-foreground">{m.path}</span>
-              <span className="ml-2 text-xs text-muted-foreground">({m.media_type})</span>
+              <a
+                href={driveGoogleViewUrl(m.drive_file_id)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex max-w-full items-center gap-1.5 font-medium text-foreground underline-offset-2 hover:underline"
+                title={m.name}
+              >
+                <span className="truncate">{m.name}</span>
+                <ExternalLink size={12} className="shrink-0 text-muted-foreground" aria-hidden />
+              </a>
               {m.media_type === "video" && m.frame_timestamp != null && (
                 <span className="ml-2 text-xs text-violet-400">@ {formatTimestamp(m.frame_timestamp)}</span>
               )}

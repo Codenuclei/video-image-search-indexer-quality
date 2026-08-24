@@ -85,6 +85,7 @@ export function SearchPage({
     useCaptions,
     persons,
     folderContexts,
+    libraryFolders,
     results,
     lastSearchMode,
     loading,
@@ -146,19 +147,29 @@ export function SearchPage({
             onChange={(v) => patchSearchSession({ person: v })}
             options={[
               { value: "", label: "All people" },
-              ...persons.map((p) => ({ value: p.name, label: p.name })),
+              ...persons.map((p) => ({
+                value: p.name,
+                label: p.name,
+                faceId: p.representative_face_id,
+              })),
             ]}
           />
           <FilterDropdown
-            title={folderPath ? folderContexts.find(f => f.folder_path === folderPath)?.description : "Folder"}
+            title={
+              folderPath
+                ? folderContexts.find((f) => f.folder_path === folderPath)?.description ||
+                  libraryFolders.find((f) => f.value === folderPath)?.label ||
+                  "Folder"
+                : "Folder"
+            }
             value={folderPath}
             onChange={(v) => patchSearchSession({ folderPath: v })}
             options={[
               { value: "", label: "All folders" },
-              ...folderContexts.map((f) => ({
-                value: f.folder_path,
-                label: f.folder_path.split("/").filter(Boolean).pop() ?? f.folder_path,
-                hint: f.description,
+              ...libraryFolders.map((f) => ({
+                value: f.value,
+                label: f.label,
+                hint: folderContexts.find((c) => c.folder_path === f.value)?.description,
               })),
             ]}
           />

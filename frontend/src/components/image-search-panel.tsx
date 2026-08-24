@@ -13,11 +13,13 @@ import {
   runReverseFaceNameTag,
   runReverseFaceSearch,
   setReverseFaceFile,
+  totalMatchFileCount,
   useReverseFaceSession,
 } from "@/lib/reverse-face-session";
 
 function MatchCard({ match, tagging }: { match: FaceSearchMatch; tagging: boolean }) {
   const appearances = match.appears_in ?? [];
+  const fileCount = match.file_count ?? appearances.length;
   const unknown = isUnknownFaceMatch(match);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
@@ -49,8 +51,8 @@ function MatchCard({ match, tagging }: { match: FaceSearchMatch; tagging: boolea
           <p className="text-[11px] text-muted-foreground">
             {Math.round(match.score * 100)}% match
             {match.cluster_id != null ? ` · cluster #${match.cluster_id}` : ""}
-            {appearances.length > 0
-              ? ` · ${appearances.length} file${appearances.length === 1 ? "" : "s"}`
+            {fileCount > 0
+              ? ` · ${fileCount} file${fileCount === 1 ? "" : "s"}`
               : ""}
           </p>
         </div>
@@ -135,6 +137,10 @@ export function ImageSearchPanel() {
     [result?.matches]
   );
   const unknownCount = unknownIds.clusterIds.length + unknownIds.faceIds.length;
+  const matchFileCount = useMemo(
+    () => totalMatchFileCount(result?.matches ?? []),
+    [result?.matches]
+  );
 
   function onPick(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -183,9 +189,11 @@ export function ImageSearchPanel() {
           ) : result ? (
             <p>
               {result.faces_detected} face{result.faces_detected === 1 ? "" : "s"} detected
-              {result.matches.length > 0
-                ? ` · ${result.matches.length} match${result.matches.length === 1 ? "" : "es"}`
-                : " · no matches"}
+              {matchFileCount > 0
+                ? ` · ${matchFileCount} match${matchFileCount === 1 ? "" : "es"}`
+                : result.matches.length > 0
+                  ? ` · ${result.matches.length} match${result.matches.length === 1 ? "" : "es"}`
+                  : " · no matches"}
               {unknownCount > 0
                 ? ` · ${unknownCount} unknown to name`
                 : result.matches.length > 0

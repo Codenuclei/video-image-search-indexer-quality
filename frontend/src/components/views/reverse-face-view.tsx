@@ -33,6 +33,7 @@ import {
   runReverseFaceSearch,
   selectReverseFaceLeader,
   setReverseFaceFile,
+  totalMatchFileCount,
   useReverseFaceSession,
 } from "@/lib/reverse-face-session";
 
@@ -55,6 +56,7 @@ function collectClusters(matches: FaceSearchMatch[]) {
     cluster_id: number;
     status: string | null;
     member_count: number | null;
+    file_count: number | null;
     face_id: number;
     person_id: number | null;
     person_name: string;
@@ -68,6 +70,7 @@ function collectClusters(matches: FaceSearchMatch[]) {
       cluster_id: m.cluster_id,
       status: m.cluster_status ?? null,
       member_count: m.cluster_member_count ?? null,
+      file_count: m.file_count ?? null,
       face_id: m.face_id,
       person_id: m.person_id,
       person_name: m.person_name,
@@ -129,6 +132,7 @@ function ResultsSidePanel({
 }) {
   const clusters = useMemo(() => collectClusters(result.matches), [result.matches]);
   const files = useMemo(() => collectAppearances(result.matches), [result.matches]);
+  const totalFileCount = useMemo(() => totalMatchFileCount(result.matches), [result.matches]);
   const canTag =
     !!leader &&
     result.matches.length > 0 &&
@@ -238,6 +242,9 @@ function ResultsSidePanel({
                     <p className="text-[11px] text-muted-foreground">
                       {c.status ?? "unknown"}
                       {c.member_count != null ? ` · ${c.member_count} faces` : ""}
+                      {c.file_count != null && c.file_count > 0
+                        ? ` · ${c.file_count} file${c.file_count === 1 ? "" : "s"}`
+                        : ""}
                       {` · ${Math.round(c.score * 100)}%`}
                       {c.person_name !== "Unknown" ? ` · ${c.person_name}` : ""}
                     </p>
@@ -258,6 +265,9 @@ function ResultsSidePanel({
           <h3 className="flex items-center gap-1.5 text-sm font-medium">
             <FolderOpen size={14} className="text-muted-foreground" aria-hidden />
             Files where they appear
+            {totalFileCount > 0 ? (
+              <span className="font-normal text-muted-foreground">({totalFileCount})</span>
+            ) : null}
           </h3>
           {files.length === 0 ? (
             <p className="text-xs text-muted-foreground">No Drive files linked to these matches yet.</p>
@@ -575,8 +585,8 @@ export function ReverseFaceLabPage({ embedded = false }: { embedded?: boolean } 
                 ) : (
                   <div className="mt-2 space-y-2">
                     <p className="text-xs text-muted-foreground">
-                      {item.search?.faces_detected ?? 0} face(s) · {item.search?.matches.length ?? 0}{" "}
-                      match(es)
+                      {item.search?.faces_detected ?? 0} face(s) ·{" "}
+                      {totalMatchFileCount(item.search?.matches ?? [])} match(es)
                     </p>
                     {(item.search?.matches ?? []).slice(0, 5).map((m) => (
                       <MatchRow key={`${item.url}-${m.face_id}`} match={m} />
