@@ -161,7 +161,7 @@ function PersonCard({
             <div className="min-w-0 flex-1">
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
-                  <Link href={detailHref} className="block text-[15px] font-semibold leading-snug tracking-tight text-foreground hover:underline">
+                  <Link href={detailHref} className="block break-words text-[15px] font-semibold leading-snug tracking-tight text-foreground hover:underline">
                     {person.name}
                   </Link>
                   <p className="mt-1 inline-flex items-center gap-1.5 whitespace-nowrap text-xs text-muted-foreground">
