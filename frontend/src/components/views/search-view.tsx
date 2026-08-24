@@ -217,7 +217,7 @@ export function SearchPage({
       )}
 
       {results && lastSearchMode && (
-        <Card className="border-border/80 bg-muted/30 px-4 py-3 text-sm">
+        <div className="max-w-3xl text-sm">
           <p className="font-medium text-foreground">Search mode for this query</p>
           <ul className="mt-1.5 space-y-1 text-xs text-muted-foreground">
             <li>
@@ -238,11 +238,11 @@ export function SearchPage({
               </li>
             ) : null}
           </ul>
-        </Card>
+        </div>
       )}
 
       {results && (
-        <Card className="relative">
+        <section className="relative">
           <div className="mb-4 flex items-start justify-between gap-2">
             <h3 className="font-medium">Matching files ({files.length})</h3>
             <div className="flex shrink-0 items-center gap-1">
@@ -334,7 +334,7 @@ export function SearchPage({
               })}
             </ul>
           )}
-        </Card>
+        </section>
       )}
 
       <ModalOverlay open={!!previewFile} onClose={() => patchSearchSession({ previewFile: null })}>
