@@ -259,6 +259,8 @@ export type FaceSearchMatch = {
   cluster_id?: number | null;
   cluster_status?: string | null;
   cluster_member_count?: number | null;
+  /** Unique Drive files for person (merged) or cluster — not capped like appears_in. */
+  file_count?: number | null;
   appears_in?: FaceSearchAppearance[];
 };
 

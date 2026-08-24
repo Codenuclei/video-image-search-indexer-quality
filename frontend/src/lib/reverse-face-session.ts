@@ -5,6 +5,7 @@ import {
   apiClient,
   formatApiError,
   type FaceCrawlResponse,
+  type FaceSearchMatch,
   type FaceSearchResponse,
   type LeadershipPerson,
   type LeadershipRoster,
@@ -236,6 +237,16 @@ export function isUnknownFaceMatch(match: {
 }): boolean {
   const status = (match.cluster_status ?? "").toLowerCase();
   return match.person_id == null || status === "unknown";
+}
+
+/** Total matching Drive files across face-search results (not just match rows). */
+export function totalMatchFileCount(matches: FaceSearchMatch[]): number {
+  let sum = 0;
+  for (const m of matches) {
+    sum += m.file_count ?? m.appears_in?.length ?? 0;
+  }
+  if (sum === 0 && matches.length > 0) return matches.length;
+  return sum;
 }
 
 /** Collect cluster/face ids for name-tag (prefer clusters; leftover faces only). */

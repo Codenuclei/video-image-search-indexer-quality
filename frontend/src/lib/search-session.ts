@@ -6,6 +6,7 @@ import {
   apiClient,
   formatApiError,
   type FolderContext,
+  type LibraryResponse,
   type Person,
   type SearchMoment,
   type SearchResponse,
@@ -14,8 +15,13 @@ import {
 import { toastApiError } from "@/lib/toast-api-error";
 import { readCache, writeCache, hydrateKeyFromDisk } from "@/lib/data-cache";
 import { personsRevision, stableJsonHash } from "@/lib/fingerprints";
+import {
+  indexedFolderPickerOptions,
+  type LibraryFolderOption,
+} from "@/lib/library-folders";
 
 const SEARCH_RESULTS_CACHE_KEY = "searchResults";
+const LIBRARY_SHELL_CACHE_KEY = "driveLibraryShell";
 const MAX_CACHED_SEARCHES = 6;
 
 type CachedSearchResult = {
@@ -36,6 +42,8 @@ export type SearchSession = {
   catalogsHydrated: boolean;
   persons: Person[];
   folderContexts: FolderContext[];
+  /** Indexed Folders paths for Search folder filter (excludes virtual "/"). */
+  libraryFolders: LibraryFolderOption[];
   linkedinMap: Record<string, string>;
   results: SearchResponse | null;
   lastSearchMode: { captions: boolean; rerank: boolean } | null;
@@ -55,6 +63,7 @@ const initial: SearchSession = {
   catalogsHydrated: false,
   persons: [],
   folderContexts: [],
+  libraryFolders: [],
   linkedinMap: {},
   results: null,
   lastSearchMode: null,
@@ -96,6 +105,7 @@ export function hydrateSearchCatalogs() {
 
   hydrateKeyFromDisk("persons");
   hydrateKeyFromDisk("folderContexts");
+  hydrateKeyFromDisk(LIBRARY_SHELL_CACHE_KEY);
   hydrateKeyFromDisk("reidLinkedinMap");
 
   const cachedPersons = readCache<Person[]>("persons");
@@ -105,6 +115,12 @@ export function hydrateSearchCatalogs() {
   const cachedFolders = readCache<FolderContext[]>("folderContexts");
   if (cachedFolders?.data?.length) {
     patchSearchSession({ folderContexts: cachedFolders.data });
+  }
+  const cachedShell = readCache<LibraryResponse>(LIBRARY_SHELL_CACHE_KEY);
+  if (cachedShell?.data?.tree) {
+    patchSearchSession({
+      libraryFolders: indexedFolderPickerOptions(cachedShell.data.tree),
+    });
   }
   const cachedLi = readCache<Record<string, string>>("reidLinkedinMap");
   if (cachedLi?.data) {
@@ -142,6 +158,23 @@ export function hydrateSearchCatalogs() {
         );
         patchSearchSession({ folderContexts });
       }
+    } catch {
+      /* ignore */
+    }
+  })();
+
+  void (async () => {
+    try {
+      const shell = await apiClient.driveLibraryShell();
+      writeCache(
+        LIBRARY_SHELL_CACHE_KEY,
+        shell,
+        shell.revision ?? String(shell.summary?.total_files ?? Date.now()),
+        true
+      );
+      patchSearchSession({
+        libraryFolders: indexedFolderPickerOptions(shell.tree),
+      });
     } catch {
       /* ignore */
     }
