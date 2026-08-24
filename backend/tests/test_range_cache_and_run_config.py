@@ -4,6 +4,11 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from app.drive.cache_cleanup import (
+    DELETE_POLICY,
+    CacheDbState,
+    classify_cache_path,
+)
 from app.routers.carousel_script import (
     CarouselGenerateRequest,
     CarouselPrerunRequest,
@@ -12,12 +17,6 @@ from app.routers.carousel_script import (
     _carousel_selection_hash,
 )
 from app.routers.drive import preview_drive_file
-from scripts.cache_audit_cleanup import (
-    DELETE_POLICY,
-    CacheDbState,
-    classify_cache_path,
-    duplicate_case_groups,
-)
 from starlette.requests import Request
 
 
@@ -84,9 +83,26 @@ def test_cache_cleanup_refuses_protected_sources_and_active_rows(tmp_path) -> No
     path.write_bytes(b"x")
 
     def state(
-        source: str, status: str = "processed", carousel: str = "idle", media=True
+        source: str,
+        status: str = "processed",
+        carousel: str = "idle",
+        media=True,
+        *,
+        is_image: bool = False,
+        has_caption: bool = True,
+        has_embed: bool = True,
     ):
-        return CacheDbState("same", source, status, carousel, media)
+        return CacheDbState(
+            "same",
+            source,
+            status,
+            carousel,
+            media,
+            is_image=is_image,
+            is_video=not is_image,
+            has_caption=has_caption,
+            has_embed=has_embed,
+        )
 
     assert classify_cache_path(path, state("upload")).policy == "keep_upload"
     assert classify_cache_path(path, state("youtube")).policy == "keep_youtube"
@@ -101,13 +117,23 @@ def test_cache_cleanup_refuses_protected_sources_and_active_rows(tmp_path) -> No
     assert classify_cache_path(path, state("drive", "error", media=False)).policy == (
         "keep_incomplete_drive"
     )
+    # Video PROCESSED+media is deletable.
     assert classify_cache_path(path, state("drive")).policy == DELETE_POLICY
-
-
-def test_duplicate_case_paths_are_reported(tmp_path) -> None:
-    upper = tmp_path / "clip.MOV"
-    lower = tmp_path / "clip.mov"
-    assert duplicate_case_groups([upper, lower]) == [[upper, lower]]
+    # Image PROCESSED without caption/embed must wait.
+    assert (
+        classify_cache_path(
+            path,
+            state("drive", is_image=True, has_caption=False, has_embed=True),
+        ).policy
+        == "keep_awaiting_search"
+    )
+    assert (
+        classify_cache_path(
+            path,
+            state("drive", is_image=True, has_caption=True, has_embed=True),
+        ).policy
+        == DELETE_POLICY
+    )
 
 
 def test_run_config_schema_and_cache_partitioning() -> None:

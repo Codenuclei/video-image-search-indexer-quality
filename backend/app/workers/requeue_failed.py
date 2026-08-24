@@ -30,6 +30,7 @@ NON_RETRYABLE_REASONS = frozenset({
     "folder_marker",
     "duplicate_content",
     "name_conflict",
+    "video_too_large",
 })
 
 # ERROR buckets that must not be blindly retried (need ops / conflict UI).
@@ -38,6 +39,7 @@ NON_RETRYABLE_ERROR_BUCKETS = frozenset({
     "folder_marker",
     "duplicate_content",
     "name_conflict",
+    "video_too_large",
 })
 
 
@@ -56,6 +58,8 @@ def normalize_skip_reason(error_message: str | None) -> str:
         return "duplicate_content"
     if raw.startswith("name_conflict"):
         return "name_conflict"
+    if raw.startswith("video_too_large"):
+        return "video_too_large"
     if raw == "folder_marker":
         return "folder_marker"
     if not raw:
@@ -106,6 +110,8 @@ def _is_permanent_skip(drive_file: DriveFile) -> bool:
     if msg.startswith("duplicate_content"):
         return True
     if msg.startswith("name_conflict"):
+        return True
+    if msg.startswith("video_too_large"):
         return True
     return False
 
@@ -222,6 +228,11 @@ async def requeue_skipped_by_reason(
             message = (
                 "Same filename as another file with different content. "
                 "Use Replace or Skip on the dashboard conflict."
+            )
+        elif key == "video_too_large":
+            message = (
+                "Videos larger than 10GB are skipped and cannot be indexed. "
+                "Split or compress the file if you need it searchable."
             )
         else:
             message = "Folder markers are structural and cannot be retried."

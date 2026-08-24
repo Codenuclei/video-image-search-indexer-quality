@@ -273,6 +273,12 @@ async def index_image_caption(jpeg_bytes: bytes, drive_file_id: str) -> None:
         vector=vec,
         caption=caption,
     )
+    try:
+        from app.workers.index_tat import stamp_completed_at_ids
+
+        await stamp_completed_at_ids([drive_file_id], reason="captioned", force=True)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 async def index_image_captions_batch(items: list[tuple[str, bytes]]) -> int:
@@ -289,6 +295,7 @@ async def index_image_captions_batch(items: list[tuple[str, bytes]]) -> int:
     captions = await asyncio.to_thread(describe_images_batch_sync, blobs)
 
     done = 0
+    captioned_ids: list[str] = []
     for fid, caption in zip(ids, captions):
         if not is_valid_caption(caption):
             continue
@@ -299,7 +306,15 @@ async def index_image_captions_batch(items: list[tuple[str, bytes]]) -> int:
             vector=vec,
             caption=caption,
         )
+        captioned_ids.append(fid)
         done += 1
+    if captioned_ids:
+        try:
+            from app.workers.index_tat import stamp_completed_at_ids
+
+            await stamp_completed_at_ids(captioned_ids, reason="captioned", force=True)
+        except Exception:  # noqa: BLE001
+            pass
     return done
 
 

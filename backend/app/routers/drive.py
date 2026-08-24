@@ -545,9 +545,12 @@ async def sync_drive_files(
     background_tasks: BackgroundTasks,
     worker: IndexingWorker = Depends(get_indexing_worker),
 ) -> dict[str, str | int | bool]:
-    """Fetch the latest Drive folder listing into the database."""
-    if worker.is_running:
-        raise HTTPException(status_code=409, detail="An indexing run is already in progress")
+    """Fetch the latest Drive folder listing into the database.
+
+    Safe to run while indexing: upserts PENDING rows and does not claim work.
+    Blocking on ``is_running`` left new folders (e.g. AI Summit) invisible while
+    a long video job held the indexer lock.
+    """
 
     async def _sync() -> None:
         try:
@@ -557,7 +560,7 @@ async def sync_drive_files(
             logger.exception("Manual Drive file-list sync failed")
 
     background_tasks.add_task(_sync)
-    return {"ok": True, "scheduled": True}
+    return {"ok": True, "scheduled": True, "indexing_in_progress": worker.is_running}
 
 
 @router.post("/library/folders/pause")

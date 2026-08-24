@@ -16,7 +16,7 @@ from app.drive.push_channels import (
 from app.db.app_settings_store import refresh_runtime_settings_from_db
 from app.runtime_settings import get_runtime_settings
 from app.workers.indexer import IndexingWorker
-from app.workers.maintenance import schedule_maintenance_tick
+from app.workers.maintenance import schedule_cache_cleanup_tick, schedule_maintenance_tick
 from app.workers.requeue_failed import requeue_failed_files
 
 
@@ -68,21 +68,17 @@ async def auto_index_loop(worker: IndexingWorker, stop_event: asyncio.Event) -> 
                     await worker.ensure_parallel_image_indexing()
                     summary = await worker.process_pending()
                     logger.info("Auto-index processing: %s", summary)
-                    # Flush status batch when full waves land; also drain leftovers
-                    # so UI does not sit on PROCESSING forever under 100.
+                    # Flush so rows hit PROCESSED in Postgres before cache cleanup.
                     try:
-                        # Primary write path: batcher flushes every 100 enqueues.
-                        # Only force a flush here when a full batch is waiting, or
-                        # when slots are idle and leftovers would otherwise stall.
                         batcher = worker._status_batcher
-                        if batcher.pending_count >= 100 or (
-                            batcher.pending_count > 0 and worker.active_image_count == 0
-                        ):
+                        if batcher.pending_count > 0:
                             n = await batcher.flush()
                             if n:
                                 logger.info("Auto-index status batch flushed %d", n)
                     except Exception:  # noqa: BLE001
                         logger.exception("Auto-index status batch flush failed")
+                    # Clean only already-PROCESSED (+ captioned/embedded images).
+                    schedule_cache_cleanup_tick()
                 except Exception:  # noqa: BLE001
                     logger.exception("Auto-index processing failed")
 
@@ -138,6 +134,15 @@ async def auto_index_loop(worker: IndexingWorker, stop_event: asyncio.Event) -> 
                 logger.exception("Parallel video slot fill failed")
             # Still caption while a Start Index cycle holds is_running.
             schedule_maintenance_tick(worker)
+            try:
+                batcher = worker._status_batcher
+                if batcher.pending_count > 0:
+                    n = await batcher.flush()
+                    if n:
+                        logger.info("In-cycle status batch flushed %d", n)
+            except Exception:  # noqa: BLE001
+                logger.exception("In-cycle status batch flush failed")
+            schedule_cache_cleanup_tick()
             logger.debug("Auto sync tick skipped — cycle in progress")
 
         try:

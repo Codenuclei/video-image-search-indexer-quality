@@ -1,0 +1,13 @@
+.git
+.venv
+__pycache__
+.pytest_cache
+.ruff_cache
+data
+*.pyc
+.env
+.env.*
+!.env.example
+tests
+../face-ab-benchmark
+face-ab-benchmark

@@ -368,7 +368,23 @@ async def save_folder(
 
     same_folder_already_selected = user.selected_folder_id == folder_id
     prior_indexed = await session.get(IndexedFolder, folder_id)
-    reuse_existing_index = same_folder_already_selected or prior_indexed is not None
+    from sqlalchemy import func
+
+    files_under_root = int(
+        (
+            await session.execute(
+                select(func.count())
+                .select_from(DriveFile)
+                .where(DriveFile.root_folder_id == folder_id)
+            )
+        ).scalar_one()
+        or 0
+    )
+    # Reuse only when this folder was already selected AND we have rows for it.
+    # A history row with zero drive_files (e.g. sync skipped / stale count) must sync.
+    reuse_existing_index = (
+        same_folder_already_selected and prior_indexed is not None and files_under_root > 0
+    )
 
     user.selected_folder_id = folder_id
     user.selected_folder_name = folder_name
@@ -382,19 +398,19 @@ async def save_folder(
         folder_name=folder_name,
         drive_user=user,
         mark_active=True,
+        file_count=files_under_root if files_under_root > 0 else None,
     )
     await session.commit()
     logger.info(
-        "Drive folder saved: %s (%s), requeued=%d, reuse_existing_index=%s",
+        "Drive folder saved: %s (%s), requeued=%d, reuse_existing_index=%s, files_under_root=%d",
         folder_name,
         folder_id,
         requeued,
         reuse_existing_index,
+        files_under_root,
     )
-    # Same / previously indexed folder: do not kick a sync→index cycle.
-    # Existing drive_files + embeddings stay the source of truth; with
-    # auto_index off, even a sync would not process pending. Skip entirely
-    # so re-select cannot mark completed files pending via side effects.
+    # Same folder with data: do not kick a sync→index cycle.
+    # Switching folders or empty root: always sync so new trees appear.
     if not reuse_existing_index and not worker.is_running:
         background_tasks.add_task(_sync_after_folder_change, worker)
     elif reuse_existing_index:
