@@ -179,7 +179,7 @@ export function SearchPage({
             title={useCaptions ? "Caption search ON" : "Caption search OFF"}
             className={`inline-flex h-9 items-center gap-1.5 rounded-full border px-3 text-xs font-medium transition-colors ${
               useCaptions
-                ? "border-primary/50 bg-primary/10 text-primary"
+                ? "border-blue-400/60 bg-blue-500/10 text-blue-600 dark:border-blue-400/50 dark:bg-blue-400/15 dark:text-blue-300"
                 : "border-border bg-card text-muted-foreground"
             }`}
           >

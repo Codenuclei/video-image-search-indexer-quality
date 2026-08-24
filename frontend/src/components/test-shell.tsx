@@ -81,11 +81,14 @@ function IconToggle({
   icon: Icon,
   title,
   active,
+  activeClassName,
   onClick,
 }: {
   icon: LucideIcon;
   title: string;
   active: boolean;
+  /** Optional on-state colors; defaults to primary tint. */
+  activeClassName?: string;
   onClick: () => void;
 }) {
   return (
@@ -96,7 +99,9 @@ function IconToggle({
       onClick={onClick}
       className={cn(
         "flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors",
-        active ? "bg-primary/10 text-primary" : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+        active
+          ? activeClassName ?? "bg-primary/10 text-primary"
+          : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
       )}
     >
       <Icon size={15} />
@@ -307,6 +312,7 @@ export function TestShell({ children }: { children: React.ReactNode }) {
                   icon={FileText}
                   title={useCaptions ? "Captions on" : "Captions off"}
                   active={useCaptions}
+                  activeClassName="bg-blue-500/10 text-blue-600 dark:bg-blue-400/15 dark:text-blue-300"
                   onClick={() => void persistSearchCaptions(!useCaptions)}
                 />
               </div>
