@@ -12,6 +12,7 @@ import {
   LogOut,
   Search,
   Settings,
+  Trash2,
   Users,
   type LucideIcon,
 } from "lucide-react";
@@ -30,7 +31,12 @@ import {
   runSearch,
   useSearchSession,
 } from "@/lib/search-session";
-import { runReverseFaceSearch, setReverseFaceFile } from "@/lib/reverse-face-session";
+import {
+  clearReverseFaceSearch,
+  runReverseFaceSearch,
+  setReverseFaceFile,
+  useReverseFaceSession,
+} from "@/lib/reverse-face-session";
 
 const libraryLinks = [
   { href: "/test/folders", label: "Indexed Folders", icon: FolderOpen },
@@ -127,6 +133,7 @@ export function TestShell({ children }: { children: React.ReactNode }) {
   const [accountOpen, setAccountOpen] = useState(false);
   const [confirmAction, setConfirmAction] = useState<"signout" | "drive" | null>(null);
   const uploadRef = useRef<HTMLInputElement>(null);
+  const { file: reverseFaceFile, result: reverseFaceResult } = useReverseFaceSession();
   const accountRef = useRef<HTMLDivElement>(null);
 
   /** Profile shows Drive account email, not the app login email. */
@@ -269,7 +276,7 @@ export function TestShell({ children }: { children: React.ReactNode }) {
       </aside>
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="sticky top-0 z-20 flex items-center gap-3 border-b border-border bg-card/90 px-4 py-3 backdrop-blur md:px-6">
+        <header className="sticky top-0 z-20 flex items-center gap-3 border-b border-border bg-card px-4 py-3 md:px-6">
           <form onSubmit={submitHeaderSearch} className="min-w-0 flex-1">
             <div className="flex h-11 items-center gap-1 rounded-full border border-border bg-muted/60 pl-3.5 pr-1.5 transition-colors focus-within:border-ring">
               <Search size={16} className="shrink-0 text-muted-foreground" />
@@ -324,6 +331,17 @@ export function TestShell({ children }: { children: React.ReactNode }) {
               >
                 <ImagePlus size={15} />
               </button>
+              {(reverseFaceFile || reverseFaceResult) && (
+                <button
+                  type="button"
+                  title="Clear image search"
+                  aria-label="Clear image search"
+                  onClick={() => clearReverseFaceSearch()}
+                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+                >
+                  <Trash2 size={15} />
+                </button>
+              )}
               <input
                 ref={uploadRef}
                 type="file"

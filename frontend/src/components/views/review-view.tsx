@@ -9,7 +9,7 @@ import {
   type ClusterListResponse,
   type Person,
 } from "@/lib/api";
-import { Button, Card, FaceThumb, Input, LoadingLabel } from "@/components/ui";
+import { Button, FaceThumb, Input, LoadingLabel } from "@/components/ui";
 import { PersonMergeSearch } from "@/components/person-merge-search";
 import { AnimatedTrash } from "@/components/animated-trash";
 import { cn } from "@/lib/utils";
@@ -215,9 +215,9 @@ export function ReviewPage({ embedded = false }: { embedded?: boolean } = {}) {
       )}
 
       {!initialLoading && clusters.length === 0 && (
-        <Card>
-          <p className="text-muted-foreground">No unknown faces in the review queue. Index some images to get started.</p>
-        </Card>
+        <p className="rounded-lg bg-muted/30 px-4 py-6 text-center text-sm text-muted-foreground">
+          No unknown faces in the review queue. Index some images to get started.
+        </p>
       )}
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
@@ -233,21 +233,21 @@ export function ReviewPage({ embedded = false }: { embedded?: boolean } = {}) {
             c.representative_confidence != null ? Math.round(c.representative_confidence * 100) : null;
 
           return (
-            <Card
+            <div
               key={c.id}
               className={cn(
-                "space-y-3 transition-shadow hover:shadow-md",
+                "space-y-3 rounded-xl bg-muted/25 p-4 transition-shadow hover:shadow-sm",
                 vanishingIds.has(c.id) && "card-vanish"
               )}
             >
               <div className="flex gap-3">
                 <FaceThumb
                   faceId={c.representative_face_id}
-                  className="h-20 w-20 shrink-0 rounded-lg ring-2 ring-amber-400/30"
+                  className="h-20 w-20 shrink-0 rounded-lg ring-1 ring-border"
                 />
                 <div className="min-w-0 flex-1">
                   <p className="flex items-center gap-1.5 font-medium">
-                    <ScanFace size={16} aria-hidden className="shrink-0 text-amber-500" />
+                    <ScanFace size={16} aria-hidden className="shrink-0 text-muted-foreground" />
                     Cluster #{c.id}
                   </p>
                   <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
@@ -330,7 +330,7 @@ export function ReviewPage({ embedded = false }: { embedded?: boolean } = {}) {
                   onSelect={(person) => mergeCluster(c.id, person)}
                 />
               </div>
-            </Card>
+            </div>
           );
         })}
       </div>
