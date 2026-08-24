@@ -55,8 +55,8 @@ function PeopleDirectory() {
         ))}
       </div>
 
-      <div className="rounded-2xl border border-border bg-card p-4 shadow-sm md:p-6">
-        {tab === "indexed" && <PeoplePage embedded />}
+      <div>
+        {tab === "indexed" && <PeoplePage embedded personHref={(id) => `/test/people/${id}`} />}
         {tab === "mu" && <ReverseFaceLabPage embedded />}
         {tab === "unindexed" && <ReviewPage embedded />}
       </div>
