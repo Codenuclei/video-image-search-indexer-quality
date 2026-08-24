@@ -197,6 +197,19 @@ export async function persistSearchCaptions(value: boolean) {
   }
 }
 
+/** Clear displayed results and query state (does not touch cached responses). */
+export function resetSearchResults() {
+  searchGeneration += 1;
+  inFlight = null;
+  patchSearchSession({
+    results: null,
+    lastSearchMode: null,
+    previewFile: null,
+    previewMoment: null,
+    loading: false,
+  });
+}
+
 export function runSearch() {
   const current = getSearchSession();
   const q = current.q.trim();

@@ -124,6 +124,22 @@ export function setReverseFaceFile(next: File | null) {
   });
 }
 
+/** Clear current face-search results and upload (dustbin). */
+export function clearReverseFaceSearch() {
+  const prevUrl = state.previewUrl;
+  if (prevUrl) URL.revokeObjectURL(prevUrl);
+  patchReverseFaceSession({
+    file: null,
+    previewUrl: null,
+    result: null,
+    error: null,
+    tagMessage: null,
+    selectedLeader: null,
+    searching: false,
+    confirmTagOpen: false,
+  });
+}
+
 export function runReverseFaceSearch(upload?: File) {
   const target = upload ?? state.file;
   if (!target) return searchJob;

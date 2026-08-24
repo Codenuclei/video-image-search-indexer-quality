@@ -240,7 +240,7 @@ export function Button({
 }) {
   const variants = {
     primary: "bg-primary text-primary-foreground hover:brightness-110 active:scale-95 shadow-sm",
-    secondary: "border border-border bg-secondary text-secondary-foreground hover:bg-accent hover:border-amber-300",
+    secondary: "border border-border bg-secondary text-secondary-foreground hover:bg-accent",
     danger: "bg-destructive text-destructive-foreground hover:brightness-110 active:scale-95",
   };
   return (

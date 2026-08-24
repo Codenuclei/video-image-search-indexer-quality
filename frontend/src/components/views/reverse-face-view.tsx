@@ -9,8 +9,10 @@ import {
   Link2,
   ScanFace,
   Tag,
+  Trash2,
   Upload,
   Users,
+  X,
 } from "lucide-react";
 import Link from "next/link";
 import {
@@ -23,6 +25,7 @@ import {
 import { Button, Card, ConfirmDialog, FaceThumb, LoadingLabel } from "@/components/ui";
 import { cn } from "@/lib/utils";
 import {
+  clearReverseFaceSearch,
   hydrateLeadershipRoster,
   patchReverseFaceSession,
   runReverseFaceCrawl,
@@ -79,7 +82,7 @@ function MatchRow({ match }: { match: FaceSearchMatch }) {
     <div className="flex items-center gap-3 rounded-lg border border-border/60 bg-card/40 p-2.5">
       <FaceThumb faceId={match.face_id} className="h-12 w-12 shrink-0 rounded-md" />
       <div className="min-w-0 flex-1">
-        <p className="truncate text-sm font-medium text-foreground">{match.person_name}</p>
+        <p className="text-sm font-medium leading-snug text-foreground">{match.person_name}</p>
         <p className="text-[11px] text-muted-foreground">
           {Math.round(match.score * 100)}%
           {match.cluster_id != null ? ` · cluster #${match.cluster_id}` : ""}
@@ -145,7 +148,7 @@ function ResultsSidePanel({
             </p>
           </div>
           {leader && (
-            <div className="flex shrink-0 items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1">
+            <div className="flex shrink-0 items-center gap-2 rounded-md border border-border/70 bg-muted/30 px-2 py-1">
               {leader.image_url ? (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img
@@ -156,7 +159,7 @@ function ResultsSidePanel({
                 />
               ) : null}
               <div className="min-w-0">
-                <p className="max-w-[9rem] truncate text-[11px] font-medium text-amber-800 dark:text-amber-200">
+                <p className="max-w-[9rem] truncate text-[11px] font-medium text-foreground">
                   {leader.name}
                 </p>
                 <p className="max-w-[9rem] truncate text-[10px] text-muted-foreground">{leader.role}</p>
@@ -213,7 +216,7 @@ function ResultsSidePanel({
       <div className="min-w-0 space-y-4">
         <Card className="space-y-3">
           <h3 className="flex items-center gap-1.5 text-sm font-medium">
-            <Users size={14} className="text-amber-600 dark:text-amber-400" aria-hidden />
+            <Users size={14} className="text-muted-foreground" aria-hidden />
             Clusters
           </h3>
           {clusters.length === 0 ? (
@@ -251,7 +254,7 @@ function ResultsSidePanel({
 
         <Card className="space-y-3">
           <h3 className="flex items-center gap-1.5 text-sm font-medium">
-            <FolderOpen size={14} className="text-amber-600 dark:text-amber-400" aria-hidden />
+            <FolderOpen size={14} className="text-muted-foreground" aria-hidden />
             Files where they appear
           </h3>
           {files.length === 0 ? (
@@ -268,8 +271,8 @@ function ResultsSidePanel({
                   >
                     <ExternalLink size={12} className="mt-0.5 shrink-0 text-muted-foreground" aria-hidden />
                     <span className="min-w-0">
-                      <span className="block truncate text-xs font-medium text-foreground">{f.name}</span>
-                      <span className="block truncate text-[10px] text-muted-foreground">
+                      <span className="block text-xs font-medium leading-snug text-foreground">{f.name}</span>
+                      <span className="block break-all text-[10px] text-muted-foreground">
                         {f.path || f.media_type}
                         {f.frame_timestamp != null ? ` · ${f.frame_timestamp.toFixed(1)}s` : ""}
                       </span>
@@ -346,7 +349,7 @@ export function ReverseFaceLabPage({ embedded = false }: { embedded?: boolean } 
         </Link>
         <div>
           <h2 className="flex items-center gap-2 text-xl font-semibold sm:text-2xl">
-            <ScanFace size={22} className="text-amber-600 dark:text-amber-400" aria-hidden />
+            <ScanFace size={22} className="text-muted-foreground" aria-hidden />
             Reverse Face Search
           </h2>
           <p className="text-sm text-muted-foreground">
@@ -396,8 +399,8 @@ export function ReverseFaceLabPage({ embedded = false }: { embedded?: boolean } 
                   className={cn(
                     "group flex flex-col items-center gap-1.5 rounded-xl border p-2 text-center transition-colors",
                     selected
-                      ? "border-amber-500 bg-amber-500/10 ring-1 ring-amber-500/40"
-                      : "border-border/60 bg-card/30 hover:border-amber-500/50 hover:bg-amber-500/5",
+                      ? "border-primary/60 bg-primary/10 ring-1 ring-primary/30"
+                      : "border-border/60 bg-card/30 hover:border-border hover:bg-muted/40",
                     (!person.image_url || searching) && "opacity-60"
                   )}
                 >
@@ -442,7 +445,7 @@ export function ReverseFaceLabPage({ embedded = false }: { embedded?: boolean } 
         <div
           className={cn(
             "flex flex-col items-center justify-center rounded-xl border-2 border-dashed px-4 py-10 text-center transition-colors",
-            dragOver ? "border-amber-500 bg-amber-500/5" : "border-border bg-muted/20"
+            dragOver ? "border-primary/60 bg-primary/5" : "border-border bg-muted/20"
           )}
           onDragOver={(e) => {
             e.preventDefault();
@@ -502,13 +505,35 @@ export function ReverseFaceLabPage({ embedded = false }: { embedded?: boolean } 
       )}
 
       {result && (
-        <ResultsSidePanel
-          result={result}
-          leader={selectedLeader}
-          tagging={tagging}
-          tagMessage={tagMessage}
-          onNameTag={() => patchReverseFaceSession({ confirmTagOpen: true })}
-        />
+        <div className="relative">
+          <div className="mb-3 flex justify-end gap-1">
+            <button
+              type="button"
+              onClick={clearReverseFaceSearch}
+              title="Clear search"
+              aria-label="Clear search"
+              className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border/70 bg-card text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            >
+              <Trash2 size={15} aria-hidden />
+            </button>
+            <button
+              type="button"
+              onClick={clearReverseFaceSearch}
+              title="Close results"
+              aria-label="Close results"
+              className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border/70 bg-card text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            >
+              <X size={16} aria-hidden />
+            </button>
+          </div>
+          <ResultsSidePanel
+            result={result}
+            leader={selectedLeader}
+            tagging={tagging}
+            tagMessage={tagMessage}
+            onNameTag={() => patchReverseFaceSession({ confirmTagOpen: true })}
+          />
+        </div>
       )}
 
       <ConfirmDialog
@@ -551,7 +576,7 @@ export function ReverseFaceLabPage({ embedded = false }: { embedded?: boolean } 
             </p>
             {crawlResult.results.map((item) => (
               <div key={item.url} className="rounded-md border border-border/60 p-3">
-                <p className="truncate text-xs font-medium" title={item.url}>
+                <p className="break-all text-xs font-medium" title={item.url}>
                   {item.url}
                 </p>
                 {!item.ok ? (
