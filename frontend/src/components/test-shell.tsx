@@ -12,8 +12,8 @@ import {
   LogOut,
   Search,
   Settings,
-  Trash2,
   Users,
+  X,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -304,7 +304,7 @@ export function TestShell({ children }: { children: React.ReactNode }) {
                   onClick={() => clearReverseFaceSearch()}
                   className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
                 >
-                  <Trash2 size={15} />
+                  <X size={15} />
                 </button>
               )}
               <input

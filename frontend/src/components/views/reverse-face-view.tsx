@@ -9,7 +9,6 @@ import {
   Link2,
   ScanFace,
   Tag,
-  Trash2,
   Upload,
   Users,
   X,
@@ -504,22 +503,13 @@ export function ReverseFaceLabPage({ embedded = false }: { embedded?: boolean } 
 
       {result && (
         <div className="relative">
-          <div className="mb-3 flex justify-end gap-1">
+          <div className="mb-3 flex justify-end">
             <button
               type="button"
               onClick={clearReverseFaceSearch}
               title="Clear search"
               aria-label="Clear search"
-              className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border/70 bg-card text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-            >
-              <Trash2 size={15} aria-hidden />
-            </button>
-            <button
-              type="button"
-              onClick={clearReverseFaceSearch}
-              title="Close results"
-              aria-label="Close results"
-              className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border/70 bg-card text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-border/70 bg-card text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
             >
               <X size={16} aria-hidden />
             </button>

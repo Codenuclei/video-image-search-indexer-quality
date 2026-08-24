@@ -2,7 +2,7 @@
 
 import { useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { ExternalLink, ImagePlus, Linkedin, Trash2 } from "lucide-react";
+import { ExternalLink, ImagePlus, Linkedin, X } from "lucide-react";
 import { driveGoogleViewUrl, type FaceSearchMatch } from "@/lib/api";
 import { Button, ConfirmDialog, FaceThumb, Input, LoadingLabel, Spinner } from "@/components/ui";
 import {
@@ -202,10 +202,9 @@ export function ImageSearchPanel() {
             onClick={clearReverseFaceSearch}
             title="Clear image search"
             aria-label="Clear image search"
-            className="inline-flex h-8 shrink-0 items-center gap-1.5 self-start rounded-full border border-border bg-card px-3 text-xs font-medium text-muted-foreground shadow-sm transition-colors hover:bg-muted hover:text-foreground"
+            className="flex h-8 w-8 shrink-0 items-center justify-center self-start rounded-full border border-border bg-card text-muted-foreground shadow-sm transition-colors hover:bg-muted hover:text-foreground"
           >
-            <Trash2 size={13} aria-hidden />
-            Clear
+            <X size={15} aria-hidden />
           </button>
         )}
       </div>

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { ExternalLink, FileText, Image as ImageIcon, Play, Search, Sparkles, Trash2, X } from "lucide-react";
+import { ExternalLink, FileText, Image as ImageIcon, Play, Search, Sparkles, X } from "lucide-react";
 import {
   apiAssetUrl,
   driveFileDownloadUrl,
@@ -211,26 +211,15 @@ export function SearchPage({
         <section className="relative">
           <div className="mb-4 flex items-start justify-between gap-2">
             <h3 className="font-medium">Matching files ({files.length})</h3>
-            <div className="flex shrink-0 items-center gap-1">
-              <button
-                type="button"
-                onClick={resetSearchResults}
-                title="Clear results"
-                aria-label="Clear results"
-                className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-              >
-                <Trash2 size={15} aria-hidden />
-              </button>
-              <button
-                type="button"
-                onClick={resetSearchResults}
-                title="Close results"
-                aria-label="Close results"
-                className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-              >
-                <X size={16} aria-hidden />
-              </button>
-            </div>
+            <button
+              type="button"
+              onClick={resetSearchResults}
+              title="Clear results"
+              aria-label="Clear results"
+              className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            >
+              <X size={16} aria-hidden />
+            </button>
           </div>
           {files.length === 0 ? (
             <p className="text-sm text-muted-foreground">No matching files in your Drive index.</p>
@@ -243,33 +232,31 @@ export function SearchPage({
                 return (
                   <li
                     key={file.drive_file_id}
-                    className="overflow-hidden rounded-md border border-border bg-muted/30"
+                    className="overflow-hidden rounded-xl border border-border bg-card shadow-sm transition-shadow hover:shadow-md"
                   >
-                    <div className="aspect-[4/3] w-full overflow-hidden bg-black/20">
+                    <div className="relative aspect-[4/3] w-full overflow-hidden bg-black/20">
                       <FilePreview
                         driveFileId={file.drive_file_id}
                         name={file.name}
                         mimeType={file.mime_type}
                         onClick={isImage ? () => patchSearchSession({ previewFile: file }) : undefined}
                       />
+                      {file.score != null && (
+                        <span className="pointer-events-none absolute right-2 top-2 rounded-full bg-black/65 px-2 py-0.5 text-[10px] font-semibold tabular-nums text-white backdrop-blur-sm">
+                          {Math.round(file.score * 100)}%
+                        </span>
+                      )}
                     </div>
-                    <div className="flex flex-col gap-2 px-3 py-3 text-sm">
-                      <div className="flex items-start justify-between gap-2">
-                        <a
-                          href={driveUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="min-w-0 flex-1 font-medium leading-snug text-primary hover:underline"
-                        >
-                          {file.name}
-                        </a>
-                        {file.score != null && (
-                          <span className="shrink-0 rounded-md bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-amber-800 dark:bg-amber-400/15 dark:text-amber-200">
-                            {Math.round(file.score * 100)}%
-                          </span>
-                        )}
-                      </div>
-                      <p className="break-all text-xs text-muted-foreground" title={file.path}>
+                    <div className="flex flex-col gap-1 px-3 py-2.5 text-sm">
+                      <a
+                        href={driveUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="min-w-0 font-medium leading-snug text-foreground hover:text-primary hover:underline"
+                      >
+                        {file.name}
+                      </a>
+                      <p className="break-all text-[11px] leading-snug text-muted-foreground" title={file.path}>
                         {file.path}
                       </p>
                       {file.caption && (
@@ -280,11 +267,11 @@ export function SearchPage({
                       {(file.person_names ?? []).length > 0 && (
                         <PersonTags names={file.person_names ?? []} links={linkedinMap} />
                       )}
-                      <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                      <div className="mt-1 flex items-center justify-end gap-1 border-t border-border/60 pt-1.5">
                         <DownloadButton
                           url={downloadUrl}
                           filename={file.name}
-                          variant="primary"
+                          variant="ghost"
                         />
                         <IconLink
                           href={driveUrl}
