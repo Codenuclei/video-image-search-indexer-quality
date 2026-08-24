@@ -272,7 +272,7 @@ export function Sidebar() {
       </aside>
 
       {/* Mobile top bar */}
-      <header className="fixed inset-x-0 top-0 z-40 flex h-14 items-center justify-between border-b border-border bg-background/95 px-4 backdrop-blur md:hidden">
+      <header className="fixed inset-x-0 top-0 z-40 flex h-14 items-center justify-between border-b border-border bg-background px-4 md:hidden">
         <BrandMark compact />
         <div className="flex min-w-0 items-center gap-2">
           <p className="truncate text-xs text-muted-foreground">{currentPage}</p>
@@ -318,7 +318,7 @@ export function Sidebar() {
       )}
 
       {/* Mobile bottom nav — quick access to main routes */}
-      <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-border bg-background/95 px-2 pb-[env(safe-area-inset-bottom)] backdrop-blur md:hidden">
+      <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-border bg-background px-2 pb-[env(safe-area-inset-bottom)] md:hidden">
         <NavLinks pathname={pathname} vertical={false} mobileOnly />
       </nav>
     </>
