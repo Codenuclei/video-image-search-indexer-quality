@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { ExternalLink, FileText, Image as ImageIcon, Play, Search, Sparkles, X } from "lucide-react";
+import { ExternalLink, FileText, Image as ImageIcon, Play, Search, Sparkles, Trash2, X } from "lucide-react";
 import {
   apiAssetUrl,
   driveFileDownloadUrl,
@@ -18,6 +18,7 @@ import {
   patchSearchSession,
   persistSearchCaptions,
   persistSearchRerank,
+  resetSearchResults,
   runSearch,
   useSearchSession,
 } from "@/lib/search-session";
@@ -127,21 +128,21 @@ export function SearchPage({
         />
         <div className="flex flex-wrap items-center gap-2">
           <label className="relative inline-flex items-center">
-            <ImageIcon size={14} className="pointer-events-none absolute left-2.5 text-muted-foreground" />
+            <ImageIcon size={14} className="pointer-events-none absolute left-3 z-10 text-muted-foreground" />
             <select
-              className="h-9 appearance-none rounded-full border border-border bg-card pl-8 pr-7 text-xs font-medium text-foreground outline-none focus:border-ring"
+              className="h-9 cursor-pointer appearance-none rounded-full border border-border bg-card pl-9 pr-8 text-xs font-medium text-foreground shadow-sm outline-none transition-colors hover:border-muted-foreground/30 focus:border-ring focus:ring-2 focus:ring-ring/20"
               value={mime === "video" ? "all" : mime}
               onChange={(e) => patchSearchSession({ mime: e.target.value })}
               title="File type"
             >
-              <option value="all">All</option>
+              <option value="all">All types</option>
               <option value="image">Images</option>
               <option value="pdf">PDFs</option>
             </select>
           </label>
           <label className="relative inline-flex items-center">
             <select
-              className="h-9 appearance-none rounded-full border border-border bg-card pl-3 pr-7 text-xs font-medium text-foreground outline-none focus:border-ring"
+              className="h-9 cursor-pointer appearance-none rounded-full border border-border bg-card pl-3.5 pr-8 text-xs font-medium text-foreground shadow-sm outline-none transition-colors hover:border-muted-foreground/30 focus:border-ring focus:ring-2 focus:ring-ring/20 disabled:cursor-not-allowed disabled:opacity-60"
               value={person}
               onChange={(e) => patchSearchSession({ person: e.target.value })}
               disabled={persons.length === 0}
@@ -157,7 +158,7 @@ export function SearchPage({
           </label>
           <label className="relative inline-flex items-center">
             <select
-              className="h-9 max-w-[11rem] appearance-none rounded-full border border-border bg-card pl-3 pr-7 text-xs font-medium text-foreground outline-none focus:border-ring"
+              className="h-9 max-w-[12rem] cursor-pointer appearance-none rounded-full border border-border bg-card pl-3.5 pr-8 text-xs font-medium text-foreground shadow-sm outline-none transition-colors hover:border-muted-foreground/30 focus:border-ring focus:ring-2 focus:ring-ring/20"
               value={folderPath}
               onChange={(e) => patchSearchSession({ folderPath: e.target.value })}
               title={folderPath && folderContexts.find(f => f.folder_path === folderPath)?.description}
@@ -241,8 +242,30 @@ export function SearchPage({
       )}
 
       {results && (
-        <Card>
-          <h3 className="mb-4 font-medium">Matching files ({files.length})</h3>
+        <Card className="relative">
+          <div className="mb-4 flex items-start justify-between gap-2">
+            <h3 className="font-medium">Matching files ({files.length})</h3>
+            <div className="flex shrink-0 items-center gap-1">
+              <button
+                type="button"
+                onClick={resetSearchResults}
+                title="Clear results"
+                aria-label="Clear results"
+                className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              >
+                <Trash2 size={15} aria-hidden />
+              </button>
+              <button
+                type="button"
+                onClick={resetSearchResults}
+                title="Close results"
+                aria-label="Close results"
+                className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              >
+                <X size={16} aria-hidden />
+              </button>
+            </div>
+          </div>
           {files.length === 0 ? (
             <p className="text-sm text-muted-foreground">No matching files in your Drive index.</p>
           ) : (
@@ -280,7 +303,7 @@ export function SearchPage({
                           </span>
                         )}
                       </div>
-                      <p className="truncate text-xs text-muted-foreground" title={file.path}>
+                      <p className="break-all text-xs text-muted-foreground" title={file.path}>
                         {file.path}
                       </p>
                       {file.caption && (
