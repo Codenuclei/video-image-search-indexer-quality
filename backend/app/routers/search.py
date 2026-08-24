@@ -21,7 +21,10 @@ from app.search.local import (
     files_for_drive_ids,
     filter_by_mime,
     filter_files_by_role_context,
+    filter_files_by_student_evidence,
     filter_non_student_solo_in_student_context,
+    person_student_funnel_active,
+    student_evidence_role_ctx,
     find_files_by_role_context,
     filter_to_tagged_persons,
     sort_by_person_overlap,
@@ -94,13 +97,21 @@ async def _filter_moments_for_context(
             m for m in moments
             if required.issubset({n.lower() for n in m.person_names})
         ]
-    if role_context_active(role_ctx) and moments:
+    if moments and (
+        role_context_active(role_ctx)
+        or person_student_funnel_active(effective_persons, role_ctx)
+    ):
+        evidence_ctx = (
+            student_evidence_role_ctx(role_ctx)
+            if person_student_funnel_active(effective_persons, role_ctx)
+            else role_ctx
+        )
         valid_ids = set(
             await resolve_role_matching_file_ids(
                 session,
                 list({m.drive_file_id for m in moments}),
                 person_names=effective_persons,
-                role_ctx=role_ctx,
+                role_ctx=evidence_ctx,
             )
         )
         moments = [m for m in moments if m.drive_file_id in valid_ids]
@@ -238,13 +249,21 @@ async def search(
         and (not role_context_active(role_ctx) or student_role_action)
     )
     person_action = bool(effective_persons and is_action_query(visual_query or query))
-    use_captions = captions or action_query or role_context_active(role_ctx) or person_action
+    combined_person_student = person_student_funnel_active(effective_persons, role_ctx)
+    use_captions = (
+        captions
+        or action_query
+        or role_context_active(role_ctx)
+        or person_action
+        or combined_person_student
+    )
     use_rerank = rerank and get_runtime_settings().search_rerank_enabled
 
     person_focused = bool(
         effective_persons
         and is_weak_person_visual(visual_query, effective_persons)
         and not role_context_active(role_ctx)
+        and not role_ctx.student_context
     )
     primary_person = effective_persons[0] if len(effective_persons) == 1 else None
 
@@ -329,6 +348,13 @@ async def search(
                     person_names=effective_persons,
                     role_ctx=role_ctx,
                 )
+            if combined_person_student:
+                hits = await filter_files_by_student_evidence(
+                    local_session,
+                    hits,
+                    person_names=effective_persons,
+                    role_ctx=role_ctx,
+                )
             return hits
 
     async def _load_vector_files() -> list[SearchResultFile]:
@@ -408,6 +434,13 @@ async def search(
             person_names=effective_persons,
             role_ctx=role_ctx,
         )
+    if combined_person_student:
+        files = await filter_files_by_student_evidence(
+            session,
+            files,
+            person_names=effective_persons,
+            role_ctx=role_ctx,
+        )
 
     # Strict name/path filter was built for filename/local hits. Do NOT apply it
     # to scored vector/caption hits — that wiped semantic RAG results for
@@ -422,6 +455,13 @@ async def search(
         ]
 
     if role_context_active(role_ctx) and not (action_query and not effective_persons):
+        files = [
+            item.model_copy(update={"score": item.score or 0.55})
+            if item.mime_type.startswith("image/") and item.score is None
+            else item
+            for item in files
+        ]
+    elif combined_person_student:
         files = [
             item.model_copy(update={"score": item.score or 0.55})
             if item.mime_type.startswith("image/") and item.score is None
@@ -506,7 +546,7 @@ async def search(
     if use_rerank and use_captions and mime_filter in ("all", "image"):
         image_hits = [f for f in files if f.mime_type.startswith("image/")]
         other_hits = [f for f in files if not f.mime_type.startswith("image/")]
-        if image_hits and role_ctx.student_context:
+        if image_hits and role_ctx.student_context and not combined_person_student:
             from app.search.local import drive_file_ids_with_student_captions
 
             student_cap_ids = set(
@@ -517,7 +557,9 @@ async def search(
             )
             if student_cap_ids:
                 image_hits = [f for f in image_hits if f.drive_file_id in student_cap_ids]
-        if image_hits:
+        if combined_person_student:
+            files = dedupe_search_files(image_hits + other_hits)
+        elif image_hits:
             pre_filter_hits = list(image_hits)
             try:
                 filtered_images = await filter_images_by_caption_llm(

@@ -6,7 +6,8 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from sqlalchemy import and_, case, exists, func, or_, select, update
+from sqlalchemy import and_, case, exists, func, or_, select, text, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import Settings, get_settings
@@ -20,12 +21,14 @@ from app.drive.cleanup import (
 )
 from app.drive.content_hash import APPLEDOUBLE_SKIP_PREFIX, is_macos_junk_name
 from app.drive.schemas import ConnectorFile
+from app.drive.video_limits import apply_video_too_large_skip, is_video_too_large, video_too_large_message
 from app.gemini.service import GeminiFileSearchService, get_gemini_service
 from app.pipelines.common import (
     INDEXABLE_IMAGE_TYPES,
     INDEXABLE_VIDEO_TYPES,
     file_has_media,
     infer_image_mime,
+    is_drive_media_candidate,
     is_image_mime,
     is_indexable_mime,
     is_video_mime,
@@ -199,6 +202,8 @@ class IndexingWorker:
             status_batcher=self._status_batcher,
             settings=self._settings,
         )
+        # One Drive list→DB upsert at a time (HTTP sync + startup seed + SSH must not race).
+        self._sync_file_list_lock = asyncio.Lock()
     @property
     def active_video_count(self) -> int:
         self._prune_video_tasks()
@@ -495,6 +500,50 @@ class IndexingWorker:
     async def index_claimed_image(self, file_id: str) -> None:
         """Complete indexing for a file already claimed (e.g. by the Go canary)."""
         await self._run_image_index_job(file_id)
+
+    async def pause_video_indexing_lane(self, *, requeue: bool = True) -> int:
+        """Cancel local video tasks and optionally requeue PROCESSING videos to PENDING."""
+        self._prune_video_tasks()
+        cancelled = 0
+        video_ids = list(self._video_tasks.keys())
+        for fid in video_ids:
+            task = self._video_tasks.get(fid)
+            if task is None or task.done():
+                continue
+            task.cancel()
+            cancelled += 1
+        if video_ids:
+            await asyncio.gather(
+                *[t for t in self._video_tasks.values() if not t.done()],
+                return_exceptions=True,
+            )
+        self._prune_video_tasks()
+
+        requeued = 0
+        if requeue:
+            async with self._session_factory() as session:
+                rows = list(
+                    (
+                        await session.execute(
+                            select(DriveFile).where(DriveFile.status == DriveFileStatus.PROCESSING)
+                        )
+                    ).scalars().all()
+                )
+                for row in rows:
+                    if not is_video_mime(row.mime_type):
+                        continue
+                    row.status = DriveFileStatus.PENDING
+                    row.error_message = None
+                    requeued += 1
+                if requeued:
+                    await session.commit()
+        if cancelled or requeued:
+            logger.info(
+                "video_lane_paused cancelled_tasks=%d requeued_processing=%d",
+                cancelled,
+                requeued,
+            )
+        return cancelled + requeued
 
     async def cancel_indexing_under_folder(self, folder_path: str) -> int:
         """Cancel in-flight index jobs for files under a folder path."""
@@ -793,9 +842,15 @@ class IndexingWorker:
         self._prune_video_tasks()
         await self.release_stalled_processing()
         if not self._settings.video_indexing_enabled:
+            # Pause lane: stop in-flight videos and free slots for images.
+            await self.pause_video_indexing_lane(requeue=True)
             return 0
 
-        max_parallel = max(1, self._settings.video_index_max_parallel)
+        max_parallel = max(0, self._settings.video_index_max_parallel)
+        if max_parallel <= 0:
+            await self.pause_video_indexing_lane(requeue=True)
+            return 0
+
         started = await self.recover_cached_video_indexes()
 
         async with self._session_factory() as session:
@@ -868,6 +923,10 @@ class IndexingWorker:
                     continue
                 if is_macos_junk_name(drive_file.name):
                     await session.delete(drive_file)
+                    dirty = True
+                    continue
+                if apply_video_too_large_skip(drive_file):
+                    _log_skip(drive_file, "video_too_large")
                     dirty = True
                     continue
                 if is_file_indexing_paused(drive_file.path, paused_paths):
@@ -988,6 +1047,10 @@ class IndexingWorker:
                 if drive_file is None:
                     return
                 file_name = drive_file.name
+                if apply_video_too_large_skip(drive_file):
+                    _log_skip(drive_file, "video_too_large")
+                    await session.commit()
+                    return
 
                 old_document = drive_file.gemini_document_name
                 if old_document:
@@ -1011,6 +1074,14 @@ class IndexingWorker:
                 if result is None or is_duplicate_content_complete(drive_file):
                     drive_file.status = DriveFileStatus.PROCESSED
                     drive_file.last_synced_at = datetime.now(timezone.utc)
+                    try:
+                        from app.workers.index_tat import stamp_completed_at
+
+                        await stamp_completed_at(
+                            session, [file_id], now=drive_file.last_synced_at, reason="processed"
+                        )
+                    except Exception:  # noqa: BLE001
+                        logger.exception("index_tat_complete_stamp_failed file_id=%s", file_id[:12])
                     await session.commit()
                     logger.info(
                         "Video index skipped duplicate_content: %s (%s)",
@@ -1026,6 +1097,14 @@ class IndexingWorker:
                 from app.drive.media_cache import unlink_drive_source_cache
 
                 unlink_drive_source_cache(drive_file, self._settings)
+                try:
+                    from app.workers.index_tat import stamp_completed_at
+
+                    await stamp_completed_at(
+                        session, [file_id], now=drive_file.last_synced_at, reason="processed"
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.exception("index_tat_complete_stamp_failed file_id=%s", file_id[:12])
                 await session.commit()
                 # Carousel generation is deliberately after the index commit and
                 # uses its own session so a slow/failed artifact can never hold
@@ -1061,9 +1140,23 @@ class IndexingWorker:
                     else:
                         failed.status = DriveFileStatus.ERROR
                         failed.error_message = friendly_index_error_message(exc, max_len=500)
+                        failed.last_synced_at = datetime.now(timezone.utc)
                         from app.drive.media_cache import unlink_drive_source_cache
 
                         unlink_drive_source_cache(failed, self._settings)
+                        try:
+                            from app.workers.index_tat import stamp_completed_at
+
+                            await stamp_completed_at(
+                                error_session,
+                                [file_id],
+                                now=failed.last_synced_at,
+                                reason="error",
+                            )
+                        except Exception:  # noqa: BLE001
+                            logger.exception(
+                                "index_tat_complete_stamp_failed file_id=%s", file_id[:12]
+                            )
                     await error_session.commit()
         finally:
             await execution_lock.release()
@@ -1572,6 +1665,25 @@ class IndexingWorker:
         return self._running
 
     async def sync_file_list(self, *, cache_source: str = "manual") -> int:
+        async with self._sync_file_list_lock:
+            from app.db.session import get_engine
+
+            # Hold one connection for the advisory lock for the whole sync (session-scoped).
+            async with get_engine().connect() as lock_conn:
+                got = (
+                    await lock_conn.execute(text("SELECT pg_try_advisory_lock(87231455)"))
+                ).scalar()
+                if not got:
+                    logger.warning(
+                        "sync_file_list skipped — another sync holds pg_advisory_lock(87231455)"
+                    )
+                    return 0
+                try:
+                    return await self._sync_file_list_body(cache_source=cache_source)
+                finally:
+                    await lock_conn.execute(text("SELECT pg_advisory_unlock(87231455)"))
+
+    async def _sync_file_list_body(self, *, cache_source: str = "manual") -> int:
         async with self._session_factory() as migrate_session:
             try:
                 from app.drive.path_prefix_migrate import migrate_active_root_path_prefix
@@ -1599,9 +1711,15 @@ class IndexingWorker:
         touched_folders: set[str] = set()
         new_file_ids: list[str] = []
         root_folder_id = listing.folder.id if listing.folder else None
+        # Dedupe by Drive id (last wins) — duplicate folder rows in one listing
+        # used to UniqueViolation mid-sync and abort the whole AI Summit upsert.
+        entries_by_id: dict[str, ConnectorFile] = {}
+        for entry in listing.files:
+            if entry.id:
+                entries_by_id[entry.id] = entry
         async with self._session_factory() as session:
             paused_paths = await load_paused_folder_paths(session)
-            for entry in listing.files:
+            for entry in entries_by_id.values():
                 if entry.mime_type == SHORTCUT_MIME and not entry.is_folder:
                     continue
                 live_ids.add(entry.id)
@@ -1615,6 +1733,17 @@ class IndexingWorker:
                     existing_junk = await session.get(DriveFile, entry.id)
                     if existing_junk is not None:
                         await session.delete(existing_junk)
+                    continue
+                # XML / WAV / docs / etc.: never media — do not sync, download, or skip-noise.
+                if not is_drive_media_candidate(entry.mime_type, entry.name):
+                    existing_noise = await session.get(DriveFile, entry.id)
+                    if existing_noise is not None and existing_noise.status in (
+                        DriveFileStatus.PENDING,
+                        DriveFileStatus.SKIPPED,
+                        DriveFileStatus.ERROR,
+                    ):
+                        # Drop queue noise only; never delete PROCESSED/PROCESSING media.
+                        await session.delete(existing_noise)
                     continue
                 seen += 1
                 was_new = await self._upsert_drive_file(
@@ -1650,6 +1779,21 @@ class IndexingWorker:
                 logger.info(
                     "sync_file_list restored %d archived file(s) that already qualify as PROCESSED",
                     saved,
+                )
+            # Drop legacy unsupported_mime skips (XML sidecars etc.) — not media, not downloadable.
+            from sqlalchemy import delete
+
+            purged = await session.execute(
+                delete(DriveFile).where(
+                    DriveFile.status == DriveFileStatus.SKIPPED,
+                    DriveFile.error_message.like("Unsupported mime type%"),
+                )
+            )
+            n_purged = int(purged.rowcount or 0)
+            if n_purged:
+                logger.info(
+                    "sync_file_list purged %d unsupported_mime skip row(s) (non-media)",
+                    n_purged,
                 )
             await session.commit()
 
@@ -1717,24 +1861,33 @@ class IndexingWorker:
         """Persist Drive folders (and folder-shortcut markers) so Library shows empty dirs."""
         from app.drive.indexing_pause import normalize_folder_path
 
-        existing = await session.get(DriveFile, entry.id)
         folder_path = normalize_folder_path(entry.path or "/")
         # Store as a folder marker: path is the folder itself (no trailing file name).
+        existing = await session.get(DriveFile, entry.id)
         if existing is None:
-            session.add(
-                DriveFile(
-                    id=entry.id,
-                    name=entry.name,
-                    mime_type=FOLDER_MIME,
-                    path=folder_path,
-                    modified_time=entry.modified_time,
-                    size=None,
-                    status=DriveFileStatus.SKIPPED,
-                    error_message="folder_marker",
-                    source="drive",
-                )
-            )
-            # Not an indexing skip — structural placeholder for Library only.
+            try:
+                async with session.begin_nested():
+                    session.add(
+                        DriveFile(
+                            id=entry.id,
+                            name=entry.name,
+                            mime_type=FOLDER_MIME,
+                            path=folder_path,
+                            modified_time=entry.modified_time,
+                            size=None,
+                            status=DriveFileStatus.SKIPPED,
+                            error_message="folder_marker",
+                            source="drive",
+                            root_folder_id=None,
+                        )
+                    )
+                    await session.flush()
+            except IntegrityError:
+                # Concurrent sync already inserted this folder id — load and update.
+                existing = await session.get(DriveFile, entry.id)
+                if existing is None:
+                    raise
+        if existing is None:
             return
         existing.name = entry.name
         existing.mime_type = FOLDER_MIME
@@ -1773,6 +1926,11 @@ class IndexingWorker:
             if paused:
                 status = DriveFileStatus.SKIPPED
                 error_message = f"{INDEXING_PAUSED_PREFIX} indexing stopped for parent folder"
+            elif is_video_mime(inferred_mime or entry.mime_type) and is_video_too_large(
+                entry.size_bytes
+            ):
+                status = DriveFileStatus.SKIPPED
+                error_message = video_too_large_message(entry.size_bytes)
             else:
                 status = DriveFileStatus.PENDING
                 error_message = None
@@ -1789,15 +1947,24 @@ class IndexingWorker:
                 content_hash_algo=algo,
                 root_folder_id=root_folder_id,
             )
-            session.add(drive_file)
-            await session.flush()
-            if not paused:
-                skip_key = await apply_dedupe_on_upsert(
-                    session, drive_file, algo=algo, digest=digest
-                )
-                if skip_key:
-                    _log_skip(drive_file, skip_key)
-            return True
+            try:
+                async with session.begin_nested():
+                    session.add(drive_file)
+                    await session.flush()
+            except IntegrityError:
+                existing = await session.get(DriveFile, entry.id)
+                if existing is None:
+                    raise
+            else:
+                if error_message and error_message.startswith("video_too_large"):
+                    _log_skip(drive_file, "video_too_large")
+                elif not paused:
+                    skip_key = await apply_dedupe_on_upsert(
+                        session, drive_file, algo=algo, digest=digest
+                    )
+                    if skip_key:
+                        _log_skip(drive_file, skip_key)
+                return True
 
         from app.drive.cleanup import restore_archived_drive_file
 
@@ -1817,6 +1984,22 @@ class IndexingWorker:
             existing.content_hash = digest
             existing.content_hash_algo = algo
         restored = restore_archived_drive_file(existing)
+        # Hard skip oversized videos — never leave them PENDING/PROCESSING.
+        if (
+            not paused
+            and is_video_mime(existing.mime_type)
+            and is_video_too_large(existing.size)
+            and existing.status
+            in (
+                DriveFileStatus.PENDING,
+                DriveFileStatus.PROCESSING,
+                DriveFileStatus.ERROR,
+            )
+        ):
+            existing.status = DriveFileStatus.SKIPPED
+            existing.error_message = video_too_large_message(existing.size)
+            _log_skip(existing, "video_too_large")
+            return True
         if paused and existing.status in (DriveFileStatus.PENDING, DriveFileStatus.ERROR):
             existing.status = DriveFileStatus.SKIPPED
             existing.error_message = f"{INDEXING_PAUSED_PREFIX} indexing stopped for parent folder"
@@ -1894,6 +2077,13 @@ class IndexingWorker:
                 )
                 if drive_file is None:
                     break
+
+                if not is_drive_media_candidate(drive_file.mime_type, drive_file.name):
+                    # XML / wav / docs leftovers — never download; drop from queue.
+                    await session.delete(drive_file)
+                    await session.commit()
+                    processed_count += 1
+                    continue
 
                 if not is_indexable_mime(drive_file.mime_type, drive_file.name):
                     drive_file.status = DriveFileStatus.SKIPPED
@@ -1983,8 +2173,13 @@ class IndexingWorker:
             self._running = False
             # Kick caption/embed backfill as soon as the cycle flag clears.
             try:
-                from app.workers.maintenance import schedule_maintenance_tick
+                from app.workers.maintenance import (
+                    schedule_cache_cleanup_tick,
+                    schedule_maintenance_tick,
+                )
 
                 schedule_maintenance_tick(self)
+                # Flush already ran — clean only durable PROCESSED (+ caption/embed).
+                schedule_cache_cleanup_tick()
             except Exception:  # noqa: BLE001
                 logger.exception("Post-cycle maintenance schedule failed")

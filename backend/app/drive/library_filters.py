@@ -1,7 +1,8 @@
 """Rows that must never count as library files, enter the index queue, or appear in UI stats.
 
 AppleDouble / .DS_Store junk and Drive folder markers are structural noise — block at
-sync and filter from every aggregate / listing.
+sync and filter from every aggregate / listing. Non-media mimes (XML sidecars, etc.)
+are skipped at sync and excluded from skip-stats.
 """
 from __future__ import annotations
 
@@ -14,6 +15,7 @@ from app.drive.content_hash import APPLEDOUBLE_SKIP_PREFIX, is_macos_junk_name
 
 FOLDER_MARKER_ERROR = "folder_marker"
 FOLDER_MIME = "application/vnd.google-apps.folder"
+UNSUPPORTED_MIME_PREFIX = "Unsupported mime type"
 
 
 def is_folder_marker_row(

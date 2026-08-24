@@ -440,8 +440,10 @@ async def skip_stats(session: AsyncSession = Depends(get_db)) -> dict[str, objec
     for msg, count in rows:
         n = int(count)
         key = normalize_skip_reason(msg)
-        # Never surface apple/folder markers even if a stale row slips past SQL.
-        if key in {"appledouble_junk", "folder_marker"}:
+        # Never surface apple/folder markers or non-media mime skips (XML sidecars,
+        # wav, docs) — those are not actionable; only real media skips (name_conflict,
+        # decode, …) belong in Admin.
+        if key in {"appledouble_junk", "folder_marker", "unsupported_mime"}:
             continue
         total += n
         by_reason[key] = by_reason.get(key, 0) + n
@@ -450,6 +452,57 @@ async def skip_stats(session: AsyncSession = Depends(get_db)) -> dict[str, objec
         key=lambda x: -x["count"],
     )
     return {"total_skipped": total, "by_reason": ranked}
+
+
+@router.get("/index/tat-stats")
+async def tat_stats(session: AsyncSession = Depends(get_db)) -> dict[str, object]:
+    """Index turnaround (claim → done: captioned image / indexed video / ERROR)."""
+    from app.workers.index_tat import build_index_tat_stats, empty_kind_bucket
+
+    try:
+        return await build_index_tat_stats(session)
+    except Exception:  # noqa: BLE001 — never break Admin over empty/old schema
+        logger.exception("index_tat_stats_failed")
+        return {
+            "image": empty_kind_bucket(),
+            "video": empty_kind_bucket(),
+            "sample_window": "unavailable",
+            "metric": "claim_to_done",
+            "done_means": "unavailable",
+        }
+
+
+@router.post("/index/tat-stats/reset")
+async def reset_tat_stats(session: AsyncSession = Depends(get_db)) -> dict[str, object]:
+    """Clear accumulated claim→done TAT samples (min/avg/max restart empty).
+
+    Only NULLs processing_started_at / completed_at on finished rows. Status and
+    search artifacts are untouched; new index completions refill the card.
+    """
+    from app.workers.index_tat import (
+        build_index_tat_stats,
+        empty_kind_bucket,
+        reset_index_tat_samples,
+    )
+
+    try:
+        result = await reset_index_tat_samples(session)
+        await session.commit()
+        stats = await build_index_tat_stats(session)
+        return {**result, "stats": stats}
+    except Exception:  # noqa: BLE001
+        logger.exception("index_tat_stats_reset_failed")
+        await session.rollback()
+        return {
+            "cleared": 0,
+            "stats": {
+                "image": empty_kind_bucket(),
+                "video": empty_kind_bucket(),
+                "sample_window": "unavailable",
+                "metric": "claim_to_done",
+                "done_means": "unavailable",
+            },
+        }
 
 
 @router.get("/index/drive-stats")
@@ -981,7 +1034,10 @@ async def go_indexer_claim(
         if is_file_indexing_paused(drive_file.path, paused_paths):
             continue
         drive_file.status = DriveFileStatus.PROCESSING
-        drive_file.last_synced_at = datetime.now(timezone.utc)
+        now = datetime.now(timezone.utc)
+        drive_file.last_synced_at = now
+        drive_file.processing_started_at = now
+        drive_file.completed_at = None
         claimed_ids.append(drive_file.id)
         items.append(
             GoIndexerClaimItem(

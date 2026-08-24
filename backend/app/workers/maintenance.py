@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from datetime import datetime, timezone
 
 import cv2
@@ -567,6 +568,53 @@ async def maintenance_tick(worker: IndexingWorker) -> None:
     if missing_caps > 0 and not _caption_running and not _embed_running:
         logger.info("Maintenance: %d image(s) need captions — starting backfill", missing_caps)
         await run_caption_backfill(worker, max_batches=caption_batches)
+
+    # After caption/embed progress, reclaim cache for fully done PROCESSED rows.
+    schedule_cache_cleanup_tick()
+
+
+_last_cache_cleanup_mono = 0.0
+_cache_cleanup_running = False
+_CACHE_CLEANUP_MIN_INTERVAL_SEC = 120.0
+
+
+def schedule_cache_cleanup_tick() -> None:
+    """Fire-and-forget cache cleaner — never blocks indexing.
+
+    Only deletes disk cache for rows already PROCESSED (images need caption+embed).
+    Does not change DriveFile status.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    loop.create_task(_safe_cache_cleanup_tick(), name="cache-cleanup-tick")
+
+
+async def _safe_cache_cleanup_tick() -> None:
+    global _last_cache_cleanup_mono, _cache_cleanup_running
+    if _cache_cleanup_running:
+        return
+    now = time.monotonic()
+    if (now - _last_cache_cleanup_mono) < _CACHE_CLEANUP_MIN_INTERVAL_SEC:
+        return
+    _cache_cleanup_running = True
+    _last_cache_cleanup_mono = now
+    try:
+        from app.drive.cache_cleanup import run_cache_cleanup
+
+        result = await run_cache_cleanup(apply=True)
+        deleted = int(result.get("deleted_count") or 0)
+        if deleted:
+            logger.info(
+                "Auto cache cleanup deleted_files=%d deleted_bytes=%s",
+                deleted,
+                result.get("deleted_bytes"),
+            )
+    except Exception:  # noqa: BLE001
+        logger.exception("Scheduled cache cleanup failed")
+    finally:
+        _cache_cleanup_running = False
 
 
 def schedule_maintenance_tick(worker: IndexingWorker) -> None:
