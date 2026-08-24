@@ -31,7 +31,7 @@ export function RoleSelector({
       <div
         role="group"
         aria-label="Role"
-        className="inline-flex w-full rounded-lg border border-border/80 bg-muted/50 p-0.5"
+        className="inline-flex rounded-lg border border-border/80 bg-muted/50 p-0.5"
       >
         {OPTIONS.map((opt) => {
           const selected = role === opt.value;
@@ -43,7 +43,7 @@ export function RoleSelector({
               aria-pressed={selected}
               onClick={() => onChange(opt.value)}
               className={cn(
-                "inline-flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-[11px] font-medium transition-all duration-150 disabled:pointer-events-none disabled:opacity-50",
+                "inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-md px-2.5 py-1.5 text-[11px] font-medium transition-all duration-150 disabled:pointer-events-none disabled:opacity-50",
                 selected
                   ? opt.value === "student"
                     ? "bg-sky-600 text-white shadow-sm"
@@ -54,7 +54,7 @@ export function RoleSelector({
               )}
             >
               <opt.icon size={12} aria-hidden className="shrink-0 opacity-90" />
-              <span className="truncate">{opt.label}</span>
+              <span>{opt.label}</span>
             </button>
           );
         })}
