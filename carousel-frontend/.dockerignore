@@ -9,3 +9,4 @@ CLAUDE.md
 tsconfig.tsbuildinfo
 npm-debug.log*
 .gitignore
+../face-ab-benchmark
