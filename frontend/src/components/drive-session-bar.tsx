@@ -24,6 +24,7 @@ function driveConnectHref(): string {
 export function DriveSessionBar({ compact = false }: { compact?: boolean }) {
   const [driveSession, setDriveSession] = useState<DriveSession | null>(null);
   const [pickerBusy, setPickerBusy] = useState(false);
+  const [folderBusy, setFolderBusy] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -55,13 +56,6 @@ export function DriveSessionBar({ compact = false }: { compact?: boolean }) {
         window._pickerApiLoaded = true;
       }
 
-      const myDriveFolderView = new window.google.picker.DocsView(window.google.picker.ViewId.FOLDERS)
-        .setEnableDrives(false)
-        .setIncludeFolders(true)
-        .setSelectFolderEnabled(true)
-        .setMimeTypes(FOLDER_MIME)
-        .setLabel("My Drive folders");
-
       const myDriveMediaView = new window.google.picker.DocsView(window.google.picker.ViewId.DOCS_IMAGES_AND_VIDEOS)
         .setEnableDrives(false)
         .setIncludeFolders(true)
@@ -76,7 +70,6 @@ export function DriveSessionBar({ compact = false }: { compact?: boolean }) {
 
       const builder = new window.google.picker.PickerBuilder()
         .setTitle("Choose a folder to index")
-        .addView(myDriveFolderView)
         .addView(myDriveMediaView)
         .addView(sharedDriveView)
         .setOAuthToken(accessToken)
@@ -91,9 +84,16 @@ export function DriveSessionBar({ compact = false }: { compact?: boolean }) {
             );
             return;
           }
-          await apiClient.saveDriveFolder(doc.id, doc.name);
-          await apiClient.syncDriveFiles().catch(() => {});
-          await refresh();
+          setFolderBusy(true);
+          try {
+            await apiClient.saveDriveFolder(doc.id, doc.name);
+            await apiClient.syncDriveFiles().catch(() => {});
+            await refresh();
+          } catch {
+            /* saveDriveFolder already toasted */
+          } finally {
+            setFolderBusy(false);
+          }
         });
 
       if (appId) builder.setAppId(appId);
@@ -105,6 +105,8 @@ export function DriveSessionBar({ compact = false }: { compact?: boolean }) {
     }
   }
 
+  const driveActionBusy = pickerBusy || folderBusy;
+
   if (compact) {
     const driveEmail = driveSession?.email?.trim() || null;
     const folderName = driveSession?.selected_folder?.name?.trim() || null;
@@ -115,7 +117,7 @@ export function DriveSessionBar({ compact = false }: { compact?: boolean }) {
           <Button
             variant="secondary"
             onClick={() => void openPicker()}
-            disabled={pickerBusy}
+            disabled={driveActionBusy}
             className="inline-flex h-auto max-w-[min(18rem,40vw)] items-center gap-2 px-3 py-1.5"
             title={
               [folderName ?? "Choose folder", driveEmail, "Click to change folder"]
@@ -124,7 +126,9 @@ export function DriveSessionBar({ compact = false }: { compact?: boolean }) {
             }
           >
             <FolderOpen size={16} className="shrink-0" />
-            {pickerBusy ? (
+            {folderBusy ? (
+              <LoadingLabel>Switching folder…</LoadingLabel>
+            ) : pickerBusy ? (
               <LoadingLabel>Opening…</LoadingLabel>
             ) : (
               <span className="min-w-0 text-left">
@@ -157,18 +161,22 @@ export function DriveSessionBar({ compact = false }: { compact?: boolean }) {
             {driveSession?.connected ? "Google Drive connected" : "Google Drive not connected"}
           </p>
           <p className="truncate text-xs text-muted-foreground">
-            {driveSession?.connected
-              ? `${driveSession.email ?? ""}${
-                  driveSession.selected_folder ? ` · ${driveSession.selected_folder.name}` : " · No folder selected"
-                }`
-              : "Connect a Drive account, then choose a folder to index."}
+            {folderBusy
+              ? "Saving connected folder and syncing…"
+              : driveSession?.connected
+                ? `${driveSession.email ?? ""}${
+                    driveSession.selected_folder ? ` · ${driveSession.selected_folder.name}` : " · No folder selected"
+                  }`
+                : "Connect a Drive account, then choose a folder to index."}
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
           {driveSession?.connected ? (
             <>
-              <Button onClick={() => void openPicker()} disabled={pickerBusy}>
-                {pickerBusy ? (
+              <Button onClick={() => void openPicker()} disabled={driveActionBusy}>
+                {folderBusy ? (
+                  <LoadingLabel>Switching folder…</LoadingLabel>
+                ) : pickerBusy ? (
                   <LoadingLabel>Opening…</LoadingLabel>
                 ) : driveSession.selected_folder ? (
                   "Change Folder"
@@ -178,6 +186,7 @@ export function DriveSessionBar({ compact = false }: { compact?: boolean }) {
               </Button>
               <Button
                 variant="secondary"
+                disabled={driveActionBusy}
                 onClick={async () => {
                   await apiClient.driveLogout();
                   await refresh();

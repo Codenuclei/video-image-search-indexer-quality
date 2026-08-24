@@ -155,3 +155,15 @@ body {
   animation: card-vanish 0.4s ease-in forwards;
   pointer-events: none;
 }
+
+/* Scrollable regions without visible scrollbar thumb/track */
+.scrollbar-hidden {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.scrollbar-hidden::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
