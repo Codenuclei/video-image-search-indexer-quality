@@ -45,6 +45,12 @@ const SKIP_REASON_META: Record<
     retryable: false,
     retryLabel: "Can't retry",
   },
+  video_too_large: {
+    label: "Video over 10GB",
+    hint: "Videos larger than 10GB are skipped and never indexed",
+    retryable: false,
+    retryLabel: "Can't retry",
+  },
   unknown: {
     label: "Other",
     hint: "Skipped for an unclassified reason",
