@@ -17,11 +17,14 @@ function PersonCard({
   onRenamed,
   onDeleted,
   onDeleteFailed,
+  personHref,
 }: {
   person: Person;
   onRenamed: (updated: Person) => void;
   onDeleted: (id: number) => void;
   onDeleteFailed: (person: Person) => void;
+  /** Base path for person detail links (e.g. /people or /test/people). */
+  personHref?: (id: number) => string;
 }) {
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(person.name);
@@ -101,6 +104,8 @@ function PersonCard({
     setEditing(false);
   }
 
+  const detailHref = personHref?.(person.id) ?? `/people/${person.id}`;
+
   return (
     <Card
       className={cn(
@@ -112,7 +117,7 @@ function PersonCard({
       {editing ? (
         <div className="space-y-3">
           <div className="flex items-start gap-3">
-            <Link href={`/people/${person.id}`} className="shrink-0">
+            <Link href={detailHref} className="shrink-0">
               <FaceThumb
                 faceId={person.representative_face_id}
                 className="h-14 w-14 rounded-xl object-cover ring-1 ring-border"
@@ -147,7 +152,7 @@ function PersonCard({
       ) : (
         <>
           <div className="flex items-start gap-3">
-            <Link href={`/people/${person.id}`} className="shrink-0">
+            <Link href={detailHref} className="shrink-0">
               <FaceThumb
                 faceId={person.representative_face_id}
                 className="h-14 w-14 rounded-xl object-cover ring-1 ring-border transition-transform duration-200 group-hover:scale-[1.02]"
@@ -156,7 +161,7 @@ function PersonCard({
             <div className="min-w-0 flex-1">
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
-                  <Link href={`/people/${person.id}`} className="block truncate text-[15px] font-semibold tracking-tight text-foreground hover:underline">
+                  <Link href={detailHref} className="block text-[15px] font-semibold leading-snug tracking-tight text-foreground hover:underline">
                     {person.name}
                   </Link>
                   <p className="mt-1 inline-flex items-center gap-1.5 whitespace-nowrap text-xs text-muted-foreground">
@@ -209,7 +214,14 @@ function PersonCard({
   );
 }
 
-export function PeoplePage({ embedded = false }: { embedded?: boolean } = {}) {
+export function PeoplePage({
+  embedded = false,
+  personHref,
+}: {
+  embedded?: boolean;
+  /** Base path for person detail links (e.g. /people or /test/people). */
+  personHref?: (id: number) => string;
+} = {}) {
   const {
     data: persons,
     loading,
@@ -268,6 +280,7 @@ export function PeoplePage({ embedded = false }: { embedded?: boolean } = {}) {
                 : [...list, restored].sort((a, b) => a.name.localeCompare(b.name));
               writeCache("persons", next, personsRevision(next), true);
             }}
+            personHref={personHref}
           />
         ))}
       </div>
