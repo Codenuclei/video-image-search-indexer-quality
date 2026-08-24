@@ -42,7 +42,7 @@ function MatchCard({ match, tagging }: { match: FaceSearchMatch; tagging: boolea
       <div className="flex items-center gap-3">
         <FaceThumb faceId={match.face_id} className="h-12 w-12 shrink-0 rounded-lg" />
         <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-semibold text-foreground">{match.person_name}</p>
+          <p className="break-words text-sm font-semibold leading-snug text-foreground">{match.person_name}</p>
           <p className="text-[11px] text-muted-foreground">
             {Math.round(match.score * 100)}% match
             {match.cluster_id != null ? ` · cluster #${match.cluster_id}` : ""}
