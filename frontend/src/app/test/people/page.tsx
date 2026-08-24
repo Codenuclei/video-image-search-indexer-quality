@@ -33,7 +33,6 @@ function PeopleDirectory() {
   return (
     <div className="space-y-6">
       <div>
-        <p className="text-xs text-muted-foreground">Library · People Directory</p>
         <h1 className="text-2xl font-semibold tracking-tight">People Directory</h1>
       </div>
 
