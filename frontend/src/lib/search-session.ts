@@ -202,6 +202,7 @@ export function resetSearchResults() {
   searchGeneration += 1;
   inFlight = null;
   patchSearchSession({
+    q: "",
     results: null,
     lastSearchMode: null,
     previewFile: null,
