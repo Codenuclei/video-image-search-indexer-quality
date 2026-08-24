@@ -2,6 +2,7 @@
 
 import { useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { ExternalLink, ImagePlus, Linkedin, X } from "lucide-react";
 import { driveGoogleViewUrl, type FaceSearchMatch } from "@/lib/api";
 import { Button, ConfirmDialog, FaceThumb, Input, LoadingLabel, Spinner } from "@/components/ui";
@@ -20,6 +21,8 @@ function MatchCard({ match, tagging }: { match: FaceSearchMatch; tagging: boolea
   const unknown = isUnknownFaceMatch(match);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
+  const pathname = usePathname();
+  const personBase = pathname.startsWith("/test") ? "/test/people" : "/people";
 
   async function submitName() {
     const name = draft.trim();
@@ -65,7 +68,7 @@ function MatchCard({ match, tagging }: { match: FaceSearchMatch; tagging: boolea
           )}
           {match.person_id != null && (
             <Link
-              href={`/people/${match.person_id}`}
+              href={`${personBase}/${match.person_id}`}
               title="Profile"
               className="flex h-7 w-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
             >
