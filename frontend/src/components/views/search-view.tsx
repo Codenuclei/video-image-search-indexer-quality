@@ -216,31 +216,6 @@ export function SearchPage({
         </p>
       )}
 
-      {results && lastSearchMode && (
-        <div className="max-w-3xl text-sm">
-          <p className="font-medium text-foreground">Search mode for this query</p>
-          <ul className="mt-1.5 space-y-1 text-xs text-muted-foreground">
-            <li>
-              {lastSearchMode.captions
-                ? "Captions ON — matches indexed image descriptions as well as visual embeddings."
-                : "Captions OFF — visual embedding match only."}
-            </li>
-            <li>
-              {lastSearchMode.rerank
-                ? "Re-rank ON — results re-ordered by AI relevance."
-                : "Re-rank OFF — raw vector similarity order."}
-            </li>
-            {results.cache === "exact" || results.cache === "semantic" ? (
-              <li>
-                {results.cache === "exact"
-                  ? "Cached — same query and folder."
-                  : "Cached — similar query in this folder."}
-              </li>
-            ) : null}
-          </ul>
-        </div>
-      )}
-
       {results && (
         <section className="relative">
           <div className="mb-4 flex items-start justify-between gap-2">
