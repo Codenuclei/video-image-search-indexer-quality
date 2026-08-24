@@ -2,10 +2,11 @@
 
 import { useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { ExternalLink, ImagePlus, Linkedin } from "lucide-react";
+import { ExternalLink, ImagePlus, Linkedin, Trash2 } from "lucide-react";
 import { driveGoogleViewUrl, type FaceSearchMatch } from "@/lib/api";
 import { Button, ConfirmDialog, FaceThumb, Input, LoadingLabel, Spinner } from "@/components/ui";
 import {
+  clearReverseFaceSearch,
   collectUnknownNameTagIds,
   isUnknownFaceMatch,
   runReverseFaceNameTag,
@@ -121,7 +122,7 @@ function MatchCard({ match, tagging }: { match: FaceSearchMatch; tagging: boolea
 }
 
 export function ImageSearchPanel() {
-  const { previewUrl, searching, result, error, tagging, tagMessage } = useReverseFaceSession();
+  const { file, previewUrl, searching, result, error, tagging, tagMessage } = useReverseFaceSession();
   const uploadRef = useRef<HTMLInputElement>(null);
   const [bulkName, setBulkName] = useState("");
   const [confirmBulkOpen, setConfirmBulkOpen] = useState(false);
@@ -173,7 +174,7 @@ export function ImageSearchPanel() {
             <ImagePlus size={18} className="text-white" />
           </span>
         </button>
-        <div className="min-w-0 text-xs text-muted-foreground">
+        <div className="min-w-0 flex-1 text-xs text-muted-foreground">
           {searching ? (
             <LoadingLabel size={14}>Searching faces…</LoadingLabel>
           ) : result ? (
@@ -195,6 +196,18 @@ export function ImageSearchPanel() {
           {tagMessage && <p className="mt-1 text-emerald-700 dark:text-emerald-400">{tagMessage}</p>}
         </div>
         {(searching || tagging) && <Spinner size={16} />}
+        {(file || result) && (
+          <button
+            type="button"
+            onClick={clearReverseFaceSearch}
+            title="Clear image search"
+            aria-label="Clear image search"
+            className="inline-flex h-8 shrink-0 items-center gap-1.5 self-start rounded-full border border-border bg-card px-3 text-xs font-medium text-muted-foreground shadow-sm transition-colors hover:bg-muted hover:text-foreground"
+          >
+            <Trash2 size={13} aria-hidden />
+            Clear
+          </button>
+        )}
       </div>
 
       {unknownCount > 0 && (

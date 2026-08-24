@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { useParams, useRouter } from "next/navigation";
-import { Pencil } from "lucide-react";
+import { useParams, usePathname, useRouter } from "next/navigation";
+import { ArrowLeft, Pencil } from "lucide-react";
 import { apiClient, formatApiError, type Person, type PersonRole } from "@/lib/api";
 import { Button, Card, ConfirmDialog, FaceThumb, Input, LoadingLabel } from "@/components/ui";
 import { RoleSelector } from "@/components/role-selector";
@@ -26,6 +26,8 @@ function formatTimestamp(sec: number): string {
 export default function PersonDetailPage() {
   const params = useParams();
   const router = useRouter();
+  const pathname = usePathname();
+  const peopleListHref = pathname.startsWith("/test") ? "/test/people" : "/people";
   const id = Number(params.id);
   const [person, setPerson] = useState<Person | null>(null);
   const [media, setMedia] = useState<PersonMedia[]>([]);
@@ -94,7 +96,7 @@ export default function PersonDetailPage() {
     if (!person) return;
     setDeleting(true);
     setError(null);
-    router.push("/people");
+    router.push(peopleListHref);
     try {
       await apiClient.deletePerson(person.id);
     } catch (e) {
@@ -119,6 +121,14 @@ export default function PersonDetailPage() {
 
   return (
     <div className="space-y-6">
+      <button
+        type="button"
+        onClick={() => router.back()}
+        className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1.5 text-xs font-medium text-muted-foreground shadow-sm transition-colors hover:bg-muted hover:text-foreground"
+      >
+        <ArrowLeft size={14} aria-hidden />
+        Back
+      </button>
       <div className="flex flex-col items-start gap-4 sm:flex-row sm:items-center">
         <FaceThumb faceId={person.representative_face_id} className="h-24 w-24" />
         <div className="min-w-0 flex-1">
