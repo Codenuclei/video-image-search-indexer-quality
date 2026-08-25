@@ -73,6 +73,12 @@ CAROUSEL_CUT_PROMPT_VERSION = "cuts-v3-crafted-complete-arc"
 # health + other carousel routes across all 24 workers.
 _EXTRACT_LOCK = asyncio.Lock()
 _EXTRACT_TIMEOUT_SEC = 900.0
+# Interactive select-images must finish before the studio proxy/browser drops the
+# socket. Rank a few Gemini batches, then fall back to local frames.
+_SELECT_IMAGES_TIMEOUT_SEC = 75.0
+_SELECT_IMAGES_PREWARM_TIMEOUT_SEC = 20.0
+_SELECT_IMAGES_RANK_BATCHES = 3
+_SELECT_IMAGES_FACE_WINDOW_SEC = 8.0
 # Same for cold theme LLM generation (cache hits bypass this lock).
 _THEMES_GEN_LOCK = asyncio.Lock()
 router = APIRouter(prefix="/search/carousel", tags=["carousel-script"])
@@ -3496,8 +3502,14 @@ async def carousel_pipeline_select_images(
     token = await _claim_carousel(session, drive_file_id)
     try:
         return await _carousel_pipeline_select_images_impl(body, session)
+    except asyncio.CancelledError:
+        logger.warning("select-images cancelled drive=%s", drive_file_id)
+        raise
     finally:
-        await _release_carousel(session, drive_file_id, token)
+        try:
+            await asyncio.shield(_release_carousel(session, drive_file_id, token))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("select-images lock release failed drive=%s: %s", drive_file_id, exc)
 
 
 async def _carousel_pipeline_select_images_impl(
@@ -3585,7 +3597,13 @@ async def _carousel_pipeline_select_images_impl(
     for item in polished:
         slides = list(item.get("slides") or [])
         _attach_layout_panels([{"slides": slides}])
-        await _prewarm_carousel_frames([{"slides": slides}], session, get_settings())
+        try:
+            await asyncio.wait_for(
+                _prewarm_carousel_frames([{"slides": slides}], session, get_settings()),
+                timeout=_SELECT_IMAGES_PREWARM_TIMEOUT_SEC,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("select-images prewarm timed out drive=%s", drive_file_id)
         item["slides"] = slides
         item["slide_count"] = len(slides)
         item["images_ready"] = True
@@ -4058,6 +4076,41 @@ async def generate_carousel_outline(
     }
 
 
+def _faces_near_slide(
+    faces: list[dict[str, Any]],
+    slide: dict[str, Any],
+    *,
+    window_sec: float = _SELECT_IMAGES_FACE_WINDOW_SEC,
+) -> list[dict[str, Any]]:
+    """Keep only detections near this slide so ranking cannot ship the full video."""
+    try:
+        start = float(slide.get("timestamp_sec") or 0)
+    except (TypeError, ValueError):
+        start = 0.0
+    try:
+        end = float(slide.get("end_timestamp_sec") or start)
+    except (TypeError, ValueError):
+        end = start
+    lo, hi = start - window_sec, end + window_sec
+    near: list[dict[str, Any]] = []
+    for face in faces:
+        try:
+            ts = float(face.get("timestamp_sec") or 0)
+        except (TypeError, ValueError):
+            continue
+        if lo <= ts <= hi:
+            near.append(face)
+    return near
+
+
+def _strip_slide_ranking_fields(slide: dict[str, Any]) -> dict[str, Any]:
+    """Drop ranking-only blobs so select-images responses stay small."""
+    cleaned = dict(slide)
+    for key in ("faces", "face_detections", "frame_faces"):
+        cleaned.pop(key, None)
+    return cleaned
+
+
 async def _polish_outline_frames(
     slides: list[dict[str, Any]],
     session: AsyncSession,
@@ -4066,6 +4119,8 @@ async def _polish_outline_frames(
     max_candidates: int = 4,
     style_copy_refs: list[str] | None = None,
     style_image_bytes: list[bytes] | None = None,
+    max_rank_batches: int = _SELECT_IMAGES_RANK_BATCHES,
+    timeout_sec: float = _SELECT_IMAGES_TIMEOUT_SEC,
 ) -> list[dict[str, Any]]:
     """Gemini rank + Instagram-ready check for each slide's display frame (span text unchanged)."""
     from app.search.carousel_frame_select import polish_slides_instagram_frames
@@ -4086,7 +4141,7 @@ async def _polish_outline_frames(
             s.setdefault("focal_x", fx)
             s.setdefault("focal_y", fy)
             s.setdefault("front_face_score", fs)
-        return slides
+        return [_strip_slide_ranking_fields(s) for s in slides]
 
     async def ensure_frame(drive_file_id: str, ts: float) -> bytes | None:
         return await _ensure_outline_frame_bytes(drive_file_id, ts, session, settings)
@@ -4102,12 +4157,28 @@ async def _polish_outline_frames(
             media = await session.scalar(select(Media).where(Media.drive_file_id == fid))
             if media is None:
                 continue
+            owned = [s for s in slides if str(s.get("drive_file_id") or "") == fid]
+            bounds: list[tuple[float, float]] = []
+            for slide in owned:
+                try:
+                    start = float(slide.get("timestamp_sec") or 0)
+                    end = float(slide.get("end_timestamp_sec") or start)
+                except (TypeError, ValueError):
+                    continue
+                bounds.append(
+                    (start - _SELECT_IMAGES_FACE_WINDOW_SEC, end + _SELECT_IMAGES_FACE_WINDOW_SEC)
+                )
+            if not bounds:
+                continue
+            lo, hi = min(b[0] for b in bounds), max(b[1] for b in bounds)
             faces = list(
                 (
                     await session.execute(
                         select(Face).where(
                             Face.media_id == media.id,
                             Face.frame_timestamp.is_not(None),
+                            Face.frame_timestamp >= lo,
+                            Face.frame_timestamp <= hi,
                         )
                     )
                 ).scalars().all()
@@ -4129,25 +4200,36 @@ async def _polish_outline_frames(
         for slide in slides:
             fid = str(slide.get("drive_file_id") or "")
             if face_rows.get(fid):
-                slide["faces"] = face_rows[fid]
-        return await polish_slides_instagram_frames(
-            slides,
-            thumbnail_dir=str(settings.thumbnail_dir),
-            api_key=settings.gemini_api_key,
-            model=settings.gemini_model,
-            max_candidates=max_candidates,
-            ensure_frame=ensure_frame,
-            concurrency=3,
-            prefer_local=prefer_local,
-            style_copy_refs=style_copy_refs,
-            style_image_bytes=style_image_bytes,
+                slide["faces"] = _faces_near_slide(face_rows[fid], slide)
+        polished = await asyncio.wait_for(
+            polish_slides_instagram_frames(
+                slides,
+                thumbnail_dir=str(settings.thumbnail_dir),
+                api_key=settings.gemini_api_key,
+                model=settings.gemini_model,
+                max_candidates=max_candidates,
+                ensure_frame=ensure_frame,
+                concurrency=3,
+                prefer_local=prefer_local,
+                style_copy_refs=style_copy_refs,
+                style_image_bytes=style_image_bytes,
+                max_rank_batches=max_rank_batches,
+            ),
+            timeout=timeout_sec,
         )
+        return [_strip_slide_ranking_fields(s) for s in polished]
+    except asyncio.TimeoutError:
+        logger.warning("Instagram frame polish timed out after %.0fs", timeout_sec)
+        for s in slides:
+            s.setdefault("frame_source", "heuristic")
+            s.setdefault("instagram_ready", False)
+        return [_strip_slide_ranking_fields(s) for s in slides]
     except Exception as exc:  # noqa: BLE001
         logger.warning("Instagram frame polish skipped: %s", exc)
         for s in slides:
             s.setdefault("frame_source", "heuristic")
             s.setdefault("instagram_ready", False)
-        return slides
+        return [_strip_slide_ranking_fields(s) for s in slides]
 
 
 async def _prewarm_carousel_frames(

@@ -1439,7 +1439,12 @@ export default function CarouselSearchPage() {
         );
       }
     } catch (e) {
-      setOutlineError(formatApiError(e, "We couldn’t select images. Please try again."));
+      setOutlineError(
+        formatApiError(
+          e,
+          "Image selection was interrupted. Wait a few seconds and try again — the video lock releases automatically now."
+        )
+      );
     } finally {
       setSelectingImages(false);
     }

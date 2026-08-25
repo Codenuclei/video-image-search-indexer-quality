@@ -9,6 +9,8 @@ from app.routers.carousel_script import (
     TimedPick,
     _carousel_selection_hash,
     _enforce_slides_match_transcript,
+    _faces_near_slide,
+    _strip_slide_ranking_fields,
     repair_duplicate_slides,
 )
 from app.search.carousel_pipeline import (
@@ -266,3 +268,18 @@ def test_quality_pass_records_prior_duplicate_repairs() -> None:
     }
     repaired, _ = apply_carousel_quality_pass([carousel])
     assert "slide_3:replaced_duplicate" in repaired[0]["quality_report"]["repairs"]
+
+
+def test_select_images_keeps_only_nearby_faces_and_strips_them() -> None:
+    faces = [
+        {"timestamp_sec": 1.0, "bbox_x": 0.1},
+        {"timestamp_sec": 120.0, "bbox_x": 0.9},
+    ]
+    near = _faces_near_slide(faces, {"timestamp_sec": 2.0, "end_timestamp_sec": 4.0})
+    assert [f["timestamp_sec"] for f in near] == [1.0]
+    cleaned = _strip_slide_ranking_fields(
+        {"transcript_text": "Build the system", "faces": near, "face_detections": near}
+    )
+    assert "faces" not in cleaned
+    assert "face_detections" not in cleaned
+    assert cleaned["transcript_text"] == "Build the system"
