@@ -196,7 +196,7 @@ async def name_tag_from_website(
     """
     from sqlalchemy import func, select
 
-    from app.db.models import Face, FaceCluster, Person
+    from app.db.models import Face, FaceCluster, Media, Person
     from app.matching.service import merge_cluster_into_person, name_cluster, tag_face_manual
 
     clean = (name or "").strip()
@@ -257,6 +257,15 @@ async def name_tag_from_website(
     occ = (
         await session.execute(select(func.count()).select_from(Face).where(Face.person_id == person.id))
     ).scalar_one()
+    file_count = (
+        await session.execute(
+            select(func.count(func.distinct(Media.drive_file_id)))
+            .select_from(Face)
+            .join(Media, Face.media_id == Media.id)
+            .where(Face.person_id == person.id)
+            .where(Media.drive_file_id.is_not(None))
+        )
+    ).scalar_one()
 
     return {
         "ok": True,
@@ -266,6 +275,7 @@ async def name_tag_from_website(
             "role": person.role,
             "representative_face_id": person.representative_face_id,
             "occurrence_count": int(occ),
+            "file_count": int(file_count or 0),
         },
         "actions": actions,
         "named": clean,

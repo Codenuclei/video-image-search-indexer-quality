@@ -170,7 +170,8 @@ function PersonCard({
                   <p className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-muted-foreground">
                     <Images size={12} aria-hidden className="shrink-0 opacity-70" />
                     <span>
-                      {person.occurrence_count} appearance{person.occurrence_count === 1 ? "" : "s"}
+                      {person.file_count ?? person.occurrence_count} file
+                      {(person.file_count ?? person.occurrence_count) === 1 ? "" : "s"}
                     </span>
                   </p>
                 </div>
@@ -270,12 +271,7 @@ export function PeoplePage({
         </p>
       )}
 
-      <div
-        className={cn(
-          "grid gap-4",
-          embedded ? "sm:grid-cols-2 lg:grid-cols-3" : "sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
-        )}
-      >
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,17.5rem),1fr))] gap-4">
         {list.map((p) => (
           <PersonCard
             key={p.id}

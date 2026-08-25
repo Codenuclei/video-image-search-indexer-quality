@@ -20,6 +20,15 @@ data/
 backend/tests/fixtures/faces/*.jpg
 !backend/tests/fixtures/faces/.gitkeep
 
+# Local face A/B benchmark workspace (heavy models / datasets / results)
+face-ab-benchmark/models/
+face-ab-benchmark/faces/
+face-ab-benchmark/results/
+!face-ab-benchmark/**/.gitkeep
+face-ab-benchmark/**/__pycache__/
+face-ab-benchmark/**/*.pyc
+face-ab-benchmark/.venv/
+
 # Node / frontend
 node_modules/
 .next/

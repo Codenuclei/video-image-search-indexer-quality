@@ -165,11 +165,15 @@ export function hydrateSearchCatalogs() {
 
   void (async () => {
     try {
+      const rev = await apiClient.driveLibraryRevision().catch(() => null);
+      if (cachedShell && rev && cachedShell.revision === rev.revision) {
+        return;
+      }
       const shell = await apiClient.driveLibraryShell();
       writeCache(
         LIBRARY_SHELL_CACHE_KEY,
         shell,
-        shell.revision ?? String(shell.summary?.total_files ?? Date.now()),
+        rev?.revision ?? shell.revision ?? String(shell.summary?.total_files ?? Date.now()),
         true
       );
       patchSearchSession({

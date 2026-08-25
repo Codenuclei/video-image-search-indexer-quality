@@ -99,6 +99,8 @@ export type Person = {
   role: PersonRole;
   representative_face_id: number | null;
   occurrence_count: number;
+  /** Unique Drive files this person appears in (preferred over occurrence_count for UI). */
+  file_count?: number | null;
   created_at: string;
 };
 
@@ -251,6 +253,9 @@ export type FaceSearchAppearance = {
 
 export type FaceSearchMatch = {
   face_id: number;
+  /** Face id whose thumbnail JPEG exists (may differ from face_id after cluster fallback). */
+  thumb_face_id?: number | null;
+  thumb_source?: string | null;
   person_id: number | null;
   person_name: string;
   score: number;
@@ -261,6 +266,7 @@ export type FaceSearchMatch = {
   cluster_member_count?: number | null;
   /** Unique Drive files for person (merged) or cluster — not capped like appears_in. */
   file_count?: number | null;
+  /** Drive file previews; server returns up to min(file_count, 500). */
   appears_in?: FaceSearchAppearance[];
 };
 
@@ -332,6 +338,7 @@ export type LeadershipNameTagResponse = {
     role?: string | null;
     representative_face_id?: number | null;
     occurrence_count: number;
+    file_count?: number;
   };
   actions: {
     type: string;
@@ -1603,7 +1610,11 @@ export const apiClient = {
       }
     );
   },
-  searchUploadedFace: async (file: File, limit = 20): Promise<FaceSearchResponse> => {
+  searchUploadedFace: async (
+    file: File,
+    limit = 20,
+    signal?: AbortSignal
+  ): Promise<FaceSearchResponse> => {
     const params = new URLSearchParams({ limit: String(limit) });
     const form = new FormData();
     form.append("file", file);
@@ -1612,6 +1623,7 @@ export const apiClient = {
         method: "POST",
         body: form,
         cache: "no-store",
+        signal,
       });
       if (!res.ok) {
         const text = await res.text();

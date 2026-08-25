@@ -7,6 +7,7 @@ import { ReviewPage } from "@/components/views/review-view";
 import { ReverseFaceLabPage } from "@/components/views/reverse-face-view";
 import { LoadingLabel } from "@/components/ui";
 import { cn } from "@/lib/utils";
+import { useRegisterTestShellChrome } from "@/lib/test-shell-chrome";
 
 const tabs = [
   { id: "indexed", label: "Indexed People" },
@@ -30,35 +31,35 @@ function PeopleDirectory() {
     router.replace(`/test/people${query}`);
   }
 
-  return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">People Directory</h1>
-      </div>
-
-      <div className="flex flex-wrap gap-2">
+  useRegisterTestShellChrome(
+    <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center sm:gap-4">
+      <h1 className="shrink-0 text-lg font-semibold tracking-tight sm:text-xl">People Directory</h1>
+      <div className="flex min-w-0 flex-wrap gap-1.5">
         {tabs.map((item) => (
           <button
             key={item.id}
             type="button"
             onClick={() => setTab(item.id)}
             className={cn(
-              "rounded-full px-4 py-2 text-sm font-medium transition-colors",
+              "rounded-full px-3 py-1.5 text-xs font-medium transition-colors sm:px-4 sm:text-sm",
               tab === item.id
                 ? "bg-blue-600 text-white shadow-sm"
-                : "bg-card text-muted-foreground ring-1 ring-border transition-colors hover:bg-accent hover:text-accent-foreground"
+                : "bg-muted text-muted-foreground ring-1 ring-border transition-colors hover:bg-accent hover:text-accent-foreground"
             )}
           >
             {item.label}
           </button>
         ))}
       </div>
+    </div>,
+    [tab]
+  );
 
-      <div>
-        {tab === "indexed" && <PeoplePage embedded personHref={(id) => `/test/people/${id}`} />}
-        {tab === "mu" && <ReverseFaceLabPage embedded />}
-        {tab === "unindexed" && <ReviewPage embedded />}
-      </div>
+  return (
+    <div>
+      {tab === "indexed" && <PeoplePage embedded personHref={(id) => `/test/people/${id}`} />}
+      {tab === "mu" && <ReverseFaceLabPage embedded />}
+      {tab === "unindexed" && <ReviewPage embedded />}
     </div>
   );
 }

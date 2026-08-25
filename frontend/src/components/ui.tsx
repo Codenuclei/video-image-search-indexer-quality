@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { LucideIcon } from "lucide-react";
 import { Download, ExternalLink } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -356,7 +356,11 @@ export function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {
 }
 
 export function FaceThumb({ faceId, className }: { faceId: number | null; className?: string }) {
-  if (!faceId) {
+  const [broken, setBroken] = useState(false);
+  useEffect(() => {
+    setBroken(false);
+  }, [faceId]);
+  if (!faceId || broken) {
     return (
       <div className={cn("flex items-center justify-center rounded-md bg-muted text-xs text-muted-foreground", className)}>
         ?
@@ -369,6 +373,7 @@ export function FaceThumb({ faceId, className }: { faceId: number | null; classN
       src={`${API_BASE}/faces/${faceId}/thumbnail`}
       alt="face"
       className={cn("rounded-md object-cover", className)}
+      onError={() => setBroken(true)}
     />
   );
 }

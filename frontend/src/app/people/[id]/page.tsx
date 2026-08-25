@@ -172,7 +172,9 @@ export default function PersonDetailPage() {
             <div className="flex items-start gap-2">
               <div>
                 <h2 className="text-xl font-semibold sm:text-2xl">{person.name}</h2>
-                <p className="text-sm text-muted-foreground">{person.occurrence_count} appearances across Drive</p>
+                <p className="text-sm text-muted-foreground">
+                  {media.length} file{media.length === 1 ? "" : "s"} across Drive
+                </p>
                 <div className="mt-3 space-y-2">
                   <p className="text-xs text-muted-foreground">Role tag (used for student / teacher search)</p>
                   <RoleSelector role={person.role ?? null} disabled={roleSaving} onChange={saveRole} />

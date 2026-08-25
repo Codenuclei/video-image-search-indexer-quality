@@ -135,7 +135,8 @@ export function PersonMergeSearch({
                   <span className="min-w-0 flex-1">
                     <span className="block truncate font-medium">{person.name}</span>
                     <span className="block text-xs text-muted-foreground">
-                      {person.occurrence_count} appearance{person.occurrence_count === 1 ? "" : "s"}
+                      {person.file_count ?? person.occurrence_count} file
+                      {(person.file_count ?? person.occurrence_count) === 1 ? "" : "s"}
                     </span>
                   </span>
                   <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-amber-500/15 px-2 py-1 text-[11px] font-semibold text-amber-700 opacity-0 transition-opacity group-hover:opacity-100 dark:text-amber-300">
