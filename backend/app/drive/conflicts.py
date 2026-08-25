@@ -13,6 +13,8 @@ from app.drive.content_hash import (
     NAME_CONFLICT_PREFIX,
     content_identity_key,
 )
+from app.drive.disambiguate import allocate_index_name, effective_index_name, find_by_effective_name
+from app.drive.perceptual_hash import hamming_hex
 
 logger = logging.getLogger(__name__)
 
@@ -103,33 +105,154 @@ async def find_by_same_name(
     name: str,
     exclude_id: str,
 ) -> DriveFile | None:
-    """Find another claimed/completed file with the same name (case-insensitive).
+    """Backward-compatible alias for effective index name lookup."""
+    return await find_by_effective_name(session, name=name, exclude_id=exclude_id)
 
-    PENDING peers are ignored so a large same-name backlog does not skip itself
-    before any file finishes indexing.
-    """
-    lowered = name.strip().lower()
-    if not lowered:
+
+async def find_by_visual_hash_exact(
+    session: AsyncSession,
+    *,
+    visual_hash: str,
+    exclude_id: str,
+) -> DriveFile | None:
+    vh = visual_hash.strip().lower()
+    if len(vh) != 16:
         return None
     return (
         await session.execute(
             select(DriveFile)
             .where(
-                func.lower(DriveFile.name) == lowered,
+                DriveFile.visual_hash == vh,
                 DriveFile.id != exclude_id,
                 DriveFile.error_message.is_distinct_from("folder_marker"),
                 DriveFile.status.in_(
                     (
                         DriveFileStatus.PROCESSING,
                         DriveFileStatus.PROCESSED,
-                        DriveFileStatus.ERROR,
                     )
                 ),
+                DriveFile.mime_type.like("image/%"),
             )
-            .order_by(DriveFile.created_at.asc())
+            .order_by(
+                case(
+                    (DriveFile.status == DriveFileStatus.PROCESSED, 0),
+                    else_=1,
+                ),
+                DriveFile.created_at.asc(),
+            )
             .limit(1)
         )
     ).scalar_one_or_none()
+
+
+async def find_visual_twin(
+    session: AsyncSession,
+    *,
+    visual_hash: str,
+    exclude_id: str,
+    max_hamming: int = 5,
+    basename: str | None = None,
+) -> DriveFile | None:
+    """Find a processed twin with exact or near-identical dHash.
+
+    Near-match Hamming scans only rows sharing the same Drive basename so
+    indexing stays O(peers) instead of scanning the whole library.
+    """
+    twin = await find_by_visual_hash_exact(
+        session, visual_hash=visual_hash, exclude_id=exclude_id
+    )
+    if twin is not None:
+        return twin
+    if max_hamming <= 0:
+        return None
+
+    vh = visual_hash.strip().lower()
+    if len(vh) != 16:
+        return None
+
+    lowered_name = (basename or "").strip().lower()
+    if not lowered_name:
+        return None
+
+    rows = (
+        await session.execute(
+            select(DriveFile.id, DriveFile.visual_hash)
+            .where(
+                DriveFile.visual_hash.isnot(None),
+                DriveFile.id != exclude_id,
+                DriveFile.error_message.is_distinct_from("folder_marker"),
+                DriveFile.status.in_(
+                    (
+                        DriveFileStatus.PROCESSING,
+                        DriveFileStatus.PROCESSED,
+                    )
+                ),
+                DriveFile.mime_type.like("image/%"),
+                func.lower(DriveFile.name) == lowered_name,
+            )
+        )
+    ).all()
+    best_id: str | None = None
+    best_dist = max_hamming + 1
+    for row_id, row_hash in rows:
+        if not row_hash:
+            continue
+        dist = hamming_hex(vh, row_hash)
+        if dist <= max_hamming and dist < best_dist:
+            best_id = row_id
+            best_dist = dist
+    if best_id is None:
+        return None
+    return await session.get(DriveFile, best_id)
+
+
+async def apply_visual_dedupe_on_image(
+    session: AsyncSession,
+    drive_file: DriveFile,
+    *,
+    max_hamming: int = 5,
+) -> str | None:
+    """Mark visually identical images as PROCESSED without re-indexing."""
+    if drive_file.status == DriveFileStatus.PROCESSED:
+        return None
+    if not (drive_file.mime_type or "").startswith("image/"):
+        return None
+    if not drive_file.visual_hash:
+        return None
+
+    twin = await find_visual_twin(
+        session,
+        visual_hash=drive_file.visual_hash,
+        exclude_id=drive_file.id,
+        max_hamming=max_hamming,
+        basename=drive_file.name,
+    )
+    if twin is None:
+        return None
+
+    same_name = effective_index_name(twin).lower() == effective_index_name(drive_file).lower()
+    kind = KIND_SAME_CONTENT if same_name else KIND_SAME_CONTENT_DIFF_NAME
+    msg = (
+        f"{DUPLICATE_CONTENT_PREFIX} visually identical to {twin.id}"
+        + ("" if same_name else f" (also named {twin.display_name!r})")
+    )
+    drive_file.status = DriveFileStatus.PROCESSED
+    drive_file.error_message = msg
+    await _upsert_conflict(
+        session,
+        incoming=drive_file,
+        existing=twin,
+        kind=kind,
+        status=STATUS_AUTOSKIPPED,
+        message=msg,
+    )
+    logger.info(
+        "Complete visual duplicate %s → matches %s (hamming≤%d)",
+        drive_file.id[:12],
+        twin.id[:12],
+        max_hamming,
+    )
+    return "duplicate_content"
 
 
 async def _upsert_conflict(
@@ -224,8 +347,7 @@ async def apply_dedupe_on_upsert(
 
     Returns a reason key when indexing should stop for this row:
     - ``duplicate_content`` → mark PROCESSED (identical bytes already indexed; not a skip)
-    - ``name_conflict`` → park SKIPPED pending Replace (same name, different content)
-    - ``None`` → proceed with normal indexing
+    - ``None`` → proceed with normal indexing (name collisions are auto-disambiguated)
     """
     if algo and digest:
         drive_file.content_hash = digest.strip().lower()
@@ -268,39 +390,55 @@ async def apply_dedupe_on_upsert(
             )
             return "duplicate_content"
 
-    # Same name, different (or unknown) content → do not silently overwrite; await Replace.
-    # Only conflict with work already claimed or completed — pending peers must not
-    # cannibalize each other or the queue never reaches real embeds.
-    name_twin = await find_by_same_name(session, name=drive_file.name, exclude_id=drive_file.id)
+    # Same effective index name, different (or unknown) content → auto-rename like a file manager.
+    incoming_name = effective_index_name(drive_file)
+    name_twin = await find_by_effective_name(
+        session, name=incoming_name, exclude_id=drive_file.id
+    )
     if name_twin is not None:
         twin_key = content_identity_key(name_twin.content_hash_algo, name_twin.content_hash)
         ours = content_identity_key(drive_file.content_hash_algo, drive_file.content_hash)
         if twin_key and ours and twin_key == ours:
-            # Same content already handled above; nothing else.
             return None
-        # Different content (or one side missing hash): require explicit Replace.
-        msg = (
-            f"{NAME_CONFLICT_PREFIX} same name as {name_twin.id} "
-            f"({name_twin.name!r}); awaiting replace/skip"
-        )
-        drive_file.status = DriveFileStatus.SKIPPED
-        drive_file.error_message = msg
-        await _upsert_conflict(
-            session,
-            incoming=drive_file,
-            existing=name_twin,
-            kind=KIND_SAME_NAME_DIFF_CONTENT,
-            status=STATUS_PENDING,
-            message=msg,
-        )
+        new_name = await allocate_index_name(session, drive_file, desired=drive_file.name)
+        drive_file.index_name = new_name
         logger.info(
-            "Name conflict parked %s vs %s",
-            drive_file.id[:12],
+            "Disambiguated index name %s → %s (was blocked by %s)",
+            drive_file.name,
+            new_name,
             name_twin.id[:12],
         )
-        return "name_conflict"
+        return None
 
     return None
+
+
+async def reconcile_name_conflict_skips(session: AsyncSession) -> int:
+    """Requeue legacy name_conflict skips with auto-disambiguated index names."""
+    rows = list(
+        (
+            await session.execute(
+                select(DriveFile).where(
+                    DriveFile.status == DriveFileStatus.SKIPPED,
+                    DriveFile.error_message.like(f"{NAME_CONFLICT_PREFIX}%"),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for row in rows:
+        row.index_name = await allocate_index_name(session, row, desired=row.name)
+        row.status = DriveFileStatus.PENDING
+        row.error_message = None
+        row.decode_attempts = 0
+    if rows:
+        await session.flush()
+        logger.info(
+            "Requeued %d name_conflict skip(s) with disambiguated index names",
+            len(rows),
+        )
+    return len(rows)
 
 
 async def list_conflicts(
