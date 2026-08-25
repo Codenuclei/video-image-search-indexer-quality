@@ -2,11 +2,19 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, usePathname, useRouter } from "next/navigation";
-import { ArrowLeft, ExternalLink, Pencil } from "lucide-react";
-import { apiClient, driveGoogleViewUrl, formatApiError, type Person, type PersonRole } from "@/lib/api";
+import { ArrowLeft, FileVideo, Pencil } from "lucide-react";
+import {
+  apiClient,
+  driveFileThumbnailUrl,
+  driveGoogleViewUrl,
+  formatApiError,
+  type Person,
+  type PersonRole,
+} from "@/lib/api";
 import { Button, Card, ConfirmDialog, FaceThumb, Input, LoadingLabel } from "@/components/ui";
 import { RoleSelector } from "@/components/role-selector";
 import { AnimatedTrash } from "@/components/animated-trash";
+import { useRegisterTestShellChrome } from "@/lib/test-shell-chrome";
 
 type PersonMedia = {
   media_id: number;
@@ -27,7 +35,8 @@ export default function PersonDetailPage() {
   const params = useParams();
   const router = useRouter();
   const pathname = usePathname();
-  const peopleListHref = pathname.startsWith("/test") ? "/test/people" : "/people";
+  const inTestShell = pathname.startsWith("/test");
+  const peopleListHref = inTestShell ? "/test/people" : "/people";
   const id = Number(params.id);
   const [person, setPerson] = useState<Person | null>(null);
   const [media, setMedia] = useState<PersonMedia[]>([]);
@@ -122,6 +131,55 @@ export default function PersonDetailPage() {
     return { images, videos };
   }, [media]);
 
+  const mediaSummary =
+    media.length > 0
+      ? `${media.length} file${media.length === 1 ? "" : "s"} · ${mediaBreakdown.images} image${
+          mediaBreakdown.images === 1 ? "" : "s"
+        } · ${mediaBreakdown.videos} video${mediaBreakdown.videos === 1 ? "" : "s"}`
+      : "No files yet";
+
+  useRegisterTestShellChrome(
+    inTestShell && person ? (
+      <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
+        <button
+          type="button"
+          onClick={() => router.push(peopleListHref)}
+          title="Back to People Directory"
+          className="flex h-8 shrink-0 items-center gap-1 rounded-full border border-border bg-card px-2.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+        >
+          <ArrowLeft size={14} aria-hidden />
+          <span className="hidden sm:inline">Back</span>
+        </button>
+        <div className="min-w-0 flex-1">
+          <h1 className="truncate text-base font-semibold tracking-tight sm:text-lg">{person.name}</h1>
+          <p className="truncate text-[11px] tabular-nums text-muted-foreground sm:text-xs">{mediaSummary}</p>
+        </div>
+        <div className="flex shrink-0 items-center gap-1">
+          <button
+            type="button"
+            onClick={() => setEditing(true)}
+            title="Edit name"
+            className="flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          >
+            <Pencil size={15} />
+          </button>
+          <Button
+            variant="secondary"
+            onClick={() => setConfirmDelete(true)}
+            disabled={deleting}
+            className="group/trash h-8 px-2.5 text-xs text-destructive hover:border-destructive/40 hover:text-destructive"
+          >
+            <span className="inline-flex items-center gap-1.5">
+              <AnimatedTrash size={14} animating={deleting} />
+              <span className="hidden sm:inline">{deleting ? "Deleting…" : "Delete"}</span>
+            </span>
+          </Button>
+        </div>
+      </div>
+    ) : null,
+    [inTestShell, person, mediaSummary, deleting, peopleListHref]
+  );
+
   if (!person) {
     return (
       <p className="text-muted-foreground">
@@ -132,14 +190,17 @@ export default function PersonDetailPage() {
 
   return (
     <div className="space-y-6">
-      <button
-        type="button"
-        onClick={() => router.back()}
-        className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1.5 text-xs font-medium text-muted-foreground shadow-sm transition-colors hover:bg-muted hover:text-foreground"
-      >
-        <ArrowLeft size={14} aria-hidden />
-        Back
-      </button>
+      {!inTestShell && (
+        <button
+          type="button"
+          onClick={() => router.back()}
+          className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1.5 text-xs font-medium text-muted-foreground shadow-sm transition-colors hover:bg-muted hover:text-foreground"
+        >
+          <ArrowLeft size={14} aria-hidden />
+          Back
+        </button>
+      )}
+
       <div className="flex flex-col items-start gap-4 sm:flex-row sm:items-center">
         <FaceThumb faceId={person.representative_face_id} className="h-24 w-24" />
         <div className="min-w-0 flex-1">
@@ -168,13 +229,17 @@ export default function PersonDetailPage() {
                 </Button>
               </div>
             </div>
+          ) : inTestShell ? (
+            <div className="space-y-2">
+              <p className="text-xs text-muted-foreground">Role tag (used for student / teacher search)</p>
+              <RoleSelector role={person.role ?? null} disabled={roleSaving} onChange={saveRole} />
+              {error && <p className="text-sm text-destructive">{error}</p>}
+            </div>
           ) : (
             <div className="flex items-start gap-2">
               <div>
                 <h2 className="text-xl font-semibold sm:text-2xl">{person.name}</h2>
-                <p className="text-sm text-muted-foreground">
-                  {media.length} file{media.length === 1 ? "" : "s"} across Drive
-                </p>
+                <p className="text-sm text-muted-foreground">{mediaSummary}</p>
                 <div className="mt-3 space-y-2">
                   <p className="text-xs text-muted-foreground">Role tag (used for student / teacher search)</p>
                   <RoleSelector role={person.role ?? null} disabled={roleSaving} onChange={saveRole} />
@@ -203,56 +268,65 @@ export default function PersonDetailPage() {
               </div>
             </div>
           )}
-          {error && !editing && <p className="mt-2 text-sm text-destructive">{error}</p>}
+          {error && !editing && !inTestShell && <p className="mt-2 text-sm text-destructive">{error}</p>}
         </div>
       </div>
 
       <Card>
-        <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
+        <div className="mb-3">
           <h3 className="font-medium">Appears in</h3>
-          {media.length > 0 && (
-            <p className="text-xs text-muted-foreground tabular-nums">
-              {mediaBreakdown.images} image{mediaBreakdown.images === 1 ? "" : "s"}
-              {" · "}
-              {mediaBreakdown.videos} video{mediaBreakdown.videos === 1 ? "" : "s"}
-            </p>
-          )}
         </div>
-        <ul className="space-y-2">
-          {media.map((m) => (
-            <li key={m.media_id} className="rounded-md bg-muted/50 px-3 py-2 text-sm">
-              <a
-                href={driveGoogleViewUrl(m.drive_file_id)}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex max-w-full items-center gap-1.5 font-medium text-foreground underline-offset-2 hover:underline"
-                title={m.name}
-              >
-                <span className="truncate">{m.name}</span>
-                <ExternalLink size={12} className="shrink-0 text-muted-foreground" aria-hidden />
-              </a>
-              {m.media_type === "video" && m.frame_timestamp != null && (
-                <span className="ml-2 text-xs text-violet-400">@ {formatTimestamp(m.frame_timestamp)}</span>
-              )}
-            </li>
-          ))}
-        </ul>
-        {media.length === 0 && <p className="text-sm text-muted-foreground">No media linked yet.</p>}
+        {media.length === 0 ? (
+          <p className="text-sm text-muted-foreground">No media linked yet.</p>
+        ) : (
+          <ul className="grid grid-cols-4 gap-2 sm:grid-cols-6 md:grid-cols-8 lg:grid-cols-10">
+            {media.map((m) => {
+              const isVideo = (m.media_type || "").toLowerCase() === "video";
+              return (
+                <li key={m.media_id}>
+                  <a
+                    href={driveGoogleViewUrl(m.drive_file_id)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title={m.name}
+                    className="relative block aspect-square overflow-hidden rounded-md border border-border bg-muted/40 transition-opacity hover:opacity-90"
+                  >
+                    {isVideo ? (
+                      <span className="flex h-full w-full flex-col items-center justify-center gap-0.5 text-muted-foreground">
+                        <FileVideo size={18} aria-hidden />
+                        {m.frame_timestamp != null && (
+                          <span className="text-[9px] tabular-nums">{formatTimestamp(m.frame_timestamp)}</span>
+                        )}
+                      </span>
+                    ) : (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={driveFileThumbnailUrl(m.drive_file_id)}
+                        alt={m.name}
+                        loading="lazy"
+                        decoding="async"
+                        className="h-full w-full object-cover"
+                      />
+                    )}
+                  </a>
+                </li>
+              );
+            })}
+          </ul>
+        )}
       </Card>
 
-      {person && (
-        <ConfirmDialog
-          open={confirmDelete}
-          title={`Delete "${person.name}"?`}
-          message="Faces will be unlinked and may return to the review queue."
-          confirmLabel={deleting ? <LoadingLabel>Deleting…</LoadingLabel> : "Delete"}
-          onConfirm={() => {
-            setConfirmDelete(false);
-            deleteName();
-          }}
-          onCancel={() => setConfirmDelete(false)}
-        />
-      )}
+      <ConfirmDialog
+        open={confirmDelete}
+        title={`Delete "${person.name}"?`}
+        message="Faces will be unlinked and may return to the review queue."
+        confirmLabel={deleting ? <LoadingLabel>Deleting…</LoadingLabel> : "Delete"}
+        onConfirm={() => {
+          setConfirmDelete(false);
+          deleteName();
+        }}
+        onCancel={() => setConfirmDelete(false)}
+      />
     </div>
   );
 }

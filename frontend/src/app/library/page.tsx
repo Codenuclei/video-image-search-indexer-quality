@@ -26,9 +26,11 @@ import {
 } from "@/lib/api";
 import { Button, Card, DownloadButton, IconLink, Input, LoadingLabel, Spinner, StatCard } from "@/components/ui";
 import { ManualFaceTagger } from "@/components/manual-face-tagger";
+import { LiveIndexingLanes, isLiveIndexingActive } from "@/components/live-indexing-lanes";
 import { humanizeIndexError } from "@/lib/index-errors";
 import { cn } from "@/lib/utils";
 import { readCache, writeCache, hydrateKeyFromDisk } from "@/lib/data-cache";
+import { useIndexStatusStore } from "@/lib/index-status-store";
 
 type FilterMode = "all" | "processed" | "failed" | "skipped" | "archived" | "missing_caption" | "missing_embed";
 
@@ -275,6 +277,7 @@ function FileRow({
 }
 
 export default function LibraryPage() {
+  const { status: indexStatus } = useIndexStatusStore();
   const [data, setData] = useState<LibraryResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [selectedFolderPath, setSelectedFolderPath] = useState("/");
@@ -541,6 +544,13 @@ export default function LibraryPage() {
         </Card>
       )}
 
+      {isLiveIndexingActive(indexStatus) && indexStatus && (
+        <Card>
+          <h3 className="mb-2 text-sm font-medium">Live indexing</h3>
+          <LiveIndexingLanes status={indexStatus} lanesOnly showHeader={false} />
+        </Card>
+      )}
+
       {summary && (
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
           <StatCard label="Total files" value={summary.total_files} />
@@ -572,12 +582,12 @@ export default function LibraryPage() {
         </div>
       )}
 
-      <div className="flex min-h-[520px] flex-col lg:flex-row">
-        <aside className="w-full shrink-0 border-b border-border lg:w-64 lg:border-b-0 lg:border-r">
-          <div className="border-b border-border px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+      <div className="flex min-h-[520px] max-h-[min(720px,calc(100vh-12rem))] flex-col overflow-hidden rounded-lg border border-border lg:flex-row">
+        <aside className="flex w-full shrink-0 flex-col overflow-hidden border-b border-border lg:w-64 lg:border-b-0 lg:border-r">
+          <div className="shrink-0 border-b border-border px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
             Folders
           </div>
-          <div className="scrollbar-hidden max-h-48 overflow-y-auto p-2 lg:max-h-[calc(100vh-18rem)]">
+          <div className="scrollbar-hidden min-h-0 flex-1 overflow-y-auto p-2">
             {data?.tree && (
               <FolderTreeItem
                 folder={data.tree}
@@ -593,8 +603,8 @@ export default function LibraryPage() {
           </div>
         </aside>
 
-        <section className="flex min-w-0 flex-1 flex-col">
-          <div className="space-y-2 border-b border-border px-3 py-2">
+        <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+          <div className="shrink-0 space-y-2 border-b border-border px-3 py-2">
             <p className="min-w-0 text-sm font-medium">
               <span className="text-foreground">
                 {selectedFolderPath === "/"
@@ -634,7 +644,7 @@ export default function LibraryPage() {
             </div>
           </div>
 
-          <div className={cn(FILE_TABLE_COLS, "hidden border-b border-border bg-muted/30 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground sm:grid")}>
+          <div className={cn(FILE_TABLE_COLS, "hidden shrink-0 border-b border-border bg-muted/30 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground sm:grid")}>
             <span className="min-w-0">Name</span>
             <span className="flex items-center justify-center">Index</span>
             <span className="flex items-center justify-center">Caption</span>
@@ -688,12 +698,12 @@ export default function LibraryPage() {
           </div>
         </section>
 
-        <aside className="flex w-full shrink-0 flex-col border-t border-border bg-muted/10 lg:w-72 lg:border-l lg:border-t-0">
-          <div className="border-b border-border px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+        <aside className="flex w-full shrink-0 flex-col overflow-hidden border-t border-border bg-muted/10 lg:w-72 lg:border-l lg:border-t-0">
+          <div className="shrink-0 border-b border-border px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
             Details
           </div>
           {selectedFile ? (
-            <div className="scrollbar-hidden max-h-64 space-y-3 overflow-y-auto p-3 text-sm lg:max-h-[calc(100vh-18rem)]">
+            <div className="scrollbar-hidden min-h-0 flex-1 space-y-3 overflow-y-auto p-3 text-sm">
               {selectedFile.is_image && (
                 manualFaceTag ? (
                   <ManualFaceTagger

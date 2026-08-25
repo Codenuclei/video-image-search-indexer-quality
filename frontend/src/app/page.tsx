@@ -5,12 +5,12 @@ import { Bar, BarChart, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from 
 import {
   apiClient,
   type FileIndexConflict,
-  type IndexStatus,
   type IndexedFolder,
   type SkipStats,
 } from "@/lib/api";
 import { formatCount, skipReasonMeta } from "@/lib/index-errors";
 import { Button, Card, LoadingLabel, StatCard } from "@/components/ui";
+import { useIndexStatusStore } from "@/lib/index-status-store";
 
 const STATUS_ORDER = ["processed", "pending", "processing", "error", "skipped", "archived"] as const;
 
@@ -53,23 +53,12 @@ function conflictKindLabel(kind: string): string {
 }
 
 export default function DashboardPage() {
-  const [indexStatus, setIndexStatus] = useState<IndexStatus | null>(null);
+  const { status: indexStatus } = useIndexStatusStore();
   const [skipStats, setSkipStats] = useState<SkipStats | null>(null);
   const [folders, setFolders] = useState<IndexedFolder[]>([]);
   const [conflicts, setConflicts] = useState<FileIndexConflict[]>([]);
   const [retryingReason, setRetryingReason] = useState<string | null>(null);
   const [resolvingId, setResolvingId] = useState<number | null>(null);
-
-  const load = useCallback(async () => {
-    try {
-      // Hot path: status only. Folders/conflicts are slower-changing — avoid
-      // spamming Postgres on every poll tick when a few tabs are open.
-      const status = await apiClient.indexStatus();
-      setIndexStatus(status);
-    } catch {
-      /* silent poll; IndexStatusBanner surfaces unreachable */
-    }
-  }, []);
 
   const loadSecondary = useCallback(async () => {
     try {
@@ -87,21 +76,15 @@ export default function DashboardPage() {
   }, []);
 
   useEffect(() => {
-    void load();
     void loadSecondary();
-    const hot = setInterval(() => void load(), 10000);
     const cold = setInterval(() => void loadSecondary(), 30000);
-    return () => {
-      clearInterval(hot);
-      clearInterval(cold);
-    };
-  }, [load, loadSecondary]);
+    return () => clearInterval(cold);
+  }, [loadSecondary]);
 
   async function requestRetryAll(reason: string) {
     setRetryingReason(reason);
     try {
       await apiClient.retrySkippedByReason(reason);
-      await load();
       await loadSecondary();
     } catch {
       /* api() already toasted */
@@ -114,7 +97,6 @@ export default function DashboardPage() {
     setResolvingId(id);
     try {
       await apiClient.resolveIndexConflict(id, action);
-      await load();
       await loadSecondary();
     } catch {
       /* api() already toasted */

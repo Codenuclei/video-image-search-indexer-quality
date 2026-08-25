@@ -26,9 +26,8 @@ import { ConfirmDialog } from "@/components/ui";
 import { signOut, useAuthSession } from "@/components/auth-gate";
 import { supportMailto } from "@/lib/support";
 
-/** Defer index polling — never load on the front page. */
-const IndexStatusBanner = dynamic(
-  () => import("@/components/index-status-banner").then((m) => m.IndexStatusBanner),
+const BackendConnectivityIndicator = dynamic(
+  () => import("@/components/backend-connectivity").then((m) => m.BackendConnectivityIndicator),
   { ssr: false, loading: () => null }
 );
 type NavLink = {
@@ -251,7 +250,6 @@ export function Sidebar() {
   const currentPage =
     links.find((l) => navActive(pathname, l.href) && l.href !== "/")?.label ??
     (pathname === "/" ? "Home" : "DriveFaceIndexer");
-  const showIndexBanner = pathname !== "/";
 
   return (
     <>
@@ -262,7 +260,7 @@ export function Sidebar() {
             <BrandMark />
           </div>
           <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
-            {showIndexBanner ? <IndexStatusBanner /> : null}
+            <BackendConnectivityIndicator />
             <NavLinks pathname={pathname} />
           </div>
           <div className="mt-4 shrink-0">
@@ -308,7 +306,7 @@ export function Sidebar() {
                 <X size={18} />
               </button>
             </div>
-            {showIndexBanner ? <IndexStatusBanner /> : null}
+            <BackendConnectivityIndicator />
             <NavLinks pathname={pathname} onNavigate={() => setMenuOpen(false)} />
             <div className="mt-auto">
               <SidebarFooter email={email} onNavigate={() => setMenuOpen(false)} />
