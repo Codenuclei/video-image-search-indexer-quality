@@ -272,47 +272,54 @@ export default function PersonDetailPage() {
         </div>
       </div>
 
-      <Card className="min-w-0 overflow-hidden">
-        <div className="mb-3">
+      <Card className="flex min-h-0 min-w-0 max-h-[min(28rem,calc(100dvh-14rem))] flex-col overflow-hidden p-0">
+        <div className="flex shrink-0 items-baseline justify-between gap-2 border-b border-border px-4 py-3">
           <h3 className="font-medium">Appears in</h3>
+          {media.length > 0 && (
+            <p className="text-xs tabular-nums text-muted-foreground">
+              {mediaBreakdown.images} img · {mediaBreakdown.videos} vid
+            </p>
+          )}
         </div>
         {media.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No media linked yet.</p>
+          <p className="px-4 py-6 text-sm text-muted-foreground">No media linked yet.</p>
         ) : (
-          <ul className="grid grid-cols-[repeat(auto-fill,minmax(4.5rem,1fr))] gap-2">
-            {media.map((m) => {
-              const isVideo = (m.media_type || "").toLowerCase() === "video";
-              return (
-                <li key={m.media_id} className="min-w-0">
-                  <a
-                    href={driveGoogleViewUrl(m.drive_file_id)}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    title={m.name}
-                    className="relative block aspect-square overflow-hidden rounded-md border border-border bg-muted/40 transition-opacity hover:opacity-90"
-                  >
-                    {isVideo ? (
-                      <span className="flex h-full w-full flex-col items-center justify-center gap-0.5 text-muted-foreground">
-                        <FileVideo size={18} aria-hidden />
-                        {m.frame_timestamp != null && (
-                          <span className="text-[9px] tabular-nums">{formatTimestamp(m.frame_timestamp)}</span>
-                        )}
-                      </span>
-                    ) : (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img
-                        src={driveFileThumbnailUrl(m.drive_file_id)}
-                        alt={m.name}
-                        loading="lazy"
-                        decoding="async"
-                        className="h-full w-full max-w-full object-cover"
-                      />
-                    )}
-                  </a>
-                </li>
-              );
-            })}
-          </ul>
+          <div className="scrollbar-hidden min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-4 py-3">
+            <ul className="grid grid-cols-[repeat(auto-fill,minmax(4.5rem,1fr))] gap-2">
+              {media.map((m) => {
+                const isVideo = (m.media_type || "").toLowerCase() === "video";
+                return (
+                  <li key={m.media_id} className="min-w-0">
+                    <a
+                      href={driveGoogleViewUrl(m.drive_file_id)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      title={m.name}
+                      className="relative block aspect-square overflow-hidden rounded-md border border-border bg-muted/40 transition-opacity hover:opacity-90"
+                    >
+                      {isVideo ? (
+                        <span className="flex h-full w-full flex-col items-center justify-center gap-0.5 text-muted-foreground">
+                          <FileVideo size={18} aria-hidden />
+                          {m.frame_timestamp != null && (
+                            <span className="text-[9px] tabular-nums">{formatTimestamp(m.frame_timestamp)}</span>
+                          )}
+                        </span>
+                      ) : (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={driveFileThumbnailUrl(m.drive_file_id)}
+                          alt={m.name}
+                          loading="lazy"
+                          decoding="async"
+                          className="h-full w-full max-w-full object-cover"
+                        />
+                      )}
+                    </a>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
         )}
       </Card>
 
