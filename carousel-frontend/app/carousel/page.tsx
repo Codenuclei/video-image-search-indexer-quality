@@ -75,6 +75,7 @@ import {
   type PickedFrame,
 } from "./utils";
 import { TopicsHooksTree, TranscriptFramePicker } from "./topics-hooks-tree";
+import { ExportSlidePreview } from "./export-preview";
 import { ItemFeedback } from "@/components/item-feedback";
 import { ItemReferences } from "@/components/item-references";
 import {
@@ -88,6 +89,12 @@ import {
   renderCarouselSlide,
   validateSlideForExport,
 } from "@/lib/carousel-export";
+import {
+  QUALITY_RECHECK_DEBOUNCE_MS,
+  qualityUiStatus,
+  shouldHideQualityScore,
+  type QualityUiStatus,
+} from "@/lib/carousel-quality";
 
 type Phase = 1 | 2 | 3 | 4 | 5;
 
@@ -341,6 +348,9 @@ export default function CarouselSearchPage() {
   const [carouselLayouts, setCarouselLayouts] = useState<CarouselLayouts | null>(null);
   const [pipelineLocked, setPipelineLocked] = useState(false);
   const [pipelineStatus, setPipelineStatus] = useState("idle");
+  const [qualityUi, setQualityUi] = useState<QualityUiStatus>("current");
+  const qualityTimerRef = useRef<number | null>(null);
+  const generatedCarouselsRef = useRef<CarouselGeneratedItem[]>([]);
   const [carouselSaves, setCarouselSaves] = useState<CarouselGenerationSaveListItem[]>([]);
   const [genHistoryOpen, setGenHistoryOpen] = useState(false);
   const genHistoryRef = useRef<HTMLDetailsElement>(null);
@@ -355,6 +365,54 @@ export default function CarouselSearchPage() {
   );
   const outlineRef = useRef<HTMLDivElement>(null);
   const phase3Ref = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    generatedCarouselsRef.current = generatedCarousels;
+  }, [generatedCarousels]);
+
+  function clearQualityTimer() {
+    if (qualityTimerRef.current != null) {
+      window.clearTimeout(qualityTimerRef.current);
+      qualityTimerRef.current = null;
+    }
+  }
+
+  function markQualityStale() {
+    setQualityUi("stale");
+    setGeneratedCarousels((prev) =>
+      prev.map((c) => (c.quality_report ? { ...c, quality_report: undefined } : c))
+    );
+  }
+
+  async function refreshQualityNow(list?: CarouselGeneratedItem[]) {
+    const carousels = list ?? generatedCarouselsRef.current;
+    if (!selectedVideo || !carousels.length) return;
+    setQualityUi("rechecking");
+    try {
+      const res = await apiClient.carouselQualityCheck({
+        drive_file_id: selectedVideo.id,
+        carousels,
+      });
+      const reports = new Map(
+        (res.carousels ?? []).map((item) => [item.id, item.quality_report])
+      );
+      setGeneratedCarousels((prev) =>
+        prev.map((c) =>
+          reports.has(c.id) ? { ...c, quality_report: reports.get(c.id) ?? undefined } : c
+        )
+      );
+      setQualityUi("current");
+    } catch {
+      setQualityUi("stale");
+    }
+  }
+
+  function scheduleQualityRecheck() {
+    markQualityStale();
+    clearQualityTimer();
+    qualityTimerRef.current = window.setTimeout(() => {
+      void refreshQualityNow();
+    }, QUALITY_RECHECK_DEBOUNCE_MS);
+  }
 
   // User-driven only: do not auto-open a cached complete carousel (that jumped
   // straight to phase 5). History loads for the Saved list; restore is a click.
@@ -1295,6 +1353,7 @@ export default function CarouselSearchPage() {
       const normalized = merged.map((c, idx) => ({ ...c, id: `hook_${idx + 1}` }));
       const withPicks = applyHookFrameOverrides(normalized, hookFrames);
       setGeneratedCarousels(withPicks);
+      setQualityUi("current");
       setActiveCarouselId(withPicks[0]?.id ?? null);
       setImagesReady(anyImages);
       setCarouselLayouts(layoutsAcc);
@@ -2493,6 +2552,7 @@ export default function CarouselSearchPage() {
                       return { ...c, slides, slide_count: slides.length };
                     })
                   );
+                  scheduleQualityRecheck();
                 }}
               />
             )}
@@ -2505,6 +2565,11 @@ export default function CarouselSearchPage() {
                 imagesReady={imagesReady}
                 locked={pipelineLocked}
                 qualityReport={activeGeneratedCarousel.quality_report}
+                qualityStatus={qualityUiStatus({
+                  report: activeGeneratedCarousel.quality_report,
+                  stale: qualityUi === "stale",
+                  rechecking: qualityUi === "rechecking",
+                })}
                 references={
                   activeGeneratedCarousel.references ??
                   outline?.references ??
@@ -2524,10 +2589,16 @@ export default function CarouselSearchPage() {
                     if (!next.some((c) => c.id === activeCarouselId)) {
                       setActiveCarouselId(next[0]?.id ?? null);
                     }
+                    scheduleQualityRecheck();
                   }
                 }}
                 onSaveCopy={async (slides, references) => {
                   if (pipelineLocked) return;
+                  await refreshQualityNow(
+                    generatedCarouselsRef.current.map((c) =>
+                      c.id === activeGeneratedCarousel.id ? { ...c, slides } : c
+                    )
+                  );
                   await apiClient.carouselCopySave({
                     drive_file_id: selectedVideo.id,
                     layout_mode: carouselLayout,
@@ -2556,7 +2627,9 @@ export default function CarouselSearchPage() {
                         : c
                     )
                   );
+                  scheduleQualityRecheck();
                 }}
+                onEnsureQuality={() => refreshQualityNow()}
                 onOpenSlide={(slide) =>
                   setPreviewCue({
                     start_sec: slide.timestamp_sec,
@@ -2574,6 +2647,7 @@ export default function CarouselSearchPage() {
                       ? { ...prev, slides }
                       : prev
                   );
+                  scheduleQualityRecheck();
                 }}
               />
             )}
@@ -2738,9 +2812,11 @@ function InstagramCarouselPost({
   imagesReady,
   locked,
   qualityReport,
+  qualityStatus = "current",
   references: attachedRefs = [],
   onOpenSlide,
   onSlidesChange,
+  onEnsureQuality,
   onRegenerateSlide,
   layoutMode,
   onLayoutModeChange,
@@ -2752,9 +2828,11 @@ function InstagramCarouselPost({
   imagesReady: boolean;
   locked: boolean;
   qualityReport?: CarouselQualityReport | null;
+  qualityStatus?: QualityUiStatus;
   references?: CarouselItemReference[];
   onOpenSlide: (slide: CarouselOutlineSlide) => void;
   onSlidesChange?: (slides: CarouselOutlineSlide[]) => void;
+  onEnsureQuality?: () => Promise<void>;
   onRegenerateSlide?: (slide: CarouselOutlineSlide, index: number) => Promise<void>;
   layoutMode: "single_1" | "split_2";
   onLayoutModeChange: (mode: "single_1" | "split_2") => void;
@@ -2856,6 +2934,7 @@ function InstagramCarouselPost({
     setExportError(null);
     setExporting("slide");
     try {
+      await onEnsureQuality?.();
       if (!current) {
         throw new CarouselExportError("No active slide is available to export.");
       }
@@ -2875,6 +2954,7 @@ function InstagramCarouselPost({
     setExportError(null);
     setExporting("carousel");
     try {
+      await onEnsureQuality?.();
       slides.forEach(validateExportSlide);
       const { default: JSZip } = await import("jszip");
       const zip = new JSZip();
@@ -3000,7 +3080,17 @@ function InstagramCarouselPost({
             {exportError}
           </p>
         ) : null}
-        {qualityReport ? (
+        {qualityStatus === "rechecking" ? (
+          <div className="ig-quality" aria-label="Rechecking carousel quality">
+            <span className="ig-quality-score">Rechecking quality</span>
+            <span className="ig-quality-warnings">Score hidden until the latest edit is scored</span>
+          </div>
+        ) : qualityStatus === "stale" || shouldHideQualityScore(qualityStatus) ? (
+          <div className="ig-quality is-warning" aria-label="Quality needs recheck">
+            <span className="ig-quality-score">Quality needs recheck</span>
+            <span className="ig-quality-warnings">Previous score is hidden after edits</span>
+          </div>
+        ) : qualityReport ? (
           <div
             className={cn("ig-quality", qualityScore < 70 && "is-warning")}
             aria-label={`Carousel quality score ${qualityScore} out of 100`}
@@ -3180,20 +3270,40 @@ function InstagramCarouselPost({
                   slide.transcript_text || slide.hook_line || ""
                 )
               : [];
+            const exportLayout =
+              layoutMode === "split_2" && splitPanels ? "split_2" : "single_1";
+            let useExportPreview = false;
+            if (framesVisible) {
+              try {
+                validateSlideForExport(slide, exportLayout, i + 1);
+                useExportPreview = true;
+              } catch {
+                useExportPreview = false;
+              }
+            }
             return (
               <article
                 key={`${slide.index}-${slide.drive_file_id}-${slide.timestamp_sec}`}
                 className={cn(
                   "ig-slide",
                   `ig-slide-${role}`,
-                  splitPanels && "ig-slide-split"
+                  splitPanels && !useExportPreview && "ig-slide-split",
+                  useExportPreview && "ig-slide-export"
                 )}
                 data-slide-role={role}
                 data-slide-number={i + 1}
                 aria-label={`Slide ${i + 1} of ${n}`}
                 aria-hidden={i !== active}
               >
-                {splitPanels ? (
+                {useExportPreview ? (
+                  <ExportSlidePreview
+                    slide={slide}
+                    layout={exportLayout}
+                    slideIndex={i}
+                    slideCount={n}
+                    label={`Slide ${i + 1} of ${n}`}
+                  />
+                ) : splitPanels ? (
                   splitPanels.map((panel, p) => (
                     <div className="ig-panel" key={`${slide.index}-panel-${p}`}>
                       {framesVisible && panel.preview_url ? (
@@ -3274,9 +3384,11 @@ function InstagramCarouselPost({
                     </div>
                   </>
                 )}
-                <span className="ig-slide-number" aria-hidden>
-                  {String(i + 1).padStart(2, "0")}
-                </span>
+                {useExportPreview ? null : (
+                  <span className="ig-slide-number" aria-hidden>
+                    {String(i + 1).padStart(2, "0")}
+                  </span>
+                )}
               </article>
             );
           })}

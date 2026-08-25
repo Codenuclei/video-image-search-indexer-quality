@@ -1056,33 +1056,59 @@ async def extract_hooks_and_topics_async(
             except Exception as exc:  # noqa: BLE001
                 logger.warning("theme topic generation failed: %s", exc)
 
-    # Light heuristic dedupe only — never collapse a rich talk into 2–3 vague labels.
+    # Heuristic first, then optional semantic merge — never collapse a rich talk.
     if len(topic_tree) >= 2:
         before = len(topic_tree)
-        labels = heuristic_topic_dedupe(
-            [
-                {
-                    "id": t.get("id"),
-                    "text": t.get("text"),
-                    "start_sec": t.get("start_sec"),
-                    "end_sec": t.get("end_sec"),
-                    "explanation": t.get("explanation"),
-                    "subtopics": t.get("subtopics"),
-                    "hooks": t.get("hooks"),
-                }
-                for t in topic_tree
-            ],
-            threshold=0.62,
-        )
-        # Preserve subtopics/hooks from originals by text key.
+        payload = [
+            {
+                "id": t.get("id"),
+                "text": t.get("text"),
+                "start_sec": t.get("start_sec"),
+                "end_sec": t.get("end_sec"),
+                "time_ranges": t.get("time_ranges"),
+                "explanation": t.get("explanation"),
+                "subtopics": t.get("subtopics"),
+                "hooks": t.get("hooks"),
+            }
+            for t in topic_tree
+        ]
+        labels = heuristic_topic_dedupe(payload, threshold=0.62)
+        source = "heuristic"
+        if has_llm and len(labels) >= 2:
+            try:
+                semantic = await dedupe_topics_semantic(
+                    labels,
+                    theme_title=theme_title,
+                    api_key=api_key,
+                    model=model,
+                    claude_api_key=claude_api_key,
+                    claude_model=claude_model,
+                    provider=provider,
+                    openrouter_api_key=openrouter_api_key,
+                    openrouter_model=openrouter_model,
+                    openrouter_base_url=openrouter_base_url,
+                )
+                if semantic:
+                    labels = semantic
+                    source = "semantic"
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("carousel topic semantic dedupe failed: %s", exc)
         by_text = {str(t.get("text") or "").strip().lower(): t for t in topic_tree}
         topic_tree = []
         for lab in labels:
             key = str(lab.get("text") or "").strip().lower()
             src = by_text.get(key) or lab
-            topic_tree.append(src)
+            if src is not lab:
+                merged = dict(src)
+                for field in ("time_ranges", "subtopics", "hooks", "explanation", "end_sec"):
+                    if lab.get(field) and not merged.get(field):
+                        merged[field] = lab.get(field)
+                topic_tree.append(merged)
+            else:
+                topic_tree.append(src)
         logger.info(
-            "carousel topic dedupe (heuristic): %d → %d",
+            "carousel topic dedupe (%s): %d → %d",
+            source,
             before,
             len(topic_tree),
         )
@@ -3153,19 +3179,21 @@ def _sync_topic_tree_hooks(
     out: list[dict[str, Any]] = []
     for topic in tree:
         row = dict(topic)
-        row["hooks"] = [
-            by_source[key]
-            for h in row.get("hooks") or []
-            if (key := _hook_provenance_key(h)) in by_source
-        ]
+        synced_hooks: list[dict[str, Any]] = []
+        for hook in row.get("hooks") or []:
+            provenance = _hook_provenance_key(hook)
+            if provenance in by_source:
+                synced_hooks.append(by_source[provenance])
+        row["hooks"] = synced_hooks
         subs: list[dict[str, Any]] = []
         for sub in row.get("subtopics") or []:
             child = dict(sub)
-            child["hooks"] = [
-                by_source[key]
-                for h in child.get("hooks") or []
-                if (key := _hook_provenance_key(h)) in by_source
-            ]
+            child_hooks: list[dict[str, Any]] = []
+            for hook in child.get("hooks") or []:
+                provenance = _hook_provenance_key(hook)
+                if provenance in by_source:
+                    child_hooks.append(by_source[provenance])
+            child["hooks"] = child_hooks
             if child["hooks"]:
                 subs.append(child)
         row["subtopics"] = subs
@@ -3692,24 +3720,91 @@ def heuristic_topic_dedupe(
 _heuristic_topic_dedupe = heuristic_topic_dedupe
 
 
+def _merge_topic_nodes(
+    topics: list[dict[str, Any]],
+    indices: list[int],
+    *,
+    label: str,
+) -> dict[str, Any]:
+    """Union provenance from merged topic indices onto one carousel-ready node."""
+    members: list[dict[str, Any]] = []
+    for idx in indices:
+        if 0 <= idx < len(topics) and isinstance(topics[idx], dict):
+            members.append(topics[idx])
+    src = members[0] if members else (topics[0] if topics else {})
+    item = dict(src)
+    item["text"] = label[:120]
+    starts: list[float] = []
+    ends: list[float] = []
+    ranges: list[dict[str, Any]] = []
+    subtopics: list[dict[str, Any]] = []
+    hooks: list[dict[str, Any]] = []
+    explanations: list[str] = []
+    for cand in members or [item]:
+        try:
+            starts.append(float(cand.get("start_sec") or 0))
+        except (TypeError, ValueError):
+            pass
+        try:
+            if cand.get("end_sec") is not None:
+                ends.append(float(cand.get("end_sec")))
+        except (TypeError, ValueError):
+            pass
+        for rng in cand.get("time_ranges") or []:
+            if isinstance(rng, dict):
+                ranges.append(dict(rng))
+        for sub in cand.get("subtopics") or []:
+            if isinstance(sub, dict):
+                subtopics.append(dict(sub))
+        for hook in cand.get("hooks") or []:
+            if isinstance(hook, dict):
+                hooks.append(dict(hook))
+        note = str(cand.get("explanation") or "").strip()
+        if note:
+            explanations.append(note)
+    if starts:
+        item["start_sec"] = min(starts)
+    if ends:
+        item["end_sec"] = max(ends)
+    if ranges:
+        item["time_ranges"] = ranges
+    if subtopics:
+        item["subtopics"] = subtopics
+    if hooks:
+        item["hooks"] = hooks
+    if explanations and not str(item.get("explanation") or "").strip():
+        item["explanation"] = explanations[0][:300]
+    item["verbatim"] = False
+    item["generated"] = True
+    item["semantic_merge"] = True
+    return item
+
+
 async def dedupe_topics_semantic(
     topics: list[dict[str, Any]],
     *,
     theme_title: str = "",
-    api_key: str,
-    model: str,
+    api_key: str | None = None,
+    model: str = "",
+    claude_api_key: str | None = None,
+    claude_model: str = "",
+    provider: str = "auto",
+    openrouter_api_key: str | None = None,
+    openrouter_model: str = "",
+    openrouter_base_url: str = "",
 ) -> list[dict[str, Any]]:
-    """Merge semantically duplicate topics via LLM; fall back to token overlap."""
+    """Merge semantically duplicate topics via the studio LLM; fall back to overlap."""
     if len(topics) < 2:
         return topics
 
-    # Fast path: heuristic first; if nothing merges, still ask LLM for cohesion.
     heuristic = _heuristic_topic_dedupe(topics)
-
-    import asyncio
-
-    from google import genai
-    from google.genai import types
+    if not _llm_has_any_key(
+        api_key=api_key,
+        claude_api_key=claude_api_key,
+        openrouter_api_key=openrouter_api_key,
+        openrouter_model=openrouter_model,
+    ):
+        return heuristic
 
     payload = [
         {
@@ -3732,6 +3827,7 @@ async def dedupe_topics_semantic(
         "- Keep only UNIQUE ideas (semantic similarity / content overlap = merge)\n"
         "- Prefer the clearest, most carousel-ready label when merging\n"
         "- Preserve a coherent narrative set for the theme — drop redundant or scattered labels\n"
+        "- Do not collapse a rich talk into fewer than half of the input topics\n"
         "- Return topics in chronological preference (use earliest start_sec of the merge group)\n"
         f"Theme: {theme_title or '(none)'}\n"
         "Return ONLY a JSON array of objects: "
@@ -3739,20 +3835,24 @@ async def dedupe_topics_semantic(
         f"Topics:\n{json.dumps(payload, ensure_ascii=False)}"
     )
     try:
-        client = genai.Client(
-            api_key=api_key,
-            http_options=types.HttpOptions(timeout=_LLM_REQUEST_TIMEOUT_MS),
-        )
-        resp = await asyncio.to_thread(
-            client.models.generate_content,
-            model=model,
-            contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
-            config=types.GenerateContentConfig(
-                temperature=0.2,
-                response_mime_type="application/json",
+        text, _provider = await _llm_complete_json(
+            prompt=prompt,
+            system=(
+                "You merge duplicate carousel topic labels. Return ONLY a JSON array."
             ),
+            temperature=0.2,
+            max_tokens=1800,
+            api_key=api_key,
+            model=model,
+            claude_api_key=claude_api_key,
+            claude_model=claude_model,
+            provider=provider,
+            openrouter_api_key=openrouter_api_key,
+            openrouter_model=openrouter_model,
+            openrouter_base_url=openrouter_base_url,
+            json_root="array",
         )
-        raw = json.loads((resp.text or "").strip() or "[]")
+        raw = _loads_json_array(text)
     except Exception as exc:  # noqa: BLE001
         logger.warning("LLM topic dedupe failed: %s", exc)
         return heuristic
@@ -3772,42 +3872,45 @@ async def dedupe_topics_semantic(
         if key in seen:
             continue
         seen.add(key)
-        indices = row.get("from_indices") or row.get("indices") or []
-        src = topics[0]
-        best_start = None
-        best_end = None
-        if isinstance(indices, list) and indices:
-            for idx in indices:
+        raw_indices = row.get("from_indices") or row.get("indices") or []
+        indices: list[int] = []
+        if isinstance(raw_indices, list):
+            for idx in raw_indices:
                 try:
                     i = int(idx)
                 except (TypeError, ValueError):
                     continue
-                if 0 <= i < len(topics):
-                    cand = topics[i]
-                    s = cand.get("start_sec")
-                    try:
-                        s_f = float(s) if s is not None else None
-                    except (TypeError, ValueError):
-                        s_f = None
-                    if s_f is not None and (best_start is None or s_f < best_start):
-                        best_start = s_f
-                        best_end = cand.get("end_sec")
-                        src = cand
-        item = dict(src)
-        item["text"] = label[:120]
-        if best_start is not None:
-            item["start_sec"] = float(best_start)
-            item["end_sec"] = best_end
-        item["verbatim"] = False
-        item["generated"] = True
+                if 0 <= i < len(topics) and i not in indices:
+                    indices.append(i)
+        if not indices:
+            match = next(
+                (
+                    i
+                    for i, t in enumerate(topics)
+                    if str(t.get("text") or "").strip().lower() == key
+                ),
+                0,
+            )
+            indices = [match]
+        item = _merge_topic_nodes(topics, indices, label=label)
         out.append(item)
         if len(out) >= _MAX_TOPICS:
             break
 
     if not out:
         return heuristic
+    min_keep = max(2, (len(heuristic) + 1) // 2)
+    if len(out) < min_keep and len(heuristic) >= min_keep:
+        logger.info(
+            "carousel topic semantic dedupe rejected collapse %d → %d (min_keep=%d)",
+            len(heuristic),
+            len(out),
+            min_keep,
+        )
+        return heuristic
     for i, t in enumerate(out):
         t["id"] = f"topic_{i + 1}"
+    out.sort(key=lambda row: float(row.get("start_sec") or 0))
     # Second pass: heuristic on LLM output to catch leftover near-dupes.
     return _heuristic_topic_dedupe(out)
 
@@ -4236,6 +4339,24 @@ def _carousel_idea_similarity(left: str, right: str) -> float:
     return len(a & b) / max(1, min(len(a), len(b)))
 
 
+def find_duplicate_slide_pairs(
+    slides: list[dict[str, Any]],
+    *,
+    threshold: float = 0.8,
+) -> list[list[int]]:
+    """Return later-slide duplicate pairs ``[left, right]`` using idea overlap."""
+    texts = [_carousel_quality_text(slide) for slide in slides]
+    pairs: list[list[int]] = []
+    for right in range(1, len(texts)):
+        for left in range(right):
+            if texts[left] and texts[right] and _carousel_idea_similarity(
+                texts[left], texts[right]
+            ) >= threshold:
+                pairs.append([left, right])
+                break
+    return pairs
+
+
 def _source_safe_concise_text(text: str, *, max_words: int = 24) -> str:
     """Return a contiguous source substring, never newly authored copy."""
     cleaned = " ".join((text or "").split()).strip()
@@ -4281,16 +4402,16 @@ def score_and_repair_carousel_quality(
         slide["highlight"] = indices
         slide["highlight_words"] = words
 
+    extra = [
+        str(repair)
+        for repair in (item.get("duplicate_repairs") or [])
+        if str(repair).strip()
+    ]
+    repairs.extend(extra)
+
     texts = [_carousel_quality_text(slide) for slide in slides]
     word_counts = [len(text.split()) for text in texts]
-    duplicate_pairs: list[list[int]] = []
-    for right in range(1, len(texts)):
-        for left in range(right):
-            if texts[left] and texts[right] and _carousel_idea_similarity(
-                texts[left], texts[right]
-            ) >= 0.8:
-                duplicate_pairs.append([left, right])
-                break
+    duplicate_pairs = find_duplicate_slide_pairs(slides)
 
     cover = texts[0] if texts else ""
     cover_words = word_counts[0] if word_counts else 0
@@ -4402,6 +4523,6 @@ def apply_carousel_quality_pass(
         "needs_attention": sum(1 for score in scores if score < 70),
         "issue_count": sum(len(report.get("issues") or []) for report in reports),
         "repair_count": sum(len(report.get("repairs") or []) for report in reports),
-        "algorithm": "deterministic_transcript_locked_v1",
+        "algorithm": "deterministic_transcript_locked_v2",
     }
     return repaired, summary

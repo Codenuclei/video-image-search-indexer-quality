@@ -15,6 +15,7 @@ import {
   carouselSlideFilenames,
   computeCoverCrop,
   renderCarouselSlide,
+  renderCarouselSlideToCanvas,
   resolveHighlightIndices,
   sanitizeExportFilename,
   validateSlideForExport,
@@ -180,6 +181,29 @@ describe("carousel slide rendering", () => {
     expect(canvas.toBlob).toHaveBeenCalledWith(expect.any(Function), "image/jpeg", 0.92);
     expect(result.type).toBe("image/jpeg");
     expect(revokeObjectURL).toHaveBeenCalledWith("blob:frame");
+  });
+
+  it("shares the same 1080x1350 canvas path for preview and JPEG export", async () => {
+    const { canvas } = canvasHarness();
+    vi.stubGlobal("document", { createElement: vi.fn(() => canvas) });
+
+    const previewCanvas = await renderCarouselSlideToCanvas(slide(), "single_1", 0, 2);
+    const jpeg = await renderCarouselSlide(slide(), "single_1", 0, 2);
+
+    expect(previewCanvas).toBe(canvas);
+    expect(previewCanvas.width).toBe(1080);
+    expect(previewCanvas.height).toBe(1350);
+    expect(jpeg.type).toBe("image/jpeg");
+  });
+
+  it("creates a preview object URL that the caller can revoke", async () => {
+    const { canvas } = canvasHarness();
+    vi.stubGlobal("document", { createElement: vi.fn(() => canvas) });
+    const { renderCarouselSlidePreviewUrl } = await import("./carousel-export");
+
+    const url = await renderCarouselSlidePreviewUrl(slide(), "single_1", 0, 1);
+    expect(url).toMatch(/^blob:/);
+    expect(createObjectURL).toHaveBeenCalled();
   });
 
   it("renders both selected images in split-panel layout", async () => {

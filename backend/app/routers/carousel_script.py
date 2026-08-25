@@ -44,12 +44,15 @@ from app.search.carousel_pipeline import (
     EXTRACT_PROMPT_VERSION,
     SLIDE_COPY_PROMPT_VERSION,
     THEME_PROMPT_VERSION,
+    _carousel_idea_similarity,
+    _carousel_quality_text,
     _hook_numbers_are_grounded,
     apply_carousel_quality_pass,
     build_harmonized_themes,
     cue_preview_lines,
     deduce_directional_intent,
     extract_hooks_and_topics_async,
+    find_duplicate_slide_pairs,
     heuristic_topic_dedupe,
     _llm_translate_lines,
 )
@@ -182,7 +185,7 @@ class PipelineThemesRequest(CarouselRunLlmFields):
 SAVE_KIND_TOPICS = "topics_hooks"
 SAVE_KIND_THEMES = "themes"
 SAVE_KIND_CAROUSEL = "carousel"
-CAROUSEL_ALGORITHM_VERSION = "p0-fast-grouped-v3-quality-diversity"
+CAROUSEL_ALGORITHM_VERSION = "p0-fast-grouped-v3-quality-diversity-p1"
 CAROUSEL_STATUS_PROCESSING = "processing"
 CAROUSEL_STATUS_IDLE = "idle"
 
@@ -498,6 +501,13 @@ class CarouselSelectImagesBody(CarouselRunLlmFields):
     drive_file_id: str = Field(..., min_length=1, max_length=128)
     carousels: list[dict[str, Any]] = Field(default_factory=list, max_length=24)
     force: bool = False
+
+
+class CarouselQualityCheckBody(BaseModel):
+    """Deterministic quality rescore for edited studio slides. No LLM calls."""
+
+    drive_file_id: str = Field(..., min_length=1, max_length=128)
+    carousels: list[dict[str, Any]] = Field(default_factory=list, max_length=24)
 
 
 class CarouselSaveBody(BaseModel):
@@ -3032,6 +3042,19 @@ async def _build_hook_carousels(
             )
         if len(slides) < 2:
             continue
+        slides, duplicate_repairs = repair_duplicate_slides(
+            slides,
+            cues=cue_corpus,
+            hook=anchored,
+            min_slides=min_slides,
+            drive_file_id=drive_file_id,
+            video_name=video_name,
+            defer_images=not select_images,
+            reserved_texts=reserved_texts,
+            reserved_starts=reserved_starts,
+        )
+        if len(slides) < 2:
+            continue
         # Claim lines/timestamps so later hooks cannot reuse them.
         for s in slides:
             key = (s.get("transcript_text") or s.get("hook_line") or "").strip().lower()
@@ -3060,6 +3083,7 @@ async def _build_hook_carousels(
                 "hook_start_sec": hs,
                 "hook_end_sec": he,
                 "references": references,
+                "duplicate_repairs": duplicate_repairs,
             }
         )
     return carousels
@@ -3324,6 +3348,15 @@ async def _carousel_pipeline_generate_impl(
             openrouter_model=llm["openrouter_model"],
             openrouter_base_url=llm["openrouter_base_url"],
         )
+    carousels = _repair_generated_carousels_duplicates(
+        carousels,
+        unique_hooks=unique_hooks,
+        cue_corpus=cue_corpus,
+        min_slides=min_slides,
+        drive_file_id=drive_file_id,
+        video_name=video_name,
+        select_images=select_images,
+    )
     # Always cross-check slide lines against the indexed transcript at each
     # timestamp so invented polish/translation cannot ship.
     transcript_guard = _enforce_slides_match_transcript(carousels, cue_corpus)
@@ -3344,7 +3377,7 @@ async def _carousel_pipeline_generate_impl(
         )
     if select_images:
         # One grouped frame pass for all carousel slides; the selector itself
-        # enforces the hard three-request Gemini cap.
+        # scales Gemini rank batches to the number of ambiguous slides.
         flat_slides = [
             slide
             for carousel in carousels
@@ -3419,6 +3452,39 @@ async def _carousel_pipeline_generate_impl(
         logger.warning("carousel artifact save failed: %s", exc)
         await session.rollback()
     return result
+
+
+@router.post("/pipeline/quality-check")
+async def carousel_pipeline_quality_check(
+    body: CarouselQualityCheckBody,
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Re-score edited carousels without invoking an LLM."""
+    drive_file_id = body.drive_file_id.strip()
+    if not drive_file_id:
+        raise HTTPException(status_code=400, detail="drive_file_id is required")
+    carousels = [dict(item) for item in (body.carousels or []) if isinstance(item, dict)]
+    if not carousels:
+        raise HTTPException(status_code=400, detail="carousels are required")
+    transcript_guard: dict[str, Any] = {"checked": 0, "ok": 0, "snapped": 0, "empty": 0}
+    try:
+        _drive_file, indexed_cues = await _load_video_cues(session, drive_file_id)
+        english_cues = await _maybe_load_english_cues(_drive_file, indexed_cues)
+        cue_corpus, _used = _select_carousel_cue_corpus(indexed_cues, english_cues)
+        if cue_corpus:
+            transcript_guard = _enforce_slides_match_transcript(carousels, cue_corpus)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("quality-check cue load failed drive=%s: %s", drive_file_id, exc)
+    repaired, quality_summary = apply_carousel_quality_pass(carousels)
+    return {
+        "drive_file_id": drive_file_id,
+        "carousels": repaired,
+        "quality_summary": quality_summary,
+        "transcript_guard": transcript_guard,
+        "status": "current",
+    }
 
 
 @router.post("/pipeline/select-images")
@@ -5582,6 +5648,210 @@ async def _plan_hook_oneline_spans(
             tag = llm_used if llm_used not in ("none", "failed") else "llm"
             source = f"{tag}+heuristic"
     return {"spans": spans[:max_slides], "source": source}
+
+
+def _slide_idea_collides(text: str, others: list[str], *, threshold: float = 0.8) -> bool:
+    return any(
+        other and _carousel_idea_similarity(text, other) >= threshold for other in others
+    )
+
+
+def repair_duplicate_slides(
+    slides: list[dict[str, Any]],
+    *,
+    cues: list[tuple[float, float | None, str]],
+    hook: "TimedPick",
+    min_slides: int,
+    drive_file_id: str,
+    video_name: str,
+    defer_images: bool,
+    reserved_texts: set[str] | None = None,
+    reserved_starts: set[float] | None = None,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Replace later duplicate-idea slides from unused transcript spans.
+
+    Drops a duplicate only when no safe replacement exists and the deck remains
+    above ``min_slides``. Timestamps stay chronological after a final sort.
+    """
+    working = [dict(slide) for slide in slides if isinstance(slide, dict)]
+    repairs: list[str] = []
+    if len(working) < 2:
+        return working, repairs
+
+    hs = float(hook.start_sec or 0)
+    he = float(hook.end_sec) if hook.end_sec is not None else hs + 8.0
+    hook_toks = _hook_token_set(hook)
+    crafted = hook.text
+
+    def _local_reserved(skip: dict[str, Any] | None = None) -> tuple[set[str], set[float]]:
+        texts = set(reserved_texts or ())
+        starts = set(reserved_starts or ())
+        for slide in working:
+            if skip is not None and slide is skip:
+                continue
+            key = _norm_slide_key(slide.get("transcript_text") or slide.get("hook_line") or "")
+            if key:
+                texts.add(key)
+            try:
+                starts.add(round(float(slide.get("timestamp_sec") or 0), 1))
+            except (TypeError, ValueError):
+                pass
+        return texts, starts
+
+    def _replacement_for(target: dict[str, Any]) -> dict[str, Any] | None:
+        keep_texts = [
+            _carousel_quality_text(slide)
+            for slide in working
+            if slide is not target
+        ]
+        local_texts, local_starts = _local_reserved(target)
+        sentence_cands = _sentence_cut_candidates(
+            cues,
+            hook_start=hs,
+            hook_end=he,
+            reserved_texts=local_texts,
+            reserved_starts=local_starts,
+        )
+        catalog = _cues_near_hook(
+            cues,
+            hs,
+            he,
+            back_sec=20.0,
+            forward_sec=60.0,
+            reserved_texts=local_texts,
+            reserved_starts=local_starts,
+        )
+        options: list[tuple[float, float, float, str, float]] = []
+        seen_opt: set[str] = set()
+        for cand in sentence_cands:
+            options.append(
+                (
+                    _cue_relevance(str(cand.get("text") or ""), hook_toks),
+                    abs(float(cand.get("start_sec") or 0) - float(target.get("timestamp_sec") or 0)),
+                    float(cand.get("start_sec") or 0),
+                    str(cand.get("text") or ""),
+                    float(cand.get("end_sec") or float(cand.get("start_sec") or 0) + 2.5),
+                )
+            )
+        for row in catalog:
+            text = _exact_text_for_span(cues, float(row["s"]), float(row["e"]))
+            options.append(
+                (
+                    _cue_relevance(text, hook_toks),
+                    abs(float(row["s"]) - float(target.get("timestamp_sec") or 0)),
+                    float(row["s"]),
+                    text,
+                    float(row["e"]),
+                )
+            )
+        options.sort(key=lambda row: (-row[0], row[1], row[2]))
+        for score, _dist, start, text, end in options:
+            key = _norm_slide_key(text)
+            if not key or key in seen_opt:
+                continue
+            seen_opt.add(key)
+            if (
+                len(text.split()) < _ONELINE_MIN_WORDS
+                or not _line_starts_clean(text)
+                or not _line_complete_enough(text)
+            ):
+                continue
+            if _is_reserved_line(
+                text,
+                start,
+                reserved_texts=local_texts,
+                reserved_starts=local_starts,
+            ):
+                continue
+            if _slide_idea_collides(text, keep_texts):
+                continue
+            return _make_oneline_slide(
+                text=text,
+                start_sec=start,
+                end_sec=end,
+                drive_file_id=drive_file_id,
+                video_name=video_name,
+                crafted_hook=crafted,
+                defer_images=defer_images,
+                order=int(target.get("index") or len(working)),
+            )
+        return None
+
+    # Walk later duplicates until the deck is unique or cannot be repaired.
+    safety = 0
+    while safety < 12:
+        safety += 1
+        pairs = find_duplicate_slide_pairs(working)
+        if not pairs:
+            break
+        left, right = pairs[0]
+        if not 0 <= right < len(working):
+            break
+        target = working[right]
+        replacement = _replacement_for(target)
+        if replacement is not None:
+            working[right] = replacement
+            repairs.append(f"slide_{right + 1}:replaced_duplicate")
+            continue
+        if len(working) > max(2, int(min_slides)):
+            working.pop(right)
+            repairs.append(f"slide_{right + 1}:dropped_duplicate")
+            continue
+        break
+
+    working.sort(key=lambda slide: float(slide.get("timestamp_sec") or 0))
+    for i, slide in enumerate(working):
+        slide["index"] = i + 1
+    return working, repairs
+
+
+def _repair_generated_carousels_duplicates(
+    carousels: list[dict[str, Any]],
+    *,
+    unique_hooks: list["TimedPick"],
+    cue_corpus: list[tuple[float, float | None, str]],
+    min_slides: int,
+    drive_file_id: str,
+    video_name: str,
+    select_images: bool,
+) -> list[dict[str, Any]]:
+    """Second-pass duplicate repair after copy polish."""
+    out: list[dict[str, Any]] = []
+    for idx, carousel in enumerate(carousels):
+        item = dict(carousel)
+        hook = unique_hooks[min(idx, len(unique_hooks) - 1)] if unique_hooks else TimedPick(
+            text=str(item.get("hook_goal") or item.get("title") or "Hook"),
+            start_sec=float(item.get("hook_start_sec") or 0),
+            end_sec=item.get("hook_end_sec"),
+        )
+        reserved_texts: set[str] = set()
+        reserved_starts: set[float] = set()
+        for prior in out:
+            for slide in prior.get("slides") or []:
+                key = _norm_slide_key(slide.get("transcript_text") or slide.get("hook_line") or "")
+                if key:
+                    reserved_texts.add(key)
+                try:
+                    reserved_starts.add(round(float(slide.get("timestamp_sec") or 0), 1))
+                except (TypeError, ValueError):
+                    pass
+        slides, repairs = repair_duplicate_slides(
+            list(item.get("slides") or []),
+            cues=cue_corpus,
+            hook=hook,
+            min_slides=min_slides,
+            drive_file_id=drive_file_id,
+            video_name=video_name,
+            defer_images=not select_images,
+            reserved_texts=reserved_texts,
+            reserved_starts=reserved_starts,
+        )
+        prior_repairs = [str(r) for r in (item.get("duplicate_repairs") or []) if str(r).strip()]
+        item["slides"] = slides
+        item["slide_count"] = len(slides)
+        item["duplicate_repairs"] = prior_repairs + repairs
+        out.append(item)
+    return out
 
 
 def _make_oneline_slide(

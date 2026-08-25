@@ -34,6 +34,21 @@ _HARD_CAP_CANDIDATES = 16
 _MAX_EXTRACTS_PER_SLIDE = 2
 # Skip Gemini when local face+quality already has a clear winner.
 _LOCAL_RANK_FACE_THRESHOLD = 0.35
+# Ambiguous slides are ranked in batches of 4–6; cap grows with deck size.
+_DEFAULT_MAX_GEMINI_RANK_BATCHES = 8
+
+
+def gemini_rank_batch_limit(
+    group_count: int,
+    batch_size: int,
+    *,
+    max_batches: int = _DEFAULT_MAX_GEMINI_RANK_BATCHES,
+) -> int:
+    """How many Gemini rank requests to run for ``group_count`` ambiguous slides."""
+    if group_count <= 0 or batch_size <= 0:
+        return 0
+    needed = (int(group_count) + int(batch_size) - 1) // int(batch_size)
+    return min(needed, max(1, int(max_batches)))
 
 
 @dataclass(frozen=True)
@@ -1344,12 +1359,14 @@ async def polish_slides_instagram_frames(
     prefer_local: bool = False,
     style_copy_refs: list[str] | None = None,
     style_image_bytes: list[bytes] | None = None,
+    max_rank_batches: int = _DEFAULT_MAX_GEMINI_RANK_BATCHES,
 ) -> list[dict[str, Any]]:
     """Apply frame polish with concurrent harvest and grouped Gemini ranking.
 
     Candidate collection is local/concurrent and cache-first. Gemini sees
-    4-6 slides per request (capped at three calls) unless every slide already
-    has a strong local face+quality ranking from precomputed frames.
+    4-6 slides per request. The batch count scales with ambiguous slides and
+    is capped by ``max_rank_batches`` (default 8). Confident local rankings
+    skip Gemini entirely.
     Timestamp collisions are resolved after rankings so early slides cannot
     starve later ones.
     """
@@ -1541,10 +1558,16 @@ async def polish_slides_instagram_frames(
 
     ranked: dict[int, tuple[list[int] | None, list[bool] | None]] = {}
     # Skip Gemini entirely when every slide ranked locally from cache/faces.
-    # Four-to-six slides per request, with an explicit hard cap of three.
+    # Four-to-six slides per request; batch count scales with ambiguous slides.
     batch_size = max(4, min(6, int(concurrency or 5)))
+    batch_limit = gemini_rank_batch_limit(
+        len(groups),
+        batch_size,
+        max_batches=max_rank_batches,
+    )
     batches = [groups[i : i + batch_size] for i in range(0, len(groups), batch_size)]
-    batches = batches[:3]
+    batches = batches[:batch_limit]
+    gemini_attempted = {idx for batch in batches for idx, *_ in batch}
     if batches:
         results = await asyncio.gather(
             *[
@@ -1651,6 +1674,18 @@ async def polish_slides_instagram_frames(
         used.append(candidates[choice].timestamp_sec)
         previous_hash = candidates[choice].perceptual_hash
 
+    local_ranked = sum(1 for item in harvested if item.get("local_ok"))
+    gemini_ranked = sum(1 for idx in gemini_attempted if idx in ranked)
+    rank_coverage = {
+        "ambiguous": len(groups),
+        "gemini_attempted": len(gemini_attempted),
+        "gemini_ranked": gemini_ranked,
+        "local_ranked": local_ranked,
+        "unranked_fallback": max(0, len(groups) - gemini_ranked),
+        "batch_limit": batch_limit,
+        "batch_size": batch_size,
+    }
+
     out_slides: list[dict[str, Any]] = []
     for idx, item in enumerate(harvested):
         out = dict(item["slide"])
@@ -1686,6 +1721,14 @@ async def polish_slides_instagram_frames(
         out["focal_x"] = focal_x
         out["focal_y"] = focal_y
         out["front_face_score"] = face_score
-        out["frame_quality"] = item["quality"]
+        quality = dict(item["quality"] or {})
+        quality["rank_coverage"] = rank_coverage
+        if idx in gemini_attempted:
+            quality["rank_source"] = "gemini"
+        elif item.get("local_ok"):
+            quality["rank_source"] = "local"
+        else:
+            quality["rank_source"] = "fallback"
+        out["frame_quality"] = quality
         out_slides.append(out)
     return out_slides

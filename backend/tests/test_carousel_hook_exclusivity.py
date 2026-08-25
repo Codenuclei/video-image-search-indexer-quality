@@ -97,3 +97,76 @@ def test_two_hooks_do_not_share_transcript_lines():
         starts = sorted(float(s.get("timestamp_sec") or 0) for s in slides)
         for a, b in zip(starts, starts[1:]):
             assert b - a >= 1.9
+
+
+def test_repair_duplicate_slides_stays_chronological_and_exclusive():
+    from app.routers.carousel_script import repair_duplicate_slides
+
+    cues = [
+        (10.0, 14.0, "First ten customers came from cold email."),
+        (15.0, 19.0, "They posted in a private Slack community."),
+        (20.0, 24.0, "First ten customers came from cold email."),
+        (25.0, 29.0, "Warm intros beat spray and pray outreach."),
+        (42.0, 46.0, "You can do it from your laptop today."),
+        (64.0, 68.0, "LinkedIn outreach to a legacy industry works."),
+        (80.0, 84.0, "They picked up the phone and closed."),
+        (100.0, 104.0, "Map communities before you write copy."),
+    ]
+    hook = TimedPick(
+        text="Unlock tactics for first 10 customers",
+        start_sec=10,
+        end_sec=30,
+        original_text="First ten customers came from cold email.",
+    )
+    slides = [
+        {
+            "transcript_text": "First ten customers came from cold email.",
+            "hook_line": "First ten customers came from cold email.",
+            "timestamp_sec": 10.0,
+            "end_timestamp_sec": 14.0,
+        },
+        {
+            "transcript_text": "They posted in a private Slack community.",
+            "hook_line": "They posted in a private Slack community.",
+            "timestamp_sec": 15.0,
+            "end_timestamp_sec": 19.0,
+        },
+        {
+            "transcript_text": "First ten customers came from cold email.",
+            "hook_line": "First ten customers came from cold email.",
+            "timestamp_sec": 20.0,
+            "end_timestamp_sec": 24.0,
+        },
+        {
+            "transcript_text": "Warm intros beat spray and pray outreach.",
+            "hook_line": "Warm intros beat spray and pray outreach.",
+            "timestamp_sec": 25.0,
+            "end_timestamp_sec": 29.0,
+        },
+        {
+            "transcript_text": "You can do it from your laptop today.",
+            "hook_line": "You can do it from your laptop today.",
+            "timestamp_sec": 42.0,
+            "end_timestamp_sec": 46.0,
+        },
+        {
+            "transcript_text": "LinkedIn outreach to a legacy industry works.",
+            "hook_line": "LinkedIn outreach to a legacy industry works.",
+            "timestamp_sec": 64.0,
+            "end_timestamp_sec": 68.0,
+        },
+    ]
+    repaired, _ = repair_duplicate_slides(
+        slides,
+        cues=cues,
+        hook=hook,
+        min_slides=5,
+        drive_file_id="vid",
+        video_name="vid.mp4",
+        defer_images=True,
+    )
+    texts = [(s.get("transcript_text") or "").strip().lower() for s in repaired]
+    starts = [float(s.get("timestamp_sec") or 0) for s in repaired]
+    assert starts == sorted(starts)
+    assert texts.count("first ten customers came from cold email.") <= 1
+    assert len(repaired) >= 5

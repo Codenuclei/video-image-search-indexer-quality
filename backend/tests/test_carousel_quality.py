@@ -9,9 +9,11 @@ from app.routers.carousel_script import (
     TimedPick,
     _carousel_selection_hash,
     _enforce_slides_match_transcript,
+    repair_duplicate_slides,
 )
 from app.search.carousel_pipeline import (
     apply_carousel_quality_pass,
+    find_duplicate_slide_pairs,
     polish_slides_instagram_copy,
 )
 
@@ -180,3 +182,87 @@ def test_algorithm_version_and_polish_copy_change_cache_identity(monkeypatch) ->
 
     monkeypatch.setattr(carousel_script, "CAROUSEL_ALGORITHM_VERSION", "future-v4")
     assert base != selection_hash()
+
+
+def test_find_duplicate_slide_pairs_detects_later_repeat() -> None:
+    slides = [
+        _slide("Why does this simple system work?", 1.0),
+        _slide("Build the smallest useful step next.", 3.0),
+        _slide("Why does this simple system work?", 5.0),
+    ]
+    assert find_duplicate_slide_pairs(slides) == [[0, 2]]
+
+
+def test_repair_duplicate_slides_replaces_later_copy() -> None:
+    cues = [
+        (1.0, 3.0, "Why does this simple system work?"),
+        (3.0, 5.0, "Build the smallest useful step next."),
+        (5.0, 7.0, "Why does this simple system work?"),
+        (9.0, 11.0, "Measure the result before you scale anything."),
+        (13.0, 15.0, "Keep one grounded example in the first slide."),
+        (17.0, 19.0, "Share the playbook after the payoff lands."),
+    ]
+    hook = TimedPick(
+        text="Why does this simple system work",
+        start_sec=1.0,
+        end_sec=8.0,
+        original_text="Why does this simple system work?",
+    )
+    slides = [
+        _slide("Why does this simple system work?", 1.0),
+        _slide("Build the smallest useful step next.", 3.0),
+        _slide("Why does this simple system work?", 5.0),
+        _slide("Keep one grounded example in the first slide.", 13.0),
+        _slide("Share the playbook after the payoff lands.", 17.0),
+        _slide("Measure the result before you scale anything.", 9.0),
+    ]
+    repaired, repairs = repair_duplicate_slides(
+        slides,
+        cues=cues,
+        hook=hook,
+        min_slides=4,
+        drive_file_id="video-1",
+        video_name="video.mp4",
+        defer_images=True,
+    )
+    texts = [s["transcript_text"] for s in repaired]
+    assert any("replaced_duplicate" in item or "dropped_duplicate" in item for item in repairs)
+    assert find_duplicate_slide_pairs(repaired) == []
+    assert len(repaired) >= 4
+    starts = [float(s["timestamp_sec"]) for s in repaired]
+    assert starts == sorted(starts)
+    assert texts.count("Why does this simple system work?") <= 1
+
+
+def test_repair_duplicate_slides_keeps_minimum_when_no_replacement() -> None:
+    cues = [
+        (1.0, 3.0, "Why does this simple system work?"),
+        (3.0, 5.0, "Why does this simple system work?"),
+    ]
+    hook = TimedPick(text="simple system", start_sec=1.0, end_sec=5.0)
+    slides = [
+        _slide("Why does this simple system work?", 1.0),
+        _slide("Why does this simple system work?", 3.0),
+    ]
+    repaired, _repairs = repair_duplicate_slides(
+        slides,
+        cues=cues,
+        hook=hook,
+        min_slides=2,
+        drive_file_id="video-1",
+        video_name="video.mp4",
+        defer_images=True,
+    )
+    assert len(repaired) == 2
+
+
+def test_quality_pass_records_prior_duplicate_repairs() -> None:
+    carousel = {
+        "slides": [
+            _slide("Build the smallest useful system first.", 1.0),
+            _slide("Then measure what changed.", 3.0),
+        ],
+        "duplicate_repairs": ["slide_3:replaced_duplicate"],
+    }
+    repaired, _ = apply_carousel_quality_pass([carousel])
+    assert "slide_3:replaced_duplicate" in repaired[0]["quality_report"]["repairs"]

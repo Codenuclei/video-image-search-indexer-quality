@@ -542,12 +542,12 @@ function canvasToJpeg(canvas: HTMLCanvasElement): Promise<Blob> {
   });
 }
 
-export async function renderCarouselSlide(
+export async function renderCarouselSlideToCanvas(
   slide: CarouselOutlineSlide,
   layout: CarouselExportLayout,
   slideIndex: number,
   slideCount: number
-): Promise<Blob> {
+): Promise<HTMLCanvasElement> {
   const slideNumber = slideIndex + 1;
   validateSlideForExport(slide, layout, slideNumber);
   const canvas = document.createElement("canvas");
@@ -567,5 +567,25 @@ export async function renderCarouselSlide(
     await renderSingle(context, slide, slideNumber, role);
   }
   drawSlideNumber(context, slideIndex, slideCount);
+  return canvas;
+}
+
+export async function renderCarouselSlide(
+  slide: CarouselOutlineSlide,
+  layout: CarouselExportLayout,
+  slideIndex: number,
+  slideCount: number
+): Promise<Blob> {
+  const canvas = await renderCarouselSlideToCanvas(slide, layout, slideIndex, slideCount);
   return canvasToJpeg(canvas);
+}
+
+export async function renderCarouselSlidePreviewUrl(
+  slide: CarouselOutlineSlide,
+  layout: CarouselExportLayout,
+  slideIndex: number,
+  slideCount: number
+): Promise<string> {
+  const blob = await renderCarouselSlide(slide, layout, slideIndex, slideCount);
+  return URL.createObjectURL(blob);
 }

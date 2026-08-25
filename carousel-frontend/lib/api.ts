@@ -862,6 +862,21 @@ export const apiClient = {
       body: JSON.stringify(body),
       timeoutMs: 900_000,
     }),
+  carouselQualityCheck: (body: {
+    drive_file_id: string;
+    carousels: CarouselGeneratedItem[];
+  }) =>
+    api<{
+      drive_file_id: string;
+      carousels: CarouselGeneratedItem[];
+      quality_summary?: CarouselQualitySummary | null;
+      transcript_guard?: Record<string, number>;
+      status?: "current" | string;
+    }>("/search/carousel/pipeline/quality-check", {
+      method: "POST",
+      body: JSON.stringify(body),
+      timeoutMs: 45_000,
+    }),
   carouselCached: (driveFileId: string) =>
     api<{
       id: number;

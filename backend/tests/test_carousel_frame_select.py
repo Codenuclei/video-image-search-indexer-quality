@@ -9,6 +9,7 @@ from app.search.carousel_frame_select import (
     choose_adjacent_diverse_candidate,
     front_face_score,
     focal_point_for_slide,
+    gemini_rank_batch_limit,
     heuristic_frame_ts,
     pick_ready_from_ranked,
     sample_candidate_timestamps,
@@ -69,6 +70,16 @@ def test_front_face_score_rejects_edge_profile_and_focal_point_is_normalized():
     assert focal_x == pytest.approx(0.45)
     assert focal_y == pytest.approx(0.368)
     assert score == front_face_score(centered_front)
+
+
+def test_gemini_rank_batch_limit_scales_and_caps():
+    assert gemini_rank_batch_limit(0, 5) == 0
+    assert gemini_rank_batch_limit(5, 5) == 1
+    assert gemini_rank_batch_limit(20, 5) == 4
+    assert gemini_rank_batch_limit(50, 5) == 8
+    assert gemini_rank_batch_limit(50, 5, max_batches=3) == 3
+    # 24-slide deck at 6 per request needs 4 batches, not the old cap of 3.
+    assert gemini_rank_batch_limit(24, 6) == 4
 
 
 def test_heuristic_frame_ts_mid_span():

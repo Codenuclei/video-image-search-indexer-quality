@@ -6,6 +6,7 @@ import pytest
 
 from app.search.carousel_pipeline import (
     _llm_hooks_for_singular_topic,
+    dedupe_topics_semantic,
     heuristic_craft_hooks,
     heuristic_topic_dedupe,
     _nearly_verbatim,
@@ -114,3 +115,91 @@ async def test_llm_hooks_keep_evidence_and_reject_invented_numbers(monkeypatch):
     assert out[0]["original_text"] == hooks[0]["text"]
     assert out[0]["start_sec"] == 267
     assert out[0]["verbatim"] is False
+
+
+@pytest.mark.asyncio
+async def test_semantic_dedupe_merges_aliases_and_keeps_provenance(monkeypatch):
+    async def fake_complete(**kwargs):
+        assert kwargs["json_root"] == "array"
+        return (
+            json.dumps(
+                [
+                    {"text": "Student-first decisions", "from_indices": [0, 1]},
+                    {"text": "Faculty Mentorship", "from_indices": [2]},
+                ]
+            ),
+            "openrouter",
+        )
+
+    monkeypatch.setattr(
+        "app.search.carousel_pipeline._llm_complete_json",
+        fake_complete,
+    )
+    topics = [
+        {
+            "text": "Student-First Philosophy",
+            "start_sec": 10,
+            "end_sec": 20,
+            "explanation": "Put students first.",
+            "subtopics": [{"text": "Hiring", "start_sec": 12}],
+        },
+        {
+            "text": "People-centric campus choices",
+            "start_sec": 22,
+            "end_sec": 40,
+            "time_ranges": [{"start_sec": 22, "end_sec": 40}],
+        },
+        {"text": "Faculty Mentorship", "start_sec": 50, "end_sec": 70},
+    ]
+    out = await dedupe_topics_semantic(
+        topics,
+        theme_title="Campus",
+        openrouter_api_key="configured",
+        openrouter_model="google/gemini-test",
+        provider="openrouter",
+    )
+    labels = [t["text"].lower() for t in out]
+    assert len(out) == 2
+    assert any("student" in label for label in labels)
+    merged = next(t for t in out if "student" in t["text"].lower())
+    assert merged["start_sec"] == 10
+    assert merged["end_sec"] == 40
+    assert merged["subtopics"]
+
+
+@pytest.mark.asyncio
+async def test_semantic_dedupe_rejects_over_collapse(monkeypatch):
+    async def fake_complete(**_kwargs):
+        return (
+            json.dumps([{"text": "Everything", "from_indices": [0, 1, 2, 3]}]),
+            "openrouter",
+        )
+
+    monkeypatch.setattr(
+        "app.search.carousel_pipeline._llm_complete_json",
+        fake_complete,
+    )
+    topics = [
+        {"text": "Campus Culture", "start_sec": 0},
+        {"text": "Career Pathways", "start_sec": 10},
+        {"text": "Research Impact", "start_sec": 20},
+        {"text": "Faculty Mentorship", "start_sec": 30},
+    ]
+    out = await dedupe_topics_semantic(
+        topics,
+        openrouter_api_key="configured",
+        openrouter_model="google/gemini-test",
+        provider="openrouter",
+    )
+    assert len(out) == 4
+
+
+@pytest.mark.asyncio
+async def test_semantic_dedupe_falls_back_without_credentials():
+    topics = [
+        {"text": "Student-First Philosophy", "start_sec": 10},
+        {"text": "Student-Centric Decisions", "start_sec": 20},
+        {"text": "Faculty Mentorship", "start_sec": 30},
+    ]
+    out = await dedupe_topics_semantic(topics)
+    assert len(out) == 2
