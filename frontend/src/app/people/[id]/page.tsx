@@ -230,8 +230,8 @@ export default function PersonDetailPage() {
               </div>
             </div>
           ) : inTestShell ? (
-            <div className="max-w-sm space-y-2">
-              <p className="text-xs text-muted-foreground">Role tag (used for student / teacher search)</p>
+            <div className="w-fit max-w-full space-y-1.5">
+              <p className="text-[11px] text-muted-foreground">Role tag</p>
               <RoleSelector role={person.role ?? null} disabled={roleSaving} onChange={saveRole} />
               {error && <p className="text-sm text-destructive">{error}</p>}
             </div>
@@ -240,8 +240,8 @@ export default function PersonDetailPage() {
               <div className="min-w-0 flex-1">
                 <h2 className="truncate text-xl font-semibold sm:text-2xl">{person.name}</h2>
                 <p className="text-sm text-muted-foreground">{mediaSummary}</p>
-                <div className="mt-3 max-w-sm space-y-2">
-                  <p className="text-xs text-muted-foreground">Role tag (used for student / teacher search)</p>
+                <div className="mt-3 w-fit max-w-full space-y-1.5">
+                  <p className="text-[11px] text-muted-foreground">Role tag</p>
                   <RoleSelector role={person.role ?? null} disabled={roleSaving} onChange={saveRole} />
                 </div>
               </div>

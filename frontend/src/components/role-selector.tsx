@@ -48,13 +48,13 @@ export function RoleSelector({
   const card = variant === "card";
 
   return (
-    <div className={cn("flex w-full min-w-0 items-center gap-2", className)}>
+    <div className={cn("flex min-w-0 items-center gap-2", card ? "w-full" : "w-fit", className)}>
       <div
         role="group"
         aria-label="Role"
         className={cn(
-          "w-full min-w-0 rounded-lg border border-border/80 bg-muted/50 p-0.5",
-          card ? "grid grid-cols-3 gap-0.5" : "inline-flex max-w-full flex-wrap gap-1"
+          "min-w-0 rounded-lg border border-border/80 bg-muted/50 p-0.5",
+          card ? "grid w-full grid-cols-3 gap-0.5" : "inline-flex w-fit gap-0.5"
         )}
       >
         {OPTIONS.map((opt) => {
