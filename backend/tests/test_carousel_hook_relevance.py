@@ -11,8 +11,10 @@ from app.routers.carousel_script import (
 from app.search.carousel_pipeline import (
     _dedupe_topic_tree_hooks,
     _force_non_verbatim_hook,
+    _hook_is_readable,
     _hooks_from_topic_tree,
     enforce_non_verbatim_hooks,
+    heuristic_craft_hooks,
 )
 
 
@@ -148,3 +150,77 @@ def test_enforce_non_verbatim_rewrites_repeated_hidden_pattern_openers():
     heads = [" ".join(t.lower().split()[:4]) for t in texts]
     assert len(set(heads)) == len(heads)
     assert stats.get("deduped_openings", 0) >= 1 or stats.get("rewritten", 0) >= 0
+
+
+def test_force_non_verbatim_keeps_money_grammar_not_filler_templates():
+    loss_to_profit = (
+        "reached 6 kores and from minus 30 40 lakhs to like plus 5 lakhs "
+        "plus 10 lakhs so if your entire sales first part or"
+    )
+    cash_burn = (
+        "and a half crores and we used to burn like 40 lakhs 50 lakhs "
+        "I think at that point of time and from that 3 cr we"
+    )
+    used: set[str] = set()
+    first = _force_non_verbatim_hook(
+        loss_to_profit, theme_title="Founder numbers", used=used, salt=0
+    )
+    used.add(" ".join(first.lower().split()))
+    second = _force_non_verbatim_hook(
+        cash_burn, theme_title="Founder numbers", used=used, salt=1
+    )
+
+    assert _hook_is_readable(first)
+    assert _hook_is_readable(second)
+    assert "like plus" not in first.lower()
+    assert "burn like" not in second.lower()
+    assert "lakh" in first.lower() or "crore" in first.lower()
+    assert "lakh" in second.lower() or "burn" in second.lower()
+
+
+def test_enforce_rewrites_ungrammatical_filler_hooks():
+    spoken = (
+        "reached 6 kores and from minus 30 40 lakhs to like plus 5 lakhs plus 10 lakhs"
+    )
+    kept, _stats = enforce_non_verbatim_hooks(
+        [
+            {
+                "id": "h1",
+                "text": "Where like plus actually wins",
+                "original_text": spoken,
+            },
+            {
+                "id": "h2",
+                "text": "What burn like quietly proves",
+                "original_text": (
+                    "we used to burn like 40 lakhs 50 lakhs I think at that point"
+                ),
+            },
+        ],
+        [spoken],
+        theme_title="Cash story",
+    )
+    assert kept
+    texts = [str(item["text"]).lower() for item in kept]
+    assert all(_hook_is_readable(item["text"]) for item in kept)
+    assert all("like plus" not in text for text in texts)
+    assert all("burn like" not in text for text in texts)
+
+
+def test_heuristic_craft_hooks_rejects_filler_glued_headlines():
+    out = heuristic_craft_hooks(
+        [
+            {
+                "id": "hook_1",
+                "text": (
+                    "from minus 30 40 lakhs to like plus 5 lakhs plus 10 lakhs"
+                ),
+                "start_sec": 448,
+                "end_sec": 456,
+            }
+        ],
+        theme_title="Founder story",
+    )
+    assert out
+    assert _hook_is_readable(out[0]["text"])
+    assert "like" not in out[0]["text"].lower()

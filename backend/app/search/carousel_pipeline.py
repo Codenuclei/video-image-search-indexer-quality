@@ -44,7 +44,7 @@ _MAX_MERGED_TOPICS = 24
 _TOPIC_CHUNK_CHARS = 12_000
 _TOPIC_CHUNK_OVERLAP_CUES = 6
 THEME_PROMPT_VERSION = "themes-v4-openrouter-structured-output"
-EXTRACT_PROMPT_VERSION = "extract-v5-intrigue-hooks"
+EXTRACT_PROMPT_VERSION = "extract-v6-readable-hooks"
 
 # Shared editorial brief for every hook-writing prompt. A hook has four jobs:
 # stop the scroll, open a curiosity loop, earn the share, and build the page's
@@ -71,6 +71,13 @@ _HOOK_CRAFT_BRIEF = (
     "\"The hidden pattern behind…\", \"What most people miss…\", \"The real reason "
     "why…\", \"You won't believe…\", \"This will blow your mind…\", and any opener "
     "recycled across hooks in the same batch.\n"
+    "GRAMMAR (hard rule):\n"
+    "- Every hook must be a grammatical English headline: a complete clause, or "
+    "\"Number — claim\". Someone should be able to read it aloud without stumbling.\n"
+    "- Never use spoken fillers (like, um, you know, kinda) as hook nouns.\n"
+    "- Never glue two random adjacent words into \"What X quietly proves\" or "
+    "\"Where X actually wins\". X must be a real noun phrase (a number, a named "
+    "thing, or a concrete stake).\n"
     "SHAPE EXAMPLE (do not copy): spoken \"two students sold 33 lakh worth of watches "
     "in eight minutes\" → hook \"₹33 Lakh in 8 Minutes — by Two Students\" (keeps the "
     "startling numbers, withholds what they sold and how).\n"
@@ -1416,9 +1423,11 @@ async def _llm_craft_hooks(
         if crafted:
             spoken = str(row.get("text") or "").strip()
             # If LLM echoed the transcript, fall back to a local punchy rewrite.
-            if _nearly_verbatim(crafted, spoken):
-                crafted = _heuristic_hook_line(spoken, theme_title=theme_title) or _trim_to_clause(
-                    crafted, 16
+            if _nearly_verbatim(crafted, spoken) or not _hook_is_readable(crafted):
+                crafted = (
+                    _heuristic_hook_line(spoken, theme_title=theme_title)
+                    or _force_non_verbatim_hook(spoken, theme_title=theme_title)
+                    or _trim_to_clause(crafted, 16)
                 )
             row["original_text"] = row.get("original_text") or spoken
             row["text"] = crafted
@@ -1497,11 +1506,137 @@ def heuristic_craft_hooks(
     return guarded
 
 
+_HOOK_FILLER_WORDS = frozenset(
+    {
+        "like", "plus", "minus", "actually", "really", "just", "kinda", "sort",
+        "think", "used", "point", "time", "first", "part", "entire", "okay",
+        "yeah", "well", "know", "gonna", "wanna", "thing", "things", "stuff",
+        "very", "quite", "maybe", "also", "still", "even", "much", "many",
+        "some", "that", "this", "from", "have", "been", "they", "their",
+        "about", "into", "what", "when", "where", "which", "while", "would",
+        "could", "should", "there", "these", "those", "because", "after",
+        "before", "people", "something", "everything", "quietly", "um", "uh",
+    }
+)
+_MONEY_UNIT_RE = r"(?:lakh|lakhs|crore|crores|cr|kore|kores)\b"
+_MONEY_SPAN_RE = re.compile(
+    rf"(?:(?:minus|plus|under|over|almost|nearly)\s+)?\d+(?:\s+\d+)?\s*{_MONEY_UNIT_RE}",
+    re.I,
+)
+
+
+def _normalize_money_span(span: str) -> str:
+    text = " ".join((span or "").split())
+    text = re.sub(r"\bkores?\b", "crore", text, flags=re.I)
+    text = re.sub(r"\bcrores\b", "crore", text, flags=re.I)
+    text = re.sub(r"\blakhs\b", "lakh", text, flags=re.I)
+    # Spoken "30 40 lakhs" means a range, not two separate amounts.
+    text = re.sub(r"(\d+)\s+(\d+)\s+(lakh|crore|cr)\b", r"\1–\2 \3", text, flags=re.I)
+    return text
+
+
+def _money_spans_from_spoken(spoken: str) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for match in _MONEY_SPAN_RE.finditer(spoken or ""):
+        span = _normalize_money_span(match.group(0))
+        key = span.lower()
+        if span and key not in seen:
+            seen.add(key)
+            out.append(span)
+    return out
+
+
+def _is_nouny_spark(spark: str) -> bool:
+    tokens = re.findall(r"[A-Za-z0-9]+", (spark or "").lower())
+    if not tokens:
+        return False
+    if any(ch.isdigit() for ch in spark):
+        return True
+    if any(token in _HOOK_FILLER_WORDS for token in tokens):
+        return False
+    return any(len(token) > 3 for token in tokens)
+
+
+def _hook_spark_phrase(spoken: str, *, theme_title: str = "") -> tuple[str, str, str]:
+    """Return (spark, spark_short, lead) that can sit inside a grammatical headline."""
+    money = _money_spans_from_spoken(spoken)
+    if money:
+        spark = " to ".join(money[:2]) if len(money) >= 2 else money[0]
+        if re.search(r"\bburn\b", spoken or "", flags=re.I):
+            spark = f"{spark} burn"
+        lead = money[0].split()[0]
+        return spark, spark, lead
+
+    stop = {
+        "the", "and", "for", "with", "that", "this", "from", "have", "been",
+        "they", "their", "about", "into", "every", "company", "largest",
+        "people",
+    } | _HOOK_FILLER_WORDS
+    words = [
+        word
+        for word in re.findall(r"[A-Za-z][A-Za-z0-9']+", spoken or "")
+        if len(word) > 3 and word.lower() not in stop
+    ]
+    if len(words) > 4:
+        mid = max(0, len(words) // 3)
+        words = words[mid : mid + 4] or words[:4]
+    else:
+        words = words[:4]
+    theme_bit = (theme_title or "this story").strip()[:48] or "this story"
+    spark = " ".join(words[:3]).strip() if words else theme_bit
+    spark_short = " ".join(words[:2]).strip() if words else theme_bit
+    if not _is_nouny_spark(spark_short):
+        spark_short = theme_bit
+        spark = theme_bit
+    lead = (words[0] if words else theme_bit).rstrip(".,;:")
+    if lead.lower() in _HOOK_FILLER_WORDS:
+        lead = theme_bit
+    return spark, spark_short, lead
+
+
+def _hook_is_readable(text: str) -> bool:
+    """Reject filler-glued templates that are not readable English headlines."""
+    words = re.findall(r"[A-Za-z0-9₹]+", text or "")
+    if len(words) < 3:
+        return False
+    lower = [word.lower() for word in words]
+    if "like" in lower:
+        return False
+    for left, right in zip(lower, lower[1:]):
+        if left in {"like", "plus", "minus"} and right in {
+            "like",
+            "plus",
+            "minus",
+            "actually",
+            "quietly",
+            "still",
+        }:
+            return False
+    content = [
+        word
+        for word in lower
+        if word not in _HOOK_FILLER_WORDS and (len(word) > 2 or word.isdigit())
+    ]
+    return bool(content) or any(ch.isdigit() for ch in text)
+
+
 def _heuristic_hook_line(spoken: str, *, theme_title: str = "") -> str:
     """Derive a short carousel hook from a spoken window without an LLM."""
     text = " ".join((spoken or "").split()).strip().strip("\"'")
     if not text:
         return ""
+    money = _money_spans_from_spoken(text)
+    if len(money) >= 2:
+        line = f"From {money[0]} to {money[-1]}"
+        if re.search(r"\bburn\b", text, flags=re.I):
+            line = f"{money[0]} to {money[-1]} burn"
+        return line[:280]
+    if money:
+        unit_line = f"The {money[0]} swing"
+        if re.search(r"\bburn\b", text, flags=re.I):
+            unit_line = f"The {money[0]} burn"
+        return unit_line[:280]
     # Prefer first complete sentence / clause.
     m = re.search(r"^(.+?[.!?])(?:\s|$)", text)
     clause = (m.group(1) if m else text).strip()
@@ -1518,6 +1653,8 @@ def _heuristic_hook_line(spoken: str, *, theme_title: str = "") -> str:
     ).strip()
     if not clause:
         clause = " ".join(words[:12])
+    if not _hook_is_readable(clause):
+        return ""
     # Title-case lightly only when the line is a short claim.
     if 4 <= len(clause.split()) <= 10 and theme_title and theme_title.lower() in clause.lower():
         return clause[:280]
@@ -1609,51 +1746,41 @@ def _force_non_verbatim_hook(
     base = _heuristic_hook_line(spoken, theme_title=theme_title)
     if (
         base
+        and _hook_is_readable(base)
         and not is_verbatim_transcript_leak(base, [spoken])
         and not _hook_opening_collision(base, used)
     ):
         return base
 
-    stop = {
-        "the", "and", "for", "with", "that", "this", "from", "have", "been",
-        "they", "their", "about", "into", "every", "company", "largest",
-        "what", "when", "where", "which", "while", "would", "could", "should",
-        "there", "these", "those", "because", "through", "after", "before",
-        "people", "really", "actually", "something", "everything", "things",
-    }
-    words = [
-        w for w in re.findall(r"[A-Za-z][A-Za-z0-9']+", spoken)
-        if len(w) > 3 and w.lower() not in stop
-    ]
-    # Prefer distinctive mid/late content words so adjacent cues diverge.
-    if len(words) > 4:
-        mid = max(0, len(words) // 3)
-        words = words[mid : mid + 4] or words[:4]
-    else:
-        words = words[:4]
-
-    spark = " ".join(words[:3]).strip() if words else theme_bit
-    spark_short = " ".join(words[:2]).strip() if words else theme_bit
-    lead = (words[0] if words else theme_bit).rstrip(".,;:")
+    spark, spark_short, lead = _hook_spark_phrase(spoken, theme_title=theme_bit)
 
     # Rotate templates by content so each spoken window gets a different shape.
-    templates = [
-        f"Why {spark_short} still surprises founders",
-        f"{lead} is the part nobody prices in",
-        f"The real bet behind {spark_short}",
-        f"Stop ignoring {spark_short}",
-        f"What {spark_short} quietly proves",
-        f"{spark_short} — and why it compounds",
-        f"How {spark_short} flipped the script",
-        f"The uncomfortable truth about {spark_short}",
-        f"{lead} isn't the headline — it's the lever",
-        f"Inside the {spark_short} moment",
-        f"Most miss this about {spark_short}",
-        f"Where {spark_short} actually wins",
-    ]
+    # Only wrap sparks that already read as a noun phrase.
+    templates = []
+    if _is_nouny_spark(spark_short):
+        templates.extend(
+            [
+                f"Why {spark_short} still surprises founders",
+                f"{lead} is the part nobody prices in",
+                f"The real bet behind {spark_short}",
+                f"Stop ignoring {spark_short}",
+                f"What {spark_short} quietly proves",
+                f"{spark_short} — and why it compounds",
+                f"How {spark_short} flipped the script",
+                f"The uncomfortable truth about {spark_short}",
+                f"{lead} isn't the headline — it's the lever",
+                f"Inside the {spark_short} moment",
+                f"Most miss this about {spark_short}",
+                f"Where {spark_short} actually wins",
+            ]
+        )
     # Stable but varied pick from spoken content (+ salt for retries).
     seed = sum(ord(c) for c in (spoken.lower()[:80] or theme_bit)) + int(salt or 0)
-    ordered = [templates[(seed + i) % len(templates)] for i in range(len(templates))]
+    ordered = (
+        [templates[(seed + i) % len(templates)] for i in range(len(templates))]
+        if templates
+        else []
+    )
     # Theme-only fallbacks last (still unique via salt).
     ordered.extend(
         [
@@ -1666,6 +1793,8 @@ def _force_non_verbatim_hook(
     for candidate in ordered:
         candidate = " ".join(candidate.split()).strip()[:280]
         if not candidate:
+            continue
+        if not _hook_is_readable(candidate):
             continue
         if is_verbatim_transcript_leak(candidate, [spoken]):
             continue
@@ -1741,7 +1870,11 @@ def enforce_non_verbatim_hooks(
             local_corpus.append(spoken)
 
         row = dict(h)
-        if text and not is_verbatim_transcript_leak(text, local_corpus):
+        if (
+            text
+            and _hook_is_readable(text)
+            and not is_verbatim_transcript_leak(text, local_corpus)
+        ):
             if _hook_opening_collision(text, used_norms):
                 # Distinct topic hooks must not share the same stock opener.
                 stats["deduped_openings"] += 1
@@ -1751,7 +1884,11 @@ def enforce_non_verbatim_hooks(
                     cand = _force_non_verbatim_hook(
                         source, theme_title=theme_title, used=used_norms, salt=salt
                     )
-                    if cand and not _hook_opening_collision(cand, used_norms):
+                    if (
+                        cand
+                        and _hook_is_readable(cand)
+                        and not _hook_opening_collision(cand, used_norms)
+                    ):
                         rewritten = cand
                         break
                 if rewritten:
@@ -1777,6 +1914,7 @@ def enforce_non_verbatim_hooks(
             )
             if (
                 cand
+                and _hook_is_readable(cand)
                 and not is_verbatim_transcript_leak(cand, local_corpus + [source])
                 and not _hook_opening_collision(cand, used_norms)
             ):
@@ -3398,6 +3536,8 @@ async def _llm_hooks_for_singular_topic(
         if not 5 <= len(crafted.split()) <= 18:
             continue
         if not _hook_numbers_are_grounded(crafted, spoken):
+            continue
+        if not _hook_is_readable(crafted):
             continue
         row = dict(h)
         row["original_text"] = spoken
