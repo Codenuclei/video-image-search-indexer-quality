@@ -113,6 +113,53 @@ async def test_copy_finalizer_rejects_invented_llm_claim(monkeypatch) -> None:
     assert "Revenue" not in polished[0]["transcript_text"]
 
 
+@pytest.mark.asyncio
+async def test_copy_finalizer_keeps_grounded_rewrite(monkeypatch) -> None:
+    async def crafted_response(**_kwargs):
+        return (
+            '{"slides":[{"i":0,"text":"The team tested one small change.",'
+            '"highlight":[1,2]}]}',
+            "claude",
+        )
+
+    monkeypatch.setattr(
+        "app.search.carousel_pipeline._llm_complete_json",
+        crafted_response,
+    )
+    source = "the team tested one small change [music] and then kept talking"
+    polished, _ = await polish_slides_instagram_copy(
+        [_slide(source, 1.0)],
+        api_key="configured",
+        model="test-model",
+    )
+
+    assert polished[0]["transcript_text"] == "The team tested one small change."
+    assert polished[0]["original_text"] == source
+    assert polished[0]["copy_source"] == "claude"
+
+
+def test_transcript_guard_keeps_grounded_crafted_copy() -> None:
+    source = "The country is extremely profitable reaching a market value of 42 billion US"
+    crafted = "India's ghee market is worth $42 billion."
+    carousels = [
+        {
+            "slides": [
+                {
+                    **_slide(crafted, 8.0),
+                    "original_text": source,
+                }
+            ]
+        }
+    ]
+    guard = _enforce_slides_match_transcript(
+        carousels,
+        [(8.0, 19.0, source)],
+    )
+    assert guard["snapped"] == 0
+    assert guard["ok"] == 1
+    assert carousels[0]["slides"][0]["transcript_text"] == crafted
+
+
 def test_algorithm_version_and_polish_copy_change_cache_identity(monkeypatch) -> None:
     hook = TimedPick(text="A grounded hook", start_sec=1.0, end_sec=3.0)
 

@@ -129,11 +129,7 @@ export function createDriveApi(apiBase: string) {
       }),
     /** Absolute URL for OAuth start (proxied same-origin). */
     googleAuthUrl: (returnTo?: string) => {
-      const dest =
-        returnTo ||
-        (typeof window !== "undefined"
-          ? `${window.location.origin}${window.location.pathname}`
-          : "");
+      const dest = (returnTo || "").trim();
       const qs = dest ? `?return_to=${encodeURIComponent(dest)}` : "";
       return `${apiBase}/auth/google${qs}`;
     },

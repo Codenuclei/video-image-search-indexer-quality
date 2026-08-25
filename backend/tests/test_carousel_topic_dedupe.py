@@ -1,6 +1,11 @@
 """Topic semantic / heuristic dedupe for carousel extract."""
 
+import json
+
+import pytest
+
 from app.search.carousel_pipeline import (
+    _llm_hooks_for_singular_topic,
     heuristic_craft_hooks,
     heuristic_topic_dedupe,
     _nearly_verbatim,
@@ -57,3 +62,55 @@ def test_heuristic_craft_hooks_compresses_dumps():
     assert out[0]["start_sec"] == 10
     assert len(out[0]["text"].split()) <= 18
     assert out[0]["text"].lower() != hooks[0]["text"].lower()
+
+
+@pytest.mark.asyncio
+async def test_llm_hooks_keep_evidence_and_reject_invented_numbers(monkeypatch):
+    async def fake_complete(**kwargs):
+        assert kwargs["json_root"] == "array"
+        return (
+            json.dumps(
+                [
+                    {"i": 0, "hook": "Why This Quality Lab Required ₹12 Lakhs"},
+                    {"i": 1, "hook": "The ₹50 Lakh Cost Nobody Expected"},
+                ]
+            ),
+            "openrouter",
+        )
+
+    monkeypatch.setattr(
+        "app.search.carousel_pipeline._llm_complete_json",
+        fake_complete,
+    )
+    hooks = [
+        {
+            "text": "We have invested almost 11 to 12 lakhs in the quality lab.",
+            "start_sec": 267,
+            "end_sec": 274,
+            "topic_id": "topic_1",
+        },
+        {
+            "text": "There is a recurring cost for chemicals and manpower.",
+            "start_sec": 274,
+            "end_sec": 281,
+            "topic_id": "topic_1",
+        },
+    ]
+
+    out = await _llm_hooks_for_singular_topic(
+        hooks=hooks,
+        topic_title="Quality Lab Investment",
+        topic_explanation="The founders explain testing costs.",
+        theme_title="Premium Pricing Through Transparency",
+        theme_summary="The company invested in testing infrastructure.",
+        used_angles=[],
+        openrouter_api_key="configured",
+        openrouter_model="google/gemini-test",
+        provider="openrouter",
+    )
+
+    assert len(out) == 1
+    assert out[0]["text"] == "Why This Quality Lab Required ₹12 Lakhs"
+    assert out[0]["original_text"] == hooks[0]["text"]
+    assert out[0]["start_sec"] == 267
+    assert out[0]["verbatim"] is False

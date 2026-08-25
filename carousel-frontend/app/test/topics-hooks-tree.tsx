@@ -498,11 +498,11 @@ function HookLeaves({
                   </div>
                   <span className="topics-hooks-meta tabular-nums">{fmtTs(h.start_sec)}</span>
                   {h.verbatim === false && h.original_text && h.original_text !== h.text ? (
-                    <span className="topics-hooks-explain italic text-amber-700">
-                      Altered from transcript — prefer regenerating topics
+                    <span className="topics-hooks-explain">
+                      Crafted hook · grounded in exact transcript
                     </span>
                   ) : (
-                    <span className="topics-hooks-explain">Exact spoken line · not rewritten</span>
+                    <span className="topics-hooks-explain">Exact spoken line · fallback</span>
                   )}
                 </span>
               </button>

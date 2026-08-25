@@ -150,14 +150,22 @@ def test_selection_hash_stable_for_same_hook():
     assert len(h1) == 64
 
 
-def test_extract_theme_key_joins_ids():
+def test_extract_theme_key_hashes_complete_theme_input():
     key = _extract_theme_key(
         [
             PipelineThemeSlice(theme_id="a", title="A", start_sec=0),
             PipelineThemeSlice(theme_id="b", title="B", start_sec=10),
         ]
     )
-    assert key == "a|b"
+    changed = _extract_theme_key(
+        [
+            PipelineThemeSlice(theme_id="a", title="A", start_sec=0),
+            PipelineThemeSlice(theme_id="b", title="B", start_sec=11),
+        ]
+    )
+
+    assert len(key) == 64
+    assert key != changed
 
 
 @pytest.mark.asyncio

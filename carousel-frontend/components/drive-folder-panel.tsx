@@ -109,6 +109,7 @@ export function DriveFolderPanel({
   const [videoTotalHint, setVideoTotalHint] = useState(0);
   const [followShortcuts, setFollowShortcuts] = useState(false);
   const shortcutsBusyRef = useRef(false);
+  const [oauthReturnTo, setOauthReturnTo] = useState("");
   const [busy, setBusy] = useState(false);
   const [pickerBusy, setPickerBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
@@ -173,6 +174,10 @@ export function DriveFolderPanel({
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    setOauthReturnTo(`${window.location.origin}${window.location.pathname}`);
+  }, []);
 
   // OAuth callback: ?connected=1 or ?error=...
   useEffect(() => {
@@ -742,7 +747,7 @@ export function DriveFolderPanel({
               </button>
               <a
                 className="studio-btn studio-btn-ghost inline-flex items-center gap-1.5 no-underline"
-                href={api.googleAuthUrl()}
+                href={api.googleAuthUrl(oauthReturnTo)}
                 data-testid={`${testIdPrefix}-provide`}
                 title="Re-authorize Google Drive access (same OAuth as Connect)"
               >
@@ -762,7 +767,7 @@ export function DriveFolderPanel({
           ) : (
             <a
               className="studio-btn studio-btn-ghost inline-flex items-center gap-1.5 no-underline"
-              href={api.googleAuthUrl()}
+              href={api.googleAuthUrl(oauthReturnTo)}
               data-testid={`${testIdPrefix}-connect`}
             >
               <HardDrive size={14} />

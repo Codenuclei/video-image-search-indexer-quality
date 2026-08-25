@@ -44,6 +44,72 @@ _MAX_MERGED_TOPICS = 24
 _TOPIC_CHUNK_CHARS = 12_000
 _TOPIC_CHUNK_OVERLAP_CUES = 6
 THEME_PROMPT_VERSION = "themes-v4-openrouter-structured-output"
+EXTRACT_PROMPT_VERSION = "extract-v5-intrigue-hooks"
+
+# Shared editorial brief for every hook-writing prompt. A hook has four jobs:
+# stop the scroll, open a curiosity loop, earn the share, and build the page's
+# voice — while staying honest, non-explicit, and never cliched.
+_HOOK_CRAFT_BRIEF = (
+    "WHAT A HOOK MUST DO (all four jobs):\n"
+    "1. STOP THE SCROLL — lead with the most startling concrete detail in the spoken "
+    "window (a number, a stake, a contrast, an impossible-sounding outcome). The first "
+    "3 words must earn attention on a fast feed.\n"
+    "2. OPEN A LOOP — tease, never resolve. Set up the exact question the viewer must "
+    "stay to the end to answer. Do NOT give away the payoff, the method, the ending, or "
+    "the lesson; withhold at least one key element (the who, the how, or the result).\n"
+    "3. EARN THE SHARE — phrase it so a viewer wants to send it to a friend or "
+    "colleague: bold enough to repeat out loud, true enough to defend when questioned.\n"
+    "4. BUILD THE PAGE — write with a confident editorial voice that makes the viewer "
+    "want more from this creator, not a one-off clickbait tone.\n"
+    "HONESTY AND TONE RULES:\n"
+    "- Never mislead: the video must fully deliver what the hook promises.\n"
+    "- You may dramatize and sharpen the truth (framing, stakes, emphasis) but never "
+    "fabricate a fact, number, name, or event absent from the spoken window.\n"
+    "- Use only numbers that appear in the spoken window.\n"
+    "- Never explicit, crude, or demeaning toward any person or group.\n"
+    "- Never boring, generic, or cliched. BANNED: stock openers such as "
+    "\"The hidden pattern behind…\", \"What most people miss…\", \"The real reason "
+    "why…\", \"You won't believe…\", \"This will blow your mind…\", and any opener "
+    "recycled across hooks in the same batch.\n"
+    "SHAPE EXAMPLE (do not copy): spoken \"two students sold 33 lakh worth of watches "
+    "in eight minutes\" → hook \"₹33 Lakh in 8 Minutes — by Two Students\" (keeps the "
+    "startling numbers, withholds what they sold and how).\n"
+)
+
+SLIDE_COPY_PROMPT_VERSION = "slides-v2-crafted-complete-arc"
+
+# Same jobs as hooks, applied across a swipeable slide sequence.
+_SLIDE_CRAFT_BRIEF = (
+    "WHAT THE CAROUSEL MUST DO:\n"
+    "1. STOP THE SCROLL on an early slide — lead with the most startling concrete "
+    "detail (a number, a stake, a contrast). The first 3 words of the cover must "
+    "earn attention.\n"
+    "2. OPEN A LOOP — tease, never dump the whole payoff on slide 1. The viewer "
+    "should need to swipe to the end. Withhold at least one key element (the who, "
+    "the how, or the result) until a later slide.\n"
+    "3. EARN THE SHARE — lines a viewer would send a colleague: bold enough to "
+    "repeat, true enough to defend.\n"
+    "4. BUILD THE PAGE — confident editorial voice, not one-off clickbait.\n"
+    "HONESTY AND TONE RULES:\n"
+    "- Never mislead: the spoken seeds must fully support every claim.\n"
+    "- You may dramatize and sharpen the truth, but never fabricate a fact, "
+    "number, name, or event absent from the spoken seeds.\n"
+    "- Use only numbers that appear in the spoken seeds.\n"
+    "- Never explicit, crude, or demeaning.\n"
+    "- Never boring, generic, or cliched. BANNED: \"You won't believe…\", "
+    "\"This will blow your mind…\", \"The hidden pattern behind…\", "
+    "\"What most people miss…\", \"The real reason why…\".\n"
+    "SENTENCE AND ORDER RULES:\n"
+    "- Each slide is one complete sentence or a tight clause that can stand alone.\n"
+    "- A single spoken sentence may occupy TWO consecutive slides only — never 3+.\n"
+    "- Never leave a mid-clause scrap, [music] tag, or unfinished thought.\n"
+    "- Keep the given chronological order. Setup → tension → hook/reveal in the "
+    "MIDDLE (for 6 slides, slide 3 or 4) → payoff.\n"
+    "SHAPE EXAMPLE (do not copy): spoken \"ghee business… market value of 42 "
+    "billion… A2 growth rate is three times\" → slides like \"India's ghee "
+    "market is $42 billion.\" / \"Most brands still sell at ₹600–800 a litre.\" / "
+    "\"A2 is growing 3x faster than the rest.\"\n"
+)
 _THEME_CHUNK_CHARS = 14_000
 _THEME_CHUNK_OVERLAP_CUES = 3
 # Gemini requests run in worker threads and the SDK does not time out by default,
@@ -1029,7 +1095,7 @@ async def extract_hooks_and_topics_async(
         span_end=end_sec,
     )
 
-    # Hooks: exact transcript sentences only — never LLM/heuristic rewrite.
+    # Select exact transcript windows first, then turn them into grounded display hooks.
     cue_corpus = [str(t or "") for _s, _e, t in window if (t or "").strip()]
     all_hooks: list[dict[str, Any]] = []
     used_angles: list[str] = []
@@ -1070,9 +1136,39 @@ async def extract_hooks_and_topics_async(
         for h in candidates:
             h["topic_id"] = topic.get("id")
             h["topic_text"] = topic.get("text")
-        topic_hooks = keep_verbatim_transcript_hooks(candidates)
+        topic_hooks: list[dict[str, Any]] = []
+        if _llm_has_any_key(
+            api_key=api_key,
+            claude_api_key=claude_api_key,
+            openrouter_api_key=openrouter_api_key,
+            openrouter_model=openrouter_model,
+        ):
+            try:
+                topic_hooks = await _llm_hooks_for_singular_topic(
+                    hooks=candidates,
+                    topic_title=topic_title,
+                    topic_explanation=str(topic.get("explanation") or ""),
+                    theme_title=theme_title,
+                    theme_summary=theme_summary,
+                    used_angles=used_angles,
+                    api_key=api_key,
+                    model=model,
+                    claude_api_key=claude_api_key,
+                    claude_model=claude_model,
+                    provider=provider,
+                    openrouter_api_key=openrouter_api_key,
+                    openrouter_model=openrouter_model,
+                    openrouter_base_url=openrouter_base_url,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("topic hook crafting failed for %r: %s", topic_title, exc)
+        if not topic_hooks:
+            topic_hooks = heuristic_craft_hooks(
+                candidates,
+                theme_title=f"{theme_title}: {topic_title}".strip(": "),
+            )[:2]
         verbatim_stats_total["checked"] += len(candidates)
-        verbatim_stats_total["verbatim_kept"] += len(topic_hooks)
+        verbatim_stats_total["rewritten"] += len(topic_hooks)
         # Keep a useful local set; the global cap and final tree dedupe still
         # bound the shipped payload.
         topic_hooks = topic_hooks[:5]
@@ -1111,16 +1207,25 @@ async def extract_hooks_and_topics_async(
     verbatim_stats_total["hooks_backfilled"] = prune_stats.get("backfilled", 0)
 
     if not all_hooks:
-        # Legacy path: keep exact transcript windows (no rewrite).
+        # Legacy path: retain provenance but never expose raw cue dumps as hooks.
         if english_cues and any(needs_english(h.get("text", "")) for h in base["hooks"]):
             base["hooks"] = _swap_hooks_with_english_cues(base["hooks"], english_cues)
-        base["hooks"] = keep_verbatim_transcript_hooks(list(base.get("hooks") or []))
+        base["hooks"] = heuristic_craft_hooks(
+            list(base.get("hooks") or []),
+            theme_title=theme_title,
+        )
         all_hooks = list(base.get("hooks") or [])
 
     all_hooks = _dedupe_hook_list(all_hooks)
 
-    # Do NOT rewrite hooks — final pass only re-asserts verbatim flags.
-    all_hooks = keep_verbatim_transcript_hooks(all_hooks)
+    all_hooks, guard_stats = enforce_non_verbatim_hooks(
+        all_hooks,
+        cue_corpus,
+        theme_title=theme_title,
+    )
+    for key in ("rejected_verbatim", "rewritten", "dropped"):
+        verbatim_stats_total[key] += guard_stats.get(key, 0)
+    topic_tree = _sync_topic_tree_hooks(topic_tree, all_hooks)
 
     # The tree is authoritative: a hook must have exactly one placement.
     topic_tree = _dedupe_topic_tree_hooks(topic_tree)
@@ -1226,20 +1331,17 @@ async def _llm_craft_hooks(
         )
 
     prompt = (
-        "You are an expert Instagram carousel copywriter. Analyse spoken transcript windows "
-        "and derive GENUINE, high-engagement HOOK lines for 4:5 feed carousels.\n"
-        "CRITICAL — hooks must be analysed, never pasted:\n"
+        "You are an expert Instagram copywriter. Analyse spoken transcript windows and "
+        "derive GENUINE, high-engagement HOOK lines for Instagram reels and 4:5 feed "
+        "carousels.\n"
+        f"{_HOOK_CRAFT_BRIEF}"
+        "CRAFT RULES — hooks must be analysed, never pasted:\n"
         "- Derive a punchy hook FROM each spoken window — do NOT copy the transcript verbatim.\n"
         "- Rewrite into a complete, self-contained slide overlay (roughly 6–14 words).\n"
-        "- Prefer scroll-stopping formulas: bold claim, curiosity gap, number, or counterintuitive take.\n"
         "- ONE idea per hook; readable on a phone at ~48pt; no mid-clause scraps or cue dumps.\n"
         "- Prefer natural English; translate meaning if spoken line is Hindi/Hinglish/other.\n"
-        "- Keep the true claim/energy of what was said — sharpen for Instagram, do not invent facts.\n"
-        "- Hooks must be DISTINCT from each other (no near-paraphrase twins).\n"
-        "- NEVER reuse the same stock opener across hooks. Ban boilerplate like "
-        "\"The hidden pattern behind…\", \"What most people miss about…\", "
-        "\"The real reason why…\" stamped on every line — each hook needs its own shape "
-        "and concrete nouns from THAT spoken window.\n"
+        "- Hooks must be DISTINCT from each other (no near-paraphrase twins); each hook "
+        "needs its own shape and concrete nouns from THAT spoken window.\n"
         "- Return one hook per input index; keep the same order.\n"
         f"Theme: {theme_title}\n"
         f"Theme summary: {theme_summary}\n"
@@ -1259,6 +1361,7 @@ async def _llm_craft_hooks(
         openrouter_api_key=openrouter_api_key,
         openrouter_model=openrouter_model,
         openrouter_base_url=openrouter_base_url,
+        json_root="array",
     )
     raw = _loads_json_array(text)
     if not raw:
@@ -1405,6 +1508,14 @@ def _nearly_verbatim(crafted: str, spoken: str, *, threshold: float = 0.82) -> b
         return False
     overlap = len(a & b) / max(len(a), 1)
     return overlap >= threshold and abs(len(a) - len(b)) <= max(3, len(b) // 4)
+
+
+def _hook_numbers_are_grounded(crafted: str, spoken: str) -> bool:
+    """Reject numeric claims that do not occur in the supporting spoken window."""
+    number_pattern = r"\d+(?:[.,]\d+)?"
+    claimed = {n.replace(",", "") for n in re.findall(number_pattern, crafted or "")}
+    supported = {n.replace(",", "") for n in re.findall(number_pattern, spoken or "")}
+    return claimed <= supported
 
 
 def _normalize_hook_cmp(text: str) -> str:
@@ -1824,6 +1935,7 @@ async def _llm_translate_lines(
         openrouter_api_key=openrouter_api_key,
         openrouter_model=openrouter_model,
         openrouter_base_url=openrouter_base_url,
+        json_root="array",
     )
     raw = _loads_json_array(raw_text)
     out = [""] * len(lines)
@@ -2901,7 +3013,10 @@ def _ensure_hooks_on_every_section(
             stitched = _stitch_complete_utterances(window) if window else []
             emerg = _emergency_hook_candidates(stitched or window, limit=4)
             if emerg:
-                crafted = keep_verbatim_transcript_hooks(emerg)
+                crafted = heuristic_craft_hooks(
+                    emerg,
+                    theme_title=f"{theme_title}: {row.get('text') or ''}".strip(": "),
+                )
                 for h in crafted[:1]:
                     h["topic_id"] = row.get("id")
                     h["topic_text"] = row.get("text")
@@ -2935,7 +3050,10 @@ def _ensure_hooks_on_every_section(
                     _stitch_complete_utterances(sw) if sw else sw, limit=3
                 )
                 if emerg:
-                    crafted = keep_verbatim_transcript_hooks(emerg)
+                    crafted = heuristic_craft_hooks(
+                        emerg,
+                        theme_title=f"{theme_title}: {s.get('text') or ''}".strip(": "),
+                    )
                     if crafted:
                         h = crafted[0]
                         h["topic_id"] = row.get("id")
@@ -3014,6 +3132,46 @@ def _hooks_from_topic_tree(tree: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     seen_ids.add(id_key)
                 hooks.append(hook)
     return hooks
+
+
+def _hook_provenance_key(hook: dict[str, Any]) -> tuple[str, str, float, str]:
+    spoken = str(hook.get("original_text") or hook.get("text") or "")
+    return (
+        str(hook.get("topic_id") or ""),
+        str(hook.get("subtopic_id") or ""),
+        round(float(hook.get("start_sec") or 0), 3),
+        _normalize_hook_cmp(spoken),
+    )
+
+
+def _sync_topic_tree_hooks(
+    tree: list[dict[str, Any]],
+    hooks: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Replace tree hooks with their guarded display-copy versions."""
+    by_source = {_hook_provenance_key(h): h for h in hooks}
+    out: list[dict[str, Any]] = []
+    for topic in tree:
+        row = dict(topic)
+        row["hooks"] = [
+            by_source[key]
+            for h in row.get("hooks") or []
+            if (key := _hook_provenance_key(h)) in by_source
+        ]
+        subs: list[dict[str, Any]] = []
+        for sub in row.get("subtopics") or []:
+            child = dict(sub)
+            child["hooks"] = [
+                by_source[key]
+                for h in child.get("hooks") or []
+                if (key := _hook_provenance_key(h)) in by_source
+            ]
+            if child["hooks"]:
+                subs.append(child)
+        row["subtopics"] = subs
+        if row["hooks"] or subs:
+            out.append(row)
+    return out
 
 
 def _dedupe_hook_list(hooks: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -3146,9 +3304,10 @@ async def _llm_hooks_for_singular_topic(
         )
     used = [u for u in used_angles if (u or "").strip()][:24]
     prompt = (
-        "You are an expert Instagram carousel copywriter.\n"
+        "You are an expert Instagram copywriter writing reel/carousel hooks.\n"
         "Generate punchy HOOK lines for ONE singular topic only.\n"
-        "CRITICAL:\n"
+        f"{_HOOK_CRAFT_BRIEF}"
+        "CRAFT RULES:\n"
         f"- This batch is ONLY about the topic: “{topic_title}”.\n"
         f"- Topic context: {topic_explanation or '(from transcript window)'}\n"
         "- Do NOT invent hooks about other topics. Do NOT reuse or paraphrase any "
@@ -3156,8 +3315,8 @@ async def _llm_hooks_for_singular_topic(
         "- Derive each hook FROM the spoken window — NEVER paste or lightly trim the transcript.\n"
         "- FORBIDDEN: returning the spoken line unchanged, a substring of it, or a near-copy "
         "that only drops filler words. You MUST rewrite into a fresh Instagram hook.\n"
-        "- 6–14 words; one idea; scroll-stopping (claim, curiosity, number, or counterintuitive take).\n"
-        "- Natural English; keep the true claim of what was said, but change the wording.\n"
+        "- 6–14 words; one idea; natural English; keep the true claim of what was said, "
+        "but change the wording.\n"
         "- Prefer returning 1–2 strongest hooks (you may skip weak indices).\n"
         f"Parent theme: {theme_title}\n"
         f"Theme summary: {theme_summary}\n"
@@ -3177,6 +3336,7 @@ async def _llm_hooks_for_singular_topic(
         openrouter_api_key=openrouter_api_key,
         openrouter_model=openrouter_model,
         openrouter_base_url=openrouter_base_url,
+        json_root="array",
     )
     raw = _loads_json_array(text)
     if not raw:
@@ -3206,6 +3366,10 @@ async def _llm_hooks_for_singular_topic(
             continue
         spoken = str(h.get("text") or "")
         if _nearly_verbatim(crafted, spoken):
+            continue
+        if not 5 <= len(crafted.split()) <= 18:
+            continue
+        if not _hook_numbers_are_grounded(crafted, spoken):
             continue
         row = dict(h)
         row["original_text"] = spoken
@@ -3246,6 +3410,9 @@ async def _llm_topics_from_theme(
         "clusters where the speaker takes a direction — for one selected theme.\n"
         "Topics are thematic chapter titles grounded in what was said — NOT transcript quotes, "
         "NOT vague umbrellas that ignore most of the talk.\n"
+        "Each topic will seed Instagram reel/carousel hooks, so choose the angles a viewer "
+        "would stop for: the startling number, the stake, the contradiction, the "
+        "counterintuitive move — not the dull category label.\n"
         "Prioritize concrete business and entrepreneurship insights: strategies, mechanisms, "
         "mistakes, contrarian views, playbooks, numbers, trade-offs, and outcomes involving "
         "customers, distribution, product, pricing, sales, growth, capital, profit, operations, "
@@ -3254,11 +3421,16 @@ async def _llm_topics_from_theme(
         "- Aim for 5–10 topics when the transcript supports it (order = chronology)\n"
         "- Each topic: 2–8 words; ONE concrete idea; natural English; insight-led rather than "
         "a generic category when the transcript supports it\n"
+        "- Intriguing but honest: name the subject truthfully, never a bait title the "
+        "transcript cannot deliver on\n"
+        "- Never boring or cliched: ban filler labels like 'Introduction', 'Key Takeaways', "
+        "'Business Insights', 'The Journey'\n"
         "- Cluster by meaning/direction pivots in the transcript\n"
         "- No incomplete thoughts; no near-duplicates "
         "(e.g. 'Student-First Philosophy' ≈ 'Student-Centric Decisions' — keep one)\n"
         "- Keep distinct adjacent angles; do not collapse the talk into 2–3 generic labels\n"
-        "- Use creative editorial phrasing, but never invent a claim, number, or lesson\n"
+        "- Use creative editorial phrasing, but never invent a claim, number, or lesson; "
+        "never explicit or demeaning\n"
         f"Theme title: {theme_title}\n"
         f"Theme summary: {theme_summary}\n"
         f"Search entity: {entity or '(none)'}\n"
@@ -3819,11 +3991,12 @@ async def polish_slides_instagram_copy(
     openrouter_model: str = "",
     openrouter_base_url: str = "",
 ) -> tuple[list[dict[str, Any]], str]:
-    """Polish slide one-liners for IG + attach yellow word highlight indices.
+    """Craft Instagram slide lines from spoken seeds + yellow highlights.
 
     Prefers Claude when configured. Returns ``(slides, provider)``.
-    On failure, keeps original lines and applies heuristic highlights so the
-    UI never drops yellow emphasis entirely.
+    Invented numbers fall back to the spoken seed. On LLM failure, keeps
+    original lines and applies heuristic highlights so the UI never drops
+    yellow emphasis entirely.
     """
     if not slides:
         return slides, "none"
@@ -3848,30 +4021,34 @@ async def polish_slides_instagram_copy(
     used_provider = "heuristic"
     parsed_rows: list[dict[str, Any]] = []
 
+    spoken_corpus = " ".join(str(row.get("text") or "") for row in payload)
     if has_llm:
         prompt = (
-            "You finalize Instagram carousel slide HIGHLIGHTS for a vertical 9:16 post.\n"
-            "CRITICAL: Do NOT rewrite, paraphrase, or invent slide text.\n"
-            "Each slide text MUST stay the exact spoken/transcript seed words "
-            "(punctuation/casing tweaks only are allowed).\n"
-            "Style: white sans-serif captions with a FEW words in bright yellow.\n"
-            "Rules for EACH slide:\n"
-            "- Return the SAME words as the input text (exact transcript)\n"
-            "- Pick 1–3 words to highlight in yellow (key nouns/verbs/names/numbers)\n"
-            "- highlight = 0-based word indices into the returned text after whitespace split\n"
+            "You write Instagram carousel SLIDE COPY for a vertical 9:16 post.\n"
+            f"{_SLIDE_CRAFT_BRIEF}"
+            "CRAFT RULES:\n"
+            "- Rewrite EACH input into a complete, self-contained caption (roughly 6–16 words).\n"
+            "- Do NOT paste the transcript. Drop filler, [music], and mid-clause scraps.\n"
+            "- Keep the same slide count and order as the input (same i).\n"
+            f"- Selected hook / reveal (place this beat on a MIDDLE slide): "
+            f"{(hook_goal or '').strip()[:240] or '(none)'}\n"
+            f"- Directional intent: {(intent or '').strip()[:240] or '(none)'}\n"
+            "- Pick 1–3 words per slide to highlight in yellow "
+            "(key nouns/verbs/names/numbers).\n"
+            "- highlight = 0-based word indices into the returned crafted text "
+            "after whitespace split\n"
             "- Never highlight every word; never return empty highlight\n"
-            f"Hook goal: {(hook_goal or '').strip()[:240] or '(none)'}\n"
-            f"Intent: {(intent or '').strip()[:240] or '(none)'}\n"
             "Return ONLY JSON:\n"
             '{"slides":[{"i":0,"text":"...","highlight":[1,2],"highlight_words":["AI","crisis"]}]}\n\n'
-            f"Input slides JSON:\n{json.dumps(payload, ensure_ascii=False)}"
+            f"Spoken seeds JSON:\n{json.dumps(payload, ensure_ascii=False)}"
         )
         try:
             text, used_provider = await _llm_complete_json(
                 prompt=prompt,
                 system=(
                     "You are an expert Instagram carousel copywriter. "
-                    "Return ONLY valid JSON. Yellow highlights must be sparse and punchy."
+                    "Return ONLY valid JSON. Craft complete swipeable lines; "
+                    "yellow highlights must be sparse and punchy."
                 ),
                 temperature=0.35,
                 max_tokens=3500,
@@ -3940,8 +4117,12 @@ async def polish_slides_instagram_copy(
         row = by_i.get(i) or {}
         polished = " ".join(str(row.get("text") or seed).split()).strip()[:220]
         slide_provider = used_provider
-        # Hard rule: never ship invented copy — fall back to exact seed.
-        if seed and polished and not _is_exact_or_subset(polished, seed):
+        word_count = len(polished.split()) if polished else 0
+        # Allow crafted rewrites; reject invented numbers or empty/endless lines.
+        if seed and polished and (
+            not _hook_numbers_are_grounded(polished, spoken_corpus or seed)
+            or not 4 <= word_count <= 22
+        ):
             polished = seed
             slide_provider = (
                 f"{used_provider}+transcript_locked"
@@ -3958,8 +4139,7 @@ async def polish_slides_instagram_copy(
             )
             if not indices:
                 _, indices, hl_words = _heuristic_highlight_for_line(polished)
-        # Keep original for audit; UI prefers polished display fields.
-        if seed and seed != polished:
+        if seed:
             item.setdefault("original_text", seed[:400])
         item["hook_line"] = polished
         item["transcript_text"] = polished

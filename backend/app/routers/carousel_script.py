@@ -41,7 +41,10 @@ from app.search.transcript_topics import (
     fallback_topics_from_cues,
 )
 from app.search.carousel_pipeline import (
+    EXTRACT_PROMPT_VERSION,
+    SLIDE_COPY_PROMPT_VERSION,
     THEME_PROMPT_VERSION,
+    _hook_numbers_are_grounded,
     apply_carousel_quality_pass,
     build_harmonized_themes,
     cue_preview_lines,
@@ -59,6 +62,8 @@ from app.search.english_text import (
 from app.pipelines.common import is_video_mime
 
 logger = logging.getLogger(__name__)
+
+CAROUSEL_CUT_PROMPT_VERSION = "cuts-v3-crafted-complete-arc"
 
 # Process-local fast path + Postgres advisory lock for Gunicorn multi-worker.
 # Studio remounts / e2e retries used to pile up overlapping extracts and starve
@@ -1639,18 +1644,19 @@ def _sanitize_extract_hook_payload(
     *,
     theme_title: str = "",
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]] | None]:
-    """Keep extract hooks as exact transcript sentences (no rewrite).
-
-    Older cache rows may still contain punchy rewrites; we restore ``text`` from
-    ``original_text`` when present so the UI never ships altered lines.
-    """
-    from app.search.carousel_pipeline import keep_verbatim_transcript_hooks
-
-    _ = theme_title  # reserved for future topic-aware filtering
+    """Keep crafted display hooks separate from their exact transcript evidence."""
+    from app.search.carousel_pipeline import enforce_non_verbatim_hooks
 
     def _clean_list(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        cleaned = keep_verbatim_transcript_hooks(
-            [dict(r) for r in rows if isinstance(r, dict)]
+        candidates = [dict(r) for r in rows if isinstance(r, dict)]
+        corpus = [
+            str(r.get("original_text") or r.get("text") or "")
+            for r in candidates
+        ]
+        cleaned, _stats = enforce_non_verbatim_hooks(
+            candidates,
+            corpus,
+            theme_title=theme_title,
         )
         for i, h in enumerate(cleaned):
             h["id"] = h.get("id") or f"hook_{i + 1}"
@@ -1711,7 +1717,9 @@ async def _carousel_pipeline_extract_impl(
     )[:800]
     theme_key = _extract_theme_key(slices_sorted)
     llm_pack = resolve_carousel_llm(body.llm_provider, body.llm_model)
-    llm_cache_id = carousel_llm_cache_id(llm_pack)
+    llm_cache_id = (
+        f"{carousel_llm_cache_id(llm_pack)}:{EXTRACT_PROMPT_VERSION}"
+    )[:128]
 
     # Cache lookup before any LLM work — only hit when theme windows AND LLM
     # config match (rejects Gemini-era / other-model precache).
@@ -3116,7 +3124,9 @@ async def _carousel_pipeline_generate_impl(
 
     polish_copy = bool(getattr(body, "polish_copy", False))
     llm = resolve_carousel_llm(body.llm_provider, body.llm_model)
-    llm_cache_id = carousel_llm_cache_id(llm)
+    llm_cache_id = (
+        f"{carousel_llm_cache_id(llm)}:{CAROUSEL_CUT_PROMPT_VERSION}:{SLIDE_COPY_PROMPT_VERSION}"
+    )[:128]
     selection_hash = _carousel_selection_hash(
         drive_file_id=drive_file_id,
         hooks=unique_hooks if hooks else [],
@@ -4943,18 +4953,32 @@ def _enforce_slides_match_transcript(
             if not text:
                 stats["empty"] += 1
                 continue
+            original = str(slide.get("original_text") or "").strip()
+            nearby = original or _exact_text_for_span(cues, start, end)
             if _line_exists_in_cues_near(text, cues, start_sec=start, end_sec=end):
                 stats["ok"] += 1
                 slide["transcript_verified"] = True
                 continue
-            # Prefer original seed if it was transcript-faithful.
-            original = str(slide.get("original_text") or "").strip()
+            # Crafted copy may stay if the seed is on the transcript and numbers
+            # are grounded — do not snap honest rewrites back to raw VTT.
+            if (
+                original
+                and _line_exists_in_cues_near(
+                    original, cues, start_sec=start, end_sec=end
+                )
+                and _hook_numbers_are_grounded(text, nearby)
+                and 4 <= len(text.split()) <= 22
+            ):
+                stats["ok"] += 1
+                slide["transcript_verified"] = True
+                slide["copy_crafted"] = True
+                continue
             if original and _line_exists_in_cues_near(
                 original, cues, start_sec=start, end_sec=end
             ):
                 fixed = original
             else:
-                fixed = _exact_text_for_span(cues, start, end)
+                fixed = nearby or _exact_text_for_span(cues, start, end)
             if not fixed:
                 stats["empty"] += 1
                 slide["transcript_verified"] = False
@@ -5346,20 +5370,36 @@ async def _plan_hook_oneline_spans_llm(
 
     prompt = (
         "You pick Instagram carousel CUTS from a video transcript catalog.\n"
-        "Text on each slide is filled later from THESE exact catalog rows — never rewrite words.\n"
-        "Carousel: 6–10 slides. Sequence 1→N must read as ONE argument "
-        "(setup → point → consequence), not random chronological chips.\n"
+        "These cuts are spoken-evidence windows. Display copy is crafted later — "
+        "do not write slide captions here, but pick complete chronological beats "
+        "a copywriter can turn into finished sentences.\n"
+        "Carousel: 6–10 slides. Build ONE clear chronological story, not a collection "
+        "of disconnected quotes.\n"
         "Return ONLY JSON: {\"spans\":[{\"start_sec\":number,\"end_sec\":number,\"cue_i\":number}]}\n"
-        f"Hook / topic the user selected (intent only — do not output this as slide text): {hook.text}\n"
+        f"Selected hook / topic (the central beat of the story): {hook.text}\n"
         f"Topic context: {getattr(hook, 'topic_text', None) or ''}\n"
+        f"Hook transcript anchor: {float(hook.start_sec or 0):.2f}s"
+        f"–{float(hook.end_sec or (float(hook.start_sec or 0) + 8.0)):.2f}s\n"
         f"{copy_note}"
         f"{image_note}"
         f"Produce between {min_slides} and {max_slides} spans.\n"
         "Rules:\n"
-        "- Each span is ONE complete spoken sentence (typically 8–24 words). "
-        "Never a 3–6 word mid-thought fragment.\n"
-        "- Skip catalog rows that start with And/But/So/Because/Then, or that only "
-        "make sense attached to the previous line.\n"
+        "- Story order is strict: setup/context → rising tension or evidence → selected "
+        "hook/reveal → consequence/payoff. Every slide must make sense after the previous one.\n"
+        "- Put the selected hook/reveal in the MIDDLE of the carousel (for 6 slides, slide "
+        "3 or 4), never on slide 1 and never only at the end. Select a catalog row at or "
+        "overlapping the hook transcript anchor for that middle position.\n"
+        "- A spoken sentence must be completed on ONE slide whenever possible. If the exact "
+        "sentence is split across catalog rows, it may occupy TWO consecutive slides only. "
+        "Never stretch one sentence across 3+ slides.\n"
+        "- Never select an orphan fragment. A slide that ends mid-sentence is valid only when "
+        "the immediately following slide continues and completes that same sentence. A slide "
+        "that starts mid-sentence is valid only as the second half of that pair.\n"
+        "- Read adjacent catalog rows together before choosing them. Reject sequences whose "
+        "combined slide text leaves an unfinished sentence, abruptly changes subject, repeats "
+        "the same point, or requires missing context.\n"
+        "- Do not start a new thought with And/But/So/Because/Then unless it is the second "
+        "slide of a two-slide sentence pair.\n"
         "- You MAY skip ahead in the catalog when the next cue is filler or a "
         "tangent. Do NOT go backwards in time.\n"
         "- start_sec must be strictly increasing (≥2s gap); no overlapping clips.\n"

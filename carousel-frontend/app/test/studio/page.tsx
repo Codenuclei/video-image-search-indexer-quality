@@ -86,6 +86,20 @@ function toggleTheme(list: TestTheme[], theme: TestTheme): TestTheme[] {
   return [...list, theme].sort((a, b) => a.start_sec - b.start_sec);
 }
 
+function isExtractBusyError(error: unknown): boolean {
+  const msg = error instanceof Error ? error.message : String(error);
+  return /already running/i.test(msg);
+}
+
+function extractHasTree(res: TestExtract | null | undefined): boolean {
+  if (!res) return false;
+  return (
+    (res.hooks?.length ?? 0) > 0 ||
+    (res.topics?.length ?? 0) > 0 ||
+    (Array.isArray(res.topic_tree) && res.topic_tree.length > 0)
+  );
+}
+
 function slideCopyText(slide: TestSlide): string {
   return (slide.hook_line || slide.transcript_text || slide.caption || "").trim();
 }
@@ -244,6 +258,7 @@ function TestStudioInner() {
     open: false,
   });
   const transcriptAbortRef = useRef<AbortController | null>(null);
+  const extractJobRef = useRef(0);
 
   const [carousels, setCarousels] = useState<TestCarousel[]>([]);
   const [layouts, setLayouts] = useState<{
@@ -735,14 +750,44 @@ function TestStudioInner() {
       return;
     }
     const cfg = opts?.runConfig ?? runConfig;
+    const job = ++extractJobRef.current;
     setExtractLoading(true);
     setError(null);
     try {
       const ordered = [...selectedThemes].sort((a, b) => a.start_sec - b.start_sec);
-      const extractRes = await testApi.extract(selected.id, ordered, {
-        force: Boolean(opts?.force),
-        runConfig: cfg,
-      });
+      const started = Date.now();
+      let extractRes: TestExtract | null = null;
+      let attempt = 0;
+      while (job === extractJobRef.current) {
+        try {
+          extractRes = await testApi.extract(selected.id, ordered, {
+            force: Boolean(opts?.force),
+            generate: true,
+            runConfig: cfg,
+            timeoutMs: 600_000,
+            silent: attempt > 0,
+          });
+          break;
+        } catch (e) {
+          if (!isExtractBusyError(e) || Date.now() - started > 600_000) {
+            throw e;
+          }
+          attempt += 1;
+          await new Promise((resolve) => setTimeout(resolve, 3000));
+          const cached = await testApi.extract(selected.id, ordered, {
+            force: false,
+            generate: false,
+            runConfig: cfg,
+            timeoutMs: 30_000,
+            silent: true,
+          });
+          if (extractHasTree(cached)) {
+            extractRes = cached;
+            break;
+          }
+        }
+      }
+      if (job !== extractJobRef.current || !extractRes) return;
       setExtract(extractRes);
       setExtractStage(extractRes.cache_hit ? "cache" : "generated");
       setCopyStage(null);
@@ -755,11 +800,12 @@ function TestStudioInner() {
       setCopySource(null);
       setPhase(3);
     } catch (e) {
+      if (job !== extractJobRef.current) return;
       setError(
         formatApiError(e, "We couldn’t extract topics and hooks. Please try again.")
       );
     } finally {
-      setExtractLoading(false);
+      if (job === extractJobRef.current) setExtractLoading(false);
     }
   }
 

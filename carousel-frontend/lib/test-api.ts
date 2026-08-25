@@ -313,15 +313,23 @@ export const testApi = {
   extract: (
     driveFileId: string,
     themes: TestTheme[],
-    opts?: { force?: boolean; runConfig?: CarouselRunConfig }
+    opts?: {
+      force?: boolean;
+      generate?: boolean;
+      runConfig?: CarouselRunConfig;
+      timeoutMs?: number;
+      silent?: boolean;
+    }
   ) =>
     api<TestExtract>("/search/carousel/pipeline/extract", {
       method: "POST",
+      timeoutMs: opts?.timeoutMs ?? 600_000,
+      silent: opts?.silent,
       body: JSON.stringify({
         drive_file_id: driveFileId,
         // Live-generate on miss; same video+themes+LLM config may cache-hit.
         // Different provider/model cache keys force a fresh run.
-        generate: true,
+        generate: opts?.generate !== false,
         force: Boolean(opts?.force),
         llm_provider: opts?.runConfig?.provider,
         llm_model: opts?.runConfig?.model,
