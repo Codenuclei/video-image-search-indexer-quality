@@ -912,6 +912,10 @@ export type LibraryFolder = {
   skipped_count: number;
   archived_count: number;
   indexing_paused: boolean;
+  /** Present on the full /drive/library response; omitted by the fast shell. */
+  top_skip_reasons?: { reason: string; count: number }[];
+  /** Present on the full /drive/library response; omitted by the fast shell. */
+  top_error_reasons?: { reason: string; count: number }[];
   folders: LibraryFolder[];
   files: LibraryFile[];
 };
