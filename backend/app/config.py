@@ -126,6 +126,9 @@ class Settings(BaseSettings):
     auto_index_interval_seconds: int = 30
     reindex_errored_files: bool = False
     reindex_skipped_files: bool = False
+    # Cross-resolution image dedupe via OpenCV dHash (CPU-only, no extra deps).
+    visual_dedupe_enabled: bool = True
+    visual_dedupe_max_hamming: int = 5
 
     # Follow Google Drive folder shortcuts when listing/syncing the connected tree.
     follow_shortcut_folders: bool = True
