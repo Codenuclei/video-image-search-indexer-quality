@@ -1,4 +1,4 @@
-"""Compressed image thumbs: local JPEG only, never Drive."""
+"""Compressed image thumbs: local JPEG only; clients never get the original stream."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -27,13 +27,13 @@ def test_write_image_thumbnail_is_smaller_jpeg(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_thumbnail_endpoint_never_calls_drive(tmp_path: Path) -> None:
+async def test_thumbnail_endpoint_serves_existing_thumb(tmp_path: Path) -> None:
     settings = Settings(thumbnail_dir=str(tmp_path / "thumbs"))
     src = tmp_path / "orig.jpg"
     Image.new("RGB", (640, 480), (1, 2, 3)).save(src, "JPEG", quality=90)
     write_image_thumbnail(src, "drive-1", settings, "orig.jpg")
 
-    drive_file = SimpleNamespace(id="drive-1", name="orig.jpg", mime_type="image/jpeg")
+    drive_file = SimpleNamespace(id="drive-1", name="orig.jpg", mime_type="image/jpeg", size=100)
     session = AsyncMock()
     session.get.return_value = drive_file
     client_cls = MagicMock()
@@ -54,11 +54,12 @@ async def test_thumbnail_builds_from_media_cache_not_drive(tmp_path: Path) -> No
     settings = Settings(
         thumbnail_dir=str(tmp_path / "thumbs"),
         media_cache_dir=str(tmp_path / "cache"),
+        temp_dir=str(tmp_path / "tmp"),
     )
     cached = tmp_path / "cache" / "drive-2.jpg"
     cached.parent.mkdir(parents=True)
     Image.new("RGB", (900, 900), (9, 9, 9)).save(cached, "JPEG", quality=90)
-    drive_file = SimpleNamespace(id="drive-2", name="orig.jpg", mime_type="image/jpeg")
+    drive_file = SimpleNamespace(id="drive-2", name="orig.jpg", mime_type="image/jpeg", size=100)
     session = AsyncMock()
     session.get.return_value = drive_file
     client_cls = MagicMock()
@@ -74,19 +75,61 @@ async def test_thumbnail_builds_from_media_cache_not_drive(tmp_path: Path) -> No
     client_cls.assert_not_called()
     thumb = tmp_path / "thumbs" / "images" / "drive-2.jpg"
     assert thumb.is_file()
+    assert thumb.stat().st_size < cached.stat().st_size
+
+
+@pytest.mark.asyncio
+async def test_thumbnail_downloads_once_writes_compressed_never_streams(tmp_path: Path) -> None:
+    settings = Settings(
+        thumbnail_dir=str(tmp_path / "thumbs"),
+        media_cache_dir=str(tmp_path / "cache"),
+        temp_dir=str(tmp_path / "tmp"),
+    )
+    (tmp_path / "tmp").mkdir(parents=True)
+    orig = tmp_path / "big.jpg"
+    Image.new("RGB", (1200, 800), (50, 50, 50)).save(orig, "JPEG", quality=95)
+
+    drive_file = SimpleNamespace(id="drive-3", name="big.jpg", mime_type="image/jpeg", size=orig.stat().st_size)
+    session = AsyncMock()
+    session.get.return_value = drive_file
+
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def fake_download(client, file_id, settings, suffix="", *, expected_size=None):
+        yield str(orig)
+
+    with (
+        patch("app.config.get_settings", return_value=settings),
+        patch("app.drive.media_cache.resolve_cache_path", return_value=None),
+        patch("app.db.session.get_session_factory", return_value=MagicMock()),
+        patch("app.routers.drive.DriveDirectClient", MagicMock()),
+        patch("app.pipelines.common.download_to_temp_file", fake_download),
+    ):
+        response = await thumbnail_drive_file("drive-3", session)
+
+    assert response.status_code == 200
+    assert response.media_type == "image/jpeg"
+    thumb = tmp_path / "thumbs" / "images" / "drive-3.jpg"
+    assert thumb.is_file()
+    assert thumb.stat().st_size < orig.stat().st_size
+    # Must be FileResponse of thumb path, not a StreamingResponse of the original.
+    assert getattr(response, "path", None) == thumb or str(thumb) in str(getattr(response, "path", response))
 
 
 def test_grids_use_thumbs_enlarge_uses_preview() -> None:
     repo = Path(__file__).resolve().parents[2]
     ui = (repo / "frontend/src/components/ui.tsx").read_text()
-    search = (repo / "frontend/src/app/search/page.tsx").read_text()
+    search = (repo / "frontend/src/components/views/search-view.tsx").read_text()
     api = (repo / "frontend/src/lib/api.ts").read_text()
     library = (repo / "frontend/src/app/library/page.tsx").read_text()
     assert "driveFileThumbnailUrl" in ui
     assert "src={thumbUrl}" in ui
-    assert "driveFilePreviewUrl(previewFile.drive_file_id" in search
+    assert "driveFileThumbnailUrl(previewFile.drive_file_id)" in search
+    assert "driveFilePreviewUrl(previewFile" not in search
     assert "/thumbnail" in api
     assert "driveFileThumbnailUrl" in library
+    assert "driveFilePreviewUrl(fileId" not in library
     assert 'src={`https://drive.google.com' not in ui
     assert "drive.google.com/thumbnail" not in api
     assert "lh3.googleusercontent.com" not in api

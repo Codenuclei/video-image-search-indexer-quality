@@ -4,6 +4,18 @@
 
 Project: `drivefaceindexer` · services: `dfi-backend`, `dfi-frontend`, `dfi-face-worker`, `dfi-carousel`.
 
+### Pre-deploy guard (required for backend / face-worker)
+
+Before `railway up` for **`dfi-backend`** or **`dfi-face-worker`**, agents **must** run the import / unbound-name guards and only deploy if they pass:
+
+```bash
+cd backend && python -m pytest tests/test_import_guards.py -q
+```
+
+These catch runtime `NameError`s (missing imports used only inside functions) that plain module imports miss. Do **not** skip this for “small” fixes. If the tests fail, fix them first — do not deploy.
+
+Frontend / carousel deploys do not require this pytest file, but still follow the upload commands below.
+
 ### Correct commands
 
 Always `cd` into the service directory first (matches `scripts/auto-deploy.sh`). Do **not** use `--path-as-root`.

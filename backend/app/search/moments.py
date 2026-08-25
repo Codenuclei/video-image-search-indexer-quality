@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.drive.display_name import drive_file_display_name
+from app.config import get_settings
 from app.runtime_settings import get_runtime_settings
 from app.db.models import DriveFile, Face, Media, MediaType, Person, VideoSegment
 from app.gemini.rerank import rerank_moments, rerank_transcript_moments

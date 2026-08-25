@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import DriveFile, DriveFileStatus, Face, Media, MediaType, Person
 from app.gemini.tags import person_names_for_drive_file
 from app.drive.display_name import drive_file_display_name
+from app.schemas import SearchResultFile
 
 _PEOPLE_PATTERN = re.compile(
     r"\b(people|person|persons|human|humans|face|faces|portrait|portraits|selfie|selfies)\b",

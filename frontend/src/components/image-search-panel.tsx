@@ -23,13 +23,13 @@ function MatchCard({ match, tagging }: { match: FaceSearchMatch; tagging: boolea
   const unknown = isUnknownFaceMatch(match);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
-  const [showAllFiles, setShowAllFiles] = useState(false);
   const pathname = usePathname();
   const personBase = pathname.startsWith("/test") ? "/test/people" : "/people";
   const previewLimit = 6;
   const hiddenCount = Math.max(0, fileCount - previewLimit);
   const canExpand = fileCount > previewLimit;
-  const visibleAppearances = showAllFiles ? appearances : appearances.slice(0, previewLimit);
+  const visibleAppearances = appearances.slice(0, previewLimit);
+  const profileHref = match.person_id != null ? `${personBase}/${match.person_id}` : null;
 
   async function submitName() {
     const name = draft.trim();
@@ -73,9 +73,9 @@ function MatchCard({ match, tagging }: { match: FaceSearchMatch; tagging: boolea
               <Linkedin size={13} />
             </a>
           )}
-          {match.person_id != null && (
+          {profileHref && (
             <Link
-              href={`${personBase}/${match.person_id}`}
+              href={profileHref}
               title="Profile"
               className="flex h-7 w-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
             >
@@ -107,57 +107,36 @@ function MatchCard({ match, tagging }: { match: FaceSearchMatch; tagging: boolea
         </div>
       )}
       {(appearances.length > 0 || fileCount > 0) && (
-        <div className="mt-2 space-y-1.5">
-          <div className="flex flex-wrap gap-1">
-            {visibleAppearances.map((a) => (
-              <a
-                key={`${a.drive_file_id}-${a.frame_timestamp ?? 0}`}
-                href={driveGoogleViewUrl(a.drive_file_id)}
-                target="_blank"
-                rel="noopener noreferrer"
-                title={a.path}
-                className="max-w-[10rem] truncate rounded-full border border-border bg-card px-2 py-0.5 text-[10px] text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
-              >
-                {a.name}
-              </a>
-            ))}
-            {!showAllFiles && canExpand && (
-              <button
-                type="button"
-                onClick={() => setShowAllFiles(true)}
-                title={`Show all ${fileCount} files`}
+        <div className="mt-2 flex flex-wrap gap-1">
+          {visibleAppearances.map((a) => (
+            <a
+              key={`${a.drive_file_id}-${a.frame_timestamp ?? 0}`}
+              href={driveGoogleViewUrl(a.drive_file_id)}
+              target="_blank"
+              rel="noopener noreferrer"
+              title={a.path}
+              className="max-w-[10rem] truncate rounded-full border border-border bg-card px-2 py-0.5 text-[10px] text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+            >
+              {a.name}
+            </a>
+          ))}
+          {canExpand &&
+            (profileHref ? (
+              <Link
+                href={profileHref}
+                title={`View all ${fileCount} files on profile`}
                 className="rounded-full border border-dashed border-border bg-card px-2 py-0.5 text-[10px] font-medium tabular-nums text-muted-foreground transition-colors hover:border-ring hover:bg-accent hover:text-accent-foreground"
               >
                 +{hiddenCount}
-              </button>
-            )}
-            {showAllFiles && canExpand && (
-              <button
-                type="button"
-                onClick={() => setShowAllFiles(false)}
-                title={`Show first ${previewLimit} files`}
-                className="rounded-full border border-border bg-muted/40 px-2 py-0.5 text-[10px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+              </Link>
+            ) : (
+              <span
+                title={`${fileCount} files`}
+                className="rounded-full border border-dashed border-border bg-card px-2 py-0.5 text-[10px] font-medium tabular-nums text-muted-foreground"
               >
-                Show less
-              </button>
-            )}
-          </div>
-          {showAllFiles && fileCount > appearances.length && (
-            <p className="text-[10px] text-muted-foreground">
-              Showing {appearances.length} of {fileCount} files
-              {match.person_id != null && (
-                <>
-                  {" · "}
-                  <Link
-                    href={`${personBase}/${match.person_id}`}
-                    className="font-medium text-primary hover:underline"
-                  >
-                    View all on profile
-                  </Link>
-                </>
-              )}
-            </p>
-          )}
+                +{hiddenCount}
+              </span>
+            ))}
         </div>
       )}
     </div>

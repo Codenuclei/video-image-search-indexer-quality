@@ -1,8 +1,8 @@
 """Compressed JPEG thumbs for image grids.
 
-Grid UIs must not stream original Drive/cache bytes. Indexing writes a small
-JPEG under thumbnail_dir/images/; the thumbnail route serves that file and
-can generate it from the local media cache. It never talks to Drive.
+Grid UIs must not stream original Drive/cache bytes. Prefer an existing thumb
+under thumbnail_dir/images/; otherwise build a small JPEG from local cache or
+a one-shot Drive download. Clients only ever receive the compressed thumb.
 """
 from __future__ import annotations
 

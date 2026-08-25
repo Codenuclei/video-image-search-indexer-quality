@@ -5,7 +5,7 @@ import { ExternalLink, FileText, Image as ImageIcon, Play, Search, Sparkles, X }
 import {
   apiAssetUrl,
   driveFileDownloadUrl,
-  driveFilePreviewUrl,
+  driveFileThumbnailUrl,
   driveGoogleViewUrl,
   driveVideoStreamUrl,
   type SearchMoment,
@@ -315,7 +315,7 @@ export function SearchPage({
               />
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
-                src={driveFilePreviewUrl(previewFile.drive_file_id, previewFile.mime_type)}
+                src={driveFileThumbnailUrl(previewFile.drive_file_id)}
                 alt={previewFile.name}
                 className="block max-h-[min(48dvh,420px)] w-full object-contain"
               />

@@ -653,17 +653,20 @@ async def delete_drive_file(file_id: str, session: AsyncSession = Depends(get_db
 @router.get("/files/{file_id}/thumbnail")
 async def thumbnail_drive_file(
     file_id: str,
-    request: Request,
     session: AsyncSession = Depends(get_db),
 ) -> Response:
-    """Serve a grid thumb when already on disk; otherwise stream from Drive.
+    """Serve a compressed JPEG thumb (KB-sized). Never stream the original.
 
-    Browser never talks to Google — server OAuth only (auth-free for the user).
-    Does not write media_cache or new thumb files for on-demand display.
+    Order: existing thumb → build from media_cache → one-shot Drive download
+    to build+persist thumb → 404. Browser only receives the JPEG thumb.
     """
+    from pathlib import Path
+
     from app.config import get_settings
-    from app.drive.image_thumbs import image_thumb_path
-    from app.pipelines.common import is_image_mime, is_video_mime
+    from app.db.session import get_session_factory
+    from app.drive.image_thumbs import image_thumb_path, write_image_thumbnail
+    from app.drive.media_cache import resolve_cache_path
+    from app.pipelines.common import download_to_temp_file, is_image_mime, is_video_mime
 
     drive_file = await session.get(DriveFile, file_id)
     if drive_file is None:
@@ -686,8 +689,59 @@ async def thumbnail_drive_file(
             },
         )
 
-    # No durable thumb (e.g. media_cache reclaimed) — stream live, do not store.
-    return await _stream_drive_file(file_id, drive_file, request, settings)
+    cached = resolve_cache_path(settings, drive_file)
+    if cached is not None and cached.is_file() and cached.stat().st_size > 0:
+        try:
+            write_image_thumbnail(cached, drive_file.id, settings, drive_file.name or "")
+        except Exception as exc:  # noqa: BLE001
+            logging.getLogger(__name__).warning(
+                "thumb from cache failed file_id=%s err=%s", file_id[:12], type(exc).__name__
+            )
+            raise HTTPException(status_code=404, detail="Thumbnail unavailable") from exc
+        return FileResponse(
+            dest,
+            media_type="image/jpeg",
+            filename=f"{drive_file.id}.jpg",
+            headers={
+                "Cache-Control": "public, max-age=604800",
+                "Content-Disposition": f'inline; filename="{drive_file.id}.jpg"',
+            },
+        )
+
+    # One-shot download → compressed thumb only (no media_cache write, no full stream).
+    client = DriveDirectClient(session_factory=get_session_factory(), settings=settings)
+    suffix = Path(drive_file.name or "img.jpg").suffix or ".jpg"
+    try:
+        async with download_to_temp_file(
+            client,
+            drive_file.id,
+            settings,
+            suffix=suffix,
+            expected_size=getattr(drive_file, "size", None),
+        ) as tmp:
+            write_image_thumbnail(Path(tmp), drive_file.id, settings, drive_file.name or "")
+    except (DriveConnectorError, DriveDirectError) as exc:
+        raise HTTPException(
+            status_code=_live_drive_http_status(exc),
+            detail=str(exc),
+        ) from exc
+    except Exception as exc:  # noqa: BLE001
+        logging.getLogger(__name__).warning(
+            "thumb download/build failed file_id=%s err=%s", file_id[:12], type(exc).__name__
+        )
+        raise HTTPException(status_code=404, detail="Thumbnail unavailable") from exc
+
+    if not dest.is_file() or dest.stat().st_size <= 0:
+        raise HTTPException(status_code=404, detail="Thumbnail unavailable")
+    return FileResponse(
+        dest,
+        media_type="image/jpeg",
+        filename=f"{drive_file.id}.jpg",
+        headers={
+            "Cache-Control": "public, max-age=604800",
+            "Content-Disposition": f'inline; filename="{drive_file.id}.jpg"',
+        },
+    )
 
 
 @router.get("/files/{file_id}/preview")

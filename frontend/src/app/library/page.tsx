@@ -17,7 +17,6 @@ import {
 import {
   apiClient,
   driveFileDownloadUrl,
-  driveFilePreviewUrl,
   driveFileThumbnailUrl,
   driveGoogleViewUrl,
   driveVideoStreamUrl,
@@ -203,17 +202,13 @@ function ExpandableLibraryImage({
   mimeType: string;
   name: string;
 }) {
-  const [full, setFull] = useState(false);
+  void mimeType;
   return (
     // eslint-disable-next-line @next/next/no-img-element
     <img
-      src={full ? driveFilePreviewUrl(fileId, mimeType) : driveFileThumbnailUrl(fileId)}
+      src={driveFileThumbnailUrl(fileId)}
       alt={name}
-      onClick={() => setFull(true)}
-      className={cn(
-        "w-full rounded-lg border border-border object-cover",
-        !full && "cursor-pointer"
-      )}
+      className="w-full rounded-lg border border-border object-cover"
     />
   );
 }
@@ -582,7 +577,7 @@ export default function LibraryPage() {
           <div className="border-b border-border px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
             Folders
           </div>
-          <div className="max-h-48 overflow-y-auto p-2 lg:max-h-[calc(100vh-18rem)]">
+          <div className="scrollbar-hidden max-h-48 overflow-y-auto p-2 lg:max-h-[calc(100vh-18rem)]">
             {data?.tree && (
               <FolderTreeItem
                 folder={data.tree}
@@ -647,7 +642,7 @@ export default function LibraryPage() {
             <span className="flex items-center justify-center">Size</span>
           </div>
 
-          <div className="min-h-0 flex-1 overflow-y-auto">
+          <div className="scrollbar-hidden min-h-0 flex-1 overflow-y-auto">
             {selectedFolderPath === "/" ? (
               <p className="py-16 text-center text-sm text-muted-foreground">
                 Choose a folder on the left to load file names
@@ -693,12 +688,12 @@ export default function LibraryPage() {
           </div>
         </section>
 
-        <aside className="w-full shrink-0 border-t border-border bg-muted/10 lg:w-72 lg:border-l lg:border-t-0">
+        <aside className="flex w-full shrink-0 flex-col border-t border-border bg-muted/10 lg:w-72 lg:border-l lg:border-t-0">
           <div className="border-b border-border px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
             Details
           </div>
           {selectedFile ? (
-            <div className="space-y-3 p-3 text-sm">
+            <div className="scrollbar-hidden max-h-64 space-y-3 overflow-y-auto p-3 text-sm lg:max-h-[calc(100vh-18rem)]">
               {selectedFile.is_image && (
                 manualFaceTag ? (
                   <ManualFaceTagger

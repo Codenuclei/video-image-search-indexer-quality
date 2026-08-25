@@ -12,7 +12,7 @@ import {
 import { formatCount, skipReasonMeta } from "@/lib/index-errors";
 import { Button, Card, LoadingLabel, StatCard } from "@/components/ui";
 
-const STATUS_ORDER = ["processed", "pending", "processing", "error", "skipped"] as const;
+const STATUS_ORDER = ["processed", "pending", "processing", "error", "skipped", "archived"] as const;
 
 const STATUS_COLORS: Record<string, string> = {
   processed: "#22c55e",
@@ -20,6 +20,7 @@ const STATUS_COLORS: Record<string, string> = {
   processing: "#3b82f6",
   error: "#ef4444",
   skipped: "#71717a",
+  archived: "#64748b",
 };
 
 const STATUS_LABELS: Record<string, string> = {
@@ -28,7 +29,15 @@ const STATUS_LABELS: Record<string, string> = {
   processing: "Processing",
   error: "Error",
   skipped: "Skipped",
+  archived: "Archived",
 };
+
+function statusChartLabel(status: string): string {
+  const key = status.trim().toLowerCase();
+  if (STATUS_LABELS[key]) return STATUS_LABELS[key];
+  if (!status) return status;
+  return status.charAt(0).toUpperCase() + status.slice(1);
+}
 
 function conflictKindLabel(kind: string): string {
   switch (kind) {
@@ -118,9 +127,9 @@ export default function DashboardPage() {
     const counts = indexStatus?.counts_by_status ?? {};
     const rows = Object.entries(counts).map(([status, count]) => ({
       status,
-      label: STATUS_LABELS[status] ?? status,
+      label: statusChartLabel(status),
       count,
-      fill: STATUS_COLORS[status] ?? "#a855f7",
+      fill: STATUS_COLORS[status.trim().toLowerCase()] ?? STATUS_COLORS[status] ?? "#a855f7",
     }));
     return rows.sort(
       (a, b) =>
