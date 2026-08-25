@@ -161,15 +161,15 @@ export function TestShell({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <div className="flex min-h-screen bg-muted/40 text-foreground">
-      <aside className="sticky top-0 hidden h-screen w-[13.5rem] shrink-0 flex-col border-r border-sidebar-border bg-sidebar md:flex">
+    <div className="flex h-dvh overflow-hidden bg-muted/40 text-foreground">
+      <aside className="hidden h-full w-[13.5rem] shrink-0 flex-col border-r border-sidebar-border bg-sidebar md:flex">
         <div className="px-3 pb-2 pt-5">
           <Link href="/test/search" className="block">
             <p className="text-lg font-semibold tracking-tight text-blue-700 dark:text-blue-400">DriveFaceIndexer</p>
           </Link>
         </div>
 
-        <nav className="min-h-0 flex-1 space-y-5 overflow-y-auto px-2 pb-4 pt-2">
+        <nav className="scrollbar-hidden min-h-0 flex-1 space-y-5 overflow-y-auto px-2 pb-4 pt-2">
           <div>
             <Link
               href="/test/search"
@@ -231,10 +231,10 @@ export function TestShell({ children }: { children: React.ReactNode }) {
         </div>
       </aside>
 
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         <header
           className={cn(
-            "sticky top-0 z-20 flex min-h-[3.25rem] items-center gap-3 px-4 md:px-6",
+            "z-20 flex min-h-[3.25rem] shrink-0 items-center gap-3 px-4 md:px-6",
             compactHeader
               ? "justify-between border-b border-border bg-card py-2.5"
               : "border-b border-border bg-card py-3"
@@ -460,7 +460,7 @@ export function TestShell({ children }: { children: React.ReactNode }) {
 
         <main
           className={cn(
-            "flex-1 overflow-y-auto px-4 md:px-8",
+            "scrollbar-hidden min-h-0 flex-1 overflow-y-auto px-4 md:px-8",
             compactHeader ? "pb-6 pt-2" : "py-6"
           )}
         >
