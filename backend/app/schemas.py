@@ -241,6 +241,8 @@ class PersonOut(BaseModel):
     role: str | None = None
     representative_face_id: int | None
     occurrence_count: int
+    """Unique Drive files this person appears in (not face-detection count)."""
+    file_count: int = 0
     created_at: datetime
 
     model_config = {"from_attributes": True}

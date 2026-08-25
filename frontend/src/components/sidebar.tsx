@@ -23,9 +23,8 @@ import {
 import { cn } from "@/lib/utils";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { ConfirmDialog } from "@/components/ui";
-import { getAuthEmail, signOut } from "@/components/auth-gate";
+import { signOut, useAuthSession } from "@/components/auth-gate";
 import { supportMailto } from "@/lib/support";
-import { isAdminEmail } from "@/lib/admin";
 
 /** Defer index polling — never load on the front page. */
 const IndexStatusBanner = dynamic(
@@ -131,9 +130,9 @@ function NavLinks({
   vertical?: boolean;
   mobileOnly?: boolean;
 }) {
-  const admin = isAdminEmail(getAuthEmail());
+  const { isAdmin } = useAuthSession();
   const items = (mobileOnly ? links.filter((l) => l.mobile) : links).filter(
-    (l) => !l.adminOnly || admin
+    (l) => !l.adminOnly || isAdmin
   );
 
   if (!vertical) {
@@ -235,12 +234,8 @@ function SidebarFooter({ email, onNavigate }: { email: string | null; onNavigate
 
 export function Sidebar() {
   const pathname = usePathname();
-  const [email, setEmail] = useState<string | null>(null);
+  const { email } = useAuthSession();
   const [menuOpen, setMenuOpen] = useState(false);
-
-  useEffect(() => {
-    setEmail(getAuthEmail());
-  }, []);
 
   useEffect(() => {
     setMenuOpen(false);
@@ -277,7 +272,7 @@ export function Sidebar() {
       </aside>
 
       {/* Mobile top bar */}
-      <header className="fixed inset-x-0 top-0 z-40 flex h-14 items-center justify-between border-b border-border bg-background/95 px-4 backdrop-blur md:hidden">
+      <header className="fixed inset-x-0 top-0 z-40 flex h-14 items-center justify-between border-b border-border bg-background px-4 md:hidden">
         <BrandMark compact />
         <div className="flex min-w-0 items-center gap-2">
           <p className="truncate text-xs text-muted-foreground">{currentPage}</p>
@@ -323,7 +318,7 @@ export function Sidebar() {
       )}
 
       {/* Mobile bottom nav — quick access to main routes */}
-      <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-border bg-background/95 px-2 pb-[env(safe-area-inset-bottom)] backdrop-blur md:hidden">
+      <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-border bg-background px-2 pb-[env(safe-area-inset-bottom)] md:hidden">
         <NavLinks pathname={pathname} vertical={false} mobileOnly />
       </nav>
     </>

@@ -12,6 +12,7 @@ import {
   type Settings,
   type IndexedFolder,
   type DriveCacheStatus,
+  type LibraryResponse,
   API_BASE,
 } from "@/lib/api";
 import { Button, Card, Input, LoadingLabel, Spinner } from "@/components/ui";
@@ -23,6 +24,8 @@ import { toast } from "sonner";
 import { getCachedIndexStatus, pollIndexStatus, useIndexStatusStore } from "@/lib/index-status-store";
 import { useCachedResource } from "@/lib/use-cached-resource";
 import { cacheStatusRevision, indexStatusRevision } from "@/lib/fingerprints";
+import { useAuthSession } from "@/components/auth-gate";
+import { indexedFolderPickerOptions } from "@/lib/library-folders";
 
 declare global {
   interface Window {
@@ -55,6 +58,7 @@ type FoldersSnapshot = {
   driveSession: DriveSession | null;
   settings: Settings | null;
   indexedFolders: IndexedFolder[];
+  libraryFolderPaths: string[];
 };
 
 export function FoldersPage({
@@ -64,18 +68,21 @@ export function FoldersPage({
   embedded?: boolean;
   indexedLayout?: "list" | "cards";
 } = {}) {
+  const { isAdmin } = useAuthSession();
   const { status: sharedStatus } = useIndexStatusStore();
   const [status, setStatus] = useState<IndexStatus | null>(null);
   const [folderContexts, setFolderContexts] = useState<FolderContext[]>([]);
   const [driveSession, setDriveSession] = useState<DriveSession | null>(null);
   const [busy, setBusy] = useState(false);
   const [pickerBusy, setPickerBusy] = useState(false);
+  const [folderBusy, setFolderBusy] = useState(false);
   const [editingFolder, setEditingFolder] = useState<string | null>(null);
   const [editDescription, setEditDescription] = useState("");
   const [savingFolder, setSavingFolder] = useState<string | null>(null);
   const [settings, setSettings] = useState<Settings | null>(null);
   const shortcutsBusyRef = useRef(false);
   const [indexedFolders, setIndexedFolders] = useState<IndexedFolder[]>([]);
+  const [libraryFolderPaths, setLibraryFolderPaths] = useState<string[]>([]);
 
   const [queueOpen, setQueueOpen] = useState(false);
   const [queueStatus, setQueueStatus] = useState("");
@@ -86,17 +93,19 @@ export function FoldersPage({
   const foldersResource = useCachedResource<FoldersSnapshot>({
     key: "foldersPage",
     fetcher: async () => {
-      const [fc, ds, st, foldersRes] = await Promise.all([
+      const [fc, ds, st, foldersRes, shell] = await Promise.all([
         apiClient.folderContexts().catch(() => [] as FolderContext[]),
         apiClient.driveSession().catch(() => null as DriveSession | null),
         apiClient.settings().catch(() => null as Settings | null),
         apiClient.indexedFolders().catch(() => ({ folders: [] as IndexedFolder[], total: 0 })),
+        apiClient.driveLibraryShell().catch(() => null as LibraryResponse | null),
       ]);
       return {
         folderContexts: Array.isArray(fc) ? fc : [],
         driveSession: ds,
         settings: st,
         indexedFolders: foldersRes.folders ?? [],
+        libraryFolderPaths: indexedFolderPickerOptions(shell?.tree).map((f) => f.value),
       };
     },
     getRevision: async () => {
@@ -138,6 +147,7 @@ export function FoldersPage({
       return st;
     });
     setIndexedFolders(snapshot.indexedFolders);
+    setLibraryFolderPaths(snapshot.libraryFolderPaths ?? []);
   }, [foldersResource.data]);
 
   const loadQueue = useCallback(async (statusFilter: string, offset: number) => {
@@ -211,15 +221,7 @@ export function FoldersPage({
         window._pickerApiLoaded = true;
       }
 
-      // My Drive tabs stay split (folders vs media). Pin enableDrives(false) so
-      // SUPPORT_DRIVES does not spawn a paired "Shared drives" tab per view.
-      const myDriveFolderView = new window.google.picker.DocsView(window.google.picker.ViewId.FOLDERS)
-        .setEnableDrives(false)
-        .setIncludeFolders(true)
-        .setSelectFolderEnabled(true)
-        .setMimeTypes(FOLDER_MIME)
-        .setLabel("My Drive folders");
-
+      // My Drive media tab + Shared drives (folders selectable in both).
       const myDriveMediaView = new window.google.picker.DocsView(window.google.picker.ViewId.DOCS_IMAGES_AND_VIDEOS)
         .setEnableDrives(false)
         .setIncludeFolders(true)
@@ -235,7 +237,6 @@ export function FoldersPage({
 
       const builder = new window.google.picker.PickerBuilder()
         .setTitle("Choose a folder to index")
-        .addView(myDriveFolderView)
         .addView(myDriveMediaView)
         .addView(sharedDriveView)
         .setOAuthToken(accessToken)
@@ -250,9 +251,16 @@ export function FoldersPage({
             );
             return;
           }
-          await apiClient.saveDriveFolder(doc.id, doc.name);
-          await apiClient.syncDriveFiles().catch(() => {});
-          await load();
+          setFolderBusy(true);
+          try {
+            await apiClient.saveDriveFolder(doc.id, doc.name);
+            await apiClient.syncDriveFiles().catch(() => {});
+            await load();
+          } catch {
+            /* saveDriveFolder already toasted */
+          } finally {
+            setFolderBusy(false);
+          }
         });
 
       if (appId) {
@@ -324,12 +332,15 @@ export function FoldersPage({
   }
 
   const uniqueFolders = useMemo(() => {
-    const paths = new Set<string>(["/"]);
+    const paths = new Set<string>();
+    for (const p of libraryFolderPaths) {
+      if (p && p !== "/") paths.add(p);
+    }
     for (const fc of folderContexts) {
-      if (fc.folder_path) paths.add(fc.folder_path);
+      if (fc.folder_path && fc.folder_path !== "/") paths.add(fc.folder_path);
     }
     return Array.from(paths).sort();
-  }, [folderContexts]);
+  }, [folderContexts, libraryFolderPaths]);
 
   const contextByPath = useMemo(() => {
     const map: Record<string, FolderContext> = {};
@@ -357,12 +368,14 @@ export function FoldersPage({
           <h2 className="text-2xl font-semibold">Folders</h2>
           <p className="text-sm text-muted-foreground">Drive files tracked from your connected folder</p>
         </div>
-        <Link
-          href="/admin"
-          className="text-sm font-medium text-blue-600 underline-offset-2 hover:underline dark:text-blue-400"
-        >
-          Indexing controls → Admin
-        </Link>
+        {isAdmin ? (
+          <Link
+            href="/admin"
+            className="text-sm font-medium text-blue-600 underline-offset-2 hover:underline dark:text-blue-400"
+          >
+            Indexing controls → Admin
+          </Link>
+        ) : null}
       </div>
       )}
 
@@ -455,10 +468,13 @@ export function FoldersPage({
             </p>
             {driveSession?.connected ? (
               <p className="text-xs text-muted-foreground">
-                {driveSession.email}
-                {driveSession.selected_folder
-                  ? ` · ${driveSession.selected_folder.name}`
-                  : " · No folder selected"}
+                {folderBusy
+                  ? "Saving connected folder and syncing…"
+                  : `${driveSession.email}${
+                      driveSession.selected_folder
+                        ? ` · ${driveSession.selected_folder.name}`
+                        : " · No folder selected"
+                    }`}
               </p>
             ) : (
               <p className="text-xs text-muted-foreground">Connect Google to index Drive files.</p>
@@ -467,8 +483,14 @@ export function FoldersPage({
           <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
             {driveSession?.connected ? (
               <>
-                <Button className="w-full sm:w-auto" onClick={openPicker} disabled={pickerBusy}>
-                  {pickerBusy ? (
+                <Button
+                  className="w-full sm:w-auto"
+                  onClick={openPicker}
+                  disabled={pickerBusy || folderBusy}
+                >
+                  {folderBusy ? (
+                    <LoadingLabel>Switching folder…</LoadingLabel>
+                  ) : pickerBusy ? (
                     <LoadingLabel>Opening…</LoadingLabel>
                   ) : driveSession.selected_folder ? (
                     "Change folder"
@@ -476,7 +498,14 @@ export function FoldersPage({
                     "Choose folder"
                   )}
                 </Button>
-                <Button className="w-full sm:w-auto" variant="secondary" onClick={disconnectDrive}>Disconnect</Button>
+                <Button
+                  className="w-full sm:w-auto"
+                  variant="secondary"
+                  onClick={disconnectDrive}
+                  disabled={folderBusy || pickerBusy}
+                >
+                  Disconnect
+                </Button>
               </>
             ) : (
               <Button className="w-full sm:w-auto" onClick={() => window.location.href = `${API_BASE}/auth/google`}>

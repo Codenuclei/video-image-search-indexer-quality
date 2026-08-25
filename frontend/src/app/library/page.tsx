@@ -112,7 +112,6 @@ function FolderTreeItem({
 }) {
   const isOpen = expanded.has(folder.path);
   const isSelected = selectedPath === folder.path;
-  const missingCaps = folder.image_count - folder.captioned_count;
 
   return (
     <div>
@@ -144,18 +143,7 @@ function FolderTreeItem({
         >
           <Folder size={14} className={cn("shrink-0", folder.indexing_paused ? "text-muted-foreground" : "text-amber-500")} />
           <span className="min-w-0 flex-1 truncate">{folder.name}</span>
-          <span className="shrink-0 text-[10px] text-muted-foreground">
-            {folder.captioned_count > 0 && folder.image_count > 0 ? (
-              <>
-                {folder.captioned_count}/{folder.image_count}
-                {missingCaps > 0 && (
-                  <span className="ml-1 text-amber-600 dark:text-amber-400">·{missingCaps}</span>
-                )}
-              </>
-            ) : (
-              folder.file_count
-            )}
-          </span>
+          <span className="shrink-0 text-[10px] text-muted-foreground">{folder.file_count}</span>
         </button>
         {folder.path !== "/" && (
           <button
@@ -589,8 +577,8 @@ export default function LibraryPage() {
         </div>
       )}
 
-      <div className="flex min-h-[520px] flex-col overflow-hidden rounded-xl border border-border bg-card lg:flex-row">
-        <aside className="w-full shrink-0 border-b border-border bg-muted/20 lg:w-64 lg:border-b-0 lg:border-r">
+      <div className="flex min-h-[520px] flex-col lg:flex-row">
+        <aside className="w-full shrink-0 border-b border-border lg:w-64 lg:border-b-0 lg:border-r">
           <div className="border-b border-border px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
             Folders
           </div>

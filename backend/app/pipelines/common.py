@@ -104,6 +104,19 @@ def is_indexable_mime(mime_type: str, file_name: str = "") -> bool:
     return mime_type in INDEXABLE_TYPES or is_image_mime(mime_type)
 
 
+def is_drive_media_candidate(mime_type: str, file_name: str = "") -> bool:
+    """True for image/video Drive files (whether video indexing is currently on).
+
+    XML, WAV, docs, etc. are never media candidates — do not sync into the
+    index queue, download, or surface as unsupported_mime skips.
+    """
+    if is_video_mime(mime_type):
+        return True
+    if file_name and is_image_mime(mime_type, file_name):
+        return True
+    return mime_type in INDEXABLE_TYPES or is_image_mime(mime_type)
+
+
 def save_face_thumbnail(face_id: int, jpeg_bytes: bytes, settings: Settings) -> str | None:
     if not jpeg_bytes:
         return None

@@ -11,6 +11,7 @@ import {
   type SearchMoment,
 } from "@/lib/api";
 import { Button, Card, DownloadButton, FilePreview, IconButton, IconLink, Input, LoadingLabel, PersonTags } from "@/components/ui";
+import { FilterDropdown } from "@/components/filter-dropdown";
 import { ModalOverlay } from "@/components/modal";
 import {
   hydrateSearchCatalogs,
@@ -18,6 +19,7 @@ import {
   patchSearchSession,
   persistSearchCaptions,
   persistSearchRerank,
+  resetSearchResults,
   runSearch,
   useSearchSession,
 } from "@/lib/search-session";
@@ -83,6 +85,7 @@ export function SearchPage({
     useCaptions,
     persons,
     folderContexts,
+    libraryFolders,
     results,
     lastSearchMode,
     loading,
@@ -126,50 +129,50 @@ export function SearchPage({
           onKeyDown={(e) => e.key === "Enter" && search()}
         />
         <div className="flex flex-wrap items-center gap-2">
-          <label className="relative inline-flex items-center">
-            <ImageIcon size={14} className="pointer-events-none absolute left-2.5 text-muted-foreground" />
-            <select
-              className="h-9 appearance-none rounded-full border border-border bg-card pl-8 pr-7 text-xs font-medium text-foreground outline-none focus:border-ring"
-              value={mime === "video" ? "all" : mime}
-              onChange={(e) => patchSearchSession({ mime: e.target.value })}
-              title="File type"
-            >
-              <option value="all">All</option>
-              <option value="image">Images</option>
-              <option value="pdf">PDFs</option>
-            </select>
-          </label>
-          <label className="relative inline-flex items-center">
-            <select
-              className="h-9 appearance-none rounded-full border border-border bg-card pl-3 pr-7 text-xs font-medium text-foreground outline-none focus:border-ring"
-              value={person}
-              onChange={(e) => patchSearchSession({ person: e.target.value })}
-              disabled={persons.length === 0}
-              title="Person"
-            >
-              <option value="">All people</option>
-              {persons.map((p) => (
-                <option key={p.id} value={p.name}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="relative inline-flex items-center">
-            <select
-              className="h-9 max-w-[11rem] appearance-none rounded-full border border-border bg-card pl-3 pr-7 text-xs font-medium text-foreground outline-none focus:border-ring"
-              value={folderPath}
-              onChange={(e) => patchSearchSession({ folderPath: e.target.value })}
-              title={folderPath && folderContexts.find(f => f.folder_path === folderPath)?.description}
-            >
-              <option value="">All folders</option>
-              {folderContexts.map((f) => (
-                <option key={f.folder_path} value={f.folder_path} title={f.description}>
-                  {f.folder_path.split("/").filter(Boolean).pop() ?? f.folder_path}
-                </option>
-              ))}
-            </select>
-          </label>
+          <FilterDropdown
+            icon={ImageIcon}
+            title="File type"
+            value={mime === "video" ? "all" : mime}
+            onChange={(v) => patchSearchSession({ mime: v })}
+            options={[
+              { value: "all", label: "All types" },
+              { value: "image", label: "Images" },
+              { value: "pdf", label: "PDFs" },
+            ]}
+          />
+          <FilterDropdown
+            title="Person"
+            value={person}
+            disabled={persons.length === 0}
+            onChange={(v) => patchSearchSession({ person: v })}
+            options={[
+              { value: "", label: "All people" },
+              ...persons.map((p) => ({
+                value: p.name,
+                label: p.name,
+                faceId: p.representative_face_id,
+              })),
+            ]}
+          />
+          <FilterDropdown
+            title={
+              folderPath
+                ? folderContexts.find((f) => f.folder_path === folderPath)?.description ||
+                  libraryFolders.find((f) => f.value === folderPath)?.label ||
+                  "Folder"
+                : "Folder"
+            }
+            value={folderPath}
+            onChange={(v) => patchSearchSession({ folderPath: v })}
+            options={[
+              { value: "", label: "All folders" },
+              ...libraryFolders.map((f) => ({
+                value: f.value,
+                label: f.label,
+                hint: folderContexts.find((c) => c.folder_path === f.value)?.description,
+              })),
+            ]}
+          />
           <Button className="h-9 rounded-full px-4" onClick={search} disabled={loading}>
             {loading ? <LoadingLabel>Searching…</LoadingLabel> : <span className="inline-flex items-center gap-1.5"><Search size={14} />Search</span>}
           </Button>
@@ -179,7 +182,7 @@ export function SearchPage({
             title={useCaptions ? "Caption search ON" : "Caption search OFF"}
             className={`inline-flex h-9 items-center gap-1.5 rounded-full border px-3 text-xs font-medium transition-colors ${
               useCaptions
-                ? "border-primary/50 bg-primary/10 text-primary"
+                ? "border-blue-400/60 bg-blue-500/10 text-blue-600 dark:border-blue-400/50 dark:bg-blue-400/15 dark:text-blue-300"
                 : "border-border bg-card text-muted-foreground"
             }`}
           >
@@ -215,34 +218,20 @@ export function SearchPage({
         </p>
       )}
 
-      {results && lastSearchMode && (
-        <Card className="border-border/80 bg-muted/30 px-4 py-3 text-sm">
-          <p className="font-medium text-foreground">Search mode for this query</p>
-          <ul className="mt-1.5 space-y-1 text-xs text-muted-foreground">
-            <li>
-              {lastSearchMode.captions
-                ? "Captions ON — matches indexed image descriptions as well as visual embeddings."
-                : "Captions OFF — visual embedding match only."}
-            </li>
-            <li>
-              {lastSearchMode.rerank
-                ? "Re-rank ON — results re-ordered by AI relevance."
-                : "Re-rank OFF — raw vector similarity order."}
-            </li>
-            {results.cache === "exact" || results.cache === "semantic" ? (
-              <li>
-                {results.cache === "exact"
-                  ? "Cached — same query and folder."
-                  : "Cached — similar query in this folder."}
-              </li>
-            ) : null}
-          </ul>
-        </Card>
-      )}
-
       {results && (
-        <Card>
-          <h3 className="mb-4 font-medium">Matching files ({files.length})</h3>
+        <section className="relative">
+          <div className="mb-4 flex items-start justify-between gap-2">
+            <h3 className="font-medium">Matching files ({files.length})</h3>
+            <button
+              type="button"
+              onClick={resetSearchResults}
+              title="Clear results"
+              aria-label="Clear results"
+              className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            >
+              <X size={16} aria-hidden />
+            </button>
+          </div>
           {files.length === 0 ? (
             <p className="text-sm text-muted-foreground">No matching files in your Drive index.</p>
           ) : (
@@ -280,7 +269,7 @@ export function SearchPage({
                           </span>
                         )}
                       </div>
-                      <p className="truncate text-xs text-muted-foreground" title={file.path}>
+                      <p className="break-all text-xs text-muted-foreground" title={file.path}>
                         {file.path}
                       </p>
                       {file.caption && (
@@ -311,7 +300,7 @@ export function SearchPage({
               })}
             </ul>
           )}
-        </Card>
+        </section>
       )}
 
       <ModalOverlay open={!!previewFile} onClose={() => patchSearchSession({ previewFile: null })}>

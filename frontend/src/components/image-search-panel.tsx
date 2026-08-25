@@ -2,23 +2,34 @@
 
 import { useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { ExternalLink, ImagePlus, Linkedin } from "lucide-react";
+import { usePathname } from "next/navigation";
+import { ExternalLink, ImagePlus, Linkedin, X } from "lucide-react";
 import { driveGoogleViewUrl, type FaceSearchMatch } from "@/lib/api";
 import { Button, ConfirmDialog, FaceThumb, Input, LoadingLabel, Spinner } from "@/components/ui";
 import {
+  clearReverseFaceSearch,
   collectUnknownNameTagIds,
   isUnknownFaceMatch,
   runReverseFaceNameTag,
   runReverseFaceSearch,
   setReverseFaceFile,
+  totalMatchFileCount,
   useReverseFaceSession,
 } from "@/lib/reverse-face-session";
 
 function MatchCard({ match, tagging }: { match: FaceSearchMatch; tagging: boolean }) {
   const appearances = match.appears_in ?? [];
+  const fileCount = match.file_count ?? appearances.length;
   const unknown = isUnknownFaceMatch(match);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
+  const [showAllFiles, setShowAllFiles] = useState(false);
+  const pathname = usePathname();
+  const personBase = pathname.startsWith("/test") ? "/test/people" : "/people";
+  const previewLimit = 6;
+  const hiddenCount = Math.max(0, fileCount - previewLimit);
+  const canExpand = fileCount > previewLimit;
+  const visibleAppearances = showAllFiles ? appearances : appearances.slice(0, previewLimit);
 
   async function submitName() {
     const name = draft.trim();
@@ -39,14 +50,14 @@ function MatchCard({ match, tagging }: { match: FaceSearchMatch; tagging: boolea
   return (
     <div className="rounded-xl border border-border/60 bg-muted/20 p-3">
       <div className="flex items-center gap-3">
-        <FaceThumb faceId={match.face_id} className="h-12 w-12 shrink-0 rounded-lg" />
+        <FaceThumb faceId={match.thumb_face_id ?? match.face_id} className="h-12 w-12 shrink-0 rounded-lg" />
         <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-semibold text-foreground">{match.person_name}</p>
+          <p className="break-words text-sm font-semibold leading-snug text-foreground">{match.person_name}</p>
           <p className="text-[11px] text-muted-foreground">
             {Math.round(match.score * 100)}% match
             {match.cluster_id != null ? ` · cluster #${match.cluster_id}` : ""}
-            {appearances.length > 0
-              ? ` · ${appearances.length} file${appearances.length === 1 ? "" : "s"}`
+            {fileCount > 0
+              ? ` · ${fileCount} file${fileCount === 1 ? "" : "s"}`
               : ""}
           </p>
         </div>
@@ -64,7 +75,7 @@ function MatchCard({ match, tagging }: { match: FaceSearchMatch; tagging: boolea
           )}
           {match.person_id != null && (
             <Link
-              href={`/people/${match.person_id}`}
+              href={`${personBase}/${match.person_id}`}
               title="Profile"
               className="flex h-7 w-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
             >
@@ -95,24 +106,57 @@ function MatchCard({ match, tagging }: { match: FaceSearchMatch; tagging: boolea
           </Button>
         </div>
       )}
-      {appearances.length > 0 && (
-        <div className="mt-2 flex flex-wrap gap-1">
-          {appearances.slice(0, 6).map((a) => (
-            <a
-              key={`${a.drive_file_id}-${a.frame_timestamp ?? 0}`}
-              href={driveGoogleViewUrl(a.drive_file_id)}
-              target="_blank"
-              rel="noopener noreferrer"
-              title={a.path}
-              className="max-w-[10rem] truncate rounded-full border border-border bg-card px-2 py-0.5 text-[10px] text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
-            >
-              {a.name}
-            </a>
-          ))}
-          {appearances.length > 6 && (
-            <span className="px-1 py-0.5 text-[10px] text-muted-foreground">
-              +{appearances.length - 6}
-            </span>
+      {(appearances.length > 0 || fileCount > 0) && (
+        <div className="mt-2 space-y-1.5">
+          <div className="flex flex-wrap gap-1">
+            {visibleAppearances.map((a) => (
+              <a
+                key={`${a.drive_file_id}-${a.frame_timestamp ?? 0}`}
+                href={driveGoogleViewUrl(a.drive_file_id)}
+                target="_blank"
+                rel="noopener noreferrer"
+                title={a.path}
+                className="max-w-[10rem] truncate rounded-full border border-border bg-card px-2 py-0.5 text-[10px] text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+              >
+                {a.name}
+              </a>
+            ))}
+            {!showAllFiles && canExpand && (
+              <button
+                type="button"
+                onClick={() => setShowAllFiles(true)}
+                title={`Show all ${fileCount} files`}
+                className="rounded-full border border-dashed border-border bg-card px-2 py-0.5 text-[10px] font-medium tabular-nums text-muted-foreground transition-colors hover:border-ring hover:bg-accent hover:text-accent-foreground"
+              >
+                +{hiddenCount}
+              </button>
+            )}
+            {showAllFiles && canExpand && (
+              <button
+                type="button"
+                onClick={() => setShowAllFiles(false)}
+                title={`Show first ${previewLimit} files`}
+                className="rounded-full border border-border bg-muted/40 px-2 py-0.5 text-[10px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+              >
+                Show less
+              </button>
+            )}
+          </div>
+          {showAllFiles && fileCount > appearances.length && (
+            <p className="text-[10px] text-muted-foreground">
+              Showing {appearances.length} of {fileCount} files
+              {match.person_id != null && (
+                <>
+                  {" · "}
+                  <Link
+                    href={`${personBase}/${match.person_id}`}
+                    className="font-medium text-primary hover:underline"
+                  >
+                    View all on profile
+                  </Link>
+                </>
+              )}
+            </p>
           )}
         </div>
       )}
@@ -121,7 +165,7 @@ function MatchCard({ match, tagging }: { match: FaceSearchMatch; tagging: boolea
 }
 
 export function ImageSearchPanel() {
-  const { previewUrl, searching, result, error, tagging, tagMessage } = useReverseFaceSession();
+  const { file, previewUrl, searching, result, error, tagging, tagMessage } = useReverseFaceSession();
   const uploadRef = useRef<HTMLInputElement>(null);
   const [bulkName, setBulkName] = useState("");
   const [confirmBulkOpen, setConfirmBulkOpen] = useState(false);
@@ -131,6 +175,10 @@ export function ImageSearchPanel() {
     [result?.matches]
   );
   const unknownCount = unknownIds.clusterIds.length + unknownIds.faceIds.length;
+  const matchFileCount = useMemo(
+    () => totalMatchFileCount(result?.matches ?? []),
+    [result?.matches]
+  );
 
   function onPick(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -173,15 +221,17 @@ export function ImageSearchPanel() {
             <ImagePlus size={18} className="text-white" />
           </span>
         </button>
-        <div className="min-w-0 text-xs text-muted-foreground">
+        <div className="min-w-0 flex-1 text-xs text-muted-foreground">
           {searching ? (
             <LoadingLabel size={14}>Searching faces…</LoadingLabel>
           ) : result ? (
             <p>
               {result.faces_detected} face{result.faces_detected === 1 ? "" : "s"} detected
-              {result.matches.length > 0
-                ? ` · ${result.matches.length} match${result.matches.length === 1 ? "" : "es"}`
-                : " · no matches"}
+              {matchFileCount > 0
+                ? ` · ${matchFileCount} match${matchFileCount === 1 ? "" : "es"}`
+                : result.matches.length > 0
+                  ? ` · ${result.matches.length} match${result.matches.length === 1 ? "" : "es"}`
+                  : " · no matches"}
               {unknownCount > 0
                 ? ` · ${unknownCount} unknown to name`
                 : result.matches.length > 0
@@ -195,6 +245,17 @@ export function ImageSearchPanel() {
           {tagMessage && <p className="mt-1 text-emerald-700 dark:text-emerald-400">{tagMessage}</p>}
         </div>
         {(searching || tagging) && <Spinner size={16} />}
+        {(file || result) && (
+          <button
+            type="button"
+            onClick={clearReverseFaceSearch}
+            title="Clear image search"
+            aria-label="Clear image search"
+            className="flex h-8 w-8 shrink-0 items-center justify-center self-start rounded-full border border-border bg-card text-muted-foreground shadow-sm transition-colors hover:bg-muted hover:text-foreground"
+          >
+            <X size={15} aria-hidden />
+          </button>
+        )}
       </div>
 
       {unknownCount > 0 && (

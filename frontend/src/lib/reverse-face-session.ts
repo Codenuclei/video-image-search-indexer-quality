@@ -5,6 +5,7 @@ import {
   apiClient,
   formatApiError,
   type FaceCrawlResponse,
+  type FaceSearchMatch,
   type FaceSearchResponse,
   type LeadershipPerson,
   type LeadershipRoster,
@@ -56,6 +57,22 @@ let state: ReverseFaceSession = initial;
 const listeners = new Set<() => void>();
 let searchJob: Promise<void> | null = null;
 let crawlJob: Promise<void> | null = null;
+let searchGeneration = 0;
+let searchAbort: AbortController | null = null;
+
+function bumpSearchGeneration() {
+  searchGeneration += 1;
+  searchJob = null;
+  if (searchAbort) {
+    searchAbort.abort();
+    searchAbort = null;
+  }
+  return searchGeneration;
+}
+
+function isStaleSearch(gen: number) {
+  return gen !== searchGeneration;
+}
 
 function emit() {
   listeners.forEach((fn) => fn());
@@ -112,6 +129,7 @@ export async function hydrateLeadershipRoster(force = false) {
 }
 
 export function setReverseFaceFile(next: File | null) {
+  bumpSearchGeneration();
   const prevUrl = state.previewUrl;
   if (prevUrl) URL.revokeObjectURL(prevUrl);
   patchReverseFaceSession({
@@ -120,25 +138,50 @@ export function setReverseFaceFile(next: File | null) {
     error: null,
     tagMessage: null,
     selectedLeader: null,
+    searching: false,
     previewUrl: next ? URL.createObjectURL(next) : null,
+  });
+}
+
+/** Clear current face-search results and upload (dustbin). */
+export function clearReverseFaceSearch() {
+  bumpSearchGeneration();
+  const prevUrl = state.previewUrl;
+  if (prevUrl) URL.revokeObjectURL(prevUrl);
+  patchReverseFaceSession({
+    file: null,
+    previewUrl: null,
+    result: null,
+    error: null,
+    tagMessage: null,
+    selectedLeader: null,
+    searching: false,
+    confirmTagOpen: false,
   });
 }
 
 export function runReverseFaceSearch(upload?: File) {
   const target = upload ?? state.file;
   if (!target) return searchJob;
+  const gen = bumpSearchGeneration();
+  searchAbort = new AbortController();
+  const signal = searchAbort.signal;
   patchReverseFaceSession({
     searching: true,
     error: null,
     tagMessage: null,
     selectedLeader: null,
+    result: null,
   });
   let job!: Promise<void>;
   job = (async () => {
     try {
-      const result = await apiClient.searchUploadedFace(target, 20);
+      const result = await apiClient.searchUploadedFace(target, 20, signal);
+      if (isStaleSearch(gen)) return;
       patchReverseFaceSession({ result, searching: false });
     } catch (e) {
+      if (isStaleSearch(gen)) return;
+      if (signal.aborted) return;
       patchReverseFaceSession({
         error: formatApiError(e, "Face search failed"),
         result: null,
@@ -146,6 +189,7 @@ export function runReverseFaceSearch(upload?: File) {
       });
     } finally {
       if (searchJob === job) searchJob = null;
+      if (searchAbort?.signal === signal) searchAbort = null;
     }
   })();
   searchJob = job;
@@ -157,6 +201,7 @@ export function selectReverseFaceLeader(person: LeadershipPerson) {
     patchReverseFaceSession({ error: `No portrait URL for ${person.name}` });
     return searchJob;
   }
+  const gen = bumpSearchGeneration();
   const prevUrl = state.previewUrl;
   if (prevUrl) URL.revokeObjectURL(prevUrl);
   patchReverseFaceSession({
@@ -171,9 +216,11 @@ export function selectReverseFaceLeader(person: LeadershipPerson) {
   let job!: Promise<void>;
   job = (async () => {
     try {
-      const result = await apiClient.searchFaceByUrl(person.image_url, 20);
+      const result = await apiClient.searchFaceByUrl(person.image_url!, 20);
+      if (isStaleSearch(gen)) return;
       patchReverseFaceSession({ result, searching: false });
     } catch (e) {
+      if (isStaleSearch(gen)) return;
       patchReverseFaceSession({
         error: formatApiError(e, "Leader face search failed"),
         result: null,
@@ -220,6 +267,16 @@ export function isUnknownFaceMatch(match: {
 }): boolean {
   const status = (match.cluster_status ?? "").toLowerCase();
   return match.person_id == null || status === "unknown";
+}
+
+/** Total matching Drive files across face-search results (not just match rows). */
+export function totalMatchFileCount(matches: FaceSearchMatch[]): number {
+  let sum = 0;
+  for (const m of matches) {
+    sum += m.file_count ?? m.appears_in?.length ?? 0;
+  }
+  if (sum === 0 && matches.length > 0) return matches.length;
+  return sum;
 }
 
 /** Collect cluster/face ids for name-tag (prefer clusters; leftover faces only). */
@@ -289,16 +346,17 @@ export async function runReverseFaceNameTag(opts: {
     });
     const okCount = res.actions.filter((a) => a.ok).length;
     patchReverseFaceSession({
-      tagMessage: `Tagged as “${res.person.name}” (person #${res.person.id}) · ${okCount} action(s) · ${res.person.occurrence_count} appearances`,
+      tagMessage: `Tagged as “${res.person.name}” (person #${res.person.id}) · ${okCount} action(s) · ${res.person.file_count ?? res.person.occurrence_count} files`,
     });
 
     // Refresh matches so named people show up immediately.
+    const refreshGen = searchGeneration;
     if (state.selectedLeader?.image_url) {
       const refreshed = await apiClient.searchFaceByUrl(state.selectedLeader.image_url, 20);
-      patchReverseFaceSession({ result: refreshed });
+      if (refreshGen === searchGeneration) patchReverseFaceSession({ result: refreshed });
     } else if (state.file) {
       const refreshed = await apiClient.searchUploadedFace(state.file, 20);
-      patchReverseFaceSession({ result: refreshed });
+      if (refreshGen === searchGeneration) patchReverseFaceSession({ result: refreshed });
     }
     return true;
   } catch (e) {

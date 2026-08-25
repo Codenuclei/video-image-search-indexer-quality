@@ -30,6 +30,9 @@ class StatusWrite:
     clear_gemini_document: bool = False
     bump_synced_at: bool = False
     unlink_drive_cache: bool = False
+    # Wall-clock when the worker finished the file (set at enqueue). Flush must
+    # use this for TAT — never one shared stamp for a whole 100-row batch.
+    finished_at: datetime | None = None
 
 
 async def bulk_claim_files(
@@ -72,6 +75,8 @@ async def bulk_claim_file_ids(
             status=DriveFileStatus.PROCESSING,
             error_message=None,
             last_synced_at=stamp,
+            processing_started_at=stamp,
+            completed_at=None,
         )
         .returning(DriveFile.id)
     )
@@ -86,7 +91,10 @@ async def bulk_apply_status_writes(
     if not writes:
         return 0
 
+    fallback_stamp = datetime.now(timezone.utc)
+
     # Group identical status+error payloads so each group is one UPDATE.
+    # Timestamps stay per-file (finished_at) so TAT is not inflated by batch wait.
     groups: dict[tuple, list[str]] = {}
     for w in writes:
         key = (
@@ -94,13 +102,11 @@ async def bulk_apply_status_writes(
             w.error_message,
             w.gemini_document_name,
             w.clear_gemini_document,
-            w.bump_synced_at,
         )
         groups.setdefault(key, []).append(w.file_id)
 
     total = 0
-    stamp = datetime.now(timezone.utc)
-    for (status, error_message, gemini_doc, clear_gemini, bump_synced), ids in groups.items():
+    for (status, error_message, gemini_doc, clear_gemini), ids in groups.items():
         values: dict = {
             "status": status,
             "error_message": error_message,
@@ -109,12 +115,45 @@ async def bulk_apply_status_writes(
             values["gemini_document_name"] = None
         elif gemini_doc is not None:
             values["gemini_document_name"] = gemini_doc
-        if bump_synced or status == DriveFileStatus.PROCESSED:
-            values["last_synced_at"] = stamp
         result = await session.execute(
             update(DriveFile).where(DriveFile.id.in_(ids)).values(**values)
         )
         total += int(result.rowcount or 0)
+
+    # Per finished_at second-bucket: last_synced_at + completed_at for TAT.
+    by_end: dict[datetime, list[StatusWrite]] = {}
+    for w in writes:
+        end = w.finished_at or fallback_stamp
+        by_end.setdefault(end, []).append(w)
+
+    for end, group in by_end.items():
+        bump_ids = [
+            w.file_id
+            for w in group
+            if w.bump_synced_at
+            or w.status in (DriveFileStatus.PROCESSED, DriveFileStatus.ERROR)
+        ]
+        if bump_ids:
+            await session.execute(
+                update(DriveFile)
+                .where(DriveFile.id.in_(bump_ids))
+                .values(last_synced_at=end)
+            )
+        try:
+            from app.workers.index_tat import stamp_completed_at
+
+            err_ids = [w.file_id for w in group if w.status == DriveFileStatus.ERROR]
+            ok_ids = [
+                w.file_id for w in group if w.status == DriveFileStatus.PROCESSED
+            ]
+            if err_ids:
+                await stamp_completed_at(session, err_ids, now=end, reason="error")
+            if ok_ids:
+                await stamp_completed_at(session, ok_ids, now=end, reason="processed")
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "index_tat_complete_stamp_failed count=%d", len(group)
+            )
     return total
 
 
@@ -143,14 +182,16 @@ class IndexStatusBatcher:
         return {w.file_id for w in self._queue}
 
     async def enqueue(self, write: StatusWrite, *, flush_if_full: bool = True) -> None:
+        if write.finished_at is None:
+            write.finished_at = datetime.now(timezone.utc)
         async with self._lock:
             # Latest write for a file wins (collapse duplicates in the buffer).
             self._queue = [w for w in self._queue if w.file_id != write.file_id]
             self._queue.append(write)
             if flush_if_full and len(self._queue) >= self._batch_size:
                 await self._flush_unlocked()
-        # Reclaim scratch cache as soon as we know the file is final — do not wait
-        # for the 100-row DB status batch (that delay was filling media_cache).
+        # Scratch unlink is best-effort; durable policy cleanup waits until the
+        # row is PROCESSED in Postgres (and captioned+embedded for images).
         if write.unlink_drive_cache or write.status in (
             DriveFileStatus.PROCESSED,
             DriveFileStatus.ERROR,

@@ -7,10 +7,10 @@ import {
   type CacheCleanupResult,
   type ControlReaderStatus,
   type IndexStatus,
+  type IndexTatStats,
   type SkipStats,
 } from "@/lib/api";
-import { getAuthEmail } from "@/components/auth-gate";
-import { isAdminEmail } from "@/lib/admin";
+import { useAuthSession } from "@/components/auth-gate";
 import { useIndexStatusStore } from "@/lib/index-status-store";
 import { formatCount, skipReasonMeta } from "@/lib/index-errors";
 import { Button, Card, ConfirmDialog, LoadingLabel, StatCard } from "@/components/ui";
@@ -22,12 +22,23 @@ function formatBytes(n: number): string {
   return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
+function formatTatMs(ms: number): string {
+  if (!ms || ms <= 0) return "—";
+  if (ms < 1000) return `${ms}ms`;
+  const sec = ms / 1000;
+  if (sec < 60) return `${sec < 10 ? sec.toFixed(1) : Math.round(sec)}s`;
+  const min = sec / 60;
+  if (min < 60) return `${min < 10 ? min.toFixed(1) : Math.round(min)}m`;
+  const hr = min / 60;
+  return `${hr < 10 ? hr.toFixed(1) : Math.round(hr)}h`;
+}
+
 export default function AdminPage() {
   const router = useRouter();
-  const email = getAuthEmail();
-  const allowed = isAdminEmail(email);
+  const { isAdmin: allowed } = useAuthSession();
   const { status, refresh } = useIndexStatusStore();
   const [skipStats, setSkipStats] = useState<SkipStats | null>(null);
+  const [tatStats, setTatStats] = useState<IndexTatStats | null>(null);
   const [busy, setBusy] = useState(false);
   const [skipBusy, setSkipBusy] = useState(false);
   const [retryingReason, setRetryingReason] = useState<string | null>(null);
@@ -43,18 +54,22 @@ export default function AdminPage() {
   const [cacheBusy, setCacheBusy] = useState(false);
   const [confirmCacheClean, setConfirmCacheClean] = useState(false);
   const [cacheResult, setCacheResult] = useState<CacheCleanupResult | null>(null);
+  const [tatResetBusy, setTatResetBusy] = useState(false);
+  const [confirmTatReset, setConfirmTatReset] = useState(false);
 
   useEffect(() => {
     if (!allowed) router.replace("/");
   }, [allowed, router]);
 
   const loadSecondary = useCallback(async () => {
-    const [skips, control] = await Promise.all([
+    const [skips, control, tat] = await Promise.all([
       apiClient.skipStats().catch(() => null),
       apiClient.controlReaderStatus().catch(() => null),
+      apiClient.indexTatStats().catch(() => null),
     ]);
     setSkipStats(skips);
     setControlStatus(control);
+    setTatStats(tat);
   }, []);
 
   useEffect(() => {
@@ -131,6 +146,20 @@ export default function AdminPage() {
     }
   }
 
+  async function resetTatStats() {
+    setTatResetBusy(true);
+    try {
+      const result = await apiClient.resetIndexTatStats();
+      setTatStats(result.stats);
+      await loadSecondary();
+    } catch {
+      /* toasted */
+    } finally {
+      setTatResetBusy(false);
+      setConfirmTatReset(false);
+    }
+  }
+
   async function restartReader() {
     setControlBusy("reader");
     try {
@@ -202,6 +231,52 @@ export default function AdminPage() {
         <StatCard label="Pending" value={pending} />
         <StatCard label="Errors" value={errors} />
       </div>
+
+      <Card className="space-y-3">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h3 className="font-medium">Index TAT</h3>
+            <p className="text-sm text-muted-foreground">
+              Claim → done (PROCESSED/captioned/error)
+              {tatStats?.sample_window ? ` · ${tatStats.sample_window}` : ""}.
+              {tatStats && (tatStats.image?.count ?? 0) + (tatStats.video?.count ?? 0) === 0
+                ? " Waiting for completed samples…"
+                : ""}
+            </p>
+          </div>
+          <Button
+            variant="secondary"
+            disabled={tatResetBusy}
+            onClick={() => setConfirmTatReset(true)}
+          >
+            {tatResetBusy ? <LoadingLabel>Resetting…</LoadingLabel> : "Reset TAT"}
+          </Button>
+        </div>
+        <div className="grid gap-3 sm:grid-cols-2 text-sm">
+          {(["image", "video"] as const).map((kind) => {
+            const bucket = tatStats?.[kind];
+            const count = bucket?.count ?? 0;
+            return (
+              <div key={kind} className="rounded-md border border-border/60 px-3 py-2">
+                <p className="font-medium capitalize">{kind}</p>
+                {count === 0 ? (
+                  <p className="mt-1 text-muted-foreground">No samples yet</p>
+                ) : (
+                  <p className="mt-1 text-muted-foreground">
+                    <span className="text-foreground">{formatTatMs(bucket!.min_ms)}</span>
+                    {" · "}
+                    <span className="font-medium text-foreground">{formatTatMs(bucket!.avg_ms)}</span>
+                    {" · "}
+                    <span className="text-foreground">{formatTatMs(bucket!.max_ms)}</span>
+                    <span className="ml-2">min · avg · max</span>
+                    <span className="ml-2">({formatCount(count)})</span>
+                  </p>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </Card>
 
       <Card className="flex flex-wrap gap-3">
         <Button onClick={() => void runIndex(false)} disabled={busy || !!s?.is_running}>
@@ -372,6 +447,15 @@ export default function AdminPage() {
           </ul>
         )}
       </Card>
+
+      <ConfirmDialog
+        open={confirmTatReset}
+        title="Reset Index TAT?"
+        message="Clears min / avg / max sample stamps only. Indexed files, captions, embeddings, and media are not changed. New completions refill the card."
+        confirmLabel="Reset TAT"
+        onConfirm={() => void resetTatStats()}
+        onCancel={() => setConfirmTatReset(false)}
+      />
 
       <ConfirmDialog
         open={!!confirmControl}

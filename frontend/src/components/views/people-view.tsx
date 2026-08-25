@@ -17,11 +17,14 @@ function PersonCard({
   onRenamed,
   onDeleted,
   onDeleteFailed,
+  personHref,
 }: {
   person: Person;
   onRenamed: (updated: Person) => void;
   onDeleted: (id: number) => void;
   onDeleteFailed: (person: Person) => void;
+  /** Base path for person detail links (e.g. /people or /test/people). */
+  personHref?: (id: number) => string;
 }) {
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(person.name);
@@ -101,10 +104,12 @@ function PersonCard({
     setEditing(false);
   }
 
+  const detailHref = personHref?.(person.id) ?? `/people/${person.id}`;
+
   return (
     <Card
       className={cn(
-        "group relative flex flex-col gap-4 overflow-hidden p-4 transition-all duration-200",
+        "group relative flex min-w-0 flex-col gap-3 overflow-hidden p-3 transition-all duration-200 sm:gap-4 sm:p-4",
         "hover:-translate-y-0.5 hover:border-border hover:shadow-[0_12px_40px_-18px_rgba(0,0,0,0.35)]",
         vanishing && "card-vanish"
       )}
@@ -112,7 +117,7 @@ function PersonCard({
       {editing ? (
         <div className="space-y-3">
           <div className="flex items-start gap-3">
-            <Link href={`/people/${person.id}`} className="shrink-0">
+            <Link href={detailHref} className="shrink-0">
               <FaceThumb
                 faceId={person.representative_face_id}
                 className="h-14 w-14 rounded-xl object-cover ring-1 ring-border"
@@ -133,7 +138,7 @@ function PersonCard({
                 autoFocus
               />
               {error && <p className="text-xs text-destructive">{error}</p>}
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
                 <Button onClick={save} disabled={saving}>
                   {saving ? <LoadingLabel>Saving…</LoadingLabel> : "Save"}
                 </Button>
@@ -147,21 +152,27 @@ function PersonCard({
       ) : (
         <>
           <div className="flex items-start gap-3">
-            <Link href={`/people/${person.id}`} className="shrink-0">
+            <Link href={detailHref} className="shrink-0">
               <FaceThumb
                 faceId={person.representative_face_id}
-                className="h-14 w-14 rounded-xl object-cover ring-1 ring-border transition-transform duration-200 group-hover:scale-[1.02]"
+                className="h-12 w-12 rounded-xl object-cover ring-1 ring-border transition-transform duration-200 group-hover:scale-[1.02] sm:h-14 sm:w-14"
               />
             </Link>
             <div className="min-w-0 flex-1">
-              <div className="flex items-start justify-between gap-2">
-                <div className="min-w-0">
-                  <Link href={`/people/${person.id}`} className="block truncate text-[15px] font-semibold tracking-tight text-foreground hover:underline">
+              <div className="flex flex-wrap items-start justify-between gap-x-2 gap-y-1">
+                <div className="min-w-0 flex-1 basis-[calc(100%-3rem)] sm:basis-auto">
+                  <Link
+                    href={detailHref}
+                    className="block break-words text-sm font-semibold leading-snug tracking-tight text-foreground hover:underline sm:text-[15px]"
+                  >
                     {person.name}
                   </Link>
-                  <p className="mt-1 inline-flex items-center gap-1.5 whitespace-nowrap text-xs text-muted-foreground">
+                  <p className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-muted-foreground">
                     <Images size={12} aria-hidden className="shrink-0 opacity-70" />
-                    {person.occurrence_count} appearance{person.occurrence_count === 1 ? "" : "s"}
+                    <span>
+                      {person.file_count ?? person.occurrence_count} file
+                      {(person.file_count ?? person.occurrence_count) === 1 ? "" : "s"}
+                    </span>
                   </p>
                 </div>
                 <div className="flex shrink-0 items-center gap-0.5 rounded-lg border border-transparent bg-transparent p-0.5 transition-colors group-hover:border-border/60 group-hover:bg-muted/40">
@@ -189,7 +200,13 @@ function PersonCard({
 
           <div className="space-y-1.5 border-t border-border/60 pt-3">
             <p className="text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">Role</p>
-            <RoleSelector role={person.role ?? null} disabled={roleSaving} onChange={saveRole} />
+            <RoleSelector
+              role={person.role ?? null}
+              disabled={roleSaving}
+              onChange={saveRole}
+              variant="card"
+              className="w-full"
+            />
           </div>
           {error && <p className="text-xs text-destructive">{error}</p>}
         </>
@@ -209,7 +226,14 @@ function PersonCard({
   );
 }
 
-export function PeoplePage({ embedded = false }: { embedded?: boolean } = {}) {
+export function PeoplePage({
+  embedded = false,
+  personHref,
+}: {
+  embedded?: boolean;
+  /** Base path for person detail links (e.g. /people or /test/people). */
+  personHref?: (id: number) => string;
+} = {}) {
   const {
     data: persons,
     loading,
@@ -247,7 +271,7 @@ export function PeoplePage({ embedded = false }: { embedded?: boolean } = {}) {
         </p>
       )}
 
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,17.5rem),1fr))] gap-4">
         {list.map((p) => (
           <PersonCard
             key={p.id}
@@ -268,6 +292,7 @@ export function PeoplePage({ embedded = false }: { embedded?: boolean } = {}) {
                 : [...list, restored].sort((a, b) => a.name.localeCompare(b.name));
               writeCache("persons", next, personsRevision(next), true);
             }}
+            personHref={personHref}
           />
         ))}
       </div>

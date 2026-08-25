@@ -99,6 +99,8 @@ export type Person = {
   role: PersonRole;
   representative_face_id: number | null;
   occurrence_count: number;
+  /** Unique Drive files this person appears in (preferred over occurrence_count for UI). */
+  file_count?: number | null;
   created_at: string;
 };
 
@@ -156,6 +158,21 @@ export type DriveFilesQuery = {
 export type SkipStats = {
   total_skipped: number;
   by_reason: { reason: string; count: number }[];
+};
+
+export type IndexTatKindStats = {
+  count: number;
+  min_ms: number;
+  max_ms: number;
+  avg_ms: number;
+};
+
+export type IndexTatStats = {
+  image: IndexTatKindStats;
+  video: IndexTatKindStats;
+  sample_window: string;
+  metric?: string;
+  done_means?: string;
 };
 
 export type CacheCleanupResult = {
@@ -236,6 +253,9 @@ export type FaceSearchAppearance = {
 
 export type FaceSearchMatch = {
   face_id: number;
+  /** Face id whose thumbnail JPEG exists (may differ from face_id after cluster fallback). */
+  thumb_face_id?: number | null;
+  thumb_source?: string | null;
   person_id: number | null;
   person_name: string;
   score: number;
@@ -244,6 +264,9 @@ export type FaceSearchMatch = {
   cluster_id?: number | null;
   cluster_status?: string | null;
   cluster_member_count?: number | null;
+  /** Unique Drive files for person (merged) or cluster — not capped like appears_in. */
+  file_count?: number | null;
+  /** Drive file previews; server returns up to min(file_count, 500). */
   appears_in?: FaceSearchAppearance[];
 };
 
@@ -315,6 +338,7 @@ export type LeadershipNameTagResponse = {
     role?: string | null;
     representative_face_id?: number | null;
     occurrence_count: number;
+    file_count?: number;
   };
   actions: {
     type: string;
@@ -1294,6 +1318,11 @@ export const apiClient = {
   indexStatus: () => api<IndexStatus>("/index", { silent: true }),
   goIndexerStatus: () => api<GoIndexerStatus>("/index/go/status", { silent: true }),
   skipStats: () => api<SkipStats>("/index/skip-stats", { silent: true }),
+  indexTatStats: () => api<IndexTatStats>("/index/tat-stats", { silent: true }),
+  resetIndexTatStats: () =>
+    api<{ cleared: number; stats: IndexTatStats }>("/index/tat-stats/reset", {
+      method: "POST",
+    }),
   indexedFolders: () =>
     api<{ folders: IndexedFolder[]; total: number }>("/index/folders"),
   indexConflicts: (status: string | null = "pending", limit = 50, offset = 0) => {
@@ -1581,7 +1610,11 @@ export const apiClient = {
       }
     );
   },
-  searchUploadedFace: async (file: File, limit = 20): Promise<FaceSearchResponse> => {
+  searchUploadedFace: async (
+    file: File,
+    limit = 20,
+    signal?: AbortSignal
+  ): Promise<FaceSearchResponse> => {
     const params = new URLSearchParams({ limit: String(limit) });
     const form = new FormData();
     form.append("file", file);
@@ -1590,6 +1623,7 @@ export const apiClient = {
         method: "POST",
         body: form,
         cache: "no-store",
+        signal,
       });
       if (!res.ok) {
         const text = await res.text();

@@ -197,15 +197,37 @@ async def process_face_job(
         )
     except Exception as exc:  # noqa: BLE001
         msg = friendly_index_error_message(exc, max_len=500)
+        # Cache was cleaned after PROCESSED — treat as success for the Drive row.
+        if "media_cache reclaimed for PROCESSED" in msg:
+            job.status = FaceJobStatus.DONE
+            job.error_message = msg[:500]
+            job.lock_token = None
+            job.locked_at = None
+            if drive_file.status != DriveFileStatus.PROCESSED:
+                # Should already be PROCESSED; never force ERROR for this case.
+                drive_file.status = DriveFileStatus.PROCESSED
+                drive_file.error_message = None
+            await session.commit()
+            logger.info(
+                "face_job_done_cache_gone job_id=%s file_id=%s",
+                job.id,
+                drive_file.id[:12],
+            )
+            return
         max_attempts = max(1, settings.face_job_max_attempts)
         if job.attempts >= max_attempts:
             job.status = FaceJobStatus.ERROR
             job.error_message = msg
-            drive_file.status = DriveFileStatus.ERROR
-            drive_file.error_message = msg
-            unlink_drive_source_cache(drive_file, settings)
+            # Only demote incomplete rows — never overwrite PROCESSED.
+            if drive_file.status != DriveFileStatus.PROCESSED:
+                drive_file.status = DriveFileStatus.ERROR
+                drive_file.error_message = msg
+                unlink_drive_source_cache(drive_file, settings)
             await session.commit()
-            if status_batcher is not None:
+            if (
+                status_batcher is not None
+                and drive_file.status == DriveFileStatus.ERROR
+            ):
                 await status_batcher.enqueue(
                     StatusWrite(
                         file_id=drive_file.id,

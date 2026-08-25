@@ -4,7 +4,7 @@ import asyncio
 import re
 from dataclasses import dataclass
 
-from sqlalchemy import exists, func, or_, select
+from sqlalchemy import exists, func, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import DriveFile, DriveFileStatus, Face, Media, MediaType, Person
@@ -66,20 +66,21 @@ _PEOPLE_WORDS = frozenset({
     "face", "faces", "portrait", "portraits", "selfie", "selfies",
 })
 
+_STUDENT_LIKE = r"(?:students?|graduates?|alumni|alumnus|alumnae)"
 _CO_OCCUR_WITH_STUDENTS = re.compile(
-    r"\b(?:with|and)\s+students?\b|\bstudents?\s+(?:with|and)\b",
+    rf"\b(?:with|and)\s+{_STUDENT_LIKE}\b|\b{_STUDENT_LIKE}\s+(?:with|and)\b",
     re.IGNORECASE,
 )
 _NON_STUDENT_WITH_STUDENTS = re.compile(
-    r"\b(?:non[- ]?students?|teachers?|faculty|staff)\s+(?:with|and)\s+students?\b",
+    rf"\b(?:non[- ]?students?|teachers?|faculty|staff)\s+(?:with|and)\s+{_STUDENT_LIKE}\b",
     re.IGNORECASE,
 )
 # "giving cheque to students" — students are the recipient, not a face-tag filter
 _STUDENT_OBJECT_PHRASE = re.compile(
-    r"\b(?:to|for|among|between|from|about)\s+students?\b",
+    rf"\b(?:to|for|among|between|from|about)\s+{_STUDENT_LIKE}\b",
     re.IGNORECASE,
 )
-_STUDENT_WORD = re.compile(r"\bstudents?\b", re.IGNORECASE)
+_STUDENT_WORD = re.compile(rf"\b{_STUDENT_LIKE}\b", re.IGNORECASE)
 _NON_STUDENT_WORD = re.compile(
     r"\b(?:non[- ]?students?|teachers?|faculty|staff)\b",
     re.IGNORECASE,
@@ -122,7 +123,7 @@ def parse_role_context(query: str) -> tuple[str, SearchRoleContext]:
     work = _STUDENT_OBJECT_PHRASE.sub(" ", work)
 
     if (
-        re.match(r"^students?\b", work.strip(), re.IGNORECASE)
+        re.match(rf"^{_STUDENT_LIKE}\b", work.strip(), re.IGNORECASE)
         and not co_occur
         and "student" not in require_all
     ):
@@ -150,10 +151,46 @@ def role_context_needs_student(ctx: SearchRoleContext) -> bool:
     return "student" in ctx.co_occur_roles or "student" in ctx.require_all_roles
 
 
+def person_student_funnel_active(person_names: list[str], role_ctx: SearchRoleContext) -> bool:
+    """True when search is named-person AND student context (two-step funnel)."""
+    return bool(person_names) and role_ctx.student_context
+
+
+def student_evidence_role_ctx(role_ctx: SearchRoleContext) -> SearchRoleContext:
+    """Ensure student face/caption evidence is required alongside a named person."""
+    if role_context_needs_student(role_ctx):
+        return role_ctx
+    return SearchRoleContext(
+        co_occur_roles=("student",),
+        require_all_roles=role_ctx.require_all_roles,
+        student_context=True,
+    )
+
+
 _STUDENT_CAPTION_RE = re.compile(
-    r"\b(?:students?|pupils?|classmates?|young\s+people|college\s+students?|university\s+students?)\b",
+    r"\b(?:students?|pupils?|classmates?|graduates?|graduation|convocation|"
+    r"alumni|alumnus|alumnae|undergraduates?|freshmen|freshman|sophomores?|"
+    r"young\s+people|college\s+students?|university\s+students?)\b",
     re.IGNORECASE,
 )
+_ID_CARD_RE = re.compile(
+    r"\b(?:id\s*cards?|identity\s+cards?|student\s+ids?|name\s+(?:tags?|badges?)|"
+    r"lanyards?|badges?)\b",
+    re.IGNORECASE,
+)
+_GROUP_CUE_RE = re.compile(
+    r"\b(?:group|crowd|batch|class|several|many|together|people|persons|"
+    r"students?|graduates?|colleagues)\b",
+    re.IGNORECASE,
+)
+
+
+def caption_has_student_evidence(text: str | None) -> bool:
+    """Captions that mention students/graduates, or a group wearing ID cards."""
+    cap = text or ""
+    if _STUDENT_CAPTION_RE.search(cap):
+        return True
+    return bool(_ID_CARD_RE.search(cap) and _GROUP_CUE_RE.search(cap))
 
 
 async def drive_file_ids_with_student_captions(
@@ -166,7 +203,45 @@ async def drive_file_ids_with_student_captions(
     from app.qdrant.image_captions import get_captions_by_ids_sync
 
     captions = await asyncio.to_thread(get_captions_by_ids_sync, drive_file_ids)
-    return [fid for fid, text in captions.items() if _STUDENT_CAPTION_RE.search(text or "")]
+    return [fid for fid, text in captions.items() if caption_has_student_evidence(text)]
+
+
+async def drive_file_ids_with_extra_named_people(
+    session: AsyncSession,
+    drive_file_ids: list[str],
+    *,
+    person_names: list[str],
+) -> list[str]:
+    """Files with the queried person plus another named person who is not tagged non_student."""
+    if not drive_file_ids or not person_names:
+        return []
+    queried = {n.strip().lower() for n in person_names if n.strip()}
+    extra = exists(
+        select(1)
+        .select_from(Face)
+        .join(Media, Media.id == Face.media_id)
+        .join(Person, Person.id == Face.person_id)
+        .where(Media.drive_file_id == DriveFile.id)
+        .where(Person.name.isnot(None))
+        .where(or_(Person.role.is_(None), Person.role != "non_student"))
+        .where(~func.lower(Person.name).in_(list(queried)) if queried else true())
+    )
+    stmt = select(DriveFile.id).where(DriveFile.id.in_(drive_file_ids)).where(extra)
+    for name in person_names:
+        stmt = stmt.where(_person_face_exists_clause(name))
+    return list((await session.execute(stmt)).scalars().all())
+
+
+def _unique_ids(*groups: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for group in groups:
+        for fid in group:
+            if fid in seen:
+                continue
+            seen.add(fid)
+            out.append(fid)
+    return out
 
 
 async def resolve_role_matching_file_ids(
@@ -176,8 +251,15 @@ async def resolve_role_matching_file_ids(
     person_names: list[str],
     role_ctx: SearchRoleContext,
 ) -> list[str]:
-    """Face-tag role SQL; caption fallback only when no faces match."""
-    if not drive_file_ids or not role_context_active(role_ctx):
+    """Face-tag role SQL; union student captions when a named person is present.
+
+    Students-only (no person names) still falls back to captions only if SQL is empty.
+    """
+    if not drive_file_ids:
+        return []
+    if not person_names and not role_context_active(role_ctx):
+        return drive_file_ids
+    if not role_context_active(role_ctx):
         return drive_file_ids
 
     sql_ids = await matching_drive_file_ids_for_roles(
@@ -186,6 +268,14 @@ async def resolve_role_matching_file_ids(
         person_names=person_names,
         role_ctx=role_ctx,
     )
+    if person_names and role_context_needs_student(role_ctx):
+        cap_ids = await drive_file_ids_with_student_captions(session, drive_file_ids)
+        named_ids = await drive_file_ids_with_extra_named_people(
+            session,
+            drive_file_ids,
+            person_names=person_names,
+        )
+        return _unique_ids(sql_ids, cap_ids, named_ids)
     if sql_ids or not role_context_needs_student(role_ctx):
         return sql_ids
 
@@ -734,10 +824,19 @@ async def filter_non_student_solo_in_student_context(
     if not await non_student_names_among(session, person_names):
         return files
 
+    ids = [item.drive_file_id for item in files]
     valid = set(
         await drive_file_ids_with_non_student_and_companion(
             session,
-            [item.drive_file_id for item in files],
+            ids,
+            person_names=person_names,
+        )
+    )
+    valid.update(await drive_file_ids_with_student_captions(session, ids))
+    valid.update(
+        await drive_file_ids_with_extra_named_people(
+            session,
+            ids,
             person_names=person_names,
         )
     )
@@ -830,6 +929,27 @@ async def filter_files_by_role_context(
             [item.drive_file_id for item in files],
             person_names=person_names,
             role_ctx=role_ctx,
+        )
+    )
+    return [item for item in files if item.drive_file_id in valid]
+
+
+async def filter_files_by_student_evidence(
+    session: AsyncSession,
+    files: list[SearchResultFile],
+    *,
+    person_names: list[str],
+    role_ctx: SearchRoleContext,
+) -> list[SearchResultFile]:
+    """Keep person-tagged files that also have student face, caption, ID-card group, or extra names."""
+    if not person_student_funnel_active(person_names, role_ctx) or not files:
+        return files
+    valid = set(
+        await resolve_role_matching_file_ids(
+            session,
+            [item.drive_file_id for item in files],
+            person_names=person_names,
+            role_ctx=student_evidence_role_ctx(role_ctx),
         )
     )
     return [item for item in files if item.drive_file_id in valid]

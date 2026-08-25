@@ -13,6 +13,7 @@ from app.db.models import DriveFile, Face, FaceCluster, FaceEmbedding, Media, Pe
 from app.faces.engine import get_face_engine
 from app.pipelines.async_cpu import run_cpu_bound
 from app.reid.reverse_search import linkedin_map
+from app.reid.face_thumbs import resolve_face_thumbnail_id
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +68,35 @@ async def _appears_in_for_face(
         }
         for media_id, drive_id, name, path, media_type, frame_timestamp in rows
     ]
+
+
+async def _file_count_for_face(
+    session: AsyncSession,
+    *,
+    person_id: int | None,
+    cluster_id: int | None,
+) -> int:
+    """Unique Drive files linked to this person (all merged clusters) or one cluster."""
+    if person_id is not None:
+        face_filter = Face.person_id == person_id
+    elif cluster_id is not None:
+        face_filter = Face.cluster_id == cluster_id
+    else:
+        return 0
+
+    stmt = (
+        select(func.count(func.distinct(Media.drive_file_id)))
+        .select_from(Face)
+        .join(Media, Face.media_id == Media.id)
+        .where(face_filter)
+        .where(Media.drive_file_id.is_not(None))
+    )
+    return int((await session.execute(stmt)).scalar_one() or 0)
+
+
+async def _face_count_for_person(session: AsyncSession, person_id: int) -> int:
+    stmt = select(func.count()).select_from(Face).where(Face.person_id == person_id)
+    return int((await session.execute(stmt)).scalar_one() or 0)
 
 
 async def _clusters_for_person(
@@ -157,15 +187,18 @@ async def search_faces_by_image_bytes(
         name = person_name or "Unknown"
         pid = int(person_id) if person_id is not None else None
         cid = int(cluster_id) if cluster_id is not None else None
-        appears_in = await _appears_in_for_face(session, person_id=pid, cluster_id=cid)
+        file_count = await _file_count_for_face(session, person_id=pid, cluster_id=cid)
+        appears_limit = min(max(file_count, 1), 500)
+        appears_in = await _appears_in_for_face(
+            session, person_id=pid, cluster_id=cid, limit=appears_limit
+        )
         person_clusters = await _clusters_for_person(session, pid) if pid is not None else []
 
-        # If face lost cluster_id after naming, surface the person's top cluster
+        # If face lost cluster_id after naming, surface the person's top cluster for UI links
         if cid is None and person_clusters:
             top = person_clusters[0]
             cid = int(top["cluster_id"])  # type: ignore[arg-type]
             cluster_status_val = top["cluster_status"]
-            member_count = top["cluster_member_count"]
         else:
             cluster_status_val = (
                 cluster_status.value
@@ -173,9 +206,19 @@ async def search_faces_by_image_bytes(
                 else None
             )
 
+        # Named/merged person: face badge = all faces for that person, not one cluster.
+        if pid is not None:
+            display_member_count = await _face_count_for_person(session, pid)
+        else:
+            display_member_count = int(member_count) if member_count is not None else None
+
+        thumb_face_id, thumb_source = await resolve_face_thumbnail_id(session, int(face_id))
+
         matches.append(
             {
                 "face_id": int(face_id),
+                "thumb_face_id": thumb_face_id,
+                "thumb_source": thumb_source,
                 "person_id": pid,
                 "person_name": name,
                 "score": round(score, 4),
@@ -183,7 +226,8 @@ async def search_faces_by_image_bytes(
                 "linkedin_url": li_map.get(name) if person_name else None,
                 "cluster_id": cid,
                 "cluster_status": cluster_status_val,
-                "cluster_member_count": int(member_count) if member_count is not None else None,
+                "cluster_member_count": display_member_count,
+                "file_count": file_count,
                 "appears_in": appears_in,
                 "person_clusters": person_clusters,
             }

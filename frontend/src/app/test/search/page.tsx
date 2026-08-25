@@ -18,7 +18,7 @@ export default function TestSearchPage() {
         </p>
       </div>
 
-      {/* Results only — no empty card chrome when the header search bar is used. */}
+      {/* Results only — header search bar is shown on this tab. */}
       <SearchPage embedded hideSearchBar />
 
       <section id="reverse-face" className="rounded-2xl border border-border bg-card p-4 shadow-sm md:p-5">

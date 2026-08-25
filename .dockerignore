@@ -1,0 +1,22 @@
+# Keep Docker build contexts lean; never ship local bench data.
+.git
+.gitattributes
+.gitignore
+node_modules
+frontend
+carousel-frontend
+docs
+scripts
+data
+*.sparsebundle
+.tmp-*
+.tmp-*/
+face-ab-benchmark
+backend/data
+backend/tests
+backend/.venv
+backend/.pytest_cache
+backend/.ruff_cache
+**/.DS_Store
+**/*.md
+!backend/README.md
