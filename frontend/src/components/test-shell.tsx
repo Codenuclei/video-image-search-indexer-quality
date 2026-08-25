@@ -37,6 +37,7 @@ import {
   setReverseFaceFile,
   useReverseFaceSession,
 } from "@/lib/reverse-face-session";
+import { useTestShellChrome } from "@/lib/test-shell-chrome";
 
 const libraryLinks = [
   { href: "/test/folders", label: "Indexed Folders", icon: FolderOpen },
@@ -96,6 +97,7 @@ export function TestShell({ children }: { children: React.ReactNode }) {
   const [confirmAction, setConfirmAction] = useState<"signout" | "drive" | null>(null);
   const uploadRef = useRef<HTMLInputElement>(null);
   const { file: reverseFaceFile, result: reverseFaceResult } = useReverseFaceSession();
+  const pageChrome = useTestShellChrome();
   const accountRef = useRef<HTMLDivElement>(null);
 
   const driveEmail = driveSession?.email?.trim() || null;
@@ -234,11 +236,11 @@ export function TestShell({ children }: { children: React.ReactNode }) {
           className={cn(
             "sticky top-0 z-20 flex min-h-[3.25rem] items-center gap-3 px-4 md:px-6",
             compactHeader
-              ? "justify-end border-0 bg-transparent py-2"
+              ? "justify-between border-b border-border bg-card py-2.5"
               : "border-b border-border bg-card py-3"
           )}
         >
-          {searchActive && (
+          {searchActive ? (
             <form onSubmit={submitHeaderSearch} className="min-w-0 flex-1">
               <div className="flex h-11 items-center gap-1 rounded-full border border-border bg-muted/60 pl-3.5 pr-1.5 transition-colors focus-within:border-ring">
                 <Search size={16} className="shrink-0 text-muted-foreground" />
@@ -348,7 +350,10 @@ export function TestShell({ children }: { children: React.ReactNode }) {
                 </button>
               </div>
             </form>
+          ) : (
+            <div className="min-w-0 flex-1">{pageChrome}</div>
           )}
+          <div className="flex shrink-0 items-center gap-2">
           <ThemeToggle />
           <div ref={accountRef} className="relative">
             <button
@@ -414,6 +419,7 @@ export function TestShell({ children }: { children: React.ReactNode }) {
                 </button>
               </div>
             )}
+          </div>
           </div>
         </header>
 

@@ -200,15 +200,7 @@ async def name_cluster_endpoint(
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-    count_stmt = select(func.count()).select_from(Face).where(Face.person_id == person.id)
-    occurrence_count = (await session.execute(count_stmt)).scalar_one()
-    return PersonOut(
-        id=person.id,
-        name=person.name,
-        representative_face_id=person.representative_face_id,
-        occurrence_count=occurrence_count,
-        created_at=person.created_at,
-    )
+    return await _serialize_person(session, person)
 
 
 @router.post("/{cluster_id}/ignore", status_code=204)

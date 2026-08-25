@@ -17,28 +17,66 @@ async def _occurrence_count(session: AsyncSession, person_id: int) -> int:
     return (await session.execute(stmt)).scalar_one()
 
 
+async def _file_count(session: AsyncSession, person_id: int) -> int:
+    """Unique Drive files linked to this person's faces."""
+    stmt = (
+        select(func.count(func.distinct(Media.drive_file_id)))
+        .select_from(Face)
+        .join(Media, Face.media_id == Media.id)
+        .where(Face.person_id == person_id)
+        .where(Media.drive_file_id.is_not(None))
+    )
+    return int((await session.execute(stmt)).scalar_one() or 0)
+
+
 async def _best_face_id(session: AsyncSession, person: Person) -> int | None:
-    """Return the representative face ID, auto-picking the best available if not set."""
+    """Return the representative face ID, preferring one with a valid on-disk thumbnail."""
+    from app.reid.face_thumbs import ensure_face_thumbnail_jpeg, thumb_exists_on_disk
+
     if person.representative_face_id is not None:
-        return person.representative_face_id
-    face = (
+        rep = await session.get(Face, person.representative_face_id)
+        if rep is not None:
+            if thumb_exists_on_disk(rep):
+                return rep.id
+            try:
+                await ensure_face_thumbnail_jpeg(session, rep.id, allow_fallback=True)
+                return rep.id
+            except ValueError:
+                pass
+
+    faces = (
         await session.execute(
             select(Face)
-            .where(Face.person_id == person.id, Face.thumbnail_path.isnot(None))
+            .where(Face.person_id == person.id)
             .order_by(Face.detection_confidence.desc())
-            .limit(1)
+            .limit(10)
         )
-    ).scalar_one_or_none()
-    return face.id if face else None
+    ).scalars().all()
+    for face in faces:
+        if thumb_exists_on_disk(face):
+            return face.id
+        try:
+            await ensure_face_thumbnail_jpeg(session, face.id, allow_fallback=True)
+            return face.id
+        except ValueError:
+            continue
+    return None
 
 
-def _person_out(session: AsyncSession, person: Person, occurrence_count: int, face_id: int | None) -> PersonOut:
+def _person_out(
+    session: AsyncSession,
+    person: Person,
+    occurrence_count: int,
+    face_id: int | None,
+    file_count: int = 0,
+) -> PersonOut:
     return PersonOut(
         id=person.id,
         name=person.name,
         role=person.role,
         representative_face_id=face_id,
         occurrence_count=occurrence_count,
+        file_count=file_count,
         created_at=person.created_at,
     )
 
@@ -49,12 +87,15 @@ async def _serialize_person(session: AsyncSession, person: Person) -> PersonOut:
         person,
         await _occurrence_count(session, person.id),
         await _best_face_id(session, person),
+        await _file_count(session, person.id),
     )
 
 
 @router.get("/revision")
 async def persons_revision(session: AsyncSession = Depends(get_db)) -> dict[str, object]:
     """Lightweight freshness token for client cache (no full person payloads)."""
+    from app.reid.face_thumbs import count_persons_with_valid_rep_thumb
+
     count = (await session.execute(select(func.count()).select_from(Person))).scalar_one()
     max_id = (await session.execute(select(func.max(Person.id)))).scalar_one()
     occ_sum = (
@@ -62,7 +103,8 @@ async def persons_revision(session: AsyncSession = Depends(get_db)) -> dict[str,
             select(func.count()).select_from(Face).where(Face.person_id.isnot(None))
         )
     ).scalar_one()
-    revision = f"{int(count or 0)}:{int(max_id or 0)}:{int(occ_sum or 0)}"
+    valid_reps = await count_persons_with_valid_rep_thumb(session)
+    revision = f"{int(count or 0)}:{int(max_id or 0)}:{int(occ_sum or 0)}:{int(valid_reps or 0)}"
     return {"revision": revision, "count": int(count or 0)}
 
 

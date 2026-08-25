@@ -13,6 +13,7 @@ from app.db.models import DriveFile, Face, FaceCluster, FaceEmbedding, Media, Pe
 from app.faces.engine import get_face_engine
 from app.pipelines.async_cpu import run_cpu_bound
 from app.reid.reverse_search import linkedin_map
+from app.reid.face_thumbs import resolve_face_thumbnail_id
 
 logger = logging.getLogger(__name__)
 
@@ -186,8 +187,11 @@ async def search_faces_by_image_bytes(
         name = person_name or "Unknown"
         pid = int(person_id) if person_id is not None else None
         cid = int(cluster_id) if cluster_id is not None else None
-        appears_in = await _appears_in_for_face(session, person_id=pid, cluster_id=cid)
         file_count = await _file_count_for_face(session, person_id=pid, cluster_id=cid)
+        appears_limit = min(max(file_count, 1), 500)
+        appears_in = await _appears_in_for_face(
+            session, person_id=pid, cluster_id=cid, limit=appears_limit
+        )
         person_clusters = await _clusters_for_person(session, pid) if pid is not None else []
 
         # If face lost cluster_id after naming, surface the person's top cluster for UI links
@@ -208,9 +212,13 @@ async def search_faces_by_image_bytes(
         else:
             display_member_count = int(member_count) if member_count is not None else None
 
+        thumb_face_id, thumb_source = await resolve_face_thumbnail_id(session, int(face_id))
+
         matches.append(
             {
                 "face_id": int(face_id),
+                "thumb_face_id": thumb_face_id,
+                "thumb_source": thumb_source,
                 "person_id": pid,
                 "person_name": name,
                 "score": round(score, 4),

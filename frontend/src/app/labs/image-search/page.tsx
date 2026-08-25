@@ -270,7 +270,7 @@ export default function OfficialImageSearchLabPage() {
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-sm font-medium">{person.name}</span>
                     <span className="block text-[11px] text-muted-foreground">
-                      {person.occurrence_count} appearances
+                      {person.file_count ?? person.occurrence_count} files
                       {person.representative_face_id ? ` · face ${person.representative_face_id}` : " · no face"}
                     </span>
                   </span>

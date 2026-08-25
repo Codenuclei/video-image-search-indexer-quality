@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import os
-
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 from sqlalchemy import select
@@ -142,7 +140,11 @@ async def tag_face_endpoint(
 
 @router.get("/{face_id}/thumbnail")
 async def get_face_thumbnail(face_id: int, session: AsyncSession = Depends(get_db)) -> FileResponse:
-    face = await session.get(Face, face_id)
-    if face is None or not face.thumbnail_path or not os.path.exists(face.thumbnail_path):
-        raise HTTPException(status_code=404, detail="Thumbnail not found")
-    return FileResponse(face.thumbnail_path, media_type="image/jpeg")
+    from app.reid.face_thumbs import ensure_face_thumbnail_jpeg
+
+    try:
+        path, _face, _source = await ensure_face_thumbnail_jpeg(session, face_id)
+        await session.commit()
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Thumbnail not found") from None
+    return FileResponse(str(path), media_type="image/jpeg")

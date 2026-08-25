@@ -85,13 +85,17 @@ function MatchRow({ match }: { match: FaceSearchMatch }) {
   const personBase = pathname.startsWith("/test") ? "/test/people" : "/people";
   return (
     <div className="flex items-center gap-3 rounded-lg bg-muted/30 p-2.5">
-      <FaceThumb faceId={match.face_id} className="h-12 w-12 shrink-0 rounded-md" />
+      <FaceThumb faceId={match.thumb_face_id ?? match.face_id} className="h-12 w-12 shrink-0 rounded-md" />
       <div className="min-w-0 flex-1">
         <p className="text-sm font-medium leading-snug text-foreground">{match.person_name}</p>
         <p className="text-[11px] text-muted-foreground">
           {Math.round(match.score * 100)}%
           {match.cluster_id != null ? ` · cluster #${match.cluster_id}` : ""}
-          {match.person_id != null ? ` · person #${match.person_id}` : ""}
+          {(match.file_count ?? match.appears_in?.length ?? 0) > 0
+            ? ` · ${match.file_count ?? match.appears_in?.length} file${
+                (match.file_count ?? match.appears_in?.length ?? 0) === 1 ? "" : "s"
+              }`
+            : ""}
         </p>
         {match.linkedin_url && (
           <a
