@@ -24,10 +24,10 @@ import {
   type LibraryFolder,
   type LibraryResponse,
 } from "@/lib/api";
-import { Button, Card, DownloadButton, IconLink, Input, LoadingLabel, Spinner, StatCard } from "@/components/ui";
+import { Button, Card, DownloadButton, IconLink, Input, LoadingLabel, Spinner } from "@/components/ui";
 import { ManualFaceTagger } from "@/components/manual-face-tagger";
-import { LiveIndexingLanes, isLiveIndexingActive } from "@/components/live-indexing-lanes";
-import { humanizeIndexError } from "@/lib/index-errors";
+import { isLiveIndexingActive } from "@/components/live-indexing-lanes";
+import { formatCount, humanizeIndexError } from "@/lib/index-errors";
 import { cn } from "@/lib/utils";
 import { readCache, writeCache, hydrateKeyFromDisk } from "@/lib/data-cache";
 import { useIndexStatusStore } from "@/lib/index-status-store";
@@ -531,55 +531,100 @@ export default function LibraryPage() {
         </div>
       </div>
 
-      {backfillActive && (
-        <Card className="border-primary/30 bg-primary/5">
-          <div className="flex items-center gap-2 text-sm text-primary">
-            <LoadingLabel size={16} className="text-primary">
-              Auto backfill running
-              {maintenance?.caption_backfill_running && " · captions"}
-              {maintenance?.embed_backfill_running && " · embeddings"}
-              {" — resumes automatically after deploys"}
-            </LoadingLabel>
-          </div>
-        </Card>
-      )}
-
-      {isLiveIndexingActive(indexStatus) && indexStatus && (
-        <Card>
-          <h3 className="mb-2 text-sm font-medium">Live indexing</h3>
-          <LiveIndexingLanes status={indexStatus} lanesOnly showHeader={false} />
-        </Card>
-      )}
-
-      {summary && (
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-          <StatCard label="Total files" value={summary.total_files} />
-          <StatCard label="Images" value={summary.images} hint={`${summary.videos} videos`} />
-          {captionStatsReady ? (
-            <>
-              <StatCard
-                label="Captioned"
-                value={`${summary.captioned}/${summary.images}`}
-                hint={`${summary.caption_pct}% complete`}
-              />
-              <StatCard label="Embedded" value={`${summary.embedded}/${summary.images}`} />
-            </>
-          ) : (
-            <>
-              <StatCard label="Pending" value={summary.pending} hint="Open a folder for file names" />
-              <StatCard label="Errors" value={summary.errors} />
-            </>
+      {(summary || backfillActive || isLiveIndexingActive(indexStatus)) && (
+        <Card className="space-y-2 p-3">
+          {summary && (
+            <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 text-xs">
+              <span>
+                <span className="text-muted-foreground">Files </span>
+                <span className="font-semibold tabular-nums text-foreground">
+                  {formatCount(summary.total_files)}
+                </span>
+              </span>
+              <span>
+                <span className="text-muted-foreground">Images </span>
+                <span className="font-semibold tabular-nums text-foreground">
+                  {formatCount(summary.images)}
+                </span>
+                <span className="text-muted-foreground"> · {formatCount(summary.videos)} videos</span>
+              </span>
+              {captionStatsReady ? (
+                <>
+                  <span>
+                    <span className="text-muted-foreground">Captioned </span>
+                    <span className="font-semibold tabular-nums text-foreground">
+                      {formatCount(summary.captioned)}/{formatCount(summary.images)}
+                    </span>
+                    <span className="text-muted-foreground"> · {summary.caption_pct}%</span>
+                  </span>
+                  <span>
+                    <span className="text-muted-foreground">Embedded </span>
+                    <span className="font-semibold tabular-nums text-foreground">
+                      {formatCount(summary.embedded)}/{formatCount(summary.images)}
+                    </span>
+                  </span>
+                </>
+              ) : (
+                <>
+                  <span>
+                    <span className="text-muted-foreground">Pending </span>
+                    <span className="font-semibold tabular-nums text-foreground">
+                      {formatCount(summary.pending)}
+                    </span>
+                  </span>
+                  <span>
+                    <span className="text-muted-foreground">Errors </span>
+                    <span className="font-semibold tabular-nums text-foreground">
+                      {formatCount(summary.errors)}
+                    </span>
+                  </span>
+                </>
+              )}
+              <span>
+                <span className="text-muted-foreground">Failed </span>
+                <span className="font-semibold tabular-nums text-foreground">
+                  {formatCount(
+                    selectedFolderPath !== "/"
+                      ? folderFiles.filter((f) => isFailedLibraryFile(f)).length
+                      : summary.errors
+                  )}
+                </span>
+              </span>
+            </div>
           )}
-          <StatCard
-            label="Failed"
-            value={
-              selectedFolderPath !== "/"
-                ? folderFiles.filter((f) => isFailedLibraryFile(f)).length
-                : summary.errors
-            }
-            hint="Corrupt + failed to decode (merged)"
-          />
-        </div>
+          {(backfillActive || isLiveIndexingActive(indexStatus)) && (
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-border/60 pt-2 text-[11px] text-muted-foreground">
+              {backfillActive && (
+                <LoadingLabel size={12} className="text-primary">
+                  Backfill
+                  {maintenance?.caption_backfill_running ? " · captions" : ""}
+                  {maintenance?.embed_backfill_running ? " · embeds" : ""}
+                </LoadingLabel>
+              )}
+              {isLiveIndexingActive(indexStatus) && indexStatus && (
+                <span className="min-w-0 truncate tabular-nums">
+                  <span className="font-medium text-foreground">Live </span>
+                  Img {(indexStatus.image_slots?.active ?? indexStatus.active_image_jobs ?? 0)}/
+                  {(indexStatus.image_slots?.max ?? "—")}
+                  {" · "}
+                  Vid {(indexStatus.video_slots?.active ?? indexStatus.active_video_jobs ?? 0)}/
+                  {(indexStatus.video_slots?.max ?? "—")}
+                  {(indexStatus.current_image_files?.[0] || indexStatus.current_video_files?.[0]) && (
+                    <>
+                      {" · "}
+                      <span title={[...(indexStatus.current_image_files ?? []), ...(indexStatus.current_video_files ?? [])].join(" · ")}>
+                        {(indexStatus.current_image_files?.[0] || indexStatus.current_video_files?.[0] || "").slice(0, 28)}
+                        {(indexStatus.current_image_files?.[0] || indexStatus.current_video_files?.[0] || "").length > 28
+                          ? "…"
+                          : ""}
+                      </span>
+                    </>
+                  )}
+                </span>
+              )}
+            </div>
+          )}
+        </Card>
       )}
 
       <div className="flex min-h-[520px] max-h-[min(720px,calc(100vh-12rem))] flex-col overflow-hidden rounded-lg border border-border lg:flex-row">

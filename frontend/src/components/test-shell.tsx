@@ -351,7 +351,7 @@ export function TestShell({ children }: { children: React.ReactNode }) {
               </div>
             </form>
           ) : (
-            <div className="min-w-0 flex-1">{pageChrome}</div>
+            <div className="min-w-0 flex-1 overflow-hidden">{pageChrome}</div>
           )}
           <div className="flex shrink-0 items-center gap-2">
           <ThemeToggle />
@@ -460,7 +460,7 @@ export function TestShell({ children }: { children: React.ReactNode }) {
 
         <main
           className={cn(
-            "scrollbar-hidden min-h-0 flex-1 overflow-y-auto px-4 md:px-8",
+            "scrollbar-hidden min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-4 md:px-8",
             compactHeader ? "pb-6 pt-2" : "py-6"
           )}
         >

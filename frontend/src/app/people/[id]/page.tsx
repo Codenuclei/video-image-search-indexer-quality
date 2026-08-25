@@ -189,7 +189,7 @@ export default function PersonDetailPage() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="min-w-0 max-w-full space-y-6 overflow-x-hidden">
       {!inTestShell && (
         <button
           type="button"
@@ -201,8 +201,8 @@ export default function PersonDetailPage() {
         </button>
       )}
 
-      <div className="flex flex-col items-start gap-4 sm:flex-row sm:items-center">
-        <FaceThumb faceId={person.representative_face_id} className="h-24 w-24" />
+      <div className="flex min-w-0 flex-col items-start gap-4 sm:flex-row sm:items-center">
+        <FaceThumb faceId={person.representative_face_id} className="h-24 w-24 shrink-0" />
         <div className="min-w-0 flex-1">
           {editing ? (
             <div className="max-w-md space-y-2">
@@ -230,17 +230,17 @@ export default function PersonDetailPage() {
               </div>
             </div>
           ) : inTestShell ? (
-            <div className="space-y-2">
+            <div className="max-w-sm space-y-2">
               <p className="text-xs text-muted-foreground">Role tag (used for student / teacher search)</p>
               <RoleSelector role={person.role ?? null} disabled={roleSaving} onChange={saveRole} />
               {error && <p className="text-sm text-destructive">{error}</p>}
             </div>
           ) : (
-            <div className="flex items-start gap-2">
-              <div>
-                <h2 className="text-xl font-semibold sm:text-2xl">{person.name}</h2>
+            <div className="flex min-w-0 items-start gap-2">
+              <div className="min-w-0 flex-1">
+                <h2 className="truncate text-xl font-semibold sm:text-2xl">{person.name}</h2>
                 <p className="text-sm text-muted-foreground">{mediaSummary}</p>
-                <div className="mt-3 space-y-2">
+                <div className="mt-3 max-w-sm space-y-2">
                   <p className="text-xs text-muted-foreground">Role tag (used for student / teacher search)</p>
                   <RoleSelector role={person.role ?? null} disabled={roleSaving} onChange={saveRole} />
                 </div>
@@ -272,18 +272,18 @@ export default function PersonDetailPage() {
         </div>
       </div>
 
-      <Card>
+      <Card className="min-w-0 overflow-hidden">
         <div className="mb-3">
           <h3 className="font-medium">Appears in</h3>
         </div>
         {media.length === 0 ? (
           <p className="text-sm text-muted-foreground">No media linked yet.</p>
         ) : (
-          <ul className="grid grid-cols-4 gap-2 sm:grid-cols-6 md:grid-cols-8 lg:grid-cols-10">
+          <ul className="grid grid-cols-[repeat(auto-fill,minmax(4.5rem,1fr))] gap-2">
             {media.map((m) => {
               const isVideo = (m.media_type || "").toLowerCase() === "video";
               return (
-                <li key={m.media_id}>
+                <li key={m.media_id} className="min-w-0">
                   <a
                     href={driveGoogleViewUrl(m.drive_file_id)}
                     target="_blank"
@@ -305,7 +305,7 @@ export default function PersonDetailPage() {
                         alt={m.name}
                         loading="lazy"
                         decoding="async"
-                        className="h-full w-full object-cover"
+                        className="h-full w-full max-w-full object-cover"
                       />
                     )}
                   </a>
