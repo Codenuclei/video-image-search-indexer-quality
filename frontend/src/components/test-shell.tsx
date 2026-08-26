@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import {
+  CircleHelp,
   FileText,
   FolderOpen,
   HardDrive,
@@ -214,6 +215,18 @@ export function TestShell({ children }: { children: React.ReactNode }) {
         </nav>
 
         <div className="space-y-1 border-t border-sidebar-border p-2">
+          <Link
+            href="/test/help"
+            className={cn(
+              "flex items-center gap-2 rounded-xl px-2.5 py-2 text-sm transition-colors",
+              pathname.startsWith("/test/help")
+                ? "bg-card text-blue-700 shadow-sm dark:text-blue-300"
+                : "text-sidebar-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+            )}
+          >
+            <CircleHelp size={16} />
+            How to / FAQ
+          </Link>
           <Link
             href="/settings"
             className="flex items-center gap-2 rounded-xl px-2.5 py-2 text-sm text-sidebar-foreground/80 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"

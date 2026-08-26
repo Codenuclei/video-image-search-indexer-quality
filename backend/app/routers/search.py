@@ -265,6 +265,10 @@ async def search(
         and not role_context_active(role_ctx)
         and not role_ctx.student_context
     )
+    # Pure person-name lookup: face tags are ground truth; captions/LLM only shrink the roster.
+    # Keep captions when leftover action text remains (e.g. "Pratham Mittal cooking").
+    if person_focused and not person_action:
+        use_captions = False
     primary_person = effective_persons[0] if len(effective_persons) == 1 else None
 
     # Look up folder context description for re-ranker and scoping

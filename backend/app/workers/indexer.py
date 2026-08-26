@@ -1677,22 +1677,21 @@ class IndexingWorker:
 
     async def sync_file_list(self, *, cache_source: str = "manual") -> int:
         async with self._sync_file_list_lock:
-            from app.db.session import get_engine
+            from app.db.advisory_locks import try_acquire_advisory_lock
 
-            # Hold one connection for the advisory lock for the whole sync (session-scoped).
-            async with get_engine().connect() as lock_conn:
-                got = (
-                    await lock_conn.execute(text("SELECT pg_try_advisory_lock(87231455)"))
-                ).scalar()
-                if not got:
-                    logger.warning(
-                        "sync_file_list skipped — another sync holds pg_advisory_lock(87231455)"
-                    )
-                    return 0
-                try:
-                    return await self._sync_file_list_body(cache_source=cache_source)
-                finally:
-                    await lock_conn.execute(text("SELECT pg_advisory_unlock(87231455)"))
+            # Session-level advisory lock; try_acquire commits so the connection is
+            # idle (not idle-in-transaction) while Drive listing runs for minutes.
+            # Legacy key 87231455 — keep stable across deploys.
+            lock = await try_acquire_advisory_lock(87231455, name="sync_file_list")
+            if lock is None:
+                logger.warning(
+                    "sync_file_list skipped — another sync holds pg_advisory_lock(87231455)"
+                )
+                return 0
+            try:
+                return await self._sync_file_list_body(cache_source=cache_source)
+            finally:
+                await lock.release()
 
     async def _sync_file_list_body(self, *, cache_source: str = "manual") -> int:
         async with self._session_factory() as migrate_session:

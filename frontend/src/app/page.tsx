@@ -1,15 +1,15 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Bar, BarChart, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import {
   apiClient,
   type FileIndexConflict,
-  type IndexedFolder,
   type SkipStats,
 } from "@/lib/api";
 import { formatCount, skipReasonMeta } from "@/lib/index-errors";
-import { Button, Card, LoadingLabel, StatCard } from "@/components/ui";
+import { Button, Card, LoadingLabel } from "@/components/ui";
 import { useIndexStatusStore } from "@/lib/index-status-store";
 
 const STATUS_ORDER = ["processed", "pending", "processing", "error", "skipped", "archived"] as const;
@@ -55,20 +55,17 @@ function conflictKindLabel(kind: string): string {
 export default function DashboardPage() {
   const { status: indexStatus } = useIndexStatusStore();
   const [skipStats, setSkipStats] = useState<SkipStats | null>(null);
-  const [folders, setFolders] = useState<IndexedFolder[]>([]);
   const [conflicts, setConflicts] = useState<FileIndexConflict[]>([]);
   const [retryingReason, setRetryingReason] = useState<string | null>(null);
   const [resolvingId, setResolvingId] = useState<number | null>(null);
 
   const loadSecondary = useCallback(async () => {
     try {
-      const [skips, folderRes, conflictRes] = await Promise.all([
+      const [skips, conflictRes] = await Promise.all([
         apiClient.skipStats().catch(() => null),
-        apiClient.indexedFolders().catch(() => ({ folders: [], total: 0 })),
         apiClient.indexConflicts("pending").catch(() => ({ items: [], total: 0, offset: 0, limit: 50 })),
       ]);
       setSkipStats(skips);
-      setFolders(folderRes.folders ?? []);
       setConflicts(conflictRes.items ?? []);
     } catch {
       /* secondary — ignore */
@@ -126,18 +123,14 @@ export default function DashboardPage() {
   );
   const maxSkipCount = Math.max(1, ...topSkipReasons.map((r) => r.count));
 
-  const processed = indexStatus?.counts_by_status?.processed ?? 0;
-  const pending = indexStatus?.counts_by_status?.pending ?? 0;
-  const errors = indexStatus?.counts_by_status?.error ?? 0;
-  const skipped = indexStatus?.counts_by_status?.skipped ?? skipStats?.total_skipped ?? 0;
+  const indexerHint = indexStatus?.last_run
+    ? `Last: ${indexStatus.last_run.processed} processed, ${indexStatus.last_run.errored} errors`
+    : null;
 
   return (
     <div className="space-y-6">
       <div>
         <h2 className="text-2xl font-semibold">Dashboard</h2>
-        <p className="text-sm text-muted-foreground">
-          Gemini Embedding 2 video search · Gemini image search · InsightFace detection
-        </p>
       </div>
 
       {!indexStatus && (
@@ -146,32 +139,36 @@ export default function DashboardPage() {
         </p>
       )}
 
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
-        <StatCard label="Indexed" value={processed} />
-        <StatCard label="Pending" value={pending} />
-        <StatCard label="Errors" value={errors} />
-        <StatCard label="Skipped" value={skipped} />
-        <StatCard
-          label="Indexer"
-          value={
-            !indexStatus ? (
-              "…"
-            ) : indexStatus.is_running ? (
-              <LoadingLabel size={18}>Running</LoadingLabel>
-            ) : (
-              "Idle"
-            )
-          }
-          hint={
-            indexStatus?.last_run
-              ? `Last: ${indexStatus.last_run.processed} processed, ${indexStatus.last_run.errored} errors`
-              : undefined
-          }
-        />
-      </div>
-
       <Card>
-        <h3 className="mb-3 font-medium">Drive file status</h3>
+        <div className="mb-3 flex flex-wrap items-end justify-between gap-2">
+          <div>
+            <h3 className="font-medium">Drive file status</h3>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              Counts live on{" "}
+              <Link href="/admin" className="font-medium text-foreground underline-offset-2 hover:underline">
+                Admin
+              </Link>
+              {" · "}
+              folders on{" "}
+              <Link href="/folders" className="font-medium text-foreground underline-offset-2 hover:underline">
+                Folders
+              </Link>
+            </p>
+          </div>
+          {indexStatus && (
+            <p className="text-xs text-muted-foreground">
+              Indexer:{" "}
+              <span className="font-medium text-foreground">
+                {indexStatus.is_running ? (
+                  <LoadingLabel size={12}>Running</LoadingLabel>
+                ) : (
+                  "Idle"
+                )}
+              </span>
+              {indexerHint ? ` · ${indexerHint}` : null}
+            </p>
+          )}
+        </div>
         {!indexStatus ? (
           <p className="text-sm text-muted-foreground">
             <LoadingLabel size={14}>Loading chart…</LoadingLabel>
@@ -296,53 +293,6 @@ export default function DashboardPage() {
                 </li>
               );
             })}
-          </ul>
-        )}
-      </Card>
-
-      <Card>
-        <div className="mb-3">
-          <h3 className="font-medium">Indexed folders</h3>
-          <p className="text-xs text-muted-foreground">
-            Historical Drive folders with persistent links (kept after disconnect)
-          </p>
-        </div>
-        {folders.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No folders indexed yet. Choose one on Folders.</p>
-        ) : (
-          <ul className="divide-y divide-border/50 overflow-hidden rounded-lg border border-border/60">
-            {folders.map((f) => (
-              <li
-                key={f.id}
-                className="flex flex-wrap items-center justify-between gap-2 px-3 py-2.5 hover:bg-muted/20"
-              >
-                <div className="min-w-0">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <p className="truncate text-sm font-medium">{f.name}</p>
-                    {f.is_active && (
-                      <span className="rounded-md bg-emerald-500/15 px-1.5 py-0.5 text-[11px] font-medium text-emerald-700 dark:text-emerald-400">
-                        Active
-                      </span>
-                    )}
-                  </div>
-                  <p className="mt-0.5 text-xs text-muted-foreground">
-                    {f.last_file_count != null ? `${formatCount(f.last_file_count)} files · ` : ""}
-                    {f.drive_user_email ? `${f.drive_user_email} · ` : ""}
-                    {f.last_indexed_at
-                      ? `last synced ${new Date(f.last_indexed_at).toLocaleString()}`
-                      : null}
-                  </p>
-                </div>
-                <a
-                  href={f.drive_url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="shrink-0 text-xs font-medium text-blue-600 underline-offset-2 hover:underline dark:text-blue-400"
-                >
-                  Open in Drive
-                </a>
-              </li>
-            ))}
           </ul>
         )}
       </Card>

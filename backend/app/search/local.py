@@ -416,12 +416,26 @@ def normalize_visual_query(query: str) -> str:
     return q
 
 
+def normalize_person_key(s: str) -> str:
+    """Collapse whitespace and casefold for person-name equality checks."""
+    return re.sub(r"\s+", " ", (s or "").strip()).casefold()
+
+
+def _person_name_regex(name: str) -> str:
+    """Whole-name pattern with flexible internal whitespace (case handled by flags)."""
+    parts = [p for p in name.split() if p]
+    if not parts:
+        return rf"\b{re.escape(name)}\b"
+    return r"\b" + r"\s+".join(re.escape(p) for p in parts) + r"\b"
+
+
 def find_person_names_in_query(query: str, known_names: list[str]) -> list[str]:
     matches: list[str] = []
     matched_starts: set[int] = set()
 
     for name in sorted(known_names, key=len, reverse=True):
-        for hit in re.finditer(rf"\b{re.escape(name)}\b", query, flags=re.IGNORECASE):
+        pattern = _person_name_regex(name)
+        for hit in re.finditer(pattern, query, flags=re.IGNORECASE):
             if hit.start() in matched_starts:
                 continue
             matches.append(name)
@@ -430,13 +444,16 @@ def find_person_names_in_query(query: str, known_names: list[str]) -> list[str]:
 
     first_to_names: dict[str, list[str]] = {}
     for name in known_names:
-        first = name.split()[0].lower()
+        parts = name.split()
+        if not parts:
+            continue
+        first = parts[0].casefold()
         first_to_names.setdefault(first, []).append(name)
 
     for hit in re.finditer(r"\b(\w+)\b", query):
         if hit.start() in matched_starts:
             continue
-        token = hit.group(1).lower()
+        token = hit.group(1).casefold()
         candidates = first_to_names.get(token, [])
         if len(candidates) != 1:
             continue
@@ -452,9 +469,10 @@ def find_person_names_in_query(query: str, known_names: list[str]) -> list[str]:
 def strip_person_names(query: str, names: list[str]) -> str:
     result = query
     for name in names:
-        result = re.sub(rf"\b{re.escape(name)}\b", "", result, flags=re.IGNORECASE)
-        first = name.split()[0]
-        if first.lower() != name.lower():
+        result = re.sub(_person_name_regex(name), "", result, flags=re.IGNORECASE)
+        parts = name.split()
+        first = parts[0] if parts else ""
+        if first and normalize_person_key(first) != normalize_person_key(name):
             result = re.sub(rf"\b{re.escape(first)}\b", "", result, flags=re.IGNORECASE)
     return normalize_visual_query(result)
 
@@ -684,8 +702,9 @@ async def resolve_search_context(
     known = await known_person_names(session)
     if person_param and person_param.strip():
         person = person_param.strip()
+        param_key = normalize_person_key(person)
         for known_name in known:
-            if known_name.lower() == person.lower():
+            if normalize_person_key(known_name) == param_key:
                 person = known_name
                 break
         visual = strip_person_names(cleaned_query, [person])
@@ -695,7 +714,11 @@ async def resolve_search_context(
     if not matched:
         return [], cleaned_query or query, role_ctx
 
-    if len(matched) == 1 and is_scene_query(query) and query.strip().lower() == matched[0].lower():
+    if (
+        len(matched) == 1
+        and is_scene_query(query)
+        and normalize_person_key(query) == normalize_person_key(matched[0])
+    ):
         return [], query, role_ctx
 
     visual = strip_person_names(cleaned_query, matched)

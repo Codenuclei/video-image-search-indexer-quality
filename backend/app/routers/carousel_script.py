@@ -304,8 +304,8 @@ async def _persist_carousel_artifact(
         input_hash=input_hash,
         layout_mode=layout_mode if layout_mode in {"single_1", "split_2"} else "single_1",
         copy_version=1,
-        algorithm_version=CAROUSEL_ALGORITHM_VERSION,
-        source=source,
+        algorithm_version=(CAROUSEL_ALGORITHM_VERSION or "p0")[:64],
+        source=(source or "")[:32] or None,
         payload=safe_payload,
     )
     session.add(save)

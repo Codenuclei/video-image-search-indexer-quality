@@ -34,6 +34,18 @@ def test_new_video_creation_uses_module_media_model() -> None:
     assert "media = Media(" in source
 
 
+def test_process_video_file_commits_before_slow_work() -> None:
+    """Idle-in-txn locks: must not hold INSERT media open across download/ffmpeg/VLM."""
+    source = inspect.getsource(video_mod.process_video_file)
+    assert "await session.commit()" in source
+    # Commit lands after media flush and before cue/whisper work.
+    media_pos = source.index("session.add(media)")
+    flush_pos = source.index("await session.flush()", media_pos)
+    commit_pos = source.index("await session.commit()", flush_pos)
+    cues_pos = source.index("cues = await _load_vtt_cues", commit_pos)
+    assert flush_pos < commit_pos < cues_pos
+
+
 @pytest.mark.asyncio
 async def test_duplicate_video_job_stops_when_execution_lock_is_held_elsewhere() -> None:
     worker = object.__new__(IndexingWorker)

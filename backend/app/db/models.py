@@ -475,7 +475,7 @@ class CarouselGenerationSave(Base):
     input_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     layout_mode: Mapped[str] = mapped_column(String(32), nullable=False, default="single_1")
     copy_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-    algorithm_version: Mapped[str] = mapped_column(String(32), nullable=False, default="p0")
+    algorithm_version: Mapped[str] = mapped_column(String(64), nullable=False, default="p0")
     payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
