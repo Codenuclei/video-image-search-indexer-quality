@@ -9,6 +9,7 @@ import pytest
 from app.llm.carousel_llm import (
     CAROUSEL_LLM_MODEL_OPTIONS,
     normalize_carousel_llm_provider,
+    openrouter_slug_for_direct,
     resolve_carousel_llm,
 )
 from app.runtime_settings import RuntimeSettings, set_runtime_settings
@@ -183,6 +184,73 @@ def test_resolve_carousel_llm_honors_openrouter_choice():
 
     assert pack["provider"] == "openrouter"
     assert pack["openrouter_model"] == "google/gemini-2.5-flash"
+
+
+def test_openrouter_slug_for_direct_arena_ids():
+    assert openrouter_slug_for_direct("claude", "claude-fable-5") == "anthropic/claude-fable-5"
+    assert openrouter_slug_for_direct("claude", "claude-opus-4-6") == "anthropic/claude-opus-4.6"
+    assert openrouter_slug_for_direct("gemini", "gemini-3.7-flash") == "google/gemini-3.7-flash"
+    assert (
+        openrouter_slug_for_direct("claude", "anthropic/claude-sonnet-4.5")
+        == "anthropic/claude-sonnet-4.5"
+    )
+
+
+@pytest.mark.asyncio
+async def test_llm_complete_json_claude_unknown_model_uses_openrouter(monkeypatch):
+    called: list[str] = []
+
+    class _Messages:
+        def create(self, **_kwargs):
+            called.append("claude")
+            raise RuntimeError("model: claude-fable-5: model not found")
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            self.messages = _Messages()
+
+    async def fake_or(*_a, model="", **_k):
+        called.append(f"openrouter:{model}")
+        return '{"ok": true}'
+
+    monkeypatch.setattr("anthropic.Anthropic", _Client)
+    monkeypatch.setattr("app.llm.openrouter.complete_json", fake_or)
+
+    text, provider = await _llm_complete_json(
+        prompt="{}",
+        provider="claude",
+        openrouter_api_key="or-key",
+        openrouter_model="anthropic/claude-sonnet-4",
+        claude_api_key="claude-key",
+        claude_model="claude-fable-5",
+        api_key="gemini-key",
+        model="gemini-2.5-flash",
+    )
+    assert provider == "openrouter"
+    assert "ok" in text
+    assert called == ["claude", "openrouter:anthropic/claude-fable-5"]
+
+
+@pytest.mark.asyncio
+async def test_llm_complete_json_gemini_missing_key_uses_openrouter(monkeypatch):
+    async def fake_or(*_a, model="", **_k):
+        assert model == "google/gemini-3.7-flash"
+        return '{"ok": true}'
+
+    monkeypatch.setattr("app.llm.openrouter.complete_json", fake_or)
+
+    text, provider = await _llm_complete_json(
+        prompt="{}",
+        provider="gemini",
+        openrouter_api_key="or-key",
+        openrouter_model="anthropic/claude-sonnet-4",
+        claude_api_key="",
+        claude_model="",
+        api_key="",
+        model="gemini-3.7-flash",
+    )
+    assert provider == "openrouter"
+    assert "ok" in text
 
 
 @pytest.mark.asyncio

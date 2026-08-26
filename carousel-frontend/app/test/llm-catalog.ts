@@ -13,10 +13,10 @@ import {
   resolveArenaCreativeWritingCatalog,
 } from "./arena-creative-writing-top10";
 
-/** Default = Arena Creative Writing #1. */
+/** Default = Arena Creative Writing #1 via OpenRouter (direct id is not an Anthropic model). */
 export const DEFAULT_CAROUSEL_RUN_CONFIG: CarouselRunConfig = {
-  provider: "claude",
-  model: "claude-fable-5",
+  provider: "openrouter",
+  model: "anthropic/claude-fable-5",
 };
 
 export const FALLBACK_PROVIDERS: CarouselLlmProviderOption[] = ARENA_CW_PROVIDERS;
@@ -87,9 +87,18 @@ export function defaultModelForProvider(
 ): string {
   const hit = models.find((m) => m.provider === provider);
   if (hit) return hit.id;
+  if (provider === "claude") {
+    const orTwin = models.find((m) => m.id.startsWith("anthropic/"));
+    if (orTwin) return orTwin.id;
+    return "anthropic/claude-fable-5";
+  }
+  if (provider === "gemini") {
+    const orTwin = models.find((m) => m.id.startsWith("google/"));
+    if (orTwin) return orTwin.id;
+    return "google/gemini-3.7-flash";
+  }
   if (provider === "openrouter" || provider === "auto") {
     return "qwen/qwen3.8-max";
   }
-  if (provider === "gemini") return "gemini-3.7-flash";
   return DEFAULT_CAROUSEL_RUN_CONFIG.model;
 }

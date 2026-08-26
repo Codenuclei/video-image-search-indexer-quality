@@ -176,12 +176,16 @@ async def _llm_complete_json(
     ``provider``:
     - ``auto``: Claude (key) → OpenRouter → Gemini
     - ``openrouter``: OpenRouter first, then Claude → Gemini on failure
-    - ``claude``: Anthropic Messages API only (no OpenRouter, no Gemini)
-    - ``gemini``: Gemini only
+    - ``claude``: Anthropic first; OpenRouter twin if the direct call fails
+    - ``gemini``: Gemini first; OpenRouter twin if the direct call fails
     """
     import asyncio
 
-    from app.llm.carousel_llm import DEFAULT_CLAUDE_MODEL, normalize_carousel_llm_provider
+    from app.llm.carousel_llm import (
+        DEFAULT_CLAUDE_MODEL,
+        normalize_carousel_llm_provider,
+        openrouter_slug_for_direct,
+    )
 
     pref = normalize_carousel_llm_provider(provider)
     or_key = (openrouter_api_key or "").strip()
@@ -189,6 +193,10 @@ async def _llm_complete_json(
     or_base = (openrouter_base_url or "").strip() or "https://openrouter.ai/api/v1"
     claude_key = (claude_api_key or "").strip()
     gemini_key = (api_key or "").strip()
+    if pref == "claude":
+        or_model = openrouter_slug_for_direct("claude", claude_model) or or_model
+    elif pref == "gemini":
+        or_model = openrouter_slug_for_direct("gemini", model) or or_model
 
     errors: list[str] = []
 
@@ -261,10 +269,16 @@ async def _llm_complete_json(
         if gemini_key:
             order.append("gemini")
     elif pref == "claude":
-        # User chose Claude-direct: Anthropic only (picker can still switch providers).
+        # Prefer Anthropic, then the OpenRouter twin. Arena picker ids such as
+        # claude-fable-5 are not valid Messages API models; without this hop
+        # the extract/copy path falls through to heuristic junk.
         order.append("claude")
+        if or_key and or_model:
+            order.append("openrouter")
     elif pref == "gemini":
         order.append("gemini")
+        if or_key and or_model:
+            order.append("openrouter")
 
     runners = {
         "openrouter": try_openrouter,
@@ -274,7 +288,7 @@ async def _llm_complete_json(
     ready = {
         "openrouter": bool(or_key and or_model),
         "claude": bool(claude_key),
-        "gemini": bool(gemini_key),
+        "gemini": bool(gemini_key and (model or "").strip()),
     }
 
     for name in order:

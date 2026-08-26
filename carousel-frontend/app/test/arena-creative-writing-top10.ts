@@ -105,8 +105,10 @@ const OPENROUTER_FALLBACK: Record<string, string> = {
 };
 
 /**
- * Prefer curated Arena top-10. If a direct id is missing from the live catalog,
- * remap that row to its OpenRouter twin when available.
+ * Prefer curated Arena top-10. Keep Claude/Gemini-direct only when that exact
+ * provider:id exists in the live catalog. Otherwise remap to the OpenRouter
+ * twin — Arena ids like claude-fable-5 are not valid Anthropic/Google API ids
+ * and used to send the extract path into heuristic fallback.
  */
 export function resolveArenaCreativeWritingCatalog(
   liveModels: CarouselLlmModelOption[]
@@ -116,7 +118,7 @@ export function resolveArenaCreativeWritingCatalog(
 
   return ARENA_CREATIVE_WRITING_TOP10.map((row) => {
     const key = `${row.provider}:${row.id}`;
-    if (byKey.has(key) || byId.has(row.id) || liveModels.length === 0) {
+    if (byKey.has(key)) {
       return {
         id: row.id,
         label: row.label,
@@ -124,14 +126,21 @@ export function resolveArenaCreativeWritingCatalog(
       };
     }
     const orId = OPENROUTER_FALLBACK[row.id];
-    if (orId && (byId.has(orId) || byKey.has(`openrouter:${orId}`))) {
+    if (orId) {
       return {
         id: orId,
         label: `${row.label} · OpenRouter`,
-        provider: "openrouter",
+        provider: "openrouter" as const,
       };
     }
-    // Still surface the curated row so the picker stays scoped to top-10.
+    if (byId.has(row.id)) {
+      const live = liveModels.find((m) => m.id === row.id);
+      return {
+        id: row.id,
+        label: row.label,
+        provider: live?.provider || row.provider,
+      };
+    }
     return {
       id: row.id,
       label: row.label,

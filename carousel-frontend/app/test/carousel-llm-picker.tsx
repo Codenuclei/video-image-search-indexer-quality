@@ -228,11 +228,17 @@ export function CarouselLlmPicker({
   const { models, providers } = useCarouselLlmCatalog();
 
   const filtered = useMemo(() => {
-    if (value.provider === "claude") return models.filter((o) => o.provider === "claude");
+    if (value.provider === "claude") {
+      const direct = models.filter((o) => o.provider === "claude");
+      return direct.length ? direct : models.filter((o) => o.id.startsWith("anthropic/"));
+    }
     if (value.provider === "openrouter" || value.provider === "auto") {
       return models.filter((o) => o.provider === "openrouter");
     }
-    return models.filter((o) => o.provider === "gemini" || o.id.startsWith("gemini-"));
+    const direct = models.filter((o) => o.provider === "gemini");
+    return direct.length
+      ? direct
+      : models.filter((o) => o.provider === "gemini" || o.id.startsWith("google/"));
   }, [models, value.provider]);
 
   const hasCurrent = filtered.some((option) => option.id === value.model);
@@ -276,7 +282,12 @@ export function CarouselLlmPicker({
             disabled={disabled}
             onChange={(event) => {
               const provider = event.target.value as CarouselRunConfig["provider"];
-              onChange({ provider, model: defaultModelForProvider(provider, models) });
+              const model = defaultModelForProvider(provider, models);
+              const option = models.find((row) => row.id === model);
+              onChange({
+                provider: (option?.provider as CarouselRunConfig["provider"]) || provider,
+                model,
+              });
             }}
             aria-label="Carousel run LLM provider"
           >
@@ -294,7 +305,11 @@ export function CarouselLlmPicker({
             options={modelOptions}
             routeProvider={value.provider}
             disabled={disabled}
-            onChange={(model) => onChange({ ...value, model })}
+            onChange={(model) => {
+              const option = models.find((row) => row.id === model);
+              const nextProvider = (option?.provider || value.provider) as CarouselRunConfig["provider"];
+              onChange({ provider: nextProvider, model });
+            }}
           />
         </div>
         {showHint ? (

@@ -172,6 +172,43 @@ def carousel_llm_cache_id(pack: CarouselLlmKwargs | None = None) -> str:
     return f"gemini:{gemini_model}"[:128]
 
 
+# Arena / picker ids that Anthropic and Google do not accept on the direct
+# Messages / generateContent APIs. OpenRouter does accept the slashed twins.
+_DIRECT_TO_OPENROUTER: dict[str, str] = {
+    "claude-fable-5": "anthropic/claude-fable-5",
+    "claude-opus-4-6": "anthropic/claude-opus-4.6",
+    "claude-opus-4-6-high": "anthropic/claude-opus-4.6",
+    "claude-opus-4-7": "anthropic/claude-opus-4.7",
+    "claude-opus-4-7-high": "anthropic/claude-opus-4.7",
+    "claude-opus-5": "anthropic/claude-opus-5",
+    "claude-opus-5-high": "anthropic/claude-opus-5",
+    "gemini-3.7-flash": "google/gemini-3.7-flash",
+    "gemini-3.7-flash-high": "google/gemini-3.7-flash",
+    "gemini-3.1-pro-preview": "google/gemini-3.1-pro-preview",
+    "gemini-3-pro-preview": "google/gemini-3-pro-preview",
+    "gemini-3-pro": "google/gemini-3-pro-preview",
+}
+
+
+def openrouter_slug_for_direct(provider: str, model_id: str) -> str:
+    """Map a Claude/Gemini picker id onto an OpenRouter model slug."""
+    mid = (model_id or "").strip()
+    if not mid:
+        return ""
+    if "/" in mid:
+        return mid
+    mapped = _DIRECT_TO_OPENROUTER.get(mid) or _DIRECT_TO_OPENROUTER.get(mid.lower())
+    if mapped:
+        return mapped
+    pref = normalize_carousel_llm_provider(provider)
+    dotted = mid.replace("-4-6", "-4.6").replace("-4-7", "-4.7")
+    if pref == "claude" or dotted.startswith("claude"):
+        return f"anthropic/{dotted}"
+    if pref == "gemini" or dotted.startswith("gemini"):
+        return f"google/{dotted}"
+    return mid
+
+
 def openrouter_configured() -> bool:
     return bool((get_settings().openrouter_api_key or "").strip())
 
