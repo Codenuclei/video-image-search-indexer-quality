@@ -44,7 +44,7 @@ _MAX_MERGED_TOPICS = 24
 _TOPIC_CHUNK_CHARS = 12_000
 _TOPIC_CHUNK_OVERLAP_CUES = 6
 THEME_PROMPT_VERSION = "themes-v4-openrouter-structured-output"
-EXTRACT_PROMPT_VERSION = "extract-v6-readable-hooks"
+EXTRACT_PROMPT_VERSION = "extract-v7-crafted-hooks-kept"
 
 # Shared editorial brief for every hook-writing prompt. A hook has four jobs:
 # stop the scroll, open a curiosity loop, earn the share, and build the page's
@@ -1267,11 +1267,17 @@ async def extract_hooks_and_topics_async(
     all_hooks.sort(key=lambda r: float(r.get("start_sec") or 0))
     for i, h in enumerate(all_hooks[:_MAX_HOOKS]):
         h["id"] = f"hook_{i + 1}"
-        spoken = " ".join(str(h.get("original_text") or h.get("text") or "").split()).strip()
+        # Keep the crafted display line. Resetting text back to the spoken cue
+        # here used to make downstream verbatim guards rewrite every hook into
+        # generic template shells — the LLM's crafted hooks never shipped.
+        text = " ".join(str(h.get("text") or "").split()).strip()
+        spoken = " ".join(str(h.get("original_text") or text).split()).strip()
         if spoken:
-            h["text"] = spoken
             h["original_text"] = spoken
-        h["verbatim"] = True
+        if not text and spoken:
+            h["text"] = spoken
+            text = spoken
+        h["verbatim"] = bool(text) and text == spoken
     base["hooks"] = all_hooks[:_MAX_HOOKS]
     base["topics"] = _flatten_topic_tree(topic_tree)[:_MAX_TOPICS]
     base["topic_tree"] = _reindex_topic_tree(topic_tree)[:_MAX_TOPICS]
@@ -1518,9 +1524,13 @@ _HOOK_FILLER_WORDS = frozenset(
         "before", "people", "something", "everything", "quietly", "um", "uh",
     }
 )
-_MONEY_UNIT_RE = r"(?:lakh|lakhs|crore|crores|cr|kore|kores)\b"
+_MONEY_UNIT_RE = (
+    r"(?:lakh|lakhs|crore|crores|cr|kore|kores"
+    r"|billion|million|thousand|rupees|rs|dollars|percent)\b"
+)
 _MONEY_SPAN_RE = re.compile(
-    rf"(?:(?:minus|plus|under|over|almost|nearly)\s+)?\d+(?:\s+\d+)?\s*{_MONEY_UNIT_RE}",
+    rf"(?:(?:minus|plus|under|over|almost|nearly)\s+)?"
+    rf"\d+(?:[.,]\d+)*(?:\s+\d+(?:[.,]\d+)*)?\s*{_MONEY_UNIT_RE}",
     re.I,
 )
 
@@ -1573,12 +1583,23 @@ def _hook_spark_phrase(spoken: str, *, theme_title: str = "") -> tuple[str, str,
         "they", "their", "about", "into", "every", "company", "largest",
         "people",
     } | _HOOK_FILLER_WORDS
-    words = [
-        word
-        for word in re.findall(r"[A-Za-z][A-Za-z0-9']+", spoken or "")
-        if len(word) > 3 and word.lower() not in stop
-    ]
-    if len(words) > 4:
+
+    def _content(word: str) -> bool:
+        return len(word) > 3 and word.lower() not in stop
+
+    # Prefer a real noun phrase: two content words that sit next to each other
+    # in the spoken sentence (e.g. "ghee business", "market value") instead of
+    # disconnected words plucked from the middle of the window.
+    raw_tokens = re.findall(r"[A-Za-z][A-Za-z0-9']+", spoken or "")
+    bigram: list[str] = []
+    for left, right in zip(raw_tokens, raw_tokens[1:]):
+        if _content(left) and _content(right):
+            bigram = [left, right]
+            break
+    words = [word for word in raw_tokens if _content(word)]
+    if bigram:
+        words = bigram + [w for w in words if w not in bigram][:2]
+    elif len(words) > 4:
         mid = max(0, len(words) // 3)
         words = words[mid : mid + 4] or words[:4]
     else:
@@ -1633,7 +1654,9 @@ def _heuristic_hook_line(spoken: str, *, theme_title: str = "") -> str:
             line = f"{money[0]} to {money[-1]} burn"
         return line[:280]
     if money:
-        unit_line = f"The {money[0]} swing"
+        unit_line = f"The {money[0]} story"
+        if re.search(r"\bmarket\b", text, flags=re.I):
+            unit_line = f"A {money[0]} market, explained"
         if re.search(r"\bburn\b", text, flags=re.I):
             unit_line = f"The {money[0]} burn"
         return unit_line[:280]
@@ -1755,25 +1778,25 @@ def _force_non_verbatim_hook(
     spark, spark_short, lead = _hook_spark_phrase(spoken, theme_title=theme_bit)
 
     # Rotate templates by content so each spoken window gets a different shape.
-    # Only wrap sparks that already read as a noun phrase.
+    # Only wrap sparks that already read as a noun phrase. Keep these plain and
+    # grammatical — clickbait shells glued around a random spark word shipped
+    # nonsense like "food isn't the headline — it's the lever".
     templates = []
     if _is_nouny_spark(spark_short):
         templates.extend(
             [
-                f"Why {spark_short} still surprises founders",
-                f"{lead} is the part nobody prices in",
-                f"The real bet behind {spark_short}",
-                f"Stop ignoring {spark_short}",
-                f"What {spark_short} quietly proves",
-                f"{spark_short} — and why it compounds",
-                f"How {spark_short} flipped the script",
-                f"The uncomfortable truth about {spark_short}",
-                f"{lead} isn't the headline — it's the lever",
-                f"Inside the {spark_short} moment",
-                f"Most miss this about {spark_short}",
-                f"Where {spark_short} actually wins",
+                f"The story behind {spark_short}",
+                f"{spark_short}, explained",
+                f"The case for {spark_short}",
+                f"A closer look at {spark_short}",
+                f"Why {spark_short} matters",
+                f"What changed with {spark_short}",
+                f"How {spark_short} actually works",
+                f"The real scale of {spark_short}",
             ]
         )
+        if any(ch.isdigit() for ch in spoken):
+            templates.append(f"The numbers behind {spark_short}")
     # Stable but varied pick from spoken content (+ salt for retries).
     seed = sum(ord(c) for c in (spoken.lower()[:80] or theme_bit)) + int(salt or 0)
     ordered = (

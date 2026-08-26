@@ -608,8 +608,15 @@ export const driveFileDownloadUrl = (driveFileId: string) =>
 export const driveVideoStreamUrl = (driveFileId: string) =>
   `${API_BASE}/drive/files/${driveFileId}/preview`;
 
+/** Video frames are cached at the source video's native aspect (9:16 for
+ * reels); the carousel studio always wants the Instagram 4:5 portrait crop. */
+const withCarouselAspect = (asset: string) => {
+  if (!asset.includes("/media/video/") || !asset.includes("/frame?")) return asset;
+  return asset.includes("ar=") ? asset : `${asset}&ar=4x5`;
+};
+
 export const apiAssetUrl = (path: string) =>
-  path.startsWith("http") ? path : `${API_BASE}${path}`;
+  withCarouselAspect(path.startsWith("http") ? path : `${API_BASE}${path}`);
 
 export const cacheOnlyAssetUrl = (path: string) => {
   const asset = apiAssetUrl(path);

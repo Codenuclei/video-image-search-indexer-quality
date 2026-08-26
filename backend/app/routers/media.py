@@ -92,6 +92,44 @@ async def get_carousel_ref_image(file_id: str) -> FileResponse:
     return FileResponse(path, media_type=media_type)
 
 
+# Instagram carousel portrait (1080x1350). Indexer frames are cached at the
+# source video's native aspect (9:16 for reels, 16:9 for landscape), so
+# carousel consumers request `ar=4x5` and get a cached serve-time crop.
+_PORTRAIT_ASPECT = 4 / 5
+
+
+def _ensure_portrait_crop(source: Path, variant: Path) -> Path:
+    """Return a cached 4:5 crop of *source*; fall back to the original on error."""
+    from PIL import Image
+
+    try:
+        if variant.is_file() and variant.stat().st_mtime >= source.stat().st_mtime:
+            return variant
+        with Image.open(source) as im:
+            width, height = im.size
+            if not width or not height:
+                return source
+            current = width / height
+            if abs(current - _PORTRAIT_ASPECT) < 0.01:
+                return source
+            if current > _PORTRAIT_ASPECT:
+                new_w = round(height * _PORTRAIT_ASPECT)
+                x0 = (width - new_w) // 2
+                box = (x0, 0, x0 + new_w, height)
+            else:
+                new_h = round(width / _PORTRAIT_ASPECT)
+                # Bias upward: faces and on-screen text live in the upper part
+                # of vertical reels.
+                y0 = round((height - new_h) * 0.33)
+                box = (0, y0, width, y0 + new_h)
+            variant.parent.mkdir(parents=True, exist_ok=True)
+            im.convert("RGB").crop(box).save(variant, "JPEG", quality=90)
+        return variant
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("portrait crop failed for %s: %s", source, exc)
+        return source
+
+
 @router.get("/video/{drive_file_id}/frame")
 async def get_video_frame(
     drive_file_id: str,
@@ -99,6 +137,7 @@ async def get_video_frame(
     download: bool = Query(False),
     cache_only: bool = Query(False),
     filename: str | None = Query(None),
+    ar: str | None = Query(None),
     session: AsyncSession = Depends(get_db),
 ) -> FileResponse:
     """
@@ -109,12 +148,16 @@ async def get_video_frame(
     2. On-demand extraction from local video cache (Drive/YouTube/upload) when present
     3. On-demand extraction via ffmpeg streaming from Google Drive (requires OAuth)
     4. 404/401 if unreachable
+
+    ``ar=4x5`` serves an Instagram-carousel 4:5 crop of the frame (cached).
     """
     settings = get_settings()
     frames_dir = Path(settings.thumbnail_dir) / "video" / drive_file_id
     out_path = frames_dir / f"{ts:.3f}.jpg"
 
     def _respond(path: Path) -> FileResponse:
+        if ar == "4x5":
+            path = _ensure_portrait_crop(path, frames_dir / "4x5" / path.name)
         safe = (filename or f"{drive_file_id}_{ts:.3f}.jpg").replace('"', "").replace("\n", "")
         if not safe.lower().endswith((".jpg", ".jpeg", ".png", ".webp")):
             safe = f"{safe}.jpg"

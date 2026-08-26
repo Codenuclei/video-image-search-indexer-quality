@@ -11,8 +11,10 @@ from app.routers.carousel_script import (
 from app.search.carousel_pipeline import (
     _dedupe_topic_tree_hooks,
     _force_non_verbatim_hook,
+    _heuristic_hook_line,
     _hook_is_readable,
     _hooks_from_topic_tree,
+    _money_spans_from_spoken,
     enforce_non_verbatim_hooks,
     heuristic_craft_hooks,
 )
@@ -205,6 +207,61 @@ def test_enforce_rewrites_ungrammatical_filler_hooks():
     assert all(_hook_is_readable(item["text"]) for item in kept)
     assert all("like plus" not in text for text in texts)
     assert all("burn like" not in text for text in texts)
+
+
+_BANNED_TEMPLATE_SHELLS = (
+    "isn't the headline",
+    "most miss this about",
+    "quietly proves",
+    "actually wins",
+    "flipped the script",
+    "still surprises founders",
+    "nobody prices in",
+)
+
+
+def test_force_non_verbatim_never_ships_clickbait_shells():
+    windows = [
+        (
+            "Ghee more than a food it has been a tradition in India and it has "
+            "continued till today which is why the ghee business"
+        ),
+        (
+            "country is extremely profitable reaching a market value of 42 "
+            "billion US it's a market that continues to grow"
+        ),
+        "built every year in India each looking to get a step ahead",
+    ]
+    used: set[str] = set()
+    for i, spoken in enumerate(windows):
+        hook = _force_non_verbatim_hook(
+            spoken, theme_title="Ghee business", used=used, salt=i
+        )
+        used.add(" ".join(hook.lower().split()))
+        assert _hook_is_readable(hook)
+        lower = hook.lower()
+        for shell in _BANNED_TEMPLATE_SHELLS:
+            assert shell not in lower, hook
+
+
+def test_money_spans_cover_billions_and_rupees():
+    assert _money_spans_from_spoken(
+        "reaching a market value of 42 billion US"
+    ) == ["42 billion"]
+    spans = _money_spans_from_spoken(
+        "most brands charge just around 600 to 800 rupees per liter up to the "
+        "2,000 rupees range"
+    )
+    assert "800 rupees" in spans
+    assert "2,000 rupees" in spans
+
+
+def test_heuristic_hook_line_builds_market_claim_from_numbers():
+    line = _heuristic_hook_line(
+        "country is extremely profitable reaching a market value of 42 billion "
+        "US it's a market that continues to grow"
+    )
+    assert line == "A 42 billion market, explained"
 
 
 def test_heuristic_craft_hooks_rejects_filler_glued_headlines():
