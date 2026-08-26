@@ -62,6 +62,27 @@ class RecoverFromQdrantResult:
         return d
 
 
+def collection_point_counts(client: Any | None = None) -> dict[str, int]:
+    """Cheap change gate: points_count per collection without any scrolling."""
+    from app.config import get_settings
+    from app.qdrant.client import make_qdrant_client
+
+    settings = get_settings()
+    q = client or make_qdrant_client(settings.qdrant_url, timeout=30)
+    counts: dict[str, int] = {}
+    for name in (
+        settings.qdrant_images_collection,
+        settings.qdrant_collection,
+        settings.qdrant_image_captions_collection,
+    ):
+        try:
+            counts[name] = int(q.get_collection(name).points_count or 0)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not get collection info for %s: %s", name, exc)
+            counts[name] = -1
+    return counts
+
+
 def _scroll_payloads(client: Any, collection: str) -> list[dict[str, Any]]:
     """Scroll all points; return payloads only (no vectors)."""
     payloads: list[dict[str, Any]] = []

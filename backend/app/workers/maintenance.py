@@ -499,15 +499,47 @@ async def run_embedding_backfill(worker: IndexingWorker, *, max_items: int | Non
         _embed_running = False
 
 
-async def _recover_status_from_qdrant() -> None:
+# Qdrant status recovery is a repair task, not a per-tick one: it scrolls every
+# point of three collections and loads all drive_files/media rows. Running it on
+# each maintenance tick hammered Qdrant/Postgres continuously and starved
+# interactive API routes (e.g. carousel select-images).
+_recover_running = False
+_last_recover_at: datetime | None = None
+_last_recover_counts: dict[str, int] | None = None
+_RECOVER_MIN_INTERVAL_SEC = 6 * 3600.0
+
+
+async def _recover_status_from_qdrant(*, force: bool = False) -> None:
     """Mark files PROCESSED when Qdrant already has their vectors.
 
-    Cheap append-only repair (scrolls Qdrant, updates Postgres) — run before
-    backfill/indexing so we never re-process files that are already embedded.
+    Append-only repair (scrolls Qdrant, updates Postgres). Overlap-guarded,
+    throttled to once per ``_RECOVER_MIN_INTERVAL_SEC``, and skipped entirely
+    when collection point counts have not changed since the last completed
+    run. ``force=True`` (explicit user-triggered endpoints) bypasses the
+    throttle and the change gate but never the overlap guard.
     """
-    from app.qdrant.recover import recover_from_qdrant
+    global _recover_running, _last_recover_at, _last_recover_counts
+    from app.qdrant.recover import collection_point_counts, recover_from_qdrant
 
+    if _recover_running:
+        return
+    now = datetime.now(tz=timezone.utc)
+    if (
+        not force
+        and _last_recover_at is not None
+        and (now - _last_recover_at).total_seconds() < _RECOVER_MIN_INTERVAL_SEC
+    ):
+        return
+    _recover_running = True
     try:
+        counts = await asyncio.to_thread(collection_point_counts)
+        if (
+            not force
+            and _last_recover_counts is not None
+            and counts == _last_recover_counts
+        ):
+            _last_recover_at = datetime.now(tz=timezone.utc)
+            return
         session_factory = get_session_factory()
         async with session_factory() as session:
             result = await recover_from_qdrant(session, dry_run=False)
@@ -516,8 +548,12 @@ async def _recover_status_from_qdrant() -> None:
                 "Qdrant recovery: marked %d file(s) PROCESSED from existing vectors",
                 result.status_marked_processed,
             )
+        _last_recover_counts = counts
+        _last_recover_at = datetime.now(tz=timezone.utc)
     except Exception:
         logger.exception("Qdrant status recovery failed (continuing)")
+    finally:
+        _recover_running = False
 
 
 async def maintenance_tick(worker: IndexingWorker) -> None:

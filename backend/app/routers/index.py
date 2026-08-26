@@ -55,7 +55,7 @@ async def _run_cycle(worker: IndexingWorker) -> None:
     from app.config import get_settings
     from app.workers.maintenance import _recover_status_from_qdrant
 
-    await _recover_status_from_qdrant()
+    await _recover_status_from_qdrant(force=True)
 
     if not get_settings().run_indexer:
         # API replica: discover new Drive files only; indexer service drains PENDING.
@@ -71,7 +71,7 @@ async def _run_cycle(worker: IndexingWorker) -> None:
 async def _backfill_image_embeddings(worker: IndexingWorker) -> None:
     from app.workers.maintenance import _recover_status_from_qdrant
 
-    await _recover_status_from_qdrant()
+    await _recover_status_from_qdrant(force=True)
     await run_embedding_backfill(worker)
 
 
@@ -181,7 +181,7 @@ async def backfill_image_embeddings(
 async def _backfill_image_captions(worker: IndexingWorker) -> None:
     from app.workers.maintenance import _recover_status_from_qdrant
 
-    await _recover_status_from_qdrant()
+    await _recover_status_from_qdrant(force=True)
     await run_caption_backfill(worker)
 
 
