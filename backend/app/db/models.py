@@ -325,6 +325,7 @@ class AppSettings(Base):
     search_parallel_variants_enabled: Mapped[bool] = mapped_column(default=False, nullable=False)
     search_use_captions: Mapped[bool] = mapped_column(default=False, nullable=False)
     search_rerank_enabled: Mapped[bool] = mapped_column(default=True, nullable=False)
+    search_semantic_min_score: Mapped[float] = mapped_column(Float, default=0.32, nullable=False)
     go_indexer_enabled: Mapped[bool] = mapped_column(default=False, nullable=False)
     # Carousel LLM: auto | openrouter | claude | gemini (key stays in env).
     carousel_llm_provider: Mapped[str] = mapped_column(String, default="auto", nullable=False)
@@ -475,7 +476,7 @@ class CarouselGenerationSave(Base):
     input_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     layout_mode: Mapped[str] = mapped_column(String(32), nullable=False, default="single_1")
     copy_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-    algorithm_version: Mapped[str] = mapped_column(String(32), nullable=False, default="p0")
+    algorithm_version: Mapped[str] = mapped_column(String(64), nullable=False, default="p0")
     payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

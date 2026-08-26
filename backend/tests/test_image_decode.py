@@ -43,6 +43,19 @@ def test_open_image_rgb_from_png():
     assert rgb.mode == "RGB"
 
 
+def test_open_image_rgb_applies_exif_orientation():
+    source = Image.new("RGB", (40, 20), color=(120, 40, 200))
+    exif = Image.Exif()
+    exif[274] = 6  # Rotate encoded landscape pixels 90° clockwise for display.
+    buf = io.BytesIO()
+    source.save(buf, format="JPEG", exif=exif)
+
+    rgb = open_image_rgb(buf.getvalue(), file_name="portrait.jpg")
+
+    assert rgb.size == (20, 40)
+    assert rgb.getexif().get(274) is None
+
+
 def test_looks_like_svg_from_name_and_bytes():
     from app.pipelines.common import looks_like_svg
 

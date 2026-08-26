@@ -233,8 +233,9 @@ async def filter_images_by_caption_llm(
     role_ctx: SearchRoleContext | None = None,
     folder_context: str | None = None,
     strict_action: bool | None = None,
+    preserve_rejected: bool = False,
 ) -> list[SearchResultFile]:
-    """Filter image hits using caption text only (parallel batched Gemini calls)."""
+    """Validate caption hits; broad searches may retain rejects at lower rank."""
     from app.concurrency.pools import effective_cpu_workers
     from app.config import get_settings
 
@@ -265,6 +266,7 @@ async def filter_images_by_caption_llm(
         else settings.search_caption_filter_pool_size
     )
     pool = ranked[:pool_limit]
+    tail = ranked[pool_limit:]
     batch_size = max(1, min(settings.search_caption_filter_batch_size, 25))
     batches = [pool[i : i + batch_size] for i in range(0, len(pool), batch_size)]
     parallel = (
@@ -316,4 +318,8 @@ async def filter_images_by_caption_llm(
             len(pool),
             query,
         )
+    if preserve_rejected:
+        kept_ids = {item.drive_file_id for item in kept}
+        rejected = [item for item in pool if item.drive_file_id not in kept_ids]
+        return kept + rejected + tail
     return kept

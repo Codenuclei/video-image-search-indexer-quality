@@ -427,6 +427,7 @@ export type Settings = {
   search_parallel_variants_enabled: boolean;
   search_use_captions: boolean;
   search_rerank_enabled: boolean;
+  search_semantic_min_score: number;
   go_indexer_enabled: boolean;
 };
 
@@ -912,6 +913,10 @@ export type LibraryFolder = {
   skipped_count: number;
   archived_count: number;
   indexing_paused: boolean;
+  /** Present on the full /drive/library response; omitted by the fast shell. */
+  top_skip_reasons?: { reason: string; count: number }[];
+  /** Present on the full /drive/library response; omitted by the fast shell. */
+  top_error_reasons?: { reason: string; count: number }[];
   folders: LibraryFolder[];
   files: LibraryFile[];
 };
@@ -1053,7 +1058,7 @@ export const driveGoogleViewUrl = (driveFileId: string) =>
 
 /** Compressed JPEG for grids. Never Drive; never the original stream. */
 export const driveFileThumbnailUrl = (driveFileId: string) =>
-  `${API_BASE}/drive/files/${encodeURIComponent(driveFileId)}/thumbnail`;
+  `${API_BASE}/drive/files/${encodeURIComponent(driveFileId)}/thumbnail?v=2`;
 
 /** Full preview via backend stream/cache. Use only after click-to-enlarge. */
 export const driveFilePreviewUrl = (driveFileId: string, mimeType?: string) => {

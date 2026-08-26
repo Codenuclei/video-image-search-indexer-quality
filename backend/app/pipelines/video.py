@@ -454,6 +454,9 @@ async def process_video_file(
             )
             return None
 
+    # Release any locks from clear/dedupe before Drive/YouTube download (minutes).
+    await session.commit()
+
     dest = _video_cache_path(settings, drive_file)
     suffix = Path(dest).suffix or ".mp4"
 
@@ -510,6 +513,8 @@ async def process_video_file(
     )
     session.add(media)
     await session.flush()
+    # Do not hold the media INSERT txn open across whisper / ffmpeg / VLM.
+    await session.commit()
 
     cues = await _load_vtt_cues(client, drive_file, dest, listing)
     if not cues:
@@ -553,6 +558,7 @@ async def process_video_file(
     tracker = LocalIdentityTracker(settings.media_dedup_similarity_threshold)
     frame_paths: dict[float, str] = {}
 
+    # Extract frames first (CPU / disk only) so we never hold a DB txn over ffmpeg.
     for ts in sample_times:
         frame_path = str(frames_dir / f"{ts:.3f}.jpg")
         partial_frame = str(frames_dir / f"{ts:.3f}.partial.jpg")
@@ -567,9 +573,15 @@ async def process_video_file(
         if not ok:
             continue
         frame_paths[ts] = frame_path
-        image_bgr = cv2.imread(frame_path)
-        if image_bgr is not None and not settings.face_jobs_enabled:
-            await _detect_faces_on_frame(session, media, image_bgr, ts, engine, settings, tracker)
+
+    if not settings.face_jobs_enabled:
+        for ts, frame_path in frame_paths.items():
+            image_bgr = cv2.imread(frame_path)
+            if image_bgr is not None:
+                await _detect_faces_on_frame(
+                    session, media, image_bgr, ts, engine, settings, tracker
+                )
+        await session.commit()
 
     if settings.gemini_api_key and frame_paths:
         await _embed_video_frames_parallel(drive_file.id, frame_paths, settings)
@@ -615,6 +627,8 @@ async def process_video_file(
             )
 
     await session.flush()
+    # Persist segments before slow VLM / Qdrant so those never sit idle-in-txn.
+    await session.commit()
 
     segments = list(
         (
@@ -634,6 +648,7 @@ async def process_video_file(
                 ) or None
             except Exception as exc:  # noqa: BLE001
                 logger.warning("VLM describe failed at %.1fs: %s", seg.start_sec, exc)
+        await session.commit()
 
     # Local transcript RAG into Qdrant (replaces Gemini File Search uploads).
     if settings.gemini_api_key:

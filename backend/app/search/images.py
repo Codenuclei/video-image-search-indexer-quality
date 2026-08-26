@@ -6,16 +6,18 @@ import logging
 import os
 import tempfile
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.concurrency.pools import effective_cpu_workers
 from app.config import get_settings
 from app.db.models import DriveFile
-from app.gemini.tags import person_names_for_drive_file
+from app.gemini.tags import person_names_for_drive_files
 from app.gemini.video_embeddings import embed_text_sync
-from app.qdrant.image_captions import search_captions_sync
+from app.qdrant.image_captions import search_caption_keywords_sync, search_captions_sync
 from app.qdrant.images import search_images_sync
 from app.drive.display_name import drive_file_display_name
+from app.runtime_settings import get_runtime_settings
 from app.schemas import SearchResultFile
 
 logger = logging.getLogger(__name__)
@@ -33,6 +35,7 @@ async def search_image_files(
 ) -> list[SearchResultFile]:
     """Text→image retrieval; optional caption fusion when use_captions=True."""
     settings = get_settings()
+    semantic_min_score = get_runtime_settings().search_semantic_min_score
     if not settings.gemini_api_key:
         return []
 
@@ -71,22 +74,25 @@ async def search_image_files(
                 asyncio.to_thread(
                     search_images_sync,
                     vec,
-                    limit=settings.gemini_image_result_limit,
+                    limit=None,
                     min_score=settings.gemini_image_min_score,
+                    page_size=settings.gemini_image_result_limit,
                 ),
                 asyncio.to_thread(
                     search_captions_sync,
                     vec,
-                    limit=settings.gemini_image_result_limit * (3 if action_query else 1),
-                    min_score=0.30 if action_query else 0.0,
+                    limit=None,
+                    min_score=semantic_min_score,
+                    page_size=settings.gemini_image_result_limit,
                 ),
             )
         else:
             visual_hits = await asyncio.to_thread(
                 search_images_sync,
                 vec,
-                limit=settings.gemini_image_result_limit,
+                limit=None,
                 min_score=settings.gemini_image_min_score,
+                page_size=settings.gemini_image_result_limit,
             )
             caption_hits = []
         return visual_hits, caption_hits
@@ -121,6 +127,19 @@ async def search_image_files(
                 visual_hits, caption_hits = await _search_variant(variant)
                 _merge_visual(visual_hits)
                 _merge_captions(caption_hits)
+        if use_captions and settings.image_caption_enabled:
+            lexical_hits = await asyncio.to_thread(
+                search_caption_keywords_sync,
+                queries[0],
+                page_size=settings.gemini_image_result_limit,
+            )
+            for hit in lexical_hits:
+                fid = hit["drive_file_id"]
+                caption_scores[fid] = max(
+                    caption_scores.get(fid, 0.0),
+                    semantic_min_score,
+                )
+                captions[fid] = hit["caption"]
     except Exception as exc:
         logger.warning("Image vector search failed (query=%r): %s", query, exc)
         return []
@@ -128,7 +147,7 @@ async def search_image_files(
     if action_query and use_captions and settings.image_caption_enabled:
         from app.qdrant.image_captions import get_captions_by_ids_sync
 
-        visual_top = sorted(visual_scores.items(), key=lambda x: -x[1])[:60]
+        visual_top = sorted(visual_scores.items(), key=lambda x: -x[1])
         stored = await asyncio.to_thread(
             get_captions_by_ids_sync,
             [fid for fid, _ in visual_top],
@@ -147,16 +166,13 @@ async def search_image_files(
 
     vw = settings.image_visual_weight
     cw = settings.image_caption_weight
-    caption_min = (
-        max(settings.image_caption_min_score, 0.62)
-        if action_query
-        else settings.image_caption_min_score
-    )
     ranked: list[tuple[str, float, str | None]] = []
 
     for fid in all_ids:
         v = visual_scores.get(fid, 0.0)
         c = caption_scores.get(fid, 0.0)
+        if max(v, c) < semantic_min_score:
+            continue
         has_caption_hit = fid in caption_scores
         if use_captions and settings.image_caption_enabled:
             if action_query:
@@ -164,8 +180,6 @@ async def search_image_files(
                     continue
                 fused = cw * c + vw * v
             elif has_caption_hit:
-                if c < caption_min and v < settings.image_visual_strong_score:
-                    continue
                 fused = vw * v + cw * c
             else:
                 fused = v
@@ -176,16 +190,25 @@ async def search_image_files(
         ranked.append((fid, fused, captions.get(fid)))
 
     ranked.sort(key=lambda x: -x[1])
-    ranked = ranked[: settings.gemini_image_result_limit]
 
     results: list[SearchResultFile] = []
     seen: set[str] = set()
+    ranked_ids = [drive_file_id for drive_file_id, _, _ in ranked]
+    drive_files = list(
+        (
+            await session.execute(
+                select(DriveFile).where(DriveFile.id.in_(ranked_ids))
+            )
+        ).scalars().all()
+    )
+    drive_files_by_id = {drive_file.id: drive_file for drive_file in drive_files}
+    names_by_file = await person_names_for_drive_files(session, ranked_ids)
 
     for drive_file_id, score, caption in ranked:
         if drive_file_id in seen:
             continue
 
-        drive_file: DriveFile | None = await session.get(DriveFile, drive_file_id)
+        drive_file = drive_files_by_id.get(drive_file_id)
         if drive_file is None or not drive_file.mime_type.startswith("image/"):
             continue
 
@@ -194,7 +217,7 @@ async def search_image_files(
             if not (drive_file.path.startswith(fp + "/") or drive_file.path == fp):
                 continue
 
-        person_names = await person_names_for_drive_file(session, drive_file_id)
+        person_names = names_by_file.get(drive_file_id, [])
         tagged = {n.lower() for n in person_names}
         if required_persons:
             if len(required_persons) >= 2:

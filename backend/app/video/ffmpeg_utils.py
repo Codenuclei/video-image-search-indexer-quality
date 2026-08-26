@@ -75,7 +75,7 @@ def extract_frame_at(video_path: str, timestamp_sec: float, output_path: str) ->
         "-frames:v",
         "1",
         "-q:v",
-        "2",
+        "7",
         output_path,
     ]
     proc = subprocess.run(cmd, capture_output=True, timeout=120)
@@ -103,7 +103,7 @@ def ffmpeg_carousel_still_cmd(
             "-vf",
             CAROUSEL_PORTRAIT_VF,
             "-q:v",
-            "3",
+            "6",
             output_path,
         ]
     )

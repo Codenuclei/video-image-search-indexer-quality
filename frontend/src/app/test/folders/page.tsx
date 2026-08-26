@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ChevronRight,
   FileImage,
@@ -22,9 +22,9 @@ import {
 import { LoadingLabel } from "@/components/ui";
 import { DriveSessionBar } from "@/components/drive-session-bar";
 import { cn } from "@/lib/utils";
-import { formatCount } from "@/lib/index-errors";
+import { formatCount, skipReasonMeta } from "@/lib/index-errors";
 import { hydrateKeyFromDisk, readCache, writeCache } from "@/lib/data-cache";
-import { librarySubfoldersAtPath } from "@/lib/library-folders";
+import { findLibraryFolder, librarySubfoldersAtPath } from "@/lib/library-folders";
 import { useRegisterTestShellChrome } from "@/lib/test-shell-chrome";
 
 const PAGE_SIZE = 120;
@@ -42,41 +42,198 @@ function indexedCount(f: LibraryFolder): number {
   );
 }
 
-function FolderTile({ folder, onOpen }: { folder: LibraryFolder; onOpen: (path: string) => void }) {
+type SkipReasonCount = { reason: string; count: number };
+
+function FolderTile({
+  folder,
+  onOpen,
+  loadSkipReasons,
+}: {
+  folder: LibraryFolder;
+  onOpen: (path: string) => void;
+  loadSkipReasons: (path: string) => Promise<SkipReasonCount[]>;
+}) {
   const indexed = indexedCount(folder);
   const pct = folder.file_count > 0 ? Math.round((indexed / folder.file_count) * 100) : 0;
-  return (
-    <button
-      type="button"
-      onClick={() => onOpen(folder.path)}
-      className="group relative flex flex-col items-center gap-1.5 rounded-xl border border-transparent p-3 text-center transition-colors hover:border-border hover:bg-accent/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-    >
-      <Folder size={56} strokeWidth={1.2} className="fill-amber-400/30 text-amber-500" />
-      <span className="w-full truncate text-xs font-medium text-foreground">{folder.name}</span>
-      <span className="text-[10px] text-muted-foreground">{formatCount(folder.file_count)} items</span>
+  const [reasonsOpen, setReasonsOpen] = useState(false);
+  const [reasonsLoading, setReasonsLoading] = useState(false);
+  const [reasons, setReasons] = useState<SkipReasonCount[] | null>(null);
+  const reasonRootRef = useRef<HTMLDivElement>(null);
+  const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-      <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-0.5 rounded-xl bg-card/95 opacity-0 backdrop-blur-sm transition-opacity group-hover:opacity-100">
-        <p className="text-xs font-semibold text-foreground">{pct}% indexed</p>
-        <p className="text-[10px] text-muted-foreground">
-          {formatCount(indexed)}/{formatCount(folder.file_count)} files
-        </p>
-        {folder.image_count > 0 && (
+  const clearCloseTimer = useCallback(() => {
+    if (closeTimerRef.current) {
+      clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = null;
+    }
+  }, []);
+
+  const openReasons = useCallback(() => {
+    if (folder.skipped_count <= 0) return;
+    clearCloseTimer();
+    setReasonsOpen(true);
+    if (reasons !== null || reasonsLoading) return;
+    setReasonsLoading(true);
+    void loadSkipReasons(folder.path)
+      .then(setReasons)
+      .finally(() => setReasonsLoading(false));
+  }, [
+    clearCloseTimer,
+    folder.path,
+    folder.skipped_count,
+    loadSkipReasons,
+    reasons,
+    reasonsLoading,
+  ]);
+
+  const scheduleClose = useCallback(() => {
+    clearCloseTimer();
+    closeTimerRef.current = setTimeout(() => {
+      if (!reasonRootRef.current?.contains(document.activeElement)) {
+        setReasonsOpen(false);
+      }
+    }, 180);
+  }, [clearCloseTimer]);
+
+  useEffect(() => {
+    return clearCloseTimer;
+  }, [clearCloseTimer]);
+
+  useEffect(() => {
+    if (!reasonsOpen) return;
+    function onDocumentPointerDown(event: MouseEvent) {
+      if (!reasonRootRef.current?.contains(event.target as Node)) {
+        setReasonsOpen(false);
+      }
+    }
+    function onDocumentKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setReasonsOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", onDocumentPointerDown);
+    document.addEventListener("keydown", onDocumentKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onDocumentPointerDown);
+      document.removeEventListener("keydown", onDocumentKeyDown);
+    };
+  }, [reasonsOpen]);
+
+  return (
+    <div className="group relative min-w-0">
+      <button
+        type="button"
+        onClick={() => onOpen(folder.path)}
+        className="relative flex w-full flex-col items-center gap-1.5 rounded-xl border border-transparent p-3 text-center transition-colors hover:border-border hover:bg-accent/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        <Folder size={56} strokeWidth={1.2} className="fill-amber-400/30 text-amber-500" />
+        <span className="w-full truncate text-xs font-medium text-foreground">{folder.name}</span>
+        <span className="text-[10px] text-muted-foreground">
+          {formatCount(folder.file_count)} items
+        </span>
+
+        <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-0.5 rounded-xl bg-card/95 opacity-0 backdrop-blur-sm transition-opacity group-hover:opacity-100">
+          <p className="text-xs font-semibold text-foreground">{pct}% indexed</p>
           <p className="text-[10px] text-muted-foreground">
-            {formatCount(folder.captioned_count)}/{formatCount(folder.image_count)} captioned
+            {formatCount(indexed)}/{formatCount(folder.file_count)} files
           </p>
-        )}
-        {folder.error_count > 0 && (
-          <p className="text-[10px] font-medium text-red-600 dark:text-red-400">
-            {formatCount(folder.error_count)} failed
-          </p>
-        )}
-        {folder.indexing_paused && (
-          <p className="flex items-center gap-1 text-[10px] font-medium text-amber-600 dark:text-amber-400">
-            <Pause size={9} /> paused
-          </p>
-        )}
-      </div>
-    </button>
+          {folder.image_count > 0 && (
+            <p className="text-[10px] text-muted-foreground">
+              {formatCount(folder.captioned_count)}/{formatCount(folder.image_count)} captioned
+            </p>
+          )}
+          {folder.error_count > 0 && (
+            <p className="text-[10px] font-medium text-red-600 dark:text-red-400">
+              {formatCount(folder.error_count)} failed
+            </p>
+          )}
+          {folder.indexing_paused && (
+            <p className="flex items-center gap-1 text-[10px] font-medium text-amber-600 dark:text-amber-400">
+              <Pause size={9} /> paused
+            </p>
+          )}
+        </div>
+      </button>
+
+      {folder.skipped_count > 0 && (
+        <div
+          ref={reasonRootRef}
+          className="absolute left-1/2 top-1.5 z-30 translate-x-3"
+          onMouseEnter={openReasons}
+          onMouseLeave={scheduleClose}
+        >
+          <button
+            type="button"
+            aria-haspopup="dialog"
+            aria-expanded={reasonsOpen}
+            aria-controls={`skip-reasons-${folder.path.replace(/[^a-z0-9]+/gi, "-")}`}
+            aria-label={`${formatCount(folder.skipped_count)} skipped files in ${folder.name}`}
+            onFocus={openReasons}
+            onClick={() => {
+              if (reasonsOpen) {
+                setReasonsOpen(false);
+              } else {
+                openReasons();
+              }
+            }}
+            className="rounded-full border border-amber-500/40 bg-card px-1.5 py-0.5 text-[9px] font-semibold tabular-nums text-amber-700 shadow-sm transition-colors hover:bg-amber-500/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:text-amber-300"
+          >
+            {folder.skipped_count > 99 ? "99+" : formatCount(folder.skipped_count)} skipped
+          </button>
+
+          {reasonsOpen && (
+            <div
+              id={`skip-reasons-${folder.path.replace(/[^a-z0-9]+/gi, "-")}`}
+              role="dialog"
+              aria-label={`Skip reasons for ${folder.name}`}
+              className="absolute left-1/2 top-full z-50 mt-2 w-64 max-w-[78vw] -translate-x-1/2 overflow-hidden rounded-xl border border-border bg-card text-left shadow-lg"
+            >
+              <div className="border-b border-border/70 px-3 py-2.5">
+                <p className="text-xs font-semibold text-foreground">
+                  Skipped files · {formatCount(folder.skipped_count)}
+                </p>
+              </div>
+              <div className="py-1">
+                {reasonsLoading ? (
+                  <p className="px-3 py-3 text-xs text-muted-foreground">
+                    <LoadingLabel size={13}>Loading reasons…</LoadingLabel>
+                  </p>
+                ) : reasons && reasons.length > 0 ? (
+                  reasons.slice(0, 3).map((item) => {
+                    const meta = skipReasonMeta(item.reason);
+                    return (
+                      <div key={item.reason} className="px-3 py-2">
+                        <div className="flex items-baseline justify-between gap-3">
+                          <p className="truncate text-xs font-medium text-foreground">
+                            {meta.label}
+                          </p>
+                          <span className="shrink-0 text-xs font-semibold tabular-nums text-foreground">
+                            {formatCount(item.count)}
+                          </span>
+                        </div>
+                        <p className="mt-0.5 line-clamp-1 text-[10px] text-muted-foreground">
+                          {meta.hint}
+                        </p>
+                      </div>
+                    );
+                  })
+                ) : (
+                  <p className="px-3 py-3 text-xs text-muted-foreground">
+                    No detailed reasons available.
+                  </p>
+                )}
+              </div>
+              <a
+                href="/admin"
+                className="block border-t border-border/70 px-3 py-2 text-[11px] font-medium text-primary hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+              >
+                View skipped files
+              </a>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -127,9 +284,36 @@ export default function TestFoldersPage() {
   const [filesLoading, setFilesLoading] = useState(false);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [total, setTotal] = useState(0);
+  const reasonLibraryRef = useRef<LibraryResponse | null>(null);
+  const reasonLibraryRequestRef = useRef<Promise<LibraryResponse | null> | null>(null);
+
+  const loadSkipReasons = useCallback(async (folderPath: string): Promise<SkipReasonCount[]> => {
+    let library = reasonLibraryRef.current;
+    if (!library) {
+      if (!reasonLibraryRequestRef.current) {
+        reasonLibraryRequestRef.current = apiClient
+          .driveLibrary()
+          .then((response) => {
+            reasonLibraryRef.current = response;
+            return response;
+          })
+          .catch(() => null)
+          .finally(() => {
+            reasonLibraryRequestRef.current = null;
+          });
+      }
+      library = await reasonLibraryRequestRef.current;
+    }
+    if (!library) return [];
+    return (findLibraryFolder(library.tree, folderPath)?.top_skip_reasons ?? []).slice(0, 3);
+  }, []);
 
   const loadShell = useCallback(async (force = false) => {
     try {
+      if (force) {
+        reasonLibraryRef.current = null;
+        reasonLibraryRequestRef.current = null;
+      }
       if (!force) {
         const revRes = await apiClient.driveLibraryRevision().catch(() => null);
         const rev = revRes?.revision ?? null;
@@ -308,7 +492,12 @@ export default function TestFoldersPage() {
           ) : (
             <div className="grid grid-cols-3 gap-1 sm:grid-cols-4 md:grid-cols-6 xl:grid-cols-8">
               {subfolders.map((f) => (
-                <FolderTile key={f.path} folder={f} onOpen={setPath} />
+                <FolderTile
+                  key={f.path}
+                  folder={f}
+                  onOpen={setPath}
+                  loadSkipReasons={loadSkipReasons}
+                />
               ))}
               {files.map((file) => (
                 <FileTile key={file.id} file={file} />

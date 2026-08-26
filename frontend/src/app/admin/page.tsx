@@ -13,7 +13,7 @@ import {
 import { useAuthSession } from "@/components/auth-gate";
 import { useIndexStatusStore } from "@/lib/index-status-store";
 import { formatCount, skipReasonMeta } from "@/lib/index-errors";
-import { Button, Card, ConfirmDialog, LoadingLabel, StatCard } from "@/components/ui";
+import { Button, Card, ConfirmDialog, Input, LoadingLabel, StatCard } from "@/components/ui";
 
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -56,10 +56,21 @@ export default function AdminPage() {
   const [cacheResult, setCacheResult] = useState<CacheCleanupResult | null>(null);
   const [tatResetBusy, setTatResetBusy] = useState(false);
   const [confirmTatReset, setConfirmTatReset] = useState(false);
+  const [semanticThreshold, setSemanticThreshold] = useState("0.32");
+  const [semanticBusy, setSemanticBusy] = useState(false);
+  const [semanticStatus, setSemanticStatus] = useState<string | null>(null);
 
   useEffect(() => {
     if (!allowed) router.replace("/");
   }, [allowed, router]);
+
+  useEffect(() => {
+    if (!allowed) return;
+    void apiClient
+      .settings()
+      .then((settings) => setSemanticThreshold(settings.search_semantic_min_score.toFixed(2)))
+      .catch(() => setSemanticStatus("Could not load the current threshold."));
+  }, [allowed]);
 
   const loadSecondary = useCallback(async () => {
     const [skips, control, tat] = await Promise.all([
@@ -160,6 +171,25 @@ export default function AdminPage() {
     }
   }
 
+  async function saveSemanticThreshold() {
+    const value = Number(semanticThreshold);
+    if (!Number.isFinite(value) || value < 0 || value > 1) {
+      setSemanticStatus("Enter a value from 0.00 to 1.00.");
+      return;
+    }
+    setSemanticBusy(true);
+    setSemanticStatus(null);
+    try {
+      const updated = await apiClient.updateSettings({ search_semantic_min_score: value });
+      setSemanticThreshold(updated.search_semantic_min_score.toFixed(2));
+      setSemanticStatus("Saved. New searches use this threshold immediately.");
+    } catch {
+      setSemanticStatus("Could not save the semantic threshold.");
+    } finally {
+      setSemanticBusy(false);
+    }
+  }
+
   async function restartReader() {
     setControlBusy("reader");
     try {
@@ -231,6 +261,40 @@ export default function AdminPage() {
         <StatCard label="Pending" value={pending} />
         <StatCard label="Errors" value={errors} />
       </div>
+
+      <Card className="space-y-3">
+        <div>
+          <h3 className="font-medium">Global semantic matches</h3>
+          <p className="text-sm text-muted-foreground">
+            Minimum similarity accepted for image visual and caption matches. Lower values return
+            more results; higher values are stricter. Results remain ordered by relevance.
+          </p>
+        </div>
+        <div className="flex flex-wrap items-end gap-3">
+          <label className="space-y-1 text-sm">
+            <span className="block text-xs font-medium text-muted-foreground">
+              Minimum score (0.00–1.00)
+            </span>
+            <Input
+              className="w-32 tabular-nums"
+              type="number"
+              min="0"
+              max="1"
+              step="0.01"
+              value={semanticThreshold}
+              disabled={semanticBusy}
+              onChange={(event) => {
+                setSemanticThreshold(event.target.value);
+                setSemanticStatus(null);
+              }}
+            />
+          </label>
+          <Button disabled={semanticBusy} onClick={() => void saveSemanticThreshold()}>
+            {semanticBusy ? <LoadingLabel>Saving…</LoadingLabel> : "Save threshold"}
+          </Button>
+        </div>
+        {semanticStatus && <p className="text-xs text-muted-foreground">{semanticStatus}</p>}
+      </Card>
 
       <Card className="space-y-3">
         <div className="flex flex-wrap items-start justify-between gap-3">

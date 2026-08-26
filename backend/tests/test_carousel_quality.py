@@ -261,6 +261,8 @@ def test_algorithm_version_and_polish_copy_change_cache_identity(monkeypatch) ->
     base = selection_hash()
     assert base != selection_hash(polish_copy=True)
     assert "v3-quality-diversity" in carousel_script.CAROUSEL_ALGORITHM_VERSION
+    # Must fit carousel_generation_saves.algorithm_version (VARCHAR(64)).
+    assert len(carousel_script.CAROUSEL_ALGORITHM_VERSION) <= 64
 
     monkeypatch.setattr(carousel_script, "CAROUSEL_ALGORITHM_VERSION", "future-v4")
     assert base != selection_hash()

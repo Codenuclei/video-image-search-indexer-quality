@@ -676,6 +676,11 @@ async def thumbnail_drive_file(
     ):
         raise HTTPException(status_code=404, detail="No image thumbnail")
 
+    # The remaining work is filesystem/Drive I/O. Release the request's DB
+    # connection before it can wait on a remote download; a large lazy-loaded
+    # result grid must not exhaust the SQLAlchemy pool.
+    await session.close()
+
     settings = get_settings()
     dest = image_thumb_path(settings, drive_file.id)
     if dest.is_file() and dest.stat().st_size > 0:

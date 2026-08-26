@@ -72,11 +72,13 @@ def test_student_caption_regex_matches():
     assert not _STUDENT_CAPTION_RE.search("faculty meeting indoors")
 
 
-def test_parse_with_graduates_is_student_context():
+def test_parse_with_graduates_remains_broad_visual_context():
     text, ctx = parse_role_context("Pratham Mittal with graduates")
-    assert ctx.student_context is True
-    assert ctx.co_occur_roles == ("student",)
+    assert ctx.student_context is False
+    assert ctx.co_occur_roles == ()
+    assert ctx.require_all_roles == ()
     assert "Pratham Mittal" in text
+    assert "graduates" in text
 
 
 def test_pratham_mittal_student_activates_funnel_not_role_sql():

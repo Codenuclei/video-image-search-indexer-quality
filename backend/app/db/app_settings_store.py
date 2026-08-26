@@ -26,6 +26,7 @@ def _defaults_from_env() -> RuntimeSettings:
         search_parallel_variants_enabled=s.search_parallel_variants_enabled,
         search_use_captions=s.search_use_captions,
         search_rerank_enabled=s.search_rerank_enabled,
+        search_semantic_min_score=max(0.0, min(1.0, s.image_caption_min_score)),
         go_indexer_enabled=getattr(s, "go_indexer_enabled", False),
         carousel_llm_provider="claude" if has_claude else "auto",
         openrouter_model=(s.openrouter_model or "anthropic/claude-sonnet-4").strip(),
@@ -56,6 +57,13 @@ def _row_to_runtime(row: AppSettings) -> RuntimeSettings:
         search_parallel_variants_enabled=row.search_parallel_variants_enabled,
         search_use_captions=row.search_use_captions,
         search_rerank_enabled=row.search_rerank_enabled,
+        search_semantic_min_score=max(
+            0.0,
+            min(
+                1.0,
+                getattr(row, "search_semantic_min_score", s.image_caption_min_score),
+            ),
+        ),
         go_indexer_enabled=getattr(row, "go_indexer_enabled", False),
         carousel_llm_provider=raw,
         openrouter_model=or_model,
@@ -74,6 +82,7 @@ def _apply_runtime_to_row(row: AppSettings, runtime: RuntimeSettings) -> None:
     row.search_parallel_variants_enabled = runtime.search_parallel_variants_enabled
     row.search_use_captions = runtime.search_use_captions
     row.search_rerank_enabled = runtime.search_rerank_enabled
+    row.search_semantic_min_score = runtime.search_semantic_min_score
     row.go_indexer_enabled = runtime.go_indexer_enabled
     row.carousel_llm_provider = runtime.carousel_llm_provider
     row.openrouter_model = runtime.openrouter_model

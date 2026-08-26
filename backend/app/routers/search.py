@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
+from app.db.app_settings_store import refresh_runtime_settings_from_db
 from app.db.session import get_db, get_session_factory
 from app.runtime_settings import get_runtime_settings
 from app.schemas import SearchMoment, SearchResponse, SearchResultFile
@@ -196,6 +197,10 @@ async def search(
     if source_filter == "all":
         source_filter = None
 
+    # Settings are persisted globally; refresh this worker before cache lookup
+    # so an admin threshold change takes effect on the next search everywhere.
+    await refresh_runtime_settings_from_db(session)
+
     from app.search.query_cache import lookup_exact, lookup_semantic, store_search_cache
     from app.gemini.video_embeddings import embed_text_sync
 
@@ -252,6 +257,7 @@ async def search(
     combined_person_student = person_student_funnel_active(effective_persons, role_ctx)
     use_captions = (
         captions
+        or not effective_persons
         or action_query
         or role_context_active(role_ctx)
         or person_action
@@ -265,6 +271,11 @@ async def search(
         and not role_context_active(role_ctx)
         and not role_ctx.student_context
     )
+    # Pure person-name lookup: face tags are ground truth; captions/LLM only shrink the roster.
+    # Keep captions when leftover action text remains (e.g. "Pratham Mittal cooking").
+    if person_focused and not person_action:
+        use_captions = False
+    strict_student_query = bool(role_ctx.student_context)
     primary_person = effective_persons[0] if len(effective_persons) == 1 else None
 
     # Look up folder context description for re-ranker and scoping
@@ -358,6 +369,11 @@ async def search(
             return hits
 
     async def _load_vector_files() -> list[SearchResultFile]:
+        # A name-only query is an identity lookup, not a semantic text search.
+        # Face clusters are the complete source of truth; Qdrant matches for a
+        # person's name only introduce unrelated images.
+        if person_focused and not person_action:
+            return []
         async with session_factory() as vector_session:
             return await search_image_files(
                 vector_session,
@@ -492,12 +508,15 @@ async def search(
             and not caption_contradicts_action(f.caption, query)
         ]
         if action_query and not person_action:
-            image_files = build_strict_action_pool(
-                image_files,
-                keyword_matched,
-                keywords,
-                query,
-            )
+            if strict_student_query:
+                image_files = build_strict_action_pool(
+                    image_files,
+                    keyword_matched,
+                    keywords,
+                    query,
+                )
+            elif keyword_matched:
+                image_files = merge_action_search_pool(image_files, keyword_matched)
         elif keyword_matched:
             image_files = merge_action_search_pool(image_files, keyword_matched)
 
@@ -514,9 +533,9 @@ async def search(
             if reranked:
                 image_files = reranked
             elif action_query and keyword_matched:
-                image_files = keyword_matched[:12]
+                image_files = keyword_matched
             else:
-                image_files = pre_rerank[:12]
+                image_files = pre_rerank
         except Exception as exc:  # noqa: BLE001
             logger.warning("Image re-rank failed, returning unfiltered results: %s", exc)
 
@@ -570,9 +589,10 @@ async def search(
                     role_ctx=role_ctx,
                     folder_context=folder_description,
                     strict_action=action_query or person_action,
+                    preserve_rejected=not strict_student_query,
                 )
                 if action_query or person_action:
-                    if action_query and not person_action:
+                    if action_query and not person_action and strict_student_query:
                         keywords = action_match_keywords(query)
                         filtered_images = [
                             f for f in filtered_images
@@ -583,17 +603,15 @@ async def search(
                     filtered_images = finalize_action_search_results(
                         filtered_images,
                         keyword_matched,
-                        max_results=12 if action_query and not person_action else 20,
                     )
                 if not filtered_images and pre_filter_hits:
                     if keyword_matched:
-                        cap = 12 if action_query and not person_action else 20
-                        filtered_images = keyword_matched[:cap]
+                        filtered_images = keyword_matched
                     elif not (person_action or action_query):
                         filtered_images = sorted(
                             pre_filter_hits,
                             key=lambda f: (-(f.score or 0.0), f.name.lower()),
-                        )[:30]
+                        )
                         logger.warning(
                             "Caption filter returned 0 for %r — fallback %d hit(s)",
                             query,

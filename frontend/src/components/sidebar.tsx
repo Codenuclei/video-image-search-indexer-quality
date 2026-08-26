@@ -72,7 +72,6 @@ function BrandMark({ compact = false }: { compact?: boolean }) {
           <h1 className="truncate text-base font-semibold tracking-tight text-sidebar-foreground">
             DriveFaceIndexer
           </h1>
-          <p className="text-xs text-muted-foreground">Gemini video · Gemini images</p>
         </div>
       )}
     </div>

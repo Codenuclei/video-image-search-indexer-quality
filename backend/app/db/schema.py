@@ -39,248 +39,426 @@ async def _ensure_enum_label(conn, type_name: str, label: str) -> None:
     logger.info("Added Postgres enum label %s.%s", type_name, label)
 
 
+async def _column_exists(conn, table: str, column: str) -> bool:
+    return bool(
+        await conn.scalar(
+            text(
+                """
+                SELECT 1 FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = :table
+                  AND column_name = :column
+                """
+            ),
+            {"table": table, "column": column},
+        )
+    )
+
+
+async def _ensure_column(conn, table: str, column: str, ddl: str) -> None:
+    """ADD COLUMN only when missing.
+
+    Postgres ``ADD COLUMN IF NOT EXISTS`` still takes AccessExclusiveLock even when
+    the column already exists — that blocks boot behind idle-in-transaction indexers.
+    """
+    if await _column_exists(conn, table, column):
+        return
+    await conn.execute(text(ddl))
+
+
+async def _index_exists(conn, index_name: str) -> bool:
+    return bool(
+        await conn.scalar(
+            text(
+                """
+                SELECT 1 FROM pg_indexes
+                WHERE schemaname = 'public' AND indexname = :name
+                """
+            ),
+            {"name": index_name},
+        )
+    )
+
+
+async def _ensure_index(conn, index_name: str, ddl: str) -> None:
+    if await _index_exists(conn, index_name):
+        return
+    await conn.execute(text(ddl))
+
+
 async def ensure_schema(engine: AsyncEngine) -> None:
     """Create pgvector extension and tables if missing (idempotent)."""
     async with engine.begin() as conn:
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         await conn.run_sync(Base.metadata.create_all)
-        await conn.execute(
-            text("ALTER TABLE drive_files ADD COLUMN IF NOT EXISTS gemini_document_name VARCHAR")
+
+        # Required by the current ORM at startup. Keep this ahead of the warm-DB
+        # shortcut so a newly introduced setting cannot be skipped.
+        await _ensure_column(
+            conn,
+            "app_settings",
+            "search_semantic_min_score",
+            "ALTER TABLE app_settings ADD COLUMN search_semantic_min_score "
+            "DOUBLE PRECISION NOT NULL DEFAULT 0.32",
         )
-        await conn.execute(
-            text("ALTER TABLE drive_files ADD COLUMN IF NOT EXISTS source VARCHAR NOT NULL DEFAULT 'drive'")
-        )
-        await conn.execute(
-            text(
-                "ALTER TABLE drive_files ADD COLUMN IF NOT EXISTS carousel_status "
-                "VARCHAR(24) NOT NULL DEFAULT 'idle'"
+
+        # Warm prod DBs already have additive columns. Skip ALTER TABLE entirely —
+        # even IF NOT EXISTS takes AccessExclusiveLock and can 503 the API on boot.
+        warm = await _column_exists(conn, "drive_files", "archived_at")
+        face_jobs = bool(
+            await conn.scalar(
+                text(
+                    """
+                    SELECT 1 FROM information_schema.tables
+                    WHERE table_schema = 'public' AND table_name = 'face_jobs'
+                    """
+                )
             )
         )
-        await conn.execute(
-            text("ALTER TABLE drive_files ADD COLUMN IF NOT EXISTS carousel_lock_token VARCHAR(64)")
-        )
-        await conn.execute(
+        algo_len = await conn.scalar(
             text(
-                "ALTER TABLE drive_files ADD COLUMN IF NOT EXISTS carousel_lock_input_hash VARCHAR(64)"
+                """
+                SELECT character_maximum_length FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'carousel_generation_saves'
+                  AND column_name = 'algorithm_version'
+                """
             )
         )
-        await conn.execute(
-            text("ALTER TABLE drive_files ADD COLUMN IF NOT EXISTS carousel_locked_at TIMESTAMPTZ")
-        )
-        await conn.execute(
-            text("ALTER TABLE drive_files ADD COLUMN IF NOT EXISTS carousel_error TEXT")
-        )
-        await conn.execute(
+        size_type = await conn.scalar(
             text(
-                "ALTER TABLE drive_files ADD COLUMN IF NOT EXISTS carousel_attempts "
-                "INTEGER NOT NULL DEFAULT 0"
+                """
+                SELECT data_type FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'drive_files'
+                  AND column_name = 'size'
+                """
             )
         )
-        await conn.execute(
-            text(
-                "CREATE INDEX IF NOT EXISTS ix_drive_files_carousel_status "
-                "ON drive_files (carousel_status)"
-            )
+        if warm and face_jobs and (algo_len or 0) >= 64 and size_type == "bigint":
+            await _ensure_enum_label(conn, "drive_file_status", "ARCHIVED")
+            logger.info("ensure_schema: warm DB — skipped additive ALTER TABLE locks")
+            return
+
+        await _ensure_column(
+            conn,
+            "drive_files",
+            "gemini_document_name",
+            "ALTER TABLE drive_files ADD COLUMN gemini_document_name VARCHAR",
         )
-        await conn.execute(
-            text("CREATE INDEX IF NOT EXISTS ix_drive_files_path ON drive_files (path)")
+        await _ensure_column(
+            conn,
+            "drive_files",
+            "source",
+            "ALTER TABLE drive_files ADD COLUMN source VARCHAR NOT NULL DEFAULT 'drive'",
         )
-        await conn.execute(
-            text("ALTER TABLE persons ADD COLUMN IF NOT EXISTS role VARCHAR(32)")
+        await _ensure_column(
+            conn,
+            "drive_files",
+            "carousel_status",
+            "ALTER TABLE drive_files ADD COLUMN carousel_status "
+            "VARCHAR(24) NOT NULL DEFAULT 'idle'",
         )
-        await conn.execute(
-            text(
-                "ALTER TABLE drive_files ADD COLUMN IF NOT EXISTS decode_attempts "
-                "INTEGER NOT NULL DEFAULT 0"
-            )
+        await _ensure_column(
+            conn,
+            "drive_files",
+            "carousel_lock_token",
+            "ALTER TABLE drive_files ADD COLUMN carousel_lock_token VARCHAR(64)",
         )
-        await conn.execute(
-            text(
-                "ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS follow_shortcut_folders "
-                "BOOLEAN NOT NULL DEFAULT true"
-            )
+        await _ensure_column(
+            conn,
+            "drive_files",
+            "carousel_lock_input_hash",
+            "ALTER TABLE drive_files ADD COLUMN carousel_lock_input_hash VARCHAR(64)",
         )
-        await conn.execute(
-            text(
-                "ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS experimental_manual_face_tag "
-                "BOOLEAN NOT NULL DEFAULT false"
-            )
+        await _ensure_column(
+            conn,
+            "drive_files",
+            "carousel_locked_at",
+            "ALTER TABLE drive_files ADD COLUMN carousel_locked_at TIMESTAMPTZ",
         )
-        await conn.execute(
-            text(
-                "ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS reindex_errored_files "
-                "BOOLEAN NOT NULL DEFAULT false"
-            )
+        await _ensure_column(
+            conn,
+            "drive_files",
+            "carousel_error",
+            "ALTER TABLE drive_files ADD COLUMN carousel_error TEXT",
         )
-        await conn.execute(
-            text(
-                "ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS reindex_skipped_files "
-                "BOOLEAN NOT NULL DEFAULT false"
-            )
+        await _ensure_column(
+            conn,
+            "drive_files",
+            "carousel_attempts",
+            "ALTER TABLE drive_files ADD COLUMN carousel_attempts "
+            "INTEGER NOT NULL DEFAULT 0",
         )
-        await conn.execute(
-            text(
-                "ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS go_indexer_enabled "
-                "BOOLEAN NOT NULL DEFAULT false"
-            )
+        await _ensure_index(
+            conn,
+            "ix_drive_files_carousel_status",
+            "CREATE INDEX ix_drive_files_carousel_status ON drive_files (carousel_status)",
         )
-        await conn.execute(
-            text(
-                "ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS carousel_llm_provider "
-                "VARCHAR NOT NULL DEFAULT 'auto'"
-            )
+        await _ensure_index(
+            conn,
+            "ix_drive_files_path",
+            "CREATE INDEX ix_drive_files_path ON drive_files (path)",
         )
-        await conn.execute(
-            text(
-                "ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS openrouter_model "
-                "VARCHAR NOT NULL DEFAULT 'anthropic/claude-sonnet-4'"
-            )
+        await _ensure_column(
+            conn,
+            "persons",
+            "role",
+            "ALTER TABLE persons ADD COLUMN role VARCHAR(32)",
         )
-        await conn.execute(
-            text(
-                "ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS claude_model "
-                "VARCHAR NOT NULL DEFAULT 'claude-sonnet-4-5-20250929'"
-            )
+        await _ensure_column(
+            conn,
+            "drive_files",
+            "decode_attempts",
+            "ALTER TABLE drive_files ADD COLUMN decode_attempts "
+            "INTEGER NOT NULL DEFAULT 0",
+        )
+        await _ensure_column(
+            conn,
+            "app_settings",
+            "follow_shortcut_folders",
+            "ALTER TABLE app_settings ADD COLUMN follow_shortcut_folders "
+            "BOOLEAN NOT NULL DEFAULT true",
+        )
+        await _ensure_column(
+            conn,
+            "app_settings",
+            "experimental_manual_face_tag",
+            "ALTER TABLE app_settings ADD COLUMN experimental_manual_face_tag "
+            "BOOLEAN NOT NULL DEFAULT false",
+        )
+        await _ensure_column(
+            conn,
+            "app_settings",
+            "reindex_errored_files",
+            "ALTER TABLE app_settings ADD COLUMN reindex_errored_files "
+            "BOOLEAN NOT NULL DEFAULT false",
+        )
+        await _ensure_column(
+            conn,
+            "app_settings",
+            "reindex_skipped_files",
+            "ALTER TABLE app_settings ADD COLUMN reindex_skipped_files "
+            "BOOLEAN NOT NULL DEFAULT false",
+        )
+        await _ensure_column(
+            conn,
+            "app_settings",
+            "go_indexer_enabled",
+            "ALTER TABLE app_settings ADD COLUMN go_indexer_enabled "
+            "BOOLEAN NOT NULL DEFAULT false",
+        )
+        await _ensure_column(
+            conn,
+            "app_settings",
+            "carousel_llm_provider",
+            "ALTER TABLE app_settings ADD COLUMN carousel_llm_provider "
+            "VARCHAR NOT NULL DEFAULT 'auto'",
+        )
+        await _ensure_column(
+            conn,
+            "app_settings",
+            "openrouter_model",
+            "ALTER TABLE app_settings ADD COLUMN openrouter_model "
+            "VARCHAR NOT NULL DEFAULT 'anthropic/claude-sonnet-4'",
+        )
+        await _ensure_column(
+            conn,
+            "app_settings",
+            "claude_model",
+            "ALTER TABLE app_settings ADD COLUMN claude_model "
+            "VARCHAR NOT NULL DEFAULT 'claude-sonnet-4-5-20250929'",
         )
         # Carousel generation saves: themes vs topics/hooks + cache keys
-        await conn.execute(
-            text(
-                "ALTER TABLE carousel_generation_saves ADD COLUMN IF NOT EXISTS kind "
-                "VARCHAR(32) NOT NULL DEFAULT 'topics_hooks'"
-            )
+        await _ensure_column(
+            conn,
+            "carousel_generation_saves",
+            "kind",
+            "ALTER TABLE carousel_generation_saves ADD COLUMN kind "
+            "VARCHAR(32) NOT NULL DEFAULT 'topics_hooks'",
         )
-        await conn.execute(
-            text(
-                "ALTER TABLE carousel_generation_saves ADD COLUMN IF NOT EXISTS model "
-                "VARCHAR(128)"
-            )
+        await _ensure_column(
+            conn,
+            "carousel_generation_saves",
+            "model",
+            "ALTER TABLE carousel_generation_saves ADD COLUMN model VARCHAR(128)",
         )
-        await conn.execute(
-            text(
-                "ALTER TABLE carousel_generation_saves ADD COLUMN IF NOT EXISTS transcript_hash "
-                "VARCHAR(64)"
-            )
+        await _ensure_column(
+            conn,
+            "carousel_generation_saves",
+            "transcript_hash",
+            "ALTER TABLE carousel_generation_saves ADD COLUMN transcript_hash VARCHAR(64)",
         )
-        await conn.execute(
-            text(
-                "ALTER TABLE carousel_generation_saves ADD COLUMN IF NOT EXISTS source "
-                "VARCHAR(32)"
-            )
+        await _ensure_column(
+            conn,
+            "carousel_generation_saves",
+            "source",
+            "ALTER TABLE carousel_generation_saves ADD COLUMN source VARCHAR(32)",
         )
-        await conn.execute(text(
-            "ALTER TABLE carousel_generation_saves ADD COLUMN IF NOT EXISTS status "
-            "VARCHAR(24) NOT NULL DEFAULT 'ready'"
-        ))
-        await conn.execute(text(
-            "ALTER TABLE carousel_generation_saves ADD COLUMN IF NOT EXISTS input_hash "
-            "VARCHAR(64)"
-        ))
-        await conn.execute(text(
-            "ALTER TABLE carousel_generation_saves ADD COLUMN IF NOT EXISTS layout_mode "
-            "VARCHAR(32) NOT NULL DEFAULT 'single_1'"
-        ))
-        await conn.execute(text(
-            "ALTER TABLE carousel_generation_saves ADD COLUMN IF NOT EXISTS copy_version "
-            "INTEGER NOT NULL DEFAULT 1"
-        ))
-        await conn.execute(text(
-            "ALTER TABLE carousel_generation_saves ADD COLUMN IF NOT EXISTS algorithm_version "
-            "VARCHAR(32) NOT NULL DEFAULT 'p0'"
-        ))
-        await conn.execute(
-            text(
-                "CREATE INDEX IF NOT EXISTS ix_carousel_generation_saves_kind "
-                "ON carousel_generation_saves (kind)"
-            )
+        await _ensure_column(
+            conn,
+            "carousel_generation_saves",
+            "status",
+            "ALTER TABLE carousel_generation_saves ADD COLUMN status "
+            "VARCHAR(24) NOT NULL DEFAULT 'ready'",
         )
-        await conn.execute(
-            text(
-                "CREATE INDEX IF NOT EXISTS ix_carousel_generation_saves_transcript_hash "
-                "ON carousel_generation_saves (transcript_hash)"
-            )
+        await _ensure_column(
+            conn,
+            "carousel_generation_saves",
+            "input_hash",
+            "ALTER TABLE carousel_generation_saves ADD COLUMN input_hash VARCHAR(64)",
         )
-        await conn.execute(text(
-            "CREATE INDEX IF NOT EXISTS ix_carousel_generation_saves_input_hash "
-            "ON carousel_generation_saves (input_hash)"
-        ))
-        await conn.execute(
-            text(
-                "CREATE INDEX IF NOT EXISTS ix_carousel_gen_saves_drive_kind_created "
-                "ON carousel_generation_saves (drive_file_id, kind, created_at DESC)"
+        await _ensure_column(
+            conn,
+            "carousel_generation_saves",
+            "layout_mode",
+            "ALTER TABLE carousel_generation_saves ADD COLUMN layout_mode "
+            "VARCHAR(32) NOT NULL DEFAULT 'single_1'",
+        )
+        await _ensure_column(
+            conn,
+            "carousel_generation_saves",
+            "copy_version",
+            "ALTER TABLE carousel_generation_saves ADD COLUMN copy_version "
+            "INTEGER NOT NULL DEFAULT 1",
+        )
+        await _ensure_column(
+            conn,
+            "carousel_generation_saves",
+            "algorithm_version",
+            "ALTER TABLE carousel_generation_saves ADD COLUMN algorithm_version "
+            "VARCHAR(64) NOT NULL DEFAULT 'p0'",
+        )
+        # Widen for CAROUSEL_ALGORITHM_VERSION (e.g. p0-fast-grouped-v3-quality-diversity).
+        if (algo_len or 0) < 64 and await _column_exists(
+            conn, "carousel_generation_saves", "algorithm_version"
+        ):
+            await conn.execute(
+                text(
+                    "ALTER TABLE carousel_generation_saves "
+                    "ALTER COLUMN algorithm_version TYPE VARCHAR(64)"
+                )
             )
+        await _ensure_index(
+            conn,
+            "ix_carousel_generation_saves_kind",
+            "CREATE INDEX ix_carousel_generation_saves_kind "
+            "ON carousel_generation_saves (kind)",
+        )
+        await _ensure_index(
+            conn,
+            "ix_carousel_generation_saves_transcript_hash",
+            "CREATE INDEX ix_carousel_generation_saves_transcript_hash "
+            "ON carousel_generation_saves (transcript_hash)",
+        )
+        await _ensure_index(
+            conn,
+            "ix_carousel_generation_saves_input_hash",
+            "CREATE INDEX ix_carousel_generation_saves_input_hash "
+            "ON carousel_generation_saves (input_hash)",
+        )
+        await _ensure_index(
+            conn,
+            "ix_carousel_gen_saves_drive_kind_created",
+            "CREATE INDEX ix_carousel_gen_saves_drive_kind_created "
+            "ON carousel_generation_saves (drive_file_id, kind, created_at DESC)",
         )
         # Content-hash dedupe + durable media cache paths (additive).
-        await conn.execute(
-            text("ALTER TABLE drive_files ADD COLUMN IF NOT EXISTS content_hash VARCHAR(128)")
+        await _ensure_column(
+            conn,
+            "drive_files",
+            "content_hash",
+            "ALTER TABLE drive_files ADD COLUMN content_hash VARCHAR(128)",
         )
-        await conn.execute(
-            text("ALTER TABLE drive_files ADD COLUMN IF NOT EXISTS content_hash_algo VARCHAR(16)")
+        await _ensure_column(
+            conn,
+            "drive_files",
+            "content_hash_algo",
+            "ALTER TABLE drive_files ADD COLUMN content_hash_algo VARCHAR(16)",
         )
-        await conn.execute(
-            text("ALTER TABLE drive_files ADD COLUMN IF NOT EXISTS cache_rel_path VARCHAR")
+        await _ensure_column(
+            conn,
+            "drive_files",
+            "cache_rel_path",
+            "ALTER TABLE drive_files ADD COLUMN cache_rel_path VARCHAR",
         )
-        await conn.execute(
-            text("ALTER TABLE drive_files ADD COLUMN IF NOT EXISTS root_folder_id VARCHAR")
+        await _ensure_column(
+            conn,
+            "drive_files",
+            "root_folder_id",
+            "ALTER TABLE drive_files ADD COLUMN root_folder_id VARCHAR",
         )
-        await conn.execute(
-            text(
-                "ALTER TABLE drive_files ADD COLUMN IF NOT EXISTS processing_started_at TIMESTAMPTZ"
-            )
+        await _ensure_column(
+            conn,
+            "drive_files",
+            "processing_started_at",
+            "ALTER TABLE drive_files ADD COLUMN processing_started_at TIMESTAMPTZ",
         )
-        await conn.execute(
-            text("ALTER TABLE drive_files ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ")
+        await _ensure_column(
+            conn,
+            "drive_files",
+            "completed_at",
+            "ALTER TABLE drive_files ADD COLUMN completed_at TIMESTAMPTZ",
         )
         # Large camera videos exceed int32 (~2.1GB); widen size so folder sync can insert them.
-        await conn.execute(
-            text("ALTER TABLE drive_files ALTER COLUMN size TYPE BIGINT USING size::bigint")
-        )
-        await conn.execute(
-            text(
-                "CREATE INDEX IF NOT EXISTS ix_drive_files_content_hash "
-                "ON drive_files (content_hash)"
+        if size_type and size_type != "bigint":
+            await conn.execute(
+                text("ALTER TABLE drive_files ALTER COLUMN size TYPE BIGINT USING size::bigint")
             )
+        await _ensure_index(
+            conn,
+            "ix_drive_files_content_hash",
+            "CREATE INDEX ix_drive_files_content_hash ON drive_files (content_hash)",
         )
-        await conn.execute(
-            text(
-                "CREATE INDEX IF NOT EXISTS ix_drive_files_root_folder_id "
-                "ON drive_files (root_folder_id)"
-            )
+        await _ensure_index(
+            conn,
+            "ix_drive_files_root_folder_id",
+            "CREATE INDEX ix_drive_files_root_folder_id ON drive_files (root_folder_id)",
         )
-        await conn.execute(
-            text("ALTER TABLE drive_files ADD COLUMN IF NOT EXISTS index_name VARCHAR")
+        await _ensure_column(
+            conn,
+            "drive_files",
+            "index_name",
+            "ALTER TABLE drive_files ADD COLUMN index_name VARCHAR",
         )
-        await conn.execute(
-            text("ALTER TABLE drive_files ADD COLUMN IF NOT EXISTS visual_hash VARCHAR(16)")
+        await _ensure_column(
+            conn,
+            "drive_files",
+            "visual_hash",
+            "ALTER TABLE drive_files ADD COLUMN visual_hash VARCHAR(16)",
         )
-        await conn.execute(
-            text(
-                "CREATE INDEX IF NOT EXISTS ix_drive_files_visual_hash "
-                "ON drive_files (visual_hash)"
-            )
+        await _ensure_index(
+            conn,
+            "ix_drive_files_visual_hash",
+            "CREATE INDEX ix_drive_files_visual_hash ON drive_files (visual_hash)",
         )
         # Transcript language for English-ensure / non-English purge.
-        await conn.execute(
-            text("ALTER TABLE video_segments ADD COLUMN IF NOT EXISTS language VARCHAR(16)")
+        await _ensure_column(
+            conn,
+            "video_segments",
+            "language",
+            "ALTER TABLE video_segments ADD COLUMN language VARCHAR(16)",
         )
-        await conn.execute(
-            text(
-                "CREATE INDEX IF NOT EXISTS ix_video_segments_language "
-                "ON video_segments (language)"
-            )
+        await _ensure_index(
+            conn,
+            "ix_video_segments_language",
+            "CREATE INDEX ix_video_segments_language ON video_segments (language)",
         )
         # Soft-archive: never-delete policy for indexed artifacts.
         # Live PG enums use SQLAlchemy *member names* (PENDING, SKIPPED, …).
         # ADD 'ARCHIVED' (uppercase). A prior mistaken 'archived' label may also
         # exist — leave it; code binds ARCHIVED via the Python enum member name.
         await _ensure_enum_label(conn, "drive_file_status", "ARCHIVED")
-        await conn.execute(
-            text("ALTER TABLE drive_files ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ")
+        await _ensure_column(
+            conn,
+            "drive_files",
+            "archived_at",
+            "ALTER TABLE drive_files ADD COLUMN archived_at TIMESTAMPTZ",
         )
-        await conn.execute(
-            text(
-                "CREATE INDEX IF NOT EXISTS ix_drive_files_archived_at "
-                "ON drive_files (archived_at)"
-            )
+        await _ensure_index(
+            conn,
+            "ix_drive_files_archived_at",
+            "CREATE INDEX ix_drive_files_archived_at ON drive_files (archived_at)",
         )
         # Durable folder history (survives disconnect / folder switch).
         await conn.execute(
@@ -300,17 +478,15 @@ async def ensure_schema(engine: AsyncEngine) -> None:
                 """
             )
         )
-        await conn.execute(
-            text(
-                "CREATE INDEX IF NOT EXISTS ix_indexed_folders_drive_user_id "
-                "ON indexed_folders (drive_user_id)"
-            )
+        await _ensure_index(
+            conn,
+            "ix_indexed_folders_drive_user_id",
+            "CREATE INDEX ix_indexed_folders_drive_user_id ON indexed_folders (drive_user_id)",
         )
-        await conn.execute(
-            text(
-                "CREATE INDEX IF NOT EXISTS ix_indexed_folders_is_active "
-                "ON indexed_folders (is_active)"
-            )
+        await _ensure_index(
+            conn,
+            "ix_indexed_folders_is_active",
+            "CREATE INDEX ix_indexed_folders_is_active ON indexed_folders (is_active)",
         )
         # Durable InsightFace job queue (FOR UPDATE SKIP LOCKED claim).
         await conn.execute(
@@ -343,17 +519,15 @@ async def ensure_schema(engine: AsyncEngine) -> None:
                 """
             )
         )
-        await conn.execute(
-            text(
-                "CREATE INDEX IF NOT EXISTS ix_face_jobs_status_created "
-                "ON face_jobs (status, created_at)"
-            )
+        await _ensure_index(
+            conn,
+            "ix_face_jobs_status_created",
+            "CREATE INDEX ix_face_jobs_status_created ON face_jobs (status, created_at)",
         )
-        await conn.execute(
-            text(
-                "CREATE INDEX IF NOT EXISTS ix_face_jobs_drive_file_id "
-                "ON face_jobs (drive_file_id)"
-            )
+        await _ensure_index(
+            conn,
+            "ix_face_jobs_drive_file_id",
+            "CREATE INDEX ix_face_jobs_drive_file_id ON face_jobs (drive_file_id)",
         )
         await conn.run_sync(Base.metadata.create_all)
     logger.info("Database schema verified")
