@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
 
 import httpx
@@ -12,6 +13,98 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_BASE = "https://openrouter.ai/api/v1"
 _DEFAULT_TIMEOUT = 120.0
+# Thinking Gemini 3.x burns a large share of max_tokens before JSON starts.
+_GEMINI_MAX_TOKENS_FLOOR = 4096
+_THINKING_GEMINI_RE = re.compile(r"gemini-(?:2\.5|3)", re.I)
+
+
+def is_google_gemini_model(model_id: str) -> bool:
+    mid = (model_id or "").strip().lower()
+    if not mid:
+        return False
+    leaf = mid.rsplit("/", 1)[-1]
+    return mid.startswith("google/") or leaf.startswith("gemini")
+
+
+def is_thinking_gemini_model(model_id: str) -> bool:
+    return bool(_THINKING_GEMINI_RE.search((model_id or "").strip()))
+
+
+def _fold_system_into_user(system: str, prompt: str) -> list[dict[str, str]]:
+    sys_msg = (system or "").strip()
+    user = (prompt or "").strip()
+    if sys_msg:
+        user = f"{sys_msg}\n\n{user}" if user else sys_msg
+    return [{"role": "user", "content": user}]
+
+
+def _assistant_text(payload: dict[str, Any]) -> str:
+    """Pull visible text from OpenRouter / Gemini message shapes."""
+    choices = payload.get("choices") if isinstance(payload, dict) else None
+    if not isinstance(choices, list) or not choices:
+        return ""
+    first = choices[0] if isinstance(choices[0], dict) else {}
+    message = first.get("message") if isinstance(first.get("message"), dict) else {}
+    chunks: list[str] = []
+
+    def _take(value: Any) -> None:
+        if isinstance(value, str) and value.strip():
+            chunks.append(value.strip())
+        elif isinstance(value, list):
+            for part in value:
+                if isinstance(part, dict):
+                    text = part.get("text") or part.get("content")
+                    if isinstance(text, str) and text.strip():
+                        chunks.append(text.strip())
+                elif isinstance(part, str) and part.strip():
+                    chunks.append(part.strip())
+
+    _take(message.get("content"))
+    if not chunks:
+        # Gemini thinking models often leave content empty and fill reasoning.
+        _take(message.get("reasoning"))
+        _take(message.get("reasoning_content"))
+        _take(message.get("reasoning_details"))
+        _take(first.get("text"))
+    return "\n".join(chunks).strip()
+
+
+def _request_bodies(
+    *,
+    model_id: str,
+    prompt: str,
+    system: str,
+    temperature: float,
+    max_tokens: int,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Primary body (structured JSON) plus a stripped retry body."""
+    gemini = is_google_gemini_model(model_id)
+    thinking = is_thinking_gemini_model(model_id)
+    token_budget = max(int(max_tokens or 0), _GEMINI_MAX_TOKENS_FLOOR) if gemini else max_tokens
+    if gemini:
+        messages = _fold_system_into_user(system, prompt)
+    else:
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt},
+        ]
+    base_body: dict[str, Any] = {
+        "model": model_id,
+        "messages": messages,
+        "max_tokens": token_budget,
+    }
+    # Gemini 3.x rejects or ignores sampling overrides; omit so the hop 200s.
+    if not thinking:
+        base_body["temperature"] = temperature
+    if thinking:
+        # Default Gemini 3 effort is medium (~50% of max_tokens) and slow.
+        # Low keeps JSON in the remaining budget and finishes like Claude.
+        base_body["reasoning"] = {"effort": "low", "exclude": True}
+
+    request_body = {**base_body, "response_format": {"type": "json_object"}}
+    # Keep low-reasoning on retry so Gemini 3 does not snap back to default medium thinking.
+    retry_body = dict(base_body)
+    return request_body, retry_body
 
 
 async def complete_json(
@@ -30,7 +123,8 @@ async def complete_json(
 
     Uses ``response_format: json_object`` when accepted; array responses are
     requested through an ``{"items": [...]}`` wrapper and unwrapped before
-    returning. On format rejection, retries without structured output.
+    returning. On format rejection, empty Gemini content, or a generic 400,
+    retries without structured output / thinking extras.
     """
     key = (api_key or "").strip()
     model_id = (model or "").strip()
@@ -56,18 +150,13 @@ async def complete_json(
             '"items", whose value is the requested JSON array.'
         )
 
-    messages: list[dict[str, str]] = [
-        {"role": "system", "content": sys_msg},
-        {"role": "user", "content": prompt},
-    ]
-    base_body: dict[str, Any] = {
-        "model": model_id,
-        "messages": messages,
-        "temperature": temperature,
-        "max_tokens": max_tokens,
-    }
-
-    request_body = {**base_body, "response_format": {"type": "json_object"}}
+    request_body, retry_body = _request_bodies(
+        model_id=model_id,
+        prompt=prompt,
+        system=sys_msg,
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
     async with httpx.AsyncClient(timeout=timeout) as client:
         text = await _post_once(
             client,
@@ -75,7 +164,7 @@ async def complete_json(
             headers=headers,
             body=request_body,
             allow_format_retry=True,
-            retry_body=base_body,
+            retry_body=retry_body,
         )
     if root == "array":
         try:
@@ -85,8 +174,8 @@ async def complete_json(
         if isinstance(wrapped, list):
             return text
         if isinstance(wrapped, dict):
-            for key in ("items", "themes", "results"):
-                items = wrapped.get(key)
+            for wrap_key in ("items", "themes", "results"):
+                items = wrapped.get(wrap_key)
                 if isinstance(items, list):
                     return json.dumps(items, ensure_ascii=False)
     return text
@@ -109,13 +198,14 @@ async def _post_once(
 
     if resp.status_code >= 400:
         detail = (resp.text or "")[:300]
-        # Some models reject response_format — retry without it.
-        if (
-            allow_format_retry
-            and resp.status_code == 400
-            and "response_format" in detail.lower()
-        ):
-            logger.info("OpenRouter rejected response_format; retrying without it")
+        # Gemini often 400s with a generic payload (no "response_format" mention).
+        if allow_format_retry and resp.status_code in (400, 422):
+            logger.info(
+                "OpenRouter HTTP %s model=%s; retrying without extras: %s",
+                resp.status_code,
+                body.get("model"),
+                detail[:160],
+            )
             return await _post_once(
                 client,
                 url,
@@ -138,22 +228,24 @@ async def _post_once(
         logger.warning("OpenRouter non-JSON response: %s", (resp.text or "")[:200])
         raise RuntimeError("OpenRouter returned non-JSON body") from exc
 
-    choices = data.get("choices") if isinstance(data, dict) else None
-    if not isinstance(choices, list) or not choices:
+    if not isinstance(data, dict) or not isinstance(data.get("choices"), list) or not data["choices"]:
         logger.warning("OpenRouter empty choices: %s", str(data)[:200])
         raise RuntimeError("OpenRouter returned no choices")
 
-    message = choices[0].get("message") if isinstance(choices[0], dict) else None
-    content = message.get("content") if isinstance(message, dict) else None
-    if isinstance(content, list):
-        # Rare multimodal-style content blocks
-        parts = [
-            str(p.get("text") or "")
-            for p in content
-            if isinstance(p, dict)
-        ]
-        content = "".join(parts)
-    text = (content or "").strip() if isinstance(content, str) else ""
+    text = _assistant_text(data)
+    if not text and allow_format_retry:
+        logger.info(
+            "OpenRouter empty content model=%s; retrying without extras",
+            body.get("model"),
+        )
+        return await _post_once(
+            client,
+            url,
+            headers=headers,
+            body=retry_body,
+            allow_format_retry=False,
+            retry_body=retry_body,
+        )
     if not text:
         raise RuntimeError("OpenRouter returned empty content")
     return text

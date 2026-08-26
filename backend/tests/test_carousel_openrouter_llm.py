@@ -10,6 +10,7 @@ from app.llm.carousel_llm import (
     CAROUSEL_LLM_MODEL_OPTIONS,
     normalize_carousel_llm_provider,
     openrouter_slug_for_direct,
+    prefer_openrouter_first,
     resolve_carousel_llm,
 )
 from app.runtime_settings import RuntimeSettings, set_runtime_settings
@@ -194,6 +195,38 @@ def test_openrouter_slug_for_direct_arena_ids():
         openrouter_slug_for_direct("claude", "anthropic/claude-sonnet-4.5")
         == "anthropic/claude-sonnet-4.5"
     )
+    assert prefer_openrouter_first("gemini", "gemini-3.7-flash") is True
+    assert prefer_openrouter_first("claude", "claude-fable-5") is True
+    assert prefer_openrouter_first("claude", "claude-sonnet-4-5-20250929") is False
+
+
+@pytest.mark.asyncio
+async def test_llm_complete_json_gemini_uses_openrouter_first(monkeypatch):
+    called: list[str] = []
+
+    async def fake_or(*_a, model="", **_k):
+        called.append(f"openrouter:{model}")
+        return '{"ok": true}'
+
+    async def boom_gemini(*_a, **_k):
+        called.append("gemini")
+        raise AssertionError("direct Gemini must not run when OpenRouter is ready")
+
+    monkeypatch.setattr("app.llm.openrouter.complete_json", fake_or)
+    monkeypatch.setattr("google.genai.Client", boom_gemini)
+
+    text, provider = await _llm_complete_json(
+        prompt="{}",
+        provider="gemini",
+        openrouter_api_key="or-key",
+        openrouter_model="anthropic/claude-sonnet-4",
+        claude_api_key="",
+        claude_model="",
+        api_key="gemini-key",
+        model="gemini-3.7-flash",
+    )
+    assert provider == "openrouter"
+    assert called == ["openrouter:google/gemini-3.7-flash"]
 
 
 @pytest.mark.asyncio
@@ -228,7 +261,7 @@ async def test_llm_complete_json_claude_unknown_model_uses_openrouter(monkeypatc
     )
     assert provider == "openrouter"
     assert "ok" in text
-    assert called == ["claude", "openrouter:anthropic/claude-fable-5"]
+    assert called == ["openrouter:anthropic/claude-fable-5"]
 
 
 @pytest.mark.asyncio
@@ -423,3 +456,118 @@ async def test_openrouter_retries_without_response_format(monkeypatch):
     assert len(calls) == 2
     assert "response_format" in calls[0]
     assert "response_format" not in calls[1]
+
+
+def test_openrouter_gemini_request_omits_temperature_and_caps_thinking():
+    from app.llm.openrouter import _request_bodies, is_thinking_gemini_model
+
+    assert is_thinking_gemini_model("google/gemini-3.7-flash") is True
+    assert is_thinking_gemini_model("google/gemini-2.5-pro") is True
+    assert is_thinking_gemini_model("anthropic/claude-sonnet-4") is False
+
+    primary, retry = _request_bodies(
+        model_id="google/gemini-3.7-flash",
+        prompt="give themes",
+        system="Return ONLY valid JSON.",
+        temperature=0.3,
+        max_tokens=1800,
+    )
+    assert primary["model"] == "google/gemini-3.7-flash"
+    assert "temperature" not in primary
+    assert primary["max_tokens"] == 4096
+    assert primary["reasoning"] == {"effort": "low", "exclude": True}
+    assert primary["messages"][0]["role"] == "user"
+    assert "Return ONLY valid JSON" in primary["messages"][0]["content"]
+    assert "response_format" in primary
+    assert "response_format" not in retry
+    assert retry["reasoning"] == {"effort": "low", "exclude": True}
+
+
+@pytest.mark.asyncio
+async def test_openrouter_gemini_reads_reasoning_when_content_empty(monkeypatch):
+    from app.llm import openrouter as or_mod
+
+    class _Resp:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": "",
+                            "reasoning": '{"title":"from-thinking"}',
+                        }
+                    }
+                ]
+            }
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def post(self, url, headers=None, json=None):
+            return _Resp()
+
+    monkeypatch.setattr(or_mod.httpx, "AsyncClient", _Client)
+    text = await or_mod.complete_json(
+        "x",
+        model="google/gemini-3.7-flash",
+        api_key="k",
+    )
+    assert text == '{"title":"from-thinking"}'
+
+
+@pytest.mark.asyncio
+async def test_openrouter_gemini_retries_generic_400(monkeypatch):
+    from app.llm import openrouter as or_mod
+
+    calls: list[dict] = []
+
+    class _Bad:
+        status_code = 400
+        text = "Provider returned error"
+
+        def json(self):
+            return {}
+
+    class _Good:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {"choices": [{"message": {"content": '{"ok":true}'}}]}
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def post(self, url, headers=None, json=None):
+            calls.append(json or {})
+            if "response_format" in (json or {}):
+                return _Bad()
+            return _Good()
+
+    monkeypatch.setattr(or_mod.httpx, "AsyncClient", _Client)
+    text = await or_mod.complete_json(
+        "x",
+        model="google/gemini-2.5-flash",
+        api_key="k",
+    )
+    assert text == '{"ok":true}'
+    assert len(calls) == 2
+    assert "temperature" not in calls[0]
+    assert calls[0]["reasoning"]["effort"] == "low"

@@ -122,7 +122,10 @@ _THEME_CHUNK_OVERLAP_CUES = 3
 # Gemini requests run in worker threads and the SDK does not time out by default,
 # so a stalled connection would pin its thread — and the background carousel slot
 # holding it — forever. Bound every request instead.
-_LLM_REQUEST_TIMEOUT_MS = 180_000
+_LLM_REQUEST_TIMEOUT_MS = 25_000
+# Railway's public edge (carousel → backend) 502s long extracts. Cap each
+# provider hop so Gemini/Claude cannot hold the socket for minutes.
+_LLM_ATTEMPT_TIMEOUT_SEC = 25.0
 
 
 def _loads_json_array(text: str) -> list[Any]:
@@ -185,6 +188,7 @@ async def _llm_complete_json(
         DEFAULT_CLAUDE_MODEL,
         normalize_carousel_llm_provider,
         openrouter_slug_for_direct,
+        prefer_openrouter_first,
     )
 
     pref = normalize_carousel_llm_provider(provider)
@@ -211,6 +215,7 @@ async def _llm_complete_json(
             system=system,
             temperature=temperature,
             max_tokens=max_tokens,
+            timeout=_LLM_ATTEMPT_TIMEOUT_SEC,
             json_root=json_root,
         )
         return text.strip(), "openrouter"
@@ -272,13 +277,24 @@ async def _llm_complete_json(
         # Prefer Anthropic, then the OpenRouter twin. Arena picker ids such as
         # claude-fable-5 are not valid Messages API models; without this hop
         # the extract/copy path falls through to heuristic junk.
-        order.append("claude")
-        if or_key and or_model:
+        if or_key and or_model and prefer_openrouter_first("claude", claude_model):
             order.append("openrouter")
+            order.append("claude")
+        else:
+            order.append("claude")
+            if or_key and or_model:
+                order.append("openrouter")
     elif pref == "gemini":
-        order.append("gemini")
-        if or_key and or_model:
+        # Google generateContent on preview/pro models routinely exceeds the
+        # Railway public-proxy budget and surfaces as 502 on /pipeline/extract.
+        # OpenRouter's google/* twins finish in time; try them first.
+        if or_key and or_model and prefer_openrouter_first("gemini", model):
             order.append("openrouter")
+            order.append("gemini")
+        else:
+            order.append("gemini")
+            if or_key and or_model:
+                order.append("openrouter")
 
     runners = {
         "openrouter": try_openrouter,
@@ -297,7 +313,7 @@ async def _llm_complete_json(
                 errors.append(f"{name} not configured")
             continue
         try:
-            return await runners[name]()
+            return await asyncio.wait_for(runners[name](), timeout=_LLM_ATTEMPT_TIMEOUT_SEC)
         except Exception as exc:  # noqa: BLE001
             errors.append(f"{name}: {str(exc)[:160]}")
             logger.warning(

@@ -8,7 +8,7 @@ import hashlib
 import logging
 import re
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, Request, UploadFile
@@ -198,18 +198,38 @@ CAROUSEL_STATUS_PROCESSING = "processing"
 CAROUSEL_STATUS_IDLE = "idle"
 
 
-async def _assert_carousel_unlocked(session: AsyncSession, drive_file_id: str) -> DriveFile:
-    """Reject mutations while another carousel generation owns this video."""
-    drive_file = await session.get(DriveFile, drive_file_id.strip())
-    if drive_file is None:
-        raise HTTPException(status_code=404, detail="Video not found")
-    if getattr(drive_file, "carousel_status", CAROUSEL_STATUS_IDLE) == CAROUSEL_STATUS_PROCESSING:
-        raise HTTPException(
-            status_code=409,
-            detail="Carousel generation is locked for this video; wait for it to finish.",
-            headers={"Retry-After": "1"},
+async def _steal_stale_carousel_lock(session: AsyncSession, drive_file_id: str) -> bool:
+    """Clear an orphaned processing lock so studio retries are not stuck for 15 minutes.
+
+    A 502 / killed worker leaves ``carousel_status=processing``. Theme generation
+    must not wait on that; slide generate/select-images may steal a lock with no
+    timestamp or one older than the stale window.
+    """
+    from app.workers.indexer import CAROUSEL_LOCK_STALE_SEC
+
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=CAROUSEL_LOCK_STALE_SEC)
+    result = await session.execute(
+        update(DriveFile)
+        .where(
+            DriveFile.id == drive_file_id,
+            DriveFile.carousel_status == CAROUSEL_STATUS_PROCESSING,
+            or_(
+                DriveFile.carousel_locked_at.is_(None),
+                DriveFile.carousel_locked_at < cutoff,
+            ),
         )
-    return drive_file
+        .values(
+            carousel_status=CAROUSEL_STATUS_IDLE,
+            carousel_lock_token=None,
+            carousel_lock_input_hash=None,
+            carousel_locked_at=None,
+        )
+    )
+    if result.rowcount:
+        await session.commit()
+        logger.info("Stole stale carousel lock drive=%s", drive_file_id)
+        return True
+    return False
 
 
 async def _claim_carousel(
@@ -218,27 +238,33 @@ async def _claim_carousel(
     """Atomically claim one video's carousel pipeline; prevents duplicate jobs."""
     drive_file_id = drive_file_id.strip()
     token = uuid.uuid4().hex
-    result = await session.execute(
-        update(DriveFile)
-        .where(
-            DriveFile.id == drive_file_id,
-            DriveFile.carousel_status != CAROUSEL_STATUS_PROCESSING,
+
+    async def _try_claim() -> int:
+        result = await session.execute(
+            update(DriveFile)
+            .where(
+                DriveFile.id == drive_file_id,
+                DriveFile.carousel_status != CAROUSEL_STATUS_PROCESSING,
+            )
+            .values(
+                carousel_status=CAROUSEL_STATUS_PROCESSING,
+                carousel_lock_token=token,
+                carousel_lock_input_hash=input_hash,
+                carousel_locked_at=datetime.now(timezone.utc),
+            )
         )
-        .values(
-            carousel_status=CAROUSEL_STATUS_PROCESSING,
-            carousel_lock_token=token,
-            carousel_lock_input_hash=input_hash,
-            carousel_locked_at=datetime.now(timezone.utc),
-        )
-    )
-    if not result.rowcount:
-        if await session.get(DriveFile, drive_file_id) is None:
-            raise HTTPException(status_code=404, detail="Video not found")
-        raise HTTPException(
-            status_code=409,
-            detail="Carousel generation is locked for this video; wait for it to finish.",
-            headers={"Retry-After": "1"},
-        )
+        return int(result.rowcount or 0)
+
+    if not await _try_claim():
+        await _steal_stale_carousel_lock(session, drive_file_id)
+        if not await _try_claim():
+            if await session.get(DriveFile, drive_file_id) is None:
+                raise HTTPException(status_code=404, detail="Video not found")
+            raise HTTPException(
+                status_code=409,
+                detail="Carousel generation is locked for this video; wait for it to finish.",
+                headers={"Retry-After": "1"},
+            )
     await session.commit()
     return token
 
@@ -1356,10 +1382,9 @@ async def carousel_pipeline_themes(
     # matches a known Person row used for presence check below.
     explicit_person = (body.person_name or "").strip()
     drive_file, cues = await _load_video_cues(session, body.drive_file_id.strip())
-    # A forced/explicit theme generation is a mutation and must not race generation.
-    # Cache reads remain available through GET /pipeline/carousel.
-    if body.force or body.generate:
-        await _assert_carousel_unlocked(session, drive_file.id)
+    # Themes write SAVE_KIND_THEMES only. Do not wait on the slide-generate
+    # lock — a 502'd generate/select-images or background carousel job used to
+    # 409 this route for up to 15 minutes even on a cache hit.
 
     check_name = explicit_person
     if not check_name and (body.search_entity or "").strip():

@@ -190,6 +190,23 @@ _DIRECT_TO_OPENROUTER: dict[str, str] = {
 }
 
 
+def prefer_openrouter_first(provider: str, model_id: str) -> bool:
+    """True when the Google/Anthropic call is likely to hang past Railway's edge.
+
+    Arena / preview Gemini ids often take longer than the public proxy budget
+    (~60–100s) even when they eventually 200. OpenRouter twins finish in time.
+    """
+    pref = normalize_carousel_llm_provider(provider)
+    mid = (model_id or "").strip().lower()
+    if pref == "gemini":
+        return True
+    if mid in _DIRECT_TO_OPENROUTER:
+        return True
+    if "preview" in mid or "fable" in mid:
+        return True
+    return False
+
+
 def openrouter_slug_for_direct(provider: str, model_id: str) -> str:
     """Map a Claude/Gemini picker id onto an OpenRouter model slug."""
     mid = (model_id or "").strip()
