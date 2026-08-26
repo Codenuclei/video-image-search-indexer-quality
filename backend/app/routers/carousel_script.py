@@ -46,6 +46,8 @@ from app.search.carousel_pipeline import (
     THEME_PROMPT_VERSION,
     _carousel_idea_similarity,
     _carousel_quality_text,
+    _heuristic_hook_line,
+    _hook_is_readable,
     _hook_numbers_are_grounded,
     apply_carousel_quality_pass,
     build_harmonized_themes,
@@ -191,7 +193,7 @@ class PipelineThemesRequest(CarouselRunLlmFields):
 SAVE_KIND_TOPICS = "topics_hooks"
 SAVE_KIND_THEMES = "themes"
 SAVE_KIND_CAROUSEL = "carousel"
-CAROUSEL_ALGORITHM_VERSION = "p0-fast-grouped-v3-quality-diversity-p1"
+CAROUSEL_ALGORITHM_VERSION = "p0-fast-grouped-v3-quality-diversity-p1-crafted-copy"
 CAROUSEL_STATUS_PROCESSING = "processing"
 CAROUSEL_STATUS_IDLE = "idle"
 
@@ -2736,11 +2738,20 @@ def _select_carousel_cue_corpus(
     english: list[tuple[float, float | None, str]] | None,
 ) -> tuple[list[tuple[float, float | None, str]], bool]:
     """Pick cue corpus for cut-planning. Never let a thin EN track wipe the VTT."""
+
+    def _sanitized(cues: list[tuple[float, float | None, str]]) -> list[tuple[float, float | None, str]]:
+        out = []
+        for s, e, t in cues:
+            text = _clean_cue_text(t)
+            if text:
+                out.append((s, e, text))
+        return out
+
     if english and _english_caption_track_usable(english, indexed):
-        preferred = prefer_english_cues(english)
+        preferred = _sanitized(prefer_english_cues(english))
         if len(preferred) >= 6:
             return preferred, True
-    return prefer_english_cues(indexed), False
+    return _sanitized(prefer_english_cues(indexed)), False
 
 
 async def _maybe_load_english_cues(
@@ -2785,6 +2796,58 @@ async def _maybe_load_english_cues(
     return english
 
 
+# Caption-track noise that must never reach slide copy, hooks, or titles.
+_CUE_NOISE_RE = re.compile(
+    r"\[\s*(?:music|applause|laughter|laughs|cheering|cheers|noise|inaudible|silence|__)\s*\]"
+    r"|\(\s*(?:music|applause|laughter|laughs|cheering|cheers|noise|inaudible)\s*\)"
+    r"|>>+",
+    re.IGNORECASE,
+)
+
+
+def _clean_cue_text(text: str) -> str:
+    """Strip [music]/(applause)/>> caption noise and collapse whitespace."""
+    cleaned = _CUE_NOISE_RE.sub(" ", text or "")
+    return " ".join(cleaned.split()).strip()
+
+
+# Trailing conjunction (optionally followed by a bare pronoun) that leaves a
+# headline hanging mid-thought, e.g. "…a tradition in India and it".
+_DANGLING_TAIL_RE = re.compile(
+    r"\s+(?:and|but|or|so|because|which|that|when|while|if)"
+    r"(?:\s+(?:it|they|he|she|we|you|i|this|these|those))?$",
+    re.IGNORECASE,
+)
+
+
+def _strip_dangling_tail(text: str) -> str:
+    cleaned = " ".join((text or "").split()).strip().rstrip(",;:–—-")
+    while True:
+        trimmed = _DANGLING_TAIL_RE.sub("", cleaned).rstrip(",;:–—-").strip()
+        if trimmed == cleaned or len(trimmed.split()) < 3:
+            return cleaned if len(trimmed.split()) < 3 else trimmed
+        cleaned = trimmed
+
+
+def _hook_carousel_title(video_name: str, hook_text: str) -> str:
+    """Readable carousel title: crafted hook label, never a raw transcript dump.
+
+    Verbatim hooks glued to the filename used to ship titles like
+    "<file> — Ghee more than a food it has been a tradition in India and it".
+    """
+    base = video_name.rsplit(".", 1)[0] if "." in video_name else video_name
+    base = " ".join((base or "").split()).strip()
+    raw = _clean_cue_text((hook_text or "").strip())
+    label = _heuristic_hook_line(raw)
+    if not label or not _hook_is_readable(label):
+        candidate = _complete_line(raw, max_len=72)
+        label = candidate if candidate and _hook_is_readable(candidate) else ""
+    label = _strip_dangling_tail(_complete_line(label, max_len=72)) if label else ""
+    if label:
+        return _complete_line(f"{base} — {label}", max_len=160) or label
+    return _complete_line(base, max_len=160) or "Carousel"
+
+
 async def _load_video_cues(
     session: AsyncSession, drive_file_id: str
 ) -> tuple[DriveFile, list[tuple[float, float | None, str]]]:
@@ -2806,15 +2869,18 @@ async def _load_video_cues(
         .order_by(VideoSegment.start_sec)
     )
     segments = list(seg_result.scalars().all())
-    cues = [
-        (
-            float(s.start_sec),
-            float(s.end_sec) if s.end_sec is not None else None,
-            (s.text or "").strip() or (s.vlm_description or "").strip(),
+    cues = []
+    for s in segments:
+        text = _clean_cue_text((s.text or "").strip() or (s.vlm_description or "").strip())
+        if not text:
+            continue
+        cues.append(
+            (
+                float(s.start_sec),
+                float(s.end_sec) if s.end_sec is not None else None,
+                text,
+            )
         )
-        for s in segments
-        if (s.text or "").strip() or (s.vlm_description or "").strip()
-    ]
     return drive_file, cues
 
 
@@ -3070,9 +3136,7 @@ async def _build_hook_carousels(
                 reserved_starts.add(round(float(s.get("timestamp_sec") or 0), 1))
             except (TypeError, ValueError):
                 pass
-        base = video_name.rsplit(".", 1)[0] if "." in video_name else video_name
-        hook_label = _complete_line((hook.text or "Hook").strip(), max_len=72)
-        title = _complete_line(f"{base} — {hook_label}", max_len=160)
+        title = _hook_carousel_title(video_name, hook.text or "")
         carousels.append(
             {
                 "id": f"hook_{idx + 1}",
@@ -5058,6 +5122,7 @@ def _line_exists_in_cues_near(
     lo = max(0.0, float(start_sec) - window_pad)
     hi = float(end_sec) if end_sec is not None else float(start_sec) + window_pad
     hi = max(hi, float(start_sec)) + window_pad
+    window_keys: list[str] = []
     for s, e, t in cues:
         cue_end = float(e) if e is not None else float(s) + 3.0
         if cue_end < lo or float(s) > hi:
@@ -5067,6 +5132,20 @@ def _line_exists_in_cues_near(
             continue
         if needle == hay or needle in hay or hay in needle:
             return True
+        window_keys.append(hay)
+    if not window_keys:
+        return False
+    # Rolling/auto captions split one spoken line across several short cues, so
+    # slide seeds stitched from consecutive cues never fit inside a single cue.
+    # Verify against the stitched window before declaring the text invented.
+    stitched = " ".join(window_keys)
+    if needle in stitched:
+        return True
+    needle_tokens = needle.split()
+    if len(needle_tokens) >= 6:
+        window_tokens = set(stitched.split())
+        matched = sum(1 for tok in needle_tokens if tok in window_tokens)
+        return matched / len(needle_tokens) >= 0.9
     return False
 
 
@@ -5107,26 +5186,39 @@ def _enforce_slides_match_transcript(
                 stats["ok"] += 1
                 slide["transcript_verified"] = True
                 continue
+            original_verified = bool(original) and _line_exists_in_cues_near(
+                original, cues, start_sec=start, end_sec=end
+            )
             # Crafted copy may stay if the seed is on the transcript and numbers
-            # are grounded — do not snap honest rewrites back to raw VTT.
-            if (
-                original
-                and _line_exists_in_cues_near(
-                    original, cues, start_sec=start, end_sec=end
+            # are grounded — do not snap honest rewrites back to raw VTT. Ground
+            # numbers against the whole spoken window, not just this slide's
+            # seed, so figures quoted a few seconds away stay legal.
+            window_lo = max(0.0, start - 8.0)
+            window_hi = max(end, start) + 8.0
+            window_text = " ".join(
+                t
+                for s, e, t in cues
+                if not (
+                    (float(e) if e is not None else float(s) + 3.0) < window_lo
+                    or float(s) > window_hi
                 )
-                and _hook_numbers_are_grounded(text, nearby)
+            )
+            if (
+                original_verified
+                and _hook_numbers_are_grounded(text, f"{nearby} {window_text}".strip())
                 and 4 <= len(text.split()) <= 22
             ):
                 stats["ok"] += 1
                 slide["transcript_verified"] = True
                 slide["copy_crafted"] = True
                 continue
-            if original and _line_exists_in_cues_near(
-                original, cues, start_sec=start, end_sec=end
-            ):
-                fixed = original
-            else:
-                fixed = nearby or _exact_text_for_span(cues, start, end)
+            # Snap to a clean exact one-liner first; the raw stitched seed is a
+            # last resort (it can be a mid-clause rolling-caption dump).
+            fixed = (
+                _exact_text_for_span(cues, start, end)
+                or (original if original_verified else "")
+                or nearby
+            )
             if not fixed:
                 stats["empty"] += 1
                 slide["transcript_verified"] = False

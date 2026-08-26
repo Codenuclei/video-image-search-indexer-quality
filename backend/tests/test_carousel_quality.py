@@ -8,8 +8,10 @@ from app.routers import carousel_script
 from app.routers.carousel_script import (
     TimedPick,
     _carousel_selection_hash,
+    _clean_cue_text,
     _enforce_slides_match_transcript,
     _faces_near_slide,
+    _hook_carousel_title,
     _strip_slide_ranking_fields,
     repair_duplicate_slides,
 )
@@ -162,6 +164,84 @@ def test_transcript_guard_keeps_grounded_crafted_copy() -> None:
     assert guard["snapped"] == 0
     assert guard["ok"] == 1
     assert carousels[0]["slides"][0]["transcript_text"] == crafted
+
+
+def test_transcript_guard_keeps_crafted_copy_when_seed_spans_rolling_cues() -> None:
+    # Rolling/auto captions split one spoken line across short cues; the seed
+    # stitched from them must still verify so crafted copy is not snapped back.
+    cues = [
+        (0.0, 5.0, "ghee more than a food it has been a tradition in India"),
+        (5.0, 10.0, "and it has continued till today which is why the ghee business"),
+    ]
+    seed = (
+        "ghee more than a food it has been a tradition in India "
+        "and it has continued till today"
+    )
+    crafted = "Ghee is a tradition in India, not just a food."
+    carousels = [
+        {
+            "slides": [
+                {
+                    **_slide(crafted, 0.0),
+                    "end_timestamp_sec": 10.0,
+                    "original_text": seed,
+                }
+            ]
+        }
+    ]
+    guard = _enforce_slides_match_transcript(carousels, cues)
+    assert guard["snapped"] == 0
+    assert guard["ok"] == 1
+    assert carousels[0]["slides"][0]["transcript_text"] == crafted
+    assert carousels[0]["slides"][0]["copy_crafted"] is True
+
+
+def test_transcript_guard_snaps_to_clean_cue_not_raw_seed() -> None:
+    cues = [
+        (10.0, 13.0, "The ghee market keeps growing every single year in India."),
+    ]
+    carousels = [
+        {
+            "slides": [
+                {
+                    **_slide("Totally invented marketing claim was written here", 10.0),
+                    "end_timestamp_sec": 13.0,
+                    "original_text": "junk words never spoken anywhere in this recording today",
+                }
+            ]
+        }
+    ]
+    guard = _enforce_slides_match_transcript(carousels, cues)
+    slide = carousels[0]["slides"][0]
+    assert guard["snapped"] == 1
+    assert slide["transcript_snapped"] is True
+    assert slide["transcript_text"].startswith("The ghee market keeps growing")
+    assert "junk words" not in slide["transcript_text"]
+
+
+def test_clean_cue_text_strips_caption_noise() -> None:
+    assert (
+        _clean_cue_text("there [music] each with its own benefits >> and process")
+        == "there each with its own benefits and process"
+    )
+    assert _clean_cue_text("[Music]") == ""
+    assert _clean_cue_text("(applause) welcome back") == "welcome back"
+
+
+def test_hook_carousel_title_never_ships_raw_dump() -> None:
+    video = "Behind the Scenes of a Ghee Startup.mp4"
+    dump = (
+        "Ghee more than a food it has been a tradition in India and it has "
+        "continued till today which is why the ghee business"
+    )
+    title = _hook_carousel_title(video, dump)
+    assert title.startswith("Behind the Scenes of a Ghee Startup")
+    assert "which is why the ghee business" not in title
+    assert not title.rstrip().endswith("and it")
+    assert "[music]" not in title.lower()
+
+    garbage = _hook_carousel_title(video, "[music] like like like")
+    assert garbage == "Behind the Scenes of a Ghee Startup"
 
 
 def test_algorithm_version_and_polish_copy_change_cache_identity(monkeypatch) -> None:
