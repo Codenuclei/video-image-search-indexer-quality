@@ -17,6 +17,7 @@ class RuntimeSettings:
     search_parallel_variants_enabled: bool
     search_use_captions: bool
     search_rerank_enabled: bool
+    search_semantic_min_score: float
     go_indexer_enabled: bool
     carousel_llm_provider: str
     openrouter_model: str
@@ -46,6 +47,7 @@ def _env_defaults() -> RuntimeSettings:
         search_parallel_variants_enabled=settings.search_parallel_variants_enabled,
         search_use_captions=settings.search_use_captions,
         search_rerank_enabled=settings.search_rerank_enabled,
+        search_semantic_min_score=max(0.0, min(1.0, settings.image_caption_min_score)),
         go_indexer_enabled=settings.go_indexer_enabled,
         # Default Claude-direct when Anthropic key is present; picker can override.
         carousel_llm_provider="claude"
@@ -80,6 +82,7 @@ def update_runtime_settings(
     search_parallel_variants_enabled: bool | None = None,
     search_use_captions: bool | None = None,
     search_rerank_enabled: bool | None = None,
+    search_semantic_min_score: float | None = None,
     go_indexer_enabled: bool | None = None,
     carousel_llm_provider: str | None = None,
     openrouter_model: str | None = None,
@@ -106,6 +109,8 @@ def update_runtime_settings(
         runtime.search_use_captions = search_use_captions
     if search_rerank_enabled is not None:
         runtime.search_rerank_enabled = search_rerank_enabled
+    if search_semantic_min_score is not None:
+        runtime.search_semantic_min_score = max(0.0, min(1.0, search_semantic_min_score))
     if go_indexer_enabled is not None:
         runtime.go_indexer_enabled = go_indexer_enabled
     if carousel_llm_provider is not None:

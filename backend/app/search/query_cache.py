@@ -15,12 +15,14 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import DriveFile, DriveFileStatus, Face, FaceCluster, Media, Person, SearchQueryCache
+from app.runtime_settings import get_runtime_settings
 from app.schemas import SearchResponse
 
 logger = logging.getLogger(__name__)
 
 # Balanced paraphrases in the same folder (e.g. "wine glass" ≈ "glass of wine").
 SEMANTIC_MIN_COSINE = 0.88
+SEARCH_CACHE_VERSION = "v3-face-cluster-person-search"
 # Exact repeats should stay fast while the indexer is continuously changing the
 # global library fingerprint. After this grace window, full fingerprint
 # validation restores freshness.
@@ -44,12 +46,14 @@ def make_cache_key(
     rerank: bool,
 ) -> str:
     payload = {
+        "version": SEARCH_CACHE_VERSION,
         "q": query.strip().lower(),
         "person": (person or "").strip().lower(),
         "mime": (mime or "all").strip().lower(),
         "folder": normalize_folder_path(folder_path),
         "captions": bool(captions),
         "rerank": bool(rerank),
+        "semantic_min_score": get_runtime_settings().search_semantic_min_score,
     }
     blob = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()

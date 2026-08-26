@@ -1,12 +1,13 @@
-"""Daily durable backups for Postgres + Qdrant (never wipe on folder/user change).
+"""Daily durable backups for Postgres + Qdrant.
 
 Rolling copies live under ``backup_dir/daily/`` with ``backup_retention_days``.
-Forever archives (deep-dive / carousel artifacts + full dumps marked keep) live
-under ``backup_dir/forever/`` and are **never** auto-deleted by retention.
+Carousel archives under ``backup_dir/forever/`` use the same retention window;
+long-term durability belongs to managed database/vector snapshots.
 """
 from __future__ import annotations
 
 import asyncio
+import gzip
 import json
 import logging
 import shutil
@@ -44,7 +45,7 @@ def _normalize_sync_dsn(url: str) -> str:
 
 
 async def export_carousel_deep_dives(dest: Path) -> int:
-    """Export carousel / deep-dive 2x generation artifacts as JSON (append-only file)."""
+    """Export carousel/deep-dive artifacts as compressed JSON."""
     dest.parent.mkdir(parents=True, exist_ok=True)
     sf = get_session_factory()
     async with sf() as session:
@@ -71,7 +72,15 @@ async def export_carousel_deep_dives(dest: Path) -> int:
         }
         for r in rows
     ]
-    dest.write_text(json.dumps({"exported_at": _stamp(), "count": len(payload), "items": payload}, default=str), encoding="utf-8")
+    serialized = json.dumps(
+        {"exported_at": _stamp(), "count": len(payload), "items": payload},
+        default=str,
+    )
+    if dest.suffix == ".gz":
+        with gzip.open(dest, "wt", encoding="utf-8", compresslevel=6) as handle:
+            handle.write(serialized)
+    else:
+        dest.write_text(serialized, encoding="utf-8")
     return len(payload)
 
 
@@ -111,7 +120,9 @@ async def backup_postgres(dest_dir: Path) -> dict[str, object]:
             )
         ).all()
         meta = {name: int(n or 0) for name, n in tables}
-    carousel_n = await export_carousel_deep_dives(dest_dir / f"carousel-deep-dives-{_stamp()}.json")
+    carousel_n = await export_carousel_deep_dives(
+        dest_dir / f"carousel-deep-dives-{_stamp()}.json.gz"
+    )
     sql_path.write_text(json.dumps({"tables": meta, "carousel_exports": carousel_n}, indent=2), encoding="utf-8")
     return {
         "ok": True,
@@ -171,6 +182,25 @@ def prune_daily_backups(daily_dir: Path, *, retention_days: int) -> int:
     return removed
 
 
+def prune_forever_backups(forever_dir: Path, *, retention_days: int) -> int:
+    """Prune app-volume archives by age; managed snapshots remain authoritative."""
+    if retention_days <= 0 or not forever_dir.is_dir():
+        return 0
+    cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+    removed = 0
+    for child in forever_dir.iterdir():
+        if not child.is_file():
+            continue
+        try:
+            mtime = datetime.fromtimestamp(child.stat().st_mtime, tz=timezone.utc)
+        except OSError:
+            continue
+        if mtime < cutoff:
+            child.unlink(missing_ok=True)
+            removed += 1
+    return removed
+
+
 async def run_daily_backup(*, promote_forever: bool = True) -> dict[str, object]:
     """Create today's backup under daily/; copy carousel deep-dives into forever/."""
     settings = get_settings()
@@ -184,10 +214,18 @@ async def run_daily_backup(*, promote_forever: bool = True) -> dict[str, object]
 
     pg = await backup_postgres(daily)
     qd = await asyncio.to_thread(backup_qdrant, daily)
-    carousel_forever = root / "forever" / f"carousel-deep-dives-{_stamp()}.json"
-    carousel_n = await export_carousel_deep_dives(carousel_forever)
+    carousel_forever = root / "forever" / f"carousel-deep-dives-{_stamp()}.json.gz"
+    carousel_n = (
+        await export_carousel_deep_dives(carousel_forever)
+        if promote_forever
+        else 0
+    )
 
     pruned = prune_daily_backups(root / "daily", retention_days=settings.backup_retention_days)
+    pruned_forever = prune_forever_backups(
+        root / "forever",
+        retention_days=settings.backup_retention_days,
+    )
 
     summary = {
         "ok": bool(pg.get("ok")) and bool(qd.get("ok") or qd.get("snapshots")),
@@ -197,16 +235,18 @@ async def run_daily_backup(*, promote_forever: bool = True) -> dict[str, object]
         "carousel_forever_rows": carousel_n,
         "carousel_forever_path": str(carousel_forever),
         "pruned_daily_dirs": pruned,
+        "pruned_forever_files": pruned_forever,
         "forever_dir": str(root / "forever"),
     }
     (daily / "summary.json").write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
     logger.info(
-        "Daily backup complete day=%s pg=%s qdrant_ok=%s carousel=%d pruned=%d",
+        "Daily backup complete day=%s pg=%s qdrant_ok=%s carousel=%d pruned=%d/%d",
         day,
         pg.get("tool"),
         qd.get("ok"),
         carousel_n,
         pruned,
+        pruned_forever,
     )
     return summary
 

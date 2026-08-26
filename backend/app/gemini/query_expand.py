@@ -19,28 +19,76 @@ from functools import lru_cache
 
 logger = logging.getLogger(__name__)
 
-_MAX_VARIANTS = 3
+_MAX_LLM_VARIANTS = 3
+
+
+def _normalize_query_typo(query: str) -> str:
+    """Normalize high-value search typos before embedding."""
+    return re.sub(r"\bgradutes\b", "graduates", query, flags=re.IGNORECASE)
+
+
+def _deterministic_variants(query: str) -> list[str]:
+    """Recall-critical variants that must not depend on an LLM response."""
+    lower = query.lower()
+    variants: list[str] = []
+    if re.search(r"\b(?:graduate|graduates|graduation|convocation)\b", lower):
+        variants.extend(
+            [
+                "graduates",
+                "graduation cap and academic gown",
+                "black and yellow graduation gowns and stoles",
+                "convocation ceremony",
+            ]
+        )
+    if re.search(r"\b(?:row|rowing|rower|rowers|rowerg|ergometer)\b", lower):
+        variants.extend(
+            [
+                "athletes using rowing machines",
+                "indoor rowing workout on Concept2 RowErg",
+            ]
+        )
+    if re.search(
+        r"\b(?:exercise|exercising|workout|fitness|gym|lifting|sled|squat|yoga)\b",
+        lower,
+    ):
+        variants.extend(
+            [
+                "people exercising in a gym",
+                "athletes doing a fitness workout",
+                "lifting weights pushing sleds and medicine ball exercise",
+            ]
+        )
+    return variants
 
 
 @lru_cache(maxsize=512)
 def expand_queries_sync(query: str) -> tuple[str, ...]:
-    """Return the original query plus up to _MAX_VARIANTS visual paraphrases."""
-    q = query.strip()
+    """Return normalized deterministic variants plus optional LLM paraphrases."""
+    q = _normalize_query_typo(query.strip())
     if not q:
         return ()
 
     from app.config import get_settings
 
     settings = get_settings()
+    base = [q, *_deterministic_variants(q)]
+    seen = set()
+    ordered: list[str] = []
+    for item in base:
+        key = item.lower()
+        if key not in seen:
+            seen.add(key)
+            ordered.append(item)
+
     if not settings.gemini_api_key:
-        return (q,)
+        return tuple(ordered)
 
     prompt = (
         "Rewrite this visual search query into short, concrete descriptions of what "
         "the scene would LOOK like on camera. Keep each under 8 words. Cover literal "
         "and closely-related interpretations.\n\n"
         f'Query: "{q}"\n\n'
-        f"Return ONLY a JSON array of {_MAX_VARIANTS} strings, no extra text."
+        f"Return ONLY a JSON array of {_MAX_LLM_VARIANTS} strings, no extra text."
     )
 
     try:
@@ -65,14 +113,14 @@ def expand_queries_sync(query: str) -> tuple[str, ...]:
                 variants = [str(v).strip() for v in arr if str(v).strip()]
     except Exception as exc:  # noqa: BLE001
         logger.debug("Query expansion failed for %r: %s", q, exc)
-        return (q,)
+        return tuple(ordered)
 
-    seen = {q.lower()}
-    ordered = [q]
+    added = 0
     for v in variants:
         if v.lower() not in seen:
             seen.add(v.lower())
             ordered.append(v)
-        if len(ordered) >= _MAX_VARIANTS + 1:
+            added += 1
+        if added >= _MAX_LLM_VARIANTS:
             break
     return tuple(ordered)

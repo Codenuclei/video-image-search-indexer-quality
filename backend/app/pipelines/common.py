@@ -399,7 +399,7 @@ def rasterize_svg_to_png(raw_bytes: bytes) -> bytes:
 
 def open_image_rgb(raw_bytes: bytes, *, file_name: str = ""):
     """Open arbitrary image bytes as RGB via Pillow (first frame for GIF/TIFF)."""
-    from PIL import Image
+    from PIL import Image, ImageOps
 
     register_image_plugins()
     if is_raw_filename(file_name):
@@ -433,6 +433,10 @@ def open_image_rgb(raw_bytes: bytes, *, file_name: str = ""):
             img.seek(0)
         except EOFError:
             pass
+    # Phone/camera JPEGs commonly store portrait orientation in EXIF while the
+    # encoded pixels remain landscape. Bake that transform into output pixels
+    # before RGB conversion strips the metadata.
+    img = ImageOps.exif_transpose(img)
     _downscale_if_huge(img)
     return img.convert("RGB")
 

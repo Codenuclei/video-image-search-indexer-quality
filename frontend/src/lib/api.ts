@@ -427,6 +427,7 @@ export type Settings = {
   search_parallel_variants_enabled: boolean;
   search_use_captions: boolean;
   search_rerank_enabled: boolean;
+  search_semantic_min_score: number;
   go_indexer_enabled: boolean;
 };
 
@@ -1057,7 +1058,7 @@ export const driveGoogleViewUrl = (driveFileId: string) =>
 
 /** Compressed JPEG for grids. Never Drive; never the original stream. */
 export const driveFileThumbnailUrl = (driveFileId: string) =>
-  `${API_BASE}/drive/files/${encodeURIComponent(driveFileId)}/thumbnail`;
+  `${API_BASE}/drive/files/${encodeURIComponent(driveFileId)}/thumbnail?v=2`;
 
 /** Full preview via backend stream/cache. Use only after click-to-enlarge. */
 export const driveFilePreviewUrl = (driveFileId: string, mimeType?: string) => {

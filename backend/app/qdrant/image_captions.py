@@ -19,6 +19,43 @@ from qdrant_client.models import Distance, PointStruct, VectorParams
 logger = logging.getLogger(__name__)
 
 _DIM = 3072
+_GENERIC_CAPTION_RE = re.compile(
+    r"^(?:a|an|the)?\s*(?:completely\s+)?(?:black|blank|empty)\s+image\.?$|"
+    r"^(?:a|an|the)?\s*image\s+(?:of|showing)\s+(?:some\s+)?people\.?$|"
+    r"^(?:no|without)\s+visible\s+content\.?$",
+    re.IGNORECASE,
+)
+_LEXICAL_STOP_WORDS = frozenset({
+    "a", "an", "and", "are", "at", "for", "from", "in", "of", "on", "or",
+    "photo", "photos", "image", "images", "picture", "pictures", "show", "showing",
+    "the", "to", "with",
+})
+_GRADUATION_CONCEPT_RE = re.compile(
+    r"\b(?:graduat\w*|convocation|mortarboards?|academic\s+gowns?|"
+    r"graduation\s+caps?|yellow\s+stoles?|black\s+and\s+yellow\s+(?:robes?|gowns?))\b",
+    re.IGNORECASE,
+)
+
+
+def caption_matches_query_text(caption: str, query: str) -> bool:
+    """Lexical recall path used alongside vector similarity."""
+    cap = caption.lower()
+    normalized_query = re.sub(r"\bgradutes\b", "graduates", query.lower())
+    if re.search(r"\b(?:graduate|graduates|graduation|convocation)\b", normalized_query):
+        return bool(_GRADUATION_CONCEPT_RE.search(caption))
+    tokens = [
+        token
+        for token in re.findall(r"\w+", normalized_query)
+        if len(token) >= 3 and token not in _LEXICAL_STOP_WORDS
+    ]
+    if not tokens:
+        return False
+    return all(
+        token in cap
+        or (token.endswith("s") and token[:-1] in cap)
+        or (not token.endswith("s") and f"{token}s" in cap)
+        for token in tokens
+    )
 
 
 @lru_cache(maxsize=1)
@@ -53,6 +90,11 @@ def is_valid_caption(text: str | None, *, min_words: int | None = None) -> bool:
     threshold = min_words if min_words is not None else get_settings().image_caption_min_words
     cleaned = (text or "").strip()
     if not cleaned:
+        return False
+    if _GENERIC_CAPTION_RE.fullmatch(cleaned):
+        return False
+    lowered = cleaned.lower()
+    if "blank image" in lowered and "no visible content" in lowered:
         return False
     return caption_word_count(cleaned) >= max(1, threshold)
 
@@ -148,19 +190,41 @@ def delete_caption_sync(drive_file_id: str) -> None:
 def search_captions_sync(
     query_vector: list[float],
     *,
-    limit: int = 30,
+    limit: int | None = 30,
     min_score: float = 0.0,
+    page_size: int = 200,
 ) -> list[dict]:
     from app.config import get_settings
 
     client = _client()
-    hits = client.query_points(
-        get_settings().qdrant_image_captions_collection,
-        query=query_vector,
-        limit=limit,
-        score_threshold=min_score if min_score > 0 else None,
-        with_payload=True,
-    ).points
+    collection = get_settings().qdrant_image_captions_collection
+    if limit is not None:
+        hits = client.query_points(
+            collection,
+            query=query_vector,
+            limit=limit,
+            score_threshold=min_score if min_score > 0 else None,
+            with_payload=True,
+        ).points
+    else:
+        hits = []
+        offset = 0
+        batch_size = max(1, page_size)
+        while True:
+            page = client.query_points(
+                collection,
+                query=query_vector,
+                limit=batch_size,
+                offset=offset,
+                score_threshold=min_score if min_score > 0 else None,
+                with_payload=True,
+            ).points
+            if not page:
+                break
+            hits.extend(page)
+            if len(page) < batch_size:
+                break
+            offset += len(page)
     return [
         {
             "drive_file_id": h.payload["drive_file_id"],
@@ -168,7 +232,43 @@ def search_captions_sync(
             "caption": h.payload.get("caption", ""),
         }
         for h in hits
+        if is_valid_caption(str(h.payload.get("caption") or ""))
     ]
+
+
+def search_caption_keywords_sync(
+    query: str,
+    *,
+    page_size: int = 500,
+) -> list[dict]:
+    """Return every valid caption with a direct query/concept text match."""
+    from app.config import get_settings
+
+    client = _client()
+    collection = get_settings().qdrant_image_captions_collection
+    offset = None
+    matches: list[dict] = []
+    while True:
+        points, offset = client.scroll(
+            collection_name=collection,
+            limit=max(1, page_size),
+            offset=offset,
+            with_payload=True,
+            with_vectors=False,
+        )
+        for point in points:
+            payload = point.payload or {}
+            caption = str(payload.get("caption") or "")
+            if is_valid_caption(caption) and caption_matches_query_text(caption, query):
+                matches.append(
+                    {
+                        "drive_file_id": payload["drive_file_id"],
+                        "caption": caption,
+                    }
+                )
+        if offset is None:
+            break
+    return matches
 
 
 def get_captions_by_ids_sync(drive_file_ids: list[str]) -> dict[str, str]:
@@ -179,17 +279,19 @@ def get_captions_by_ids_sync(drive_file_ids: list[str]) -> dict[str, str]:
         return {}
     client = _client()
     id_map = {_point_id(fid): fid for fid in drive_file_ids}
-    found = client.retrieve(
-        collection_name=get_settings().qdrant_image_captions_collection,
-        ids=list(id_map.keys()),
-        with_payload=True,
-        with_vectors=False,
-    )
     out: dict[str, str] = {}
-    for point in found:
-        fid = id_map.get(point.id)
-        if fid and point.payload:
-            out[fid] = str(point.payload.get("caption") or "")
+    point_ids = list(id_map)
+    for start in range(0, len(point_ids), 500):
+        found = client.retrieve(
+            collection_name=get_settings().qdrant_image_captions_collection,
+            ids=point_ids[start : start + 500],
+            with_payload=True,
+            with_vectors=False,
+        )
+        for point in found:
+            fid = id_map.get(point.id)
+            if fid and point.payload:
+                out[fid] = str(point.payload.get("caption") or "")
     return out
 
 
@@ -201,13 +303,17 @@ def existing_caption_ids_sync(drive_file_ids: list[str]) -> set[str]:
         return set()
     client = _client()
     id_map = {_point_id(fid): fid for fid in drive_file_ids}
-    found = client.retrieve(
-        collection_name=get_settings().qdrant_image_captions_collection,
-        ids=list(id_map.keys()),
-        with_payload=False,
-        with_vectors=False,
-    )
-    return {id_map[p.id] for p in found if p.id in id_map}
+    found_ids: set[str] = set()
+    point_ids = list(id_map)
+    for start in range(0, len(point_ids), 500):
+        found = client.retrieve(
+            collection_name=get_settings().qdrant_image_captions_collection,
+            ids=point_ids[start : start + 500],
+            with_payload=False,
+            with_vectors=False,
+        )
+        found_ids.update(id_map[p.id] for p in found if p.id in id_map)
+    return found_ids
 
 
 def collection_info_sync() -> dict:

@@ -7,7 +7,15 @@ from dataclasses import dataclass
 from sqlalchemy import exists, func, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import DriveFile, DriveFileStatus, Face, Media, MediaType, Person
+from app.db.models import (
+    DriveFile,
+    DriveFileStatus,
+    Face,
+    FaceCluster,
+    Media,
+    MediaType,
+    Person,
+)
 from app.gemini.tags import person_names_for_drive_file
 from app.drive.display_name import drive_file_display_name
 from app.schemas import SearchResultFile
@@ -26,7 +34,9 @@ _ACTION_PATTERN = re.compile(
     r"sit|sitting|stand|standing|walk|walking|run|running|eat|eating|wear|wearing|"
     r"talk|talking|speak|speaking|chat|chatting|discuss|discussing|conversation|conversing|"
     r"cook|cooking|chop|chopping|grill|grilling|bake|baking|fry|frying|prepare|preparing|"
-    r"dance|dancing|play|playing|study|studying|work|working|present|presenting)\b",
+    r"dance|dancing|play|playing|study|studying|work|working|present|presenting|"
+    r"row|rowing|exercise|exercising|workout|workouts|lift|lifting|push|pushing|"
+    r"throw|throwing|squat|squatting|sled|yoga)\b",
     re.IGNORECASE,
 )
 
@@ -39,6 +49,8 @@ _ACTION_WORDS = frozenset({
     "cook", "cooking", "chop", "chopping", "grill", "grilling", "bake", "baking",
     "fry", "frying", "prepare", "preparing", "dance", "dancing", "play", "playing",
     "study", "studying", "work", "working", "present", "presenting",
+    "row", "rowing", "exercise", "exercising", "workout", "workouts", "lift", "lifting",
+    "push", "pushing", "throw", "throwing", "squat", "squatting", "sled", "yoga",
     "with", "and",
 })
 
@@ -54,6 +66,19 @@ _ACTION_KEYWORD_GROUPS: dict[str, frozenset[str]] = {
     "study": frozenset({"study", "studying", "reading", "book", "library", "homework"}),
     "work": frozenset({"work", "working", "workshop", "tools", "electronics", "building"}),
     "present": frozenset({"present", "presenting", "presentation", "podium", "stage", "lecture"}),
+    "rowing": frozenset({
+        "rowing", "rower", "rowers", "rowing machine", "rowerg", "ergometer",
+        "concept2", "concept 2", "oar", "oars",
+    }),
+    "exercise": frozenset({
+        "exercise", "exercising", "workout", "workouts", "fitness", "gym", "training",
+        "pushup", "pushups", "push-up", "push-ups", "situp", "situps", "sit-up",
+        "sit-ups", "squat", "squats", "squatting", "medicine ball", "wall ball",
+        "sled", "athletic", "yoga",
+    }),
+    "lift": frozenset({
+        "lift", "lifting", "weight", "weights", "weightlifting", "barbell", "dumbbell",
+    }),
     "give": frozenset({
         "give", "giving", "hand", "handing", "cheque", "cheques", "check", "checks",
         "award", "prize", "certificate", "ceremonial", "ceremony", "scholarship",
@@ -67,7 +92,9 @@ _PEOPLE_WORDS = frozenset({
     "face", "faces", "portrait", "portraits", "selfie", "selfies",
 })
 
-_STUDENT_LIKE = r"(?:students?|graduates?|alumni|alumnus|alumnae)"
+# Query-role parsing is deliberately strict: graduate/alumni concepts are broad
+# visual searches, not aliases for the manually assigned student face role.
+_STUDENT_LIKE = r"(?:students?)"
 _CO_OCCUR_WITH_STUDENTS = re.compile(
     rf"\b(?:with|and)\s+{_STUDENT_LIKE}\b|\b{_STUDENT_LIKE}\s+(?:with|and)\b",
     re.IGNORECASE,
@@ -608,14 +635,14 @@ def finalize_action_search_results(
     results: list[SearchResultFile],
     keyword_matched: list[SearchResultFile],
     *,
-    max_results: int = 12,
+    max_results: int | None = None,
 ) -> list[SearchResultFile]:
-    """Keyword-confirmed hits first; cap total so tail trash is dropped."""
+    """Keyword-confirmed hits first; preserve every unique relevant result."""
     if not results:
-        return keyword_matched[:max_results]
+        return list(keyword_matched)
 
     kw_ids = {f.drive_file_id for f in keyword_matched}
-    primary = [f for f in keyword_matched if f.drive_file_id in {r.drive_file_id for r in results}]
+    primary = list(keyword_matched)
     secondary = [f for f in results if f.drive_file_id not in kw_ids]
 
     seen: set[str] = set()
@@ -625,17 +652,17 @@ def finalize_action_search_results(
             continue
         seen.add(item.drive_file_id)
         ordered.append(item)
-        if len(ordered) >= max_results:
+        if max_results is not None and len(ordered) >= max_results:
             break
     return ordered
 
 
 def dedupe_search_files(files: list[SearchResultFile]) -> list[SearchResultFile]:
-    """Drop duplicate filenames (same asset synced in multiple folders)."""
+    """Drop repeated merge hits without hiding distinct Drive files."""
     seen: set[str] = set()
     out: list[SearchResultFile] = []
     for item in files:
-        key = item.name.strip().lower()
+        key = item.drive_file_id
         if key in seen:
             continue
         seen.add(key)
@@ -726,7 +753,7 @@ async def resolve_search_context(
 
 
 def _person_face_exists_clause(person_name: str):
-    return exists(
+    direct = exists(
         select(1)
         .select_from(Face)
         .join(Media, Media.id == Face.media_id)
@@ -734,6 +761,16 @@ def _person_face_exists_clause(person_name: str):
         .where(Media.drive_file_id == DriveFile.id)
         .where(Person.name.ilike(person_name))
     )
+    clustered = exists(
+        select(1)
+        .select_from(Face)
+        .join(Media, Media.id == Face.media_id)
+        .join(FaceCluster, FaceCluster.id == Face.cluster_id)
+        .join(Person, Person.id == FaceCluster.person_id)
+        .where(Media.drive_file_id == DriveFile.id)
+        .where(Person.name.ilike(person_name))
+    )
+    return or_(direct, clustered)
 
 
 def _min_faces_in_file_clause(*, min_faces: int = 2):
@@ -1168,7 +1205,8 @@ async def find_matching_files(
             stmt = stmt.where(or_(DriveFile.name.ilike(pattern), DriveFile.path.ilike(pattern)))
 
     stmt = stmt.distinct().order_by(DriveFile.path)
-    stmt = stmt.limit(500 if names else 100)
+    if not names:
+        stmt = stmt.limit(100)
     drive_files = list((await session.execute(stmt)).scalars().all())
 
     results: list[SearchResultFile] = []

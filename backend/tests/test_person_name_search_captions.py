@@ -1,11 +1,13 @@
 """Person-only queries skip captions; person+action still allows them."""
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from app.search.local import (
+    _person_face_exists_clause,
     find_person_names_in_query,
+    find_matching_files,
     is_action_query,
     is_weak_person_visual,
     normalize_person_key,
@@ -61,6 +63,29 @@ def test_person_only_with_captions_toggle_forces_captions_off():
         assert decision["person_focused"] is True
         assert decision["person_action"] is False
         assert decision["use_captions"] is False
+
+
+def test_person_lookup_clause_includes_direct_and_cluster_identity():
+    sql = str(_person_face_exists_clause("Pratham Mittal")).lower()
+    assert "faces.person_id" in sql
+    assert "face_clusters" in sql
+
+
+@pytest.mark.asyncio
+async def test_person_lookup_has_no_result_limit():
+    result = MagicMock()
+    result.scalars.return_value.all.return_value = []
+    session = AsyncMock()
+    session.execute.return_value = result
+
+    assert await find_matching_files(
+        session,
+        "",
+        person_names=["Pratham Mittal"],
+    ) == []
+
+    sql = str(session.execute.await_args.args[0]).lower()
+    assert " limit " not in f" {sql} "
 
 
 def test_person_plus_action_keeps_captions():

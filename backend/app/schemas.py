@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class DriveFileOut(BaseModel):
@@ -130,6 +130,7 @@ class SettingsOut(BaseModel):
     search_parallel_variants_enabled: bool
     search_use_captions: bool
     search_rerank_enabled: bool
+    search_semantic_min_score: float
     go_indexer_enabled: bool
     carousel_llm_provider: str = "auto"
     openrouter_model: str = "anthropic/claude-sonnet-4"
@@ -150,6 +151,7 @@ class SettingsUpdate(BaseModel):
     search_parallel_variants_enabled: bool | None = None
     search_use_captions: bool | None = None
     search_rerank_enabled: bool | None = None
+    search_semantic_min_score: float | None = Field(default=None, ge=0.0, le=1.0)
     go_indexer_enabled: bool | None = None
     carousel_llm_provider: str | None = None
     openrouter_model: str | None = None

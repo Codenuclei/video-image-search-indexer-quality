@@ -73,18 +73,39 @@ def delete_image_sync(drive_file_id: str) -> None:
 def search_images_sync(
     query_vector: list[float],
     *,
-    limit: int = 20,
+    limit: int | None = 20,
     min_score: float = 0.0,
+    page_size: int = 200,
 ) -> list[dict]:
     from app.config import get_settings
 
     client = _client()
-    hits = client.query_points(
-        get_settings().qdrant_images_collection,
-        query=query_vector,
-        limit=limit,
-        score_threshold=min_score if min_score > 0 else None,
-    ).points
+    collection = get_settings().qdrant_images_collection
+    if limit is not None:
+        hits = client.query_points(
+            collection,
+            query=query_vector,
+            limit=limit,
+            score_threshold=min_score if min_score > 0 else None,
+        ).points
+    else:
+        hits = []
+        offset = 0
+        batch_size = max(1, page_size)
+        while True:
+            page = client.query_points(
+                collection,
+                query=query_vector,
+                limit=batch_size,
+                offset=offset,
+                score_threshold=min_score if min_score > 0 else None,
+            ).points
+            if not page:
+                break
+            hits.extend(page)
+            if len(page) < batch_size:
+                break
+            offset += len(page)
     return [
         {"drive_file_id": h.payload["drive_file_id"], "score": h.score}
         for h in hits

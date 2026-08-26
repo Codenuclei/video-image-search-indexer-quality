@@ -16,11 +16,16 @@ from app.storage import ensure_disk_space
 
 THUMB_MAX_EDGE = 480
 JPEG_QUALITY = 72
+THUMB_CACHE_VERSION = "v2-exif"
 
 
 def image_thumb_path(settings: Settings | None, drive_file_id: str) -> Path:
     settings = settings or get_settings()
-    return Path(settings.thumbnail_dir) / "images" / f"{drive_file_id}.jpg"
+    return (
+        Path(settings.thumbnail_dir)
+        / "images"
+        / f"{drive_file_id}.{THUMB_CACHE_VERSION}.jpg"
+    )
 
 
 def write_image_thumbnail(

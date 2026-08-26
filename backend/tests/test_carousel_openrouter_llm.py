@@ -27,6 +27,7 @@ def _runtime(**overrides: object) -> RuntimeSettings:
         search_parallel_variants_enabled=False,
         search_use_captions=True,
         search_rerank_enabled=False,
+        search_semantic_min_score=0.32,
         go_indexer_enabled=False,
         carousel_llm_provider="auto",
         openrouter_model="anthropic/claude-sonnet-4",

@@ -27,6 +27,7 @@ def _runtime(**overrides: object) -> RuntimeSettings:
         search_parallel_variants_enabled=False,
         search_use_captions=True,
         search_rerank_enabled=False,
+        search_semantic_min_score=0.32,
         go_indexer_enabled=False,
         carousel_llm_provider="auto",
         claude_model="claude-sonnet-4-5-20250929",
@@ -53,6 +54,7 @@ async def test_refresh_runtime_settings_from_db_updates_memory_cache():
     row.search_parallel_variants_enabled = False
     row.search_use_captions = True
     row.search_rerank_enabled = False
+    row.search_semantic_min_score = 0.41
     row.go_indexer_enabled = False
     row.carousel_llm_provider = "openrouter"
     row.openrouter_model = "google/gemini-2.5-pro"
@@ -65,6 +67,7 @@ async def test_refresh_runtime_settings_from_db_updates_memory_cache():
     assert runtime.auto_index_interval_seconds == 45
     assert runtime.carousel_llm_provider == "openrouter"
     assert runtime.openrouter_model == "google/gemini-2.5-pro"
+    assert runtime.search_semantic_min_score == 0.41
     assert get_runtime_settings().auto_index_enabled is True
 
 

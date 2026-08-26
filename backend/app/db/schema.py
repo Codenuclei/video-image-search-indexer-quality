@@ -92,6 +92,16 @@ async def ensure_schema(engine: AsyncEngine) -> None:
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         await conn.run_sync(Base.metadata.create_all)
 
+        # Required by the current ORM at startup. Keep this ahead of the warm-DB
+        # shortcut so a newly introduced setting cannot be skipped.
+        await _ensure_column(
+            conn,
+            "app_settings",
+            "search_semantic_min_score",
+            "ALTER TABLE app_settings ADD COLUMN search_semantic_min_score "
+            "DOUBLE PRECISION NOT NULL DEFAULT 0.32",
+        )
+
         # Warm prod DBs already have additive columns. Skip ALTER TABLE entirely —
         # even IF NOT EXISTS takes AccessExclusiveLock and can 503 the API on boot.
         warm = await _column_exists(conn, "drive_files", "archived_at")

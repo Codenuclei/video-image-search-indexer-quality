@@ -9,8 +9,8 @@ import {
   FolderOpen,
   HardDrive,
   Image as ImageIcon,
-  ImagePlus,
   LogOut,
+  ScanFace,
   Search,
   Settings,
   Users,
@@ -333,7 +333,7 @@ export function TestShell({ children }: { children: React.ReactNode }) {
                   onClick={() => uploadRef.current?.click()}
                   className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
                 >
-                  <ImagePlus size={15} />
+                  <ScanFace size={15} />
                 </button>
                 {(reverseFaceFile || reverseFaceResult) && (
                   <button

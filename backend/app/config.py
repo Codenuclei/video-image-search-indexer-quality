@@ -228,7 +228,9 @@ class Settings(BaseSettings):
     gemini_video_min_score: float = 0.25
     gemini_video_display_min_score: float = 0.32   # cosine threshold — lower = more recall
     gemini_transcript_min_score: float = 0.35
-    gemini_image_result_limit: int = 30
+    # Internal Qdrant page size only; image search continues until every
+    # above-threshold candidate is collected and returned in relevance order.
+    gemini_image_result_limit: int = 200
     gemini_image_min_score: float = 0.25
 
     # Query expansion (LLM rewrites → multi-vector fusion) for higher recall
@@ -246,14 +248,15 @@ class Settings(BaseSettings):
     # Fusion of visual (image-embedding) and caption (text-embedding) cosine.
     image_visual_weight: float = 0.4
     image_caption_weight: float = 0.6
-    image_caption_min_score: float = 0.55     # caption text-match precision gate
+    image_caption_min_score: float = 0.32     # recall gate; reranking handles precision
     image_visual_strong_score: float = 0.50   # keep on strong visual alone
 
     # Durable backups (Postgres + Qdrant + carousel/deep-dive forever archives).
     backup_enabled: bool = True
     backup_dir: str = "./data/backups"
-    # Rolling daily retention only — forever/ is never pruned.
-    backup_retention_days: int = 14
+    # Keep all on-volume backup archives for three days; durable history belongs
+    # in managed Postgres/Qdrant snapshots rather than an ever-growing app volume.
+    backup_retention_days: int = 3
     backup_interval_seconds: int = 86400
     # Async SQLAlchemy pool — must fit under Postgres max_connections (200).
     # Budget: WEB_CONCURRENCY × (pool_size + max_overflow) << max_connections.

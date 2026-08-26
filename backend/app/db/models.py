@@ -325,6 +325,7 @@ class AppSettings(Base):
     search_parallel_variants_enabled: Mapped[bool] = mapped_column(default=False, nullable=False)
     search_use_captions: Mapped[bool] = mapped_column(default=False, nullable=False)
     search_rerank_enabled: Mapped[bool] = mapped_column(default=True, nullable=False)
+    search_semantic_min_score: Mapped[float] = mapped_column(Float, default=0.32, nullable=False)
     go_indexer_enabled: Mapped[bool] = mapped_column(default=False, nullable=False)
     # Carousel LLM: auto | openrouter | claude | gemini (key stays in env).
     carousel_llm_provider: Mapped[str] = mapped_column(String, default="auto", nullable=False)

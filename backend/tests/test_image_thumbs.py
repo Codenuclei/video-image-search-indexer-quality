@@ -9,7 +9,7 @@ import pytest
 from PIL import Image
 
 from app.config import Settings
-from app.drive.image_thumbs import THUMB_MAX_EDGE, write_image_thumbnail
+from app.drive.image_thumbs import THUMB_MAX_EDGE, image_thumb_path, write_image_thumbnail
 from app.routers.drive import thumbnail_drive_file
 
 
@@ -73,7 +73,7 @@ async def test_thumbnail_builds_from_media_cache_not_drive(tmp_path: Path) -> No
 
     assert response.status_code == 200
     client_cls.assert_not_called()
-    thumb = tmp_path / "thumbs" / "images" / "drive-2.jpg"
+    thumb = image_thumb_path(settings, "drive-2")
     assert thumb.is_file()
     assert thumb.stat().st_size < cached.stat().st_size
 
@@ -110,7 +110,7 @@ async def test_thumbnail_downloads_once_writes_compressed_never_streams(tmp_path
 
     assert response.status_code == 200
     assert response.media_type == "image/jpeg"
-    thumb = tmp_path / "thumbs" / "images" / "drive-3.jpg"
+    thumb = image_thumb_path(settings, "drive-3")
     assert thumb.is_file()
     assert thumb.stat().st_size < orig.stat().st_size
     # Must be FileResponse of thumb path, not a StreamingResponse of the original.

@@ -8,9 +8,15 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from PIL import Image
 
 from app.config import Settings
-from app.workers.backup import prune_daily_backups, restore_dry_run
+from app.workers.backup import (
+    prune_daily_backups,
+    prune_forever_backups,
+    restore_dry_run,
+)
+from scripts.compact_volume import compact_thumbnails
 
 
 def test_db_pool_fits_under_max_connections_200():
@@ -24,7 +30,7 @@ def test_db_pool_fits_under_max_connections_200():
     assert 8 * (pool + overflow) < 200
 
 
-def test_prune_daily_never_touches_forever(tmp_path: Path):
+def test_backup_retention_prunes_daily_and_forever(tmp_path: Path):
     daily = tmp_path / "daily"
     forever = tmp_path / "forever"
     daily.mkdir()
@@ -36,13 +42,36 @@ def test_prune_daily_never_touches_forever(tmp_path: Path):
     import os
 
     os.utime(old, (old_ts, old_ts))
-    keep = forever / "carousel-deep-dives-keep.json"
-    keep.write_text("[]", encoding="utf-8")
+    old_archive = forever / "carousel-deep-dives-old.json.gz"
+    old_archive.write_text("[]", encoding="utf-8")
+    os.utime(old_archive, (old_ts, old_ts))
 
-    removed = prune_daily_backups(daily, retention_days=14)
+    removed = prune_daily_backups(daily, retention_days=3)
+    removed_forever = prune_forever_backups(forever, retention_days=3)
     assert removed == 1
+    assert removed_forever == 1
     assert not old.exists()
-    assert keep.exists()
+    assert not old_archive.exists()
+
+
+def test_compact_thumbnails_reduces_large_jpeg(tmp_path: Path):
+    source = tmp_path / "video" / "file" / "1.000.jpg"
+    source.parent.mkdir(parents=True)
+    Image.effect_noise((2000, 1500), 80).convert("RGB").save(
+        source,
+        "JPEG",
+        quality=95,
+    )
+    before = source.stat().st_size
+
+    scanned, compacted, reclaimed = compact_thumbnails(tmp_path, apply=True)
+
+    assert scanned == 1
+    assert compacted == 1
+    assert reclaimed > 0
+    assert source.stat().st_size < before
+    with Image.open(source) as compact:
+        assert max(compact.size) <= 1280
 
 
 @pytest.mark.asyncio

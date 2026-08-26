@@ -24,6 +24,8 @@ import {
   useSearchSession,
 } from "@/lib/search-session";
 
+const SEARCH_RESULTS_PAGE_SIZE = 30;
+
 function formatTimestamp(sec: number): string {
   const m = Math.floor(sec / 60);
   const s = Math.floor(sec % 60);
@@ -93,6 +95,8 @@ export function SearchPage({
     previewMoment,
     linkedinMap,
   } = useSearchSession();
+  const [visibleFileCount, setVisibleFileCount] = useState(SEARCH_RESULTS_PAGE_SIZE);
+  const loadMoreRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     hydrateSearchCatalogs();
@@ -106,6 +110,28 @@ export function SearchPage({
   const files = (results?.files ?? []).filter(
     (f) => f.score != null || !f.mime_type.startsWith("image/")
   );
+  const visibleFiles = files.slice(0, visibleFileCount);
+
+  useEffect(() => {
+    setVisibleFileCount(SEARCH_RESULTS_PAGE_SIZE);
+  }, [results]);
+
+  useEffect(() => {
+    const sentinel = loadMoreRef.current;
+    if (!sentinel || visibleFileCount >= files.length) return;
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (!entry.isIntersecting) return;
+        setVisibleFileCount((current) =>
+          Math.min(current + SEARCH_RESULTS_PAGE_SIZE, files.length)
+        );
+      },
+      { rootMargin: "600px 0px" }
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [files.length, visibleFileCount]);
 
   return (
     <div className="space-y-6">
@@ -235,11 +261,14 @@ export function SearchPage({
           {files.length === 0 ? (
             <p className="text-sm text-muted-foreground">No matching files in your Drive index.</p>
           ) : (
-            <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              {files.map((file) => {
+            <>
+              <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              {visibleFiles.map((file) => {
                 const driveUrl = `https://drive.google.com/file/d/${file.drive_file_id}/view`;
                 const downloadUrl = driveFileDownloadUrl(file.drive_file_id);
                 const isImage = file.mime_type.startsWith("image/");
+                const pathParts = file.path.split("/").filter(Boolean);
+                const topLevelFolder = pathParts.length > 1 ? pathParts[0] : null;
                 return (
                   <li
                     key={file.drive_file_id}
@@ -269,9 +298,13 @@ export function SearchPage({
                           </span>
                         )}
                       </div>
-                      <p className="break-all text-xs text-muted-foreground" title={file.path}>
-                        {file.path}
-                      </p>
+                      {topLevelFolder && (
+                        <p className="truncate text-xs" title={file.path}>
+                          <span className="inline-block max-w-full truncate rounded border border-cyan-500/30 bg-cyan-500/10 px-1.5 py-0.5 font-medium text-cyan-700 dark:text-cyan-300">
+                            {topLevelFolder}
+                          </span>
+                        </p>
+                      )}
                       {file.caption && (
                         <p className="line-clamp-2 text-xs text-muted-foreground/90" title={file.caption}>
                           {file.caption}
@@ -298,7 +331,19 @@ export function SearchPage({
                   </li>
                 );
               })}
-            </ul>
+              </ul>
+              {visibleFileCount < files.length && (
+                <div
+                  ref={loadMoreRef}
+                  className="flex min-h-20 items-center justify-center text-sm text-muted-foreground"
+                  aria-label="Loading more search results"
+                >
+                  <LoadingLabel size={14}>
+                    Showing {visibleFiles.length} of {files.length} — scroll for more
+                  </LoadingLabel>
+                </div>
+              )}
+            </>
           )}
         </section>
       )}
