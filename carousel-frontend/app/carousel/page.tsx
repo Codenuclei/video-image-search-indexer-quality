@@ -42,6 +42,7 @@ import {
   driveVideoStreamUrl,
   formatApiError,
   prependUniqueById,
+  studioLlmFields,
   type CarouselGeneratedItem,
   type CarouselGenerationSaveListItem,
   type CarouselLayouts,
@@ -1296,6 +1297,7 @@ export default function CarouselSearchPage() {
           // Explicit Generate must always fall through to Gemini on cache miss.
           generate: true,
           force,
+          ...studioLlmFields(),
         };
         let res = await apiClient.carouselPipelineGenerate(body);
         const empty =
@@ -1398,6 +1400,7 @@ export default function CarouselSearchPage() {
       const res = await apiClient.carouselPipelineSelectImages({
         drive_file_id: selectedVideo.id,
         carousels: generatedCarousels,
+        ...studioLlmFields(),
       });
       const list = (res.carousels ?? []).map((c) => ({
         ...c,

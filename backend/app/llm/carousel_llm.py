@@ -226,6 +226,70 @@ def openrouter_slug_for_direct(provider: str, model_id: str) -> str:
     return mid
 
 
+def vision_hops(pack: CarouselLlmKwargs | dict[str, Any]) -> list[tuple[str, str, str]]:
+    """Ready vision hops as ``(provider, model_id, api_key)`` honoring the studio picker.
+
+    Same hop order as ``_llm_complete_json`` so Claude/Gemini on OpenRouter
+    stay on OpenRouter instead of falling through to a hardcoded Gemini id.
+    """
+    pref = normalize_carousel_llm_provider(pack.get("provider"))
+    or_key = (pack.get("openrouter_api_key") or "").strip()
+    or_model = (pack.get("openrouter_model") or "").strip()
+    claude_key = (pack.get("claude_api_key") or "").strip()
+    claude_model = (pack.get("claude_model") or "").strip()
+    gemini_key = (pack.get("api_key") or "").strip()
+    gemini_model = (pack.get("model") or "").strip()
+    if pref == "claude":
+        or_model = openrouter_slug_for_direct("claude", claude_model) or or_model
+    elif pref == "gemini":
+        or_model = openrouter_slug_for_direct("gemini", gemini_model) or or_model
+
+    names: list[str] = []
+    if pref == "auto":
+        if claude_key:
+            names.append("claude")
+        if or_key and or_model:
+            names.append("openrouter")
+        if gemini_key and gemini_model:
+            names.append("gemini")
+    elif pref == "openrouter":
+        names.append("openrouter")
+        if claude_key:
+            names.append("claude")
+        if gemini_key and gemini_model:
+            names.append("gemini")
+    elif pref == "claude":
+        if or_key and or_model and prefer_openrouter_first("claude", claude_model):
+            names.extend(["openrouter", "claude"])
+        else:
+            names.append("claude")
+            if or_key and or_model:
+                names.append("openrouter")
+    elif pref == "gemini":
+        if or_key and or_model and prefer_openrouter_first("gemini", gemini_model):
+            names.extend(["openrouter", "gemini"])
+        else:
+            names.append("gemini")
+            if or_key and or_model:
+                names.append("openrouter")
+
+    hops: list[tuple[str, str, str]] = []
+    for name in names:
+        if name == "openrouter" and or_key and or_model:
+            hops.append(("openrouter", or_model, or_key))
+        elif name == "claude" and claude_key:
+            hops.append(("claude", claude_model or DEFAULT_CLAUDE_MODEL, claude_key))
+        elif name == "gemini" and gemini_key and gemini_model:
+            hops.append(("gemini", gemini_model, gemini_key))
+    return hops
+
+
+def vision_ready(pack: CarouselLlmKwargs | dict[str, Any] | None, *, api_key: str = "") -> bool:
+    if pack and vision_hops(pack):
+        return True
+    return bool((api_key or "").strip())
+
+
 def openrouter_configured() -> bool:
     return bool((get_settings().openrouter_api_key or "").strip())
 

@@ -47,8 +47,11 @@ def gemini_rank_batch_limit(
     """How many Gemini rank requests to run for ``group_count`` ambiguous slides."""
     if group_count <= 0 or batch_size <= 0:
         return 0
+    cap = int(max_batches)
+    if cap <= 0:
+        return 0
     needed = (int(group_count) + int(batch_size) - 1) // int(batch_size)
-    return min(needed, max(1, int(max_batches)))
+    return min(needed, cap)
 
 
 @dataclass(frozen=True)
@@ -804,6 +807,200 @@ def _group_rank_prompt(
     return "".join(parts)
 
 
+def _grouped_rank_blocks(
+    groups: list[tuple[int, str, list[FrameCandidate], list[bytes | None]]],
+    *,
+    style_copy_refs: list[str] | None = None,
+    style_image_bytes: list[bytes] | None = None,
+) -> list[tuple[str, bytes | None]]:
+    prompt_groups = [
+        (local_i, hook, candidates)
+        for local_i, (_, hook, candidates, _) in enumerate(groups)
+    ]
+    blocks: list[tuple[str, bytes | None]] = [
+        (_group_rank_prompt(prompt_groups, style_copy_refs=style_copy_refs), None)
+    ]
+    for i, raw in enumerate((style_image_bytes or [])[:4]):
+        blocks.append((f"STYLE REFERENCE IMAGE {i + 1}:", _downscale_jpeg(raw)))
+    for local_i, (_, _, candidates, images) in enumerate(groups):
+        blocks.append((f"SLIDE {local_i} CANDIDATES", None))
+        for candidate, image in zip(candidates, images):
+            label = (
+                f"Slide {local_i} candidate {candidate.index} "
+                f"({candidate.label} @{candidate.timestamp_sec:.2f}s):"
+            )
+            blocks.append((label, _downscale_jpeg(image) if image else None))
+    return blocks
+
+
+def _openai_vision_content(blocks: list[tuple[str, bytes | None]]) -> list[dict[str, Any]]:
+    import base64
+
+    content: list[dict[str, Any]] = []
+    for text, jpeg in blocks:
+        if text:
+            content.append({"type": "text", "text": text})
+        if jpeg:
+            b64 = base64.b64encode(jpeg).decode("ascii")
+            content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
+                }
+            )
+    return content
+
+
+def _map_local_rank_result(
+    groups: list[tuple[int, str, list[FrameCandidate], list[bytes | None]]],
+    raw_text: str,
+) -> dict[int, tuple[list[int] | None, list[bool] | None]]:
+    local_result = _parse_grouped_rank_response(
+        raw_text, [candidates for _, _, candidates, _ in groups]
+    )
+    return {
+        groups[local_i][0]: value
+        for local_i, value in local_result.items()
+        if 0 <= local_i < len(groups)
+    }
+
+
+def rank_grouped_candidates_with_openrouter_sync(
+    *,
+    groups: list[tuple[int, str, list[FrameCandidate], list[bytes | None]]],
+    api_key: str,
+    model: str,
+    base_url: str = "",
+    style_copy_refs: list[str] | None = None,
+    style_image_bytes: list[bytes] | None = None,
+) -> dict[int, tuple[list[int] | None, list[bool] | None]]:
+    if not api_key or not model or not groups:
+        return {}
+    from app.llm.openrouter import complete_vision_json_sync
+
+    text = complete_vision_json_sync(
+        _openai_vision_content(
+            _grouped_rank_blocks(
+                groups,
+                style_copy_refs=style_copy_refs,
+                style_image_bytes=style_image_bytes,
+            )
+        ),
+        model=model,
+        api_key=api_key,
+        base_url=base_url or "https://openrouter.ai/api/v1",
+        system="Return ONLY valid JSON that ranks the attached slide frames.",
+        max_tokens=2048,
+        timeout=28.0,
+    )
+    return _map_local_rank_result(groups, text)
+
+
+def rank_grouped_candidates_with_claude_sync(
+    *,
+    groups: list[tuple[int, str, list[FrameCandidate], list[bytes | None]]],
+    api_key: str,
+    model: str,
+    style_copy_refs: list[str] | None = None,
+    style_image_bytes: list[bytes] | None = None,
+) -> dict[int, tuple[list[int] | None, list[bool] | None]]:
+    if not api_key or not model or not groups:
+        return {}
+    import base64
+
+    from anthropic import Anthropic
+
+    content: list[dict[str, Any]] = []
+    for text, jpeg in _grouped_rank_blocks(
+        groups,
+        style_copy_refs=style_copy_refs,
+        style_image_bytes=style_image_bytes,
+    ):
+        if text:
+            content.append({"type": "text", "text": text})
+        if jpeg:
+            content.append(
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/jpeg",
+                        "data": base64.b64encode(jpeg).decode("ascii"),
+                    },
+                }
+            )
+    response = Anthropic(api_key=api_key).messages.create(
+        model=model,
+        max_tokens=2048,
+        temperature=0.1,
+        system="Return ONLY valid JSON that ranks the attached slide frames.",
+        messages=[{"role": "user", "content": content}],
+    )
+    text = "".join(
+        block.text
+        for block in response.content
+        if getattr(block, "type", "") == "text"
+    )
+    return _map_local_rank_result(groups, text)
+
+
+def rank_grouped_candidates(
+    *,
+    groups: list[tuple[int, str, list[FrameCandidate], list[bytes | None]]],
+    llm_pack: dict[str, Any] | None = None,
+    api_key: str = "",
+    model: str = "",
+    style_copy_refs: list[str] | None = None,
+    style_image_bytes: list[bytes] | None = None,
+) -> dict[int, tuple[list[int] | None, list[bool] | None]]:
+    """Rank frames with the studio picker (OpenRouter / Claude / Gemini)."""
+    from app.llm.carousel_llm import vision_hops
+
+    hops: list[tuple[str, str, str]] = []
+    or_base = ""
+    if llm_pack:
+        hops = vision_hops(llm_pack)
+        or_base = str(llm_pack.get("openrouter_base_url") or "")
+    if not hops and api_key and model:
+        hops = [("gemini", model, api_key)]
+    for hop, hop_model, hop_key in hops:
+        try:
+            if hop == "openrouter":
+                result = rank_grouped_candidates_with_openrouter_sync(
+                    groups=groups,
+                    api_key=hop_key,
+                    model=hop_model,
+                    base_url=or_base,
+                    style_copy_refs=style_copy_refs,
+                    style_image_bytes=style_image_bytes,
+                )
+            elif hop == "claude":
+                result = rank_grouped_candidates_with_claude_sync(
+                    groups=groups,
+                    api_key=hop_key,
+                    model=hop_model,
+                    style_copy_refs=style_copy_refs,
+                    style_image_bytes=style_image_bytes,
+                )
+            else:
+                result = rank_grouped_candidates_with_gemini_sync(
+                    groups=groups,
+                    api_key=hop_key,
+                    model=hop_model,
+                    style_copy_refs=style_copy_refs,
+                    style_image_bytes=style_image_bytes,
+                )
+            if result:
+                return result
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "carousel frame rank hop %s failed (%s) — trying next",
+                hop,
+                str(exc)[:160],
+            )
+    return {}
+
+
 def rank_grouped_candidates_with_gemini_sync(
     *,
     groups: list[tuple[int, str, list[FrameCandidate], list[bytes | None]]],
@@ -1360,19 +1557,21 @@ async def polish_slides_instagram_frames(
     style_copy_refs: list[str] | None = None,
     style_image_bytes: list[bytes] | None = None,
     max_rank_batches: int = _DEFAULT_MAX_GEMINI_RANK_BATCHES,
+    llm_pack: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    """Apply frame polish with concurrent harvest and grouped Gemini ranking.
+    """Apply frame polish with concurrent harvest and studio-picker ranking.
 
-    Candidate collection is local/concurrent and cache-first. Gemini sees
-    4-6 slides per request. The batch count scales with ambiguous slides and
-    is capped by ``max_rank_batches`` (default 8). Confident local rankings
-    skip Gemini entirely.
-    Timestamp collisions are resolved after rankings so early slides cannot
-    starve later ones.
+    Candidate collection is local/concurrent and cache-first. The studio LLM
+    sees 4-6 slides per request. The batch count scales with ambiguous slides
+    and is capped by ``max_rank_batches``. Confident local rankings skip the
+    LLM. Timestamp collisions are resolved after rankings so early slides
+    cannot starve later ones.
     """
+    from app.llm.carousel_llm import vision_ready
+
     if not slides:
         return slides
-    if not api_key:
+    if not vision_ready(llm_pack, api_key=api_key):
         for s in slides:
             s.setdefault("frame_source", "heuristic")
             s.setdefault("instagram_ready", False)
@@ -1572,8 +1771,9 @@ async def polish_slides_instagram_frames(
         results = await asyncio.gather(
             *[
                 asyncio.to_thread(
-                    rank_grouped_candidates_with_gemini_sync,
+                    rank_grouped_candidates,
                     groups=batch,
+                    llm_pack=llm_pack,
                     api_key=api_key,
                     model=model,
                     style_copy_refs=style_copy_refs,

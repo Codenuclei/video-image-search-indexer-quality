@@ -78,6 +78,7 @@ def test_gemini_rank_batch_limit_scales_and_caps():
     assert gemini_rank_batch_limit(20, 5) == 4
     assert gemini_rank_batch_limit(50, 5) == 8
     assert gemini_rank_batch_limit(50, 5, max_batches=3) == 3
+    assert gemini_rank_batch_limit(20, 5, max_batches=0) == 0
     # 24-slide deck at 6 per request needs 4 batches, not the old cap of 3.
     assert gemini_rank_batch_limit(24, 6) == 4
 

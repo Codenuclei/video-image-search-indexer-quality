@@ -365,3 +365,105 @@ def test_select_images_keeps_only_nearby_faces_and_strips_them() -> None:
     assert "faces" not in cleaned
     assert "face_detections" not in cleaned
     assert cleaned["transcript_text"] == "Build the system"
+
+
+def test_snap_slides_keeps_existing_preview_url() -> None:
+    slides = [
+        {
+            "drive_file_id": "vid",
+            "timestamp_sec": 2.0,
+            "frame_ts": 2.1,
+            "preview_url": "/media/video/vid/frame?ts=2.100&cache_only=1",
+        }
+    ]
+    carousel_script._snap_slides_to_cached_preview(slides, type("S", (), {"thumbnail_dir": "/tmp"})())
+    assert slides[0]["preview_url"].endswith("cache_only=1")
+    assert slides[0]["frame_ts"] == 2.1
+
+
+@pytest.mark.asyncio
+async def test_select_images_timeout_is_504_not_500(monkeypatch) -> None:
+    from fastapi import HTTPException
+
+    from app.routers.carousel_script import CarouselSelectImagesBody
+
+    async def fake_claim(*_a, **_k):
+        return "tok"
+
+    async def fake_release(*_a, **_k):
+        return None
+
+    async def boom(*_a, **_k):
+        raise TimeoutError("proxy cancelled")
+
+    monkeypatch.setattr(carousel_script, "_claim_carousel", fake_claim)
+    monkeypatch.setattr(carousel_script, "_release_carousel", fake_release)
+    monkeypatch.setattr(carousel_script, "_carousel_pipeline_select_images_impl", boom)
+
+    body = CarouselSelectImagesBody(drive_file_id="vid", carousels=[{"slides": [_slide("Hi", 1.0)]}])
+    with pytest.raises(HTTPException) as exc:
+        await carousel_script.carousel_pipeline_select_images(body, session=object())
+    assert exc.value.status_code == 504
+
+
+@pytest.mark.asyncio
+async def test_select_images_uses_studio_llm_pack(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from app.routers.carousel_script import CarouselSelectImagesBody
+
+    seen: dict[str, object] = {}
+
+    async def fake_cues(*_a, **_k):
+        return SimpleNamespace(id="vid"), [(1.0, 3.0, "Hi there.")]
+
+    async def fake_refs(*_a, **_k):
+        return []
+
+    async def fake_polish(slides, session, **kwargs):
+        seen.update(kwargs)
+        for slide in slides:
+            slide["frame_ts"] = 1.5
+            slide["preview_url"] = "/media/video/vid/frame?ts=1.500&cache_only=1"
+        return slides
+
+    monkeypatch.setattr(
+        carousel_script,
+        "resolve_carousel_llm",
+        lambda *_a, **_k: {
+            "provider": "openrouter",
+            "openrouter_api_key": "or",
+            "openrouter_model": "anthropic/claude-sonnet-4",
+            "openrouter_base_url": "https://openrouter.ai/api/v1",
+            "api_key": "",
+            "model": "",
+            "claude_api_key": "",
+            "claude_model": "",
+        },
+    )
+
+    async def fake_persist(*_a, **_k):
+        return SimpleNamespace(id=9)
+
+    monkeypatch.setattr(carousel_script, "_load_video_cues", fake_cues)
+    monkeypatch.setattr(carousel_script, "_load_attached_references", fake_refs)
+    monkeypatch.setattr(carousel_script, "_polish_outline_frames", fake_polish)
+    monkeypatch.setattr(carousel_script, "_persist_carousel_artifact", fake_persist)
+    monkeypatch.setattr(carousel_script, "_attach_layout_panels", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        carousel_script,
+        "get_settings",
+        lambda: SimpleNamespace(thumbnail_dir="/tmp"),
+    )
+    monkeypatch.setattr(carousel_script, "carousel_llm_cache_id", lambda *_a, **_k: "local")
+
+    body = CarouselSelectImagesBody(
+        drive_file_id="vid",
+        carousels=[{"slides": [_slide("Hi there.", 1.0)]}],
+    )
+    out = await carousel_script._carousel_pipeline_select_images_impl(body, session=object())
+    assert seen.get("prefer_local") is True
+    assert seen.get("max_rank_batches") == 2
+    assert seen.get("llm_pack", {}).get("provider") == "openrouter"
+    assert out["images_ready"] is True
+    assert out["slides"][0]["preview_url"]

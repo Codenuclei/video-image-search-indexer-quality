@@ -107,6 +107,48 @@ def _request_bodies(
     return request_body, retry_body
 
 
+def _request_bodies_vision(
+    *,
+    model_id: str,
+    content: list[dict[str, Any]],
+    system: str,
+    temperature: float,
+    max_tokens: int,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    gemini = is_google_gemini_model(model_id)
+    thinking = is_thinking_gemini_model(model_id)
+    user_content = list(content)
+    sys_msg = (system or "").strip()
+    if gemini:
+        if sys_msg:
+            if user_content and user_content[0].get("type") == "text":
+                first = dict(user_content[0])
+                first["text"] = f"{sys_msg}\n\n{first.get('text') or ''}"
+                user_content = [first, *user_content[1:]]
+            else:
+                user_content = [{"type": "text", "text": sys_msg}, *user_content]
+        messages: list[dict[str, Any]] = [{"role": "user", "content": user_content}]
+    else:
+        messages = [
+            {"role": "system", "content": sys_msg or "Return ONLY valid JSON."},
+            {"role": "user", "content": user_content},
+        ]
+    token_budget = max(int(max_tokens or 0), 2048)
+    if gemini:
+        token_budget = max(token_budget, _GEMINI_MAX_TOKENS_FLOOR)
+    base_body: dict[str, Any] = {
+        "model": model_id,
+        "messages": messages,
+        "max_tokens": token_budget,
+    }
+    if not thinking:
+        base_body["temperature"] = temperature
+    if thinking:
+        base_body["reasoning"] = {"effort": "low", "exclude": True}
+    request_body = {**base_body, "response_format": {"type": "json_object"}}
+    return request_body, dict(base_body)
+
+
 async def complete_json(
     prompt: str,
     *,
@@ -181,6 +223,84 @@ async def complete_json(
     return text
 
 
+def complete_vision_json_sync(
+    content: list[dict[str, Any]],
+    *,
+    model: str,
+    api_key: str,
+    base_url: str = _DEFAULT_BASE,
+    system: str = "Return ONLY valid JSON.",
+    temperature: float = 0.1,
+    max_tokens: int = 2048,
+    timeout: float = 30.0,
+) -> str:
+    """Synchronous multimodal chat/completions for frame ranking."""
+    key = (api_key or "").strip()
+    model_id = (model or "").strip()
+    if not key:
+        raise RuntimeError("OpenRouter API key is empty")
+    if not model_id:
+        raise RuntimeError("OpenRouter model id is empty")
+    if not content:
+        raise RuntimeError("OpenRouter vision content is empty")
+
+    url = f"{(base_url or _DEFAULT_BASE).rstrip('/')}/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://github.com/video-image-search-indexer",
+        "X-Title": "carousel-llm",
+    }
+    sys_msg = (system or "").strip() or "Return ONLY valid JSON."
+    if "json" not in sys_msg.lower():
+        sys_msg = f"{sys_msg} Return ONLY valid JSON."
+    request_body, retry_body = _request_bodies_vision(
+        model_id=model_id,
+        content=content,
+        system=sys_msg,
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
+    with httpx.Client(timeout=timeout) as client:
+        return _post_once_sync(
+            client,
+            url,
+            headers=headers,
+            body=request_body,
+            allow_format_retry=True,
+            retry_body=retry_body,
+        )
+
+
+def _post_once_sync(
+    client: httpx.Client,
+    url: str,
+    *,
+    headers: dict[str, str],
+    body: dict[str, Any],
+    allow_format_retry: bool,
+    retry_body: dict[str, Any],
+) -> str:
+    try:
+        resp = client.post(url, headers=headers, json=body)
+    except httpx.HTTPError as exc:
+        logger.warning("OpenRouter request failed: %s", str(exc)[:200])
+        raise RuntimeError(f"OpenRouter request failed: {exc}") from exc
+    return _read_openrouter_response(
+        resp,
+        body=body,
+        allow_format_retry=allow_format_retry,
+        retry=lambda: _post_once_sync(
+            client,
+            url,
+            headers=headers,
+            body=retry_body,
+            allow_format_retry=False,
+            retry_body=retry_body,
+        ),
+    )
+
+
 async def _post_once(
     client: httpx.AsyncClient,
     url: str,
@@ -196,9 +316,36 @@ async def _post_once(
         logger.warning("OpenRouter request failed: %s", str(exc)[:200])
         raise RuntimeError(f"OpenRouter request failed: {exc}") from exc
 
+    async def _retry() -> str:
+        return await _post_once(
+            client,
+            url,
+            headers=headers,
+            body=retry_body,
+            allow_format_retry=False,
+            retry_body=retry_body,
+        )
+
+    text_or_retry = _read_openrouter_response(
+        resp,
+        body=body,
+        allow_format_retry=allow_format_retry,
+        retry=_retry,
+    )
+    if hasattr(text_or_retry, "__await__"):
+        return await text_or_retry  # type: ignore[misc]
+    return text_or_retry
+
+
+def _read_openrouter_response(
+    resp: httpx.Response,
+    *,
+    body: dict[str, Any],
+    allow_format_retry: bool,
+    retry,
+) -> str:
     if resp.status_code >= 400:
         detail = (resp.text or "")[:300]
-        # Gemini often 400s with a generic payload (no "response_format" mention).
         if allow_format_retry and resp.status_code in (400, 422):
             logger.info(
                 "OpenRouter HTTP %s model=%s; retrying without extras: %s",
@@ -206,14 +353,7 @@ async def _post_once(
                 body.get("model"),
                 detail[:160],
             )
-            return await _post_once(
-                client,
-                url,
-                headers=headers,
-                body=retry_body,
-                allow_format_retry=False,
-                retry_body=retry_body,
-            )
+            return retry()
         logger.warning(
             "OpenRouter HTTP %s model=%s: %s",
             resp.status_code,
@@ -238,14 +378,7 @@ async def _post_once(
             "OpenRouter empty content model=%s; retrying without extras",
             body.get("model"),
         )
-        return await _post_once(
-            client,
-            url,
-            headers=headers,
-            body=retry_body,
-            allow_format_retry=False,
-            retry_body=retry_body,
-        )
+        return retry()
     if not text:
         raise RuntimeError("OpenRouter returned empty content")
     return text

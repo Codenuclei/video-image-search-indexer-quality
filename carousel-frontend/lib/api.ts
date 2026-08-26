@@ -326,7 +326,25 @@ export type CarouselGenerateRequest = {
   generate?: boolean;
   /** Explicit regenerate — bypasses cache. */
   force?: boolean;
+  llm_provider?: string;
+  llm_model?: string;
 };
+
+/** Studio picker from /test sessionStorage, if the user set one this tab. */
+export function studioLlmFields(): { llm_provider?: string; llm_model?: string } {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = sessionStorage.getItem("test-carousel-run-config");
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as { provider?: string; model?: string };
+    if (parsed?.provider && parsed?.model) {
+      return { llm_provider: parsed.provider, llm_model: parsed.model };
+    }
+  } catch {
+    /* ignore */
+  }
+  return {};
+}
 
 export type CarouselCueItem = {
   kind: "hook" | "topic" | string;
@@ -863,6 +881,8 @@ export const apiClient = {
   carouselPipelineSelectImages: (body: {
     drive_file_id: string;
     carousels: CarouselGeneratedItem[];
+    llm_provider?: string;
+    llm_model?: string;
   }) =>
     api<CarouselOutlineResponse>("/search/carousel/pipeline/select-images", {
       method: "POST",

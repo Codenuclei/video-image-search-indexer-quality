@@ -75,10 +75,12 @@ CAROUSEL_CUT_PROMPT_VERSION = "cuts-v3-crafted-complete-arc"
 # health + other carousel routes across all 24 workers.
 _EXTRACT_LOCK = asyncio.Lock()
 _EXTRACT_TIMEOUT_SEC = 900.0
-# Interactive select-images must finish before the studio proxy/browser drops the
-# socket. Rank a few Gemini batches, then fall back to local frames.
-_SELECT_IMAGES_TIMEOUT_SEC = 75.0
-_SELECT_IMAGES_PREWARM_TIMEOUT_SEC = 20.0
+# Interactive select-images must finish before Railway's public edge (~60–100s)
+# cancels the socket. Gemini ranking + ffmpeg prewarm used to overrun that and
+# surface as an unhandled TimeoutError 500. Local cache ranking is enough here;
+# generate still uses Gemini when the caller asks.
+_SELECT_IMAGES_TIMEOUT_SEC = 30.0
+_SELECT_IMAGES_REQUEST_TIMEOUT_SEC = 45.0
 _SELECT_IMAGES_RANK_BATCHES = 3
 _SELECT_IMAGES_FACE_WINDOW_SEC = 8.0
 # Same for cold theme LLM generation (cache hits bypass this lock).
@@ -2409,7 +2411,11 @@ async def regenerate_carousel_slide(
             except (TypeError, ValueError):
                 pass
         polished = await _polish_outline_frames(
-            [candidate], session, prefer_local=True, max_candidates=4
+            [candidate],
+            session,
+            prefer_local=True,
+            max_candidates=4,
+            llm_pack=resolve_carousel_llm(body.llm_provider, body.llm_model),
         )
         _attach_layout_panels([{"slides": polished}])
         await _prewarm_carousel_frames([{"slides": polished}], session, get_settings())
@@ -3483,6 +3489,7 @@ async def _carousel_pipeline_generate_impl(
             session,
             style_copy_refs=copy_refs,
             style_image_bytes=image_ref_bytes,
+            llm_pack=llm,
         )
         cursor = 0
         for carousel in carousels:
@@ -3588,17 +3595,33 @@ async def carousel_pipeline_select_images(
     session: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     drive_file_id = body.drive_file_id.strip()
-    token = await _claim_carousel(session, drive_file_id)
+    token = ""
     try:
-        return await _carousel_pipeline_select_images_impl(body, session)
-    except asyncio.CancelledError:
-        logger.warning("select-images cancelled drive=%s", drive_file_id)
+        token = await _claim_carousel(session, drive_file_id)
+        return await asyncio.wait_for(
+            _carousel_pipeline_select_images_impl(body, session),
+            timeout=_SELECT_IMAGES_REQUEST_TIMEOUT_SEC,
+        )
+    except HTTPException:
         raise
+    except (asyncio.TimeoutError, TimeoutError) as exc:
+        logger.warning("select-images timed out drive=%s", drive_file_id)
+        raise HTTPException(
+            status_code=504,
+            detail="Image selection took too long. Retry — local frames will be used.",
+        ) from exc
+    except asyncio.CancelledError as exc:
+        logger.warning("select-images cancelled drive=%s", drive_file_id)
+        raise HTTPException(
+            status_code=504,
+            detail="Image selection was interrupted. Retry — local frames will be used.",
+        ) from exc
     finally:
-        try:
-            await asyncio.shield(_release_carousel(session, drive_file_id, token))
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("select-images lock release failed drive=%s: %s", drive_file_id, exc)
+        if token:
+            try:
+                await asyncio.shield(_release_carousel(session, drive_file_id, token))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("select-images lock release failed drive=%s: %s", drive_file_id, exc)
 
 
 async def _carousel_pipeline_select_images_impl(
@@ -3655,25 +3678,20 @@ async def _carousel_pipeline_select_images_impl(
             themes=[],
             include_all_for_drive=True,
         )
+    llm_pack = resolve_carousel_llm(body.llm_provider, body.llm_model)
     copy_refs = [
         str(r.get("copy_text") or "").strip()
         for r in style_refs
         if (r.get("ref_kind") or "").strip().lower() == "copy" and (r.get("copy_text") or "").strip()
     ]
-    image_ref_bytes = await _load_reference_image_bytes_list(
-        [
-            str(r.get("image_url") or "").strip()
-            for r in style_refs
-            if (r.get("ref_kind") or "").strip().lower() == "image" and (r.get("image_url") or "").strip()
-        ],
-        session=session,
-        settings=get_settings(),
-    )
     selected_slides = await _polish_outline_frames(
         all_slides,
         session,
+        prefer_local=True,
+        max_rank_batches=2,
+        timeout_sec=_SELECT_IMAGES_TIMEOUT_SEC,
         style_copy_refs=copy_refs,
-        style_image_bytes=image_ref_bytes,
+        llm_pack=llm_pack,
     )
     for s in selected_slides:
         if isinstance(s.get("frame_quality"), dict):
@@ -3686,13 +3704,7 @@ async def _carousel_pipeline_select_images_impl(
     for item in polished:
         slides = list(item.get("slides") or [])
         _attach_layout_panels([{"slides": slides}])
-        try:
-            await asyncio.wait_for(
-                _prewarm_carousel_frames([{"slides": slides}], session, get_settings()),
-                timeout=_SELECT_IMAGES_PREWARM_TIMEOUT_SEC,
-            )
-        except asyncio.TimeoutError:
-            logger.warning("select-images prewarm timed out drive=%s", drive_file_id)
+        _snap_slides_to_cached_preview(slides, get_settings())
         item["slides"] = slides
         item["slide_count"] = len(slides)
         item["images_ready"] = True
@@ -4134,7 +4146,9 @@ async def generate_carousel_outline(
     # Instagram-style: one slide per selected timed pick with exact text.
     if _moments_are_timed_picks(moments):
         slides = _slides_from_timed_picks(moments, slide_count)
-        slides = await _polish_outline_frames(slides, session)
+        slides = await _polish_outline_frames(
+            slides, session, llm_pack=resolve_carousel_llm()
+        )
         hooks = selected_hooks or [
             (s.get("hook_line") or "") for s in slides if (s.get("match_type") or "") == "hook"
         ]
@@ -4153,7 +4167,9 @@ async def generate_carousel_outline(
 
     # Legacy path: moments are generic preview dumps — keep fallback (no curated pad).
     slides = _fallback_carousel_outline(body.script, moments, slide_count, selected_hooks)
-    slides = await _polish_outline_frames(slides, session)
+    slides = await _polish_outline_frames(
+        slides, session, llm_pack=resolve_carousel_llm()
+    )
     return {
         "source": "fallback",
         "title": title,
@@ -4200,6 +4216,53 @@ def _strip_slide_ranking_fields(slide: dict[str, Any]) -> dict[str, Any]:
     return cleaned
 
 
+def _snap_slides_to_cached_preview(slides: list[dict[str, Any]], settings) -> None:
+    """Point each slide at a nearby indexer JPEG. Never ffmpeg/Drive on this path."""
+    from app.search.carousel_frame_select import HARVEST_NEAREST_TOLERANCE_SEC, nearest_cached_frame
+
+    used: set[float] = set()
+    tolerance = max(float(HARVEST_NEAREST_TOLERANCE_SEC), 5.0)
+    for slide in slides:
+        fid = str(slide.get("drive_file_id") or "").strip()
+        if not fid:
+            continue
+        ts = slide.get("frame_ts")
+        if ts is None:
+            ts = _frame_ts(float(slide.get("timestamp_sec") or 0), slide.get("end_timestamp_sec"))
+            slide["frame_ts"] = ts
+        target = float(ts)
+        if slide.get("preview_url") and slide.get("frame_ts") is not None:
+            used.add(round(float(slide["frame_ts"]), 3))
+            continue
+        snapped = nearest_cached_frame(
+            str(settings.thumbnail_dir),
+            fid,
+            target,
+            nearest_tolerance_sec=tolerance,
+            exclude_ts=used,
+        )
+        if snapped is None:
+            snapped = nearest_cached_frame(
+                str(settings.thumbnail_dir),
+                fid,
+                target,
+                nearest_tolerance_sec=tolerance,
+                exclude_ts=None,
+            )
+        if snapped is not None:
+            snap_ts, _path = snapped
+            slide["frame_ts"] = snap_ts
+            slide["preview_url"] = (
+                f"/media/video/{fid}/frame?ts={snap_ts:.3f}&cache_only=1"
+            )
+            used.add(snap_ts)
+        else:
+            slide.setdefault(
+                "preview_url",
+                f"/media/video/{fid}/frame?ts={target:.3f}&cache_only=1",
+            )
+
+
 async def _polish_outline_frames(
     slides: list[dict[str, Any]],
     session: AsyncSession,
@@ -4210,12 +4273,14 @@ async def _polish_outline_frames(
     style_image_bytes: list[bytes] | None = None,
     max_rank_batches: int = _SELECT_IMAGES_RANK_BATCHES,
     timeout_sec: float = _SELECT_IMAGES_TIMEOUT_SEC,
+    llm_pack: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    """Gemini rank + Instagram-ready check for each slide's display frame (span text unchanged)."""
+    """Studio-picker rank + Instagram-ready check (span text unchanged)."""
+    from app.llm.carousel_llm import vision_ready
     from app.search.carousel_frame_select import polish_slides_instagram_frames
 
     settings = get_settings()
-    if not settings.gemini_api_key or not slides:
+    if not slides or not vision_ready(llm_pack, api_key=settings.gemini_api_key or ""):
         from app.search.carousel_frame_select import focal_point_for_slide
         for s in slides:
             s.setdefault("frame_source", "heuristic")
@@ -4294,8 +4359,8 @@ async def _polish_outline_frames(
             polish_slides_instagram_frames(
                 slides,
                 thumbnail_dir=str(settings.thumbnail_dir),
-                api_key=settings.gemini_api_key,
-                model=settings.gemini_model,
+                api_key=settings.gemini_api_key or "",
+                model=settings.gemini_model or "",
                 max_candidates=max_candidates,
                 ensure_frame=ensure_frame,
                 concurrency=3,
@@ -4303,6 +4368,8 @@ async def _polish_outline_frames(
                 style_copy_refs=style_copy_refs,
                 style_image_bytes=style_image_bytes,
                 max_rank_batches=max_rank_batches,
+                timeout_sec=timeout_sec,
+                llm_pack=llm_pack,
             ),
             timeout=timeout_sec,
         )

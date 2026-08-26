@@ -12,6 +12,7 @@ from app.llm.carousel_llm import (
     openrouter_slug_for_direct,
     prefer_openrouter_first,
     resolve_carousel_llm,
+    vision_hops,
 )
 from app.runtime_settings import RuntimeSettings, set_runtime_settings
 from app.search.carousel_pipeline import _llm_complete_json, _llm_has_any_key
@@ -198,6 +199,38 @@ def test_openrouter_slug_for_direct_arena_ids():
     assert prefer_openrouter_first("gemini", "gemini-3.7-flash") is True
     assert prefer_openrouter_first("claude", "claude-fable-5") is True
     assert prefer_openrouter_first("claude", "claude-sonnet-4-5-20250929") is False
+
+
+def test_vision_hops_honor_openrouter_picker():
+    hops = vision_hops(
+        {
+            "provider": "openrouter",
+            "openrouter_api_key": "or",
+            "openrouter_model": "google/gemini-2.5-flash",
+            "openrouter_base_url": "https://openrouter.ai/api/v1",
+            "api_key": "g",
+            "model": "gemini-2.5-flash",
+            "claude_api_key": "",
+            "claude_model": "",
+        }
+    )
+    assert hops[0] == ("openrouter", "google/gemini-2.5-flash", "or")
+
+
+def test_vision_hops_gemini_picker_uses_openrouter_first():
+    hops = vision_hops(
+        {
+            "provider": "gemini",
+            "openrouter_api_key": "or",
+            "openrouter_model": "anthropic/claude-sonnet-4",
+            "api_key": "g",
+            "model": "gemini-3.7-flash",
+            "claude_api_key": "",
+            "claude_model": "",
+        }
+    )
+    assert hops[0][0] == "openrouter"
+    assert hops[0][1] == "google/gemini-3.7-flash"
 
 
 @pytest.mark.asyncio
@@ -571,3 +604,65 @@ async def test_openrouter_gemini_retries_generic_400(monkeypatch):
     assert len(calls) == 2
     assert "temperature" not in calls[0]
     assert calls[0]["reasoning"]["effort"] == "low"
+
+
+def test_openrouter_vision_request_includes_image_url():
+    from app.llm.openrouter import _request_bodies_vision
+
+    primary, _retry = _request_bodies_vision(
+        model_id="anthropic/claude-sonnet-4",
+        content=[
+            {"type": "text", "text": "rank these"},
+            {
+                "type": "image_url",
+                "image_url": {"url": "data:image/jpeg;base64,abc"},
+            },
+        ],
+        system="Return ONLY valid JSON.",
+        temperature=0.1,
+        max_tokens=512,
+    )
+    assert primary["messages"][0]["role"] == "system"
+    assert primary["messages"][1]["content"][1]["type"] == "image_url"
+
+
+def test_rank_grouped_candidates_uses_studio_openrouter(monkeypatch):
+    from app.search.carousel_frame_select import (
+        FrameCandidate,
+        rank_grouped_candidates,
+    )
+
+    called: list[str] = []
+
+    def fake_or(*, groups, model, **_k):
+        called.append(model)
+        return {groups[0][0]: ([0, 1], [True, True])}
+
+    monkeypatch.setattr(
+        "app.search.carousel_frame_select.rank_grouped_candidates_with_openrouter_sync",
+        fake_or,
+    )
+    monkeypatch.setattr(
+        "app.search.carousel_frame_select.rank_grouped_candidates_with_gemini_sync",
+        lambda **_k: (_ for _ in ()).throw(AssertionError("gemini must not run")),
+    )
+
+    cand = [
+        FrameCandidate(index=0, timestamp_sec=1.0, label="heuristic"),
+        FrameCandidate(index=1, timestamp_sec=2.0, label="sample"),
+    ]
+    groups = [(3, "hook", cand, [b"a", b"b"])]
+    out = rank_grouped_candidates(
+        groups=groups,
+        llm_pack={
+            "provider": "openrouter",
+            "openrouter_api_key": "or",
+            "openrouter_model": "google/gemini-2.5-flash",
+            "api_key": "g",
+            "model": "gemini-2.5-flash",
+            "claude_api_key": "",
+            "claude_model": "",
+        },
+    )
+    assert called == ["google/gemini-2.5-flash"]
+    assert 3 in out

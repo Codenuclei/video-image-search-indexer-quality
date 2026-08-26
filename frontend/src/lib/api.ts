@@ -1480,6 +1480,8 @@ export const apiClient = {
   carouselPipelineSelectImages: (body: {
     drive_file_id: string;
     carousels: CarouselGeneratedItem[];
+    llm_provider?: string;
+    llm_model?: string;
   }) =>
     api<CarouselOutlineResponse>("/search/carousel/pipeline/select-images", {
       method: "POST",
