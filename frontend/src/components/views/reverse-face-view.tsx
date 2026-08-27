@@ -5,9 +5,12 @@ import {
   ArrowLeft,
   Check,
   ExternalLink,
+  FileVideo,
   FolderOpen,
+  GitMerge,
   Link2,
   ScanFace,
+  SlidersHorizontal,
   Tag,
   Upload,
   Users,
@@ -18,12 +21,14 @@ import { usePathname } from "next/navigation";
 import {
   apiClient,
   driveFilePreviewUrl,
+  driveFileThumbnailUrl,
   type FaceSearchAppearance,
   type FaceSearchMatch,
   type FaceSearchResponse,
   type LeadershipPerson,
 } from "@/lib/api";
 import { Button, Card, ConfirmDialog, FaceThumb, LoadingLabel } from "@/components/ui";
+import { PersonMergeSearch } from "@/components/person-merge-search";
 import { cn } from "@/lib/utils";
 import {
   clearReverseFaceSearch,
@@ -62,6 +67,7 @@ function collectClusters(matches: FaceSearchMatch[]) {
     person_id: number | null;
     person_name: string;
     score: number;
+    files: FaceSearchAppearance[];
   }[] = [];
   for (const m of matches) {
     if (m.cluster_id == null) continue;
@@ -76,6 +82,7 @@ function collectClusters(matches: FaceSearchMatch[]) {
       person_id: m.person_id,
       person_name: m.person_name,
       score: m.score,
+      files: m.appears_in ?? [],
     });
   }
   return out;
@@ -128,18 +135,23 @@ function ResultsSidePanel({
   tagging,
   tagMessage,
   onNameTag,
+  onClustersMerged,
 }: {
   result: FaceSearchResponse;
   leader: LeadershipPerson | null;
   tagging: boolean;
   tagMessage: string | null;
   onNameTag: () => void;
+  onClustersMerged: () => Promise<void>;
 }) {
   const clusters = useMemo(() => collectClusters(result.matches), [result.matches]);
   const initialFiles = useMemo(() => collectAppearances(result.matches), [result.matches]);
   const [files, setFiles] = useState(initialFiles);
   const [appearanceOffsets, setAppearanceOffsets] = useState<Record<string, number>>({});
   const [loadingMoreFiles, setLoadingMoreFiles] = useState(false);
+  const [selectedClusterIds, setSelectedClusterIds] = useState<Set<number>>(new Set());
+  const [mergeBusy, setMergeBusy] = useState(false);
+  const [mergeMessage, setMergeMessage] = useState<string | null>(null);
   const totalFileCount = useMemo(() => totalMatchFileCount(result.matches), [result.matches]);
   useEffect(() => {
     setFiles(initialFiles);
@@ -152,6 +164,20 @@ function ResultsSidePanel({
       )
     );
   }, [initialFiles, result.matches]);
+  useEffect(() => {
+    setSelectedClusterIds(
+      new Set(
+        clusters
+          .filter(
+            (cluster) =>
+              cluster.person_id == null &&
+              (cluster.status ?? "unknown").toLowerCase() === "unknown"
+          )
+          .map((cluster) => cluster.cluster_id)
+      )
+    );
+    setMergeMessage(null);
+  }, [clusters]);
   const nextAppearanceMatch = result.matches.find((match) => {
     const key = match.person_id != null ? `p:${match.person_id}` : `c:${match.cluster_id}`;
     return (appearanceOffsets[key] ?? 0) < (match.file_count ?? match.appears_in?.length ?? 0);
@@ -183,6 +209,45 @@ function ResultsSidePanel({
       });
     } finally {
       setLoadingMoreFiles(false);
+    }
+  }
+  const mergeableClusters = clusters.filter(
+    (cluster) =>
+      cluster.person_id == null &&
+      (cluster.status ?? "unknown").toLowerCase() === "unknown"
+  );
+
+  function toggleCluster(clusterId: number) {
+    setSelectedClusterIds((current) => {
+      const next = new Set(current);
+      if (next.has(clusterId)) next.delete(clusterId);
+      else next.add(clusterId);
+      return next;
+    });
+  }
+
+  async function mergeSelectedClusters(person: { id: number; name: string }) {
+    const ids = Array.from(selectedClusterIds);
+    if (!ids.length || mergeBusy) return;
+    setMergeBusy(true);
+    setMergeMessage(null);
+    let merged = 0;
+    try {
+      for (const clusterId of ids) {
+        await apiClient.mergeCluster(clusterId, person.id);
+        merged += 1;
+      }
+      setMergeMessage(
+        `Merged ${merged} selected cluster${merged === 1 ? "" : "s"} into ${person.name}.`
+      );
+      await onClustersMerged();
+    } catch {
+      setMergeMessage(
+        `Merged ${merged} cluster${merged === 1 ? "" : "s"} before an error. Refreshing results…`
+      );
+      await onClustersMerged();
+    } finally {
+      setMergeBusy(false);
     }
   }
   const canTag =
@@ -273,10 +338,29 @@ function ResultsSidePanel({
 
       <div className="min-w-0 space-y-6">
         <section className="space-y-3">
-          <h3 className="flex items-center gap-1.5 text-sm font-medium">
-            <Users size={14} className="text-muted-foreground" aria-hidden />
-            Clusters
-          </h3>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h3 className="flex items-center gap-1.5 text-sm font-medium">
+              <Users size={14} className="text-muted-foreground" aria-hidden />
+              Face clusters
+            </h3>
+            {mergeableClusters.length > 0 && (
+              <button
+                type="button"
+                onClick={() =>
+                  setSelectedClusterIds(
+                    selectedClusterIds.size === mergeableClusters.length
+                      ? new Set()
+                      : new Set(mergeableClusters.map((cluster) => cluster.cluster_id))
+                  )
+                }
+                className="text-[11px] font-medium text-muted-foreground hover:text-foreground"
+              >
+                {selectedClusterIds.size === mergeableClusters.length
+                  ? "Deselect all"
+                  : "Select all"}
+              </button>
+            )}
+          </div>
           {clusters.length === 0 ? (
             <p className="text-xs text-muted-foreground">
               No unknown/linked clusters on these matches (named faces may already be attached to a person).
@@ -286,29 +370,108 @@ function ResultsSidePanel({
               {clusters.map((c) => (
                 <div
                   key={c.cluster_id}
-                  className="flex items-center gap-3 rounded-lg bg-muted/30 p-2.5"
+                  className={cn(
+                    "rounded-lg border p-2.5 transition-colors",
+                    selectedClusterIds.has(c.cluster_id)
+                      ? "border-primary/40 bg-primary/5"
+                      : "border-transparent bg-muted/30"
+                  )}
                 >
-                  <FaceThumb faceId={c.face_id} className="h-11 w-11 shrink-0 rounded-md" />
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm font-medium">Cluster #{c.cluster_id}</p>
-                    <p className="text-[11px] text-muted-foreground">
-                      {c.status ?? "unknown"}
-                      {c.member_count != null ? ` · ${c.member_count} faces` : ""}
-                      {c.file_count != null && c.file_count > 0
-                        ? ` · ${c.file_count} file${c.file_count === 1 ? "" : "s"}`
-                        : ""}
-                      {` · ${Math.round(c.score * 100)}%`}
-                      {c.person_name !== "Unknown" ? ` · ${c.person_name}` : ""}
-                    </p>
+                  <div className="flex items-center gap-3">
+                    {c.person_id == null &&
+                    (c.status ?? "unknown").toLowerCase() === "unknown" ? (
+                      <button
+                        type="button"
+                        onClick={() => toggleCluster(c.cluster_id)}
+                        aria-pressed={selectedClusterIds.has(c.cluster_id)}
+                        title={
+                          selectedClusterIds.has(c.cluster_id)
+                            ? "Deselect this cluster"
+                            : "Select this cluster to merge"
+                        }
+                        className="relative shrink-0"
+                      >
+                        <FaceThumb faceId={c.face_id} className="h-12 w-12 rounded-md" />
+                        <span
+                          className={cn(
+                            "absolute -right-1 -top-1 flex h-5 w-5 items-center justify-center rounded-full border text-[11px]",
+                            selectedClusterIds.has(c.cluster_id)
+                              ? "border-primary bg-primary text-primary-foreground"
+                              : "border-border bg-card text-muted-foreground"
+                          )}
+                        >
+                          {selectedClusterIds.has(c.cluster_id) ? <Check size={12} /> : ""}
+                        </span>
+                      </button>
+                    ) : (
+                      <FaceThumb faceId={c.face_id} className="h-12 w-12 shrink-0 rounded-md" />
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-medium">Cluster #{c.cluster_id}</p>
+                      <p className="text-[11px] text-muted-foreground">
+                        {c.status ?? "unknown"}
+                        {c.member_count != null ? ` · ${c.member_count} faces` : ""}
+                        {c.file_count != null && c.file_count > 0
+                          ? ` · ${c.file_count} file${c.file_count === 1 ? "" : "s"}`
+                          : ""}
+                        {` · ${Math.round(c.score * 100)}%`}
+                        {c.person_name !== "Unknown" ? ` · ${c.person_name}` : ""}
+                      </p>
+                    </div>
+                    <Link
+                      href="/review"
+                      className="shrink-0 text-[11px] text-muted-foreground hover:text-foreground"
+                    >
+                      Review
+                    </Link>
                   </div>
-                  <Link
-                    href="/review"
-                    className="shrink-0 text-[11px] text-muted-foreground hover:text-foreground"
-                  >
-                    Review
-                  </Link>
+                  {c.files.length > 0 && (
+                    <div className="mt-2 flex gap-1.5 overflow-x-auto pb-1">
+                      {c.files.slice(0, 6).map((file) => (
+                        <a
+                          key={`${c.cluster_id}-${file.drive_file_id}`}
+                          href={driveFilePreviewUrl(file.drive_file_id)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          title={file.name}
+                          className="relative h-14 w-14 shrink-0 overflow-hidden rounded-md border border-border bg-muted"
+                        >
+                          {file.media_type.toLowerCase() === "video" ? (
+                            <span className="flex h-full items-center justify-center text-muted-foreground">
+                              <FileVideo size={17} />
+                            </span>
+                          ) : (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img
+                              src={driveFileThumbnailUrl(file.drive_file_id)}
+                              alt={file.name}
+                              loading="lazy"
+                              className="h-full w-full object-cover"
+                            />
+                          )}
+                        </a>
+                      ))}
+                    </div>
+                  )}
                 </div>
               ))}
+            </div>
+          )}
+          {mergeableClusters.length > 0 && (
+            <div className="rounded-lg border border-border bg-card p-3">
+              <p className="mb-2 flex items-center gap-1.5 text-xs text-muted-foreground">
+                <GitMerge size={13} aria-hidden />
+                Merge {selectedClusterIds.size} selected cluster
+                {selectedClusterIds.size === 1 ? "" : "s"} into a named person
+              </p>
+              <PersonMergeSearch
+                disabled={selectedClusterIds.size === 0}
+                busy={mergeBusy}
+                onSelect={(person) => void mergeSelectedClusters(person)}
+              />
+              {mergeMessage && (
+                <p className="mt-2 text-xs text-muted-foreground">{mergeMessage}</p>
+              )}
             </div>
           )}
         </section>
@@ -324,22 +487,38 @@ function ResultsSidePanel({
           {files.length === 0 ? (
             <p className="text-xs text-muted-foreground">No Drive files linked to these matches yet.</p>
           ) : (
-            <ul className="max-h-[28rem] space-y-0.5 overflow-y-auto pr-1">
+            <ul className="grid max-h-[28rem] grid-cols-3 gap-2 overflow-y-auto pr-1 sm:grid-cols-4">
               {files.map((f) => (
                 <li key={f.drive_file_id}>
                   <a
                     href={driveFilePreviewUrl(f.drive_file_id)}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="flex items-start gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-muted/50"
+                    title={`${f.name}\n${f.path || f.media_type}`}
+                    className="group block overflow-hidden rounded-lg border border-border bg-card transition-colors hover:bg-muted/50"
                   >
-                    <ExternalLink size={12} className="mt-0.5 shrink-0 text-muted-foreground" aria-hidden />
-                    <span className="min-w-0">
-                      <span className="block text-xs font-medium leading-snug text-foreground">{f.name}</span>
-                      <span className="block break-all text-[10px] text-muted-foreground">
-                        {f.path || f.media_type}
-                        {f.frame_timestamp != null ? ` · ${f.frame_timestamp.toFixed(1)}s` : ""}
-                      </span>
+                    <span className="relative block aspect-square bg-muted">
+                      {f.media_type.toLowerCase() === "video" ? (
+                        <span className="flex h-full items-center justify-center text-muted-foreground">
+                          <FileVideo size={22} />
+                        </span>
+                      ) : (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={driveFileThumbnailUrl(f.drive_file_id)}
+                          alt={f.name}
+                          loading="lazy"
+                          className="h-full w-full object-cover"
+                        />
+                      )}
+                      <ExternalLink
+                        size={12}
+                        className="absolute right-1.5 top-1.5 text-white drop-shadow"
+                        aria-hidden
+                      />
+                    </span>
+                    <span className="block truncate px-2 py-1.5 text-[10px] font-medium">
+                      {f.name}
                     </span>
                   </a>
                 </li>
@@ -368,6 +547,7 @@ export function ReverseFaceLabPage({ embedded = false }: { embedded?: boolean } 
     dragOver,
     file,
     previewUrl,
+    minSimilarity,
     searching,
     result,
     crawlUrls,
@@ -395,7 +575,15 @@ export function ReverseFaceLabPage({ embedded = false }: { embedded?: boolean } 
   }
 
   async function selectLeader(person: LeadershipPerson) {
-    await selectReverseFaceLeader(person);
+    await selectReverseFaceLeader(person, minSimilarity);
+  }
+
+  async function refreshCurrentSearch() {
+    if (selectedLeader) {
+      await selectReverseFaceLeader(selectedLeader, minSimilarity);
+    } else if (file) {
+      await runReverseFaceSearch(file, minSimilarity);
+    }
   }
 
   async function runNameTag() {
@@ -432,6 +620,47 @@ export function ReverseFaceLabPage({ embedded = false }: { embedded?: boolean } 
         </div>
       </div>
       )}
+
+      <Card className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center">
+        <div className="flex min-w-0 flex-1 items-start gap-2">
+          <SlidersHorizontal size={16} className="mt-0.5 shrink-0 text-muted-foreground" />
+          <div>
+            <p className="text-sm font-medium">Cluster match threshold</p>
+            <p className="text-xs text-muted-foreground">
+              Lower values show more possible clusters; higher values are stricter.
+            </p>
+          </div>
+        </div>
+        <div className="flex min-w-[16rem] items-center gap-3">
+          <input
+            type="range"
+            min="20"
+            max="80"
+            step="1"
+            value={Math.round(minSimilarity * 100)}
+            onChange={(event) =>
+              patchReverseFaceSession({
+                minSimilarity: Number(event.target.value) / 100,
+              })
+            }
+            className="min-w-0 flex-1 accent-primary"
+            aria-label="Minimum cluster similarity"
+          />
+          <span className="w-11 text-right text-sm font-semibold tabular-nums">
+            {Math.round(minSimilarity * 100)}%
+          </span>
+          {result && (
+            <Button
+              variant="secondary"
+              onClick={() => void refreshCurrentSearch()}
+              disabled={searching}
+              className="shrink-0"
+            >
+              Apply
+            </Button>
+          )}
+        </div>
+      </Card>
 
       <section className="space-y-3">
         <div className="flex flex-wrap items-start justify-between gap-2">
@@ -595,6 +824,7 @@ export function ReverseFaceLabPage({ embedded = false }: { embedded?: boolean } 
             tagging={tagging}
             tagMessage={tagMessage}
             onNameTag={() => patchReverseFaceSession({ confirmTagOpen: true })}
+            onClustersMerged={refreshCurrentSearch}
           />
         </div>
       )}

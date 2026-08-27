@@ -1251,10 +1251,16 @@ export const apiClient = {
         frame_timestamp?: number | null;
       }[]
     >(`/persons/${id}/media`),
-  personClusterSuggestions: (id: number, opts?: { limit?: number; offset?: number }) => {
+  personClusterSuggestions: (
+    id: number,
+    opts?: { limit?: number; offset?: number; minSimilarity?: number }
+  ) => {
     const params = new URLSearchParams();
     if (opts?.limit != null) params.set("limit", String(opts.limit));
     if (opts?.offset != null) params.set("offset", String(opts.offset));
+    if (opts?.minSimilarity != null) {
+      params.set("min_similarity", String(opts.minSimilarity));
+    }
     const qs = params.toString();
     return api<PersonClusterSuggestionList>(
       `/persons/${id}/suggested-clusters${qs ? `?${qs}` : ""}`
@@ -1662,9 +1668,13 @@ export const apiClient = {
   searchUploadedFace: async (
     file: File,
     limit = 20,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    minSimilarity = 0.45
   ): Promise<FaceSearchResponse> => {
-    const params = new URLSearchParams({ limit: String(limit) });
+    const params = new URLSearchParams({
+      limit: String(limit),
+      min_similarity: String(minSimilarity),
+    });
     const form = new FormData();
     form.append("file", file);
     try {
@@ -1686,10 +1696,10 @@ export const apiClient = {
       throw new Error(msg);
     }
   },
-  searchFaceByUrl: (imageUrl: string, limit = 20) =>
+  searchFaceByUrl: (imageUrl: string, limit = 20, minSimilarity = 0.45) =>
     api<FaceSearchResponse>("/reid/faces/search-by-url", {
       method: "POST",
-      body: JSON.stringify({ image_url: imageUrl, limit }),
+      body: JSON.stringify({ image_url: imageUrl, limit, min_similarity: minSimilarity }),
     }),
   faceMatchAppearances: (opts: {
     personId?: number | null;
