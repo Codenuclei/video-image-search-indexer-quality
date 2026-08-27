@@ -19,7 +19,6 @@ export type ReverseFaceSession = {
   dragOver: boolean;
   file: File | null;
   previewUrl: string | null;
-  minSimilarity: number;
   searching: boolean;
   result: FaceSearchResponse | null;
   crawlUrls: string;
@@ -39,7 +38,6 @@ const initial: ReverseFaceSession = {
   dragOver: false,
   file: null,
   previewUrl: null,
-  minSimilarity: 0.45,
   searching: false,
   result: null,
   crawlUrls: "",
@@ -162,10 +160,9 @@ export function clearReverseFaceSearch() {
   });
 }
 
-export function runReverseFaceSearch(upload?: File, minSimilarity?: number) {
+export function runReverseFaceSearch(upload?: File) {
   const target = upload ?? state.file;
   if (!target) return searchJob;
-  const threshold = minSimilarity ?? state.minSimilarity;
   const gen = bumpSearchGeneration();
   searchAbort = new AbortController();
   const signal = searchAbort.signal;
@@ -174,13 +171,12 @@ export function runReverseFaceSearch(upload?: File, minSimilarity?: number) {
     error: null,
     tagMessage: null,
     selectedLeader: null,
-    minSimilarity: threshold,
     result: null,
   });
   let job!: Promise<void>;
   job = (async () => {
     try {
-      const result = await apiClient.searchUploadedFace(target, 50, signal, threshold);
+      const result = await apiClient.searchUploadedFace(target, 20, signal);
       if (isStaleSearch(gen)) return;
       patchReverseFaceSession({ result, searching: false });
     } catch (e) {
@@ -200,20 +196,18 @@ export function runReverseFaceSearch(upload?: File, minSimilarity?: number) {
   return job;
 }
 
-export function selectReverseFaceLeader(person: LeadershipPerson, minSimilarity?: number) {
+export function selectReverseFaceLeader(person: LeadershipPerson) {
   if (!person.image_url) {
     patchReverseFaceSession({ error: `No portrait URL for ${person.name}` });
     return searchJob;
   }
   const gen = bumpSearchGeneration();
-  const threshold = minSimilarity ?? state.minSimilarity;
   const prevUrl = state.previewUrl;
   if (prevUrl) URL.revokeObjectURL(prevUrl);
   patchReverseFaceSession({
     selectedLeader: person,
     file: null,
     previewUrl: null,
-    minSimilarity: threshold,
     searching: true,
     error: null,
     tagMessage: null,
@@ -222,7 +216,7 @@ export function selectReverseFaceLeader(person: LeadershipPerson, minSimilarity?
   let job!: Promise<void>;
   job = (async () => {
     try {
-      const result = await apiClient.searchFaceByUrl(person.image_url!, 50, threshold);
+      const result = await apiClient.searchFaceByUrl(person.image_url!, 20);
       if (isStaleSearch(gen)) return;
       patchReverseFaceSession({ result, searching: false });
     } catch (e) {
@@ -358,19 +352,10 @@ export async function runReverseFaceNameTag(opts: {
     // Refresh matches so named people show up immediately.
     const refreshGen = searchGeneration;
     if (state.selectedLeader?.image_url) {
-      const refreshed = await apiClient.searchFaceByUrl(
-        state.selectedLeader.image_url,
-        50,
-        state.minSimilarity
-      );
+      const refreshed = await apiClient.searchFaceByUrl(state.selectedLeader.image_url, 20);
       if (refreshGen === searchGeneration) patchReverseFaceSession({ result: refreshed });
     } else if (state.file) {
-      const refreshed = await apiClient.searchUploadedFace(
-        state.file,
-        50,
-        undefined,
-        state.minSimilarity
-      );
+      const refreshed = await apiClient.searchUploadedFace(state.file, 20);
       if (refreshGen === searchGeneration) patchReverseFaceSession({ result: refreshed });
     }
     return true;

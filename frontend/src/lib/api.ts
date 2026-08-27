@@ -280,6 +280,8 @@ export type FaceSearchMatch = {
   /** Face id whose thumbnail JPEG exists (may differ from face_id after cluster fallback). */
   thumb_face_id?: number | null;
   thumb_source?: string | null;
+  /** What this match represents: one cluster, one person (no cluster), or one face. */
+  match_scope?: "cluster" | "person" | "face";
   person_id: number | null;
   person_name: string;
   score: number;
@@ -1251,16 +1253,10 @@ export const apiClient = {
         frame_timestamp?: number | null;
       }[]
     >(`/persons/${id}/media`),
-  personClusterSuggestions: (
-    id: number,
-    opts?: { limit?: number; offset?: number; minSimilarity?: number }
-  ) => {
+  personClusterSuggestions: (id: number, opts?: { limit?: number; offset?: number }) => {
     const params = new URLSearchParams();
     if (opts?.limit != null) params.set("limit", String(opts.limit));
     if (opts?.offset != null) params.set("offset", String(opts.offset));
-    if (opts?.minSimilarity != null) {
-      params.set("min_similarity", String(opts.minSimilarity));
-    }
     const qs = params.toString();
     return api<PersonClusterSuggestionList>(
       `/persons/${id}/suggested-clusters${qs ? `?${qs}` : ""}`
@@ -1668,13 +1664,9 @@ export const apiClient = {
   searchUploadedFace: async (
     file: File,
     limit = 20,
-    signal?: AbortSignal,
-    minSimilarity = 0.45
+    signal?: AbortSignal
   ): Promise<FaceSearchResponse> => {
-    const params = new URLSearchParams({
-      limit: String(limit),
-      min_similarity: String(minSimilarity),
-    });
+    const params = new URLSearchParams({ limit: String(limit) });
     const form = new FormData();
     form.append("file", file);
     try {
@@ -1696,10 +1688,10 @@ export const apiClient = {
       throw new Error(msg);
     }
   },
-  searchFaceByUrl: (imageUrl: string, limit = 20, minSimilarity = 0.45) =>
+  searchFaceByUrl: (imageUrl: string, limit = 20) =>
     api<FaceSearchResponse>("/reid/faces/search-by-url", {
       method: "POST",
-      body: JSON.stringify({ image_url: imageUrl, limit, min_similarity: minSimilarity }),
+      body: JSON.stringify({ image_url: imageUrl, limit }),
     }),
   faceMatchAppearances: (opts: {
     personId?: number | null;

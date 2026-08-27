@@ -15,7 +15,6 @@ import {
 import { Button, Card, ConfirmDialog, FaceThumb, Input, LoadingLabel } from "@/components/ui";
 import { RoleSelector } from "@/components/role-selector";
 import { AnimatedTrash } from "@/components/animated-trash";
-import { PersonMergeSearch } from "@/components/person-merge-search";
 import { useRegisterTestShellChrome } from "@/lib/test-shell-chrome";
 
 type PersonMedia = {
@@ -55,7 +54,6 @@ export default function PersonDetailPage() {
   const [suggestionsLoadingMore, setSuggestionsLoadingMore] = useState(false);
   const [suggestionActionId, setSuggestionActionId] = useState<number | null>(null);
   const [suggestionError, setSuggestionError] = useState<string | null>(null);
-  const [suggestionThreshold, setSuggestionThreshold] = useState(0.5);
   const savingRef = useRef(false);
 
   useEffect(() => {
@@ -65,17 +63,9 @@ export default function PersonDetailPage() {
       setName(p.name);
     });
     apiClient.personMedia(id).then(setMedia);
-  }, [id]);
-
-  useEffect(() => {
-    if (!id) return;
     setSuggestionsLoading(true);
     apiClient
-      .personClusterSuggestions(id, {
-        limit: 12,
-        offset: 0,
-        minSimilarity: suggestionThreshold,
-      })
+      .personClusterSuggestions(id, { limit: 12, offset: 0 })
       .then((result) => {
         setSuggestions(result.items);
         setSuggestionTotal(result.total);
@@ -83,7 +73,7 @@ export default function PersonDetailPage() {
       })
       .catch((e) => setSuggestionError(formatApiError(e, "Could not load potential matches")))
       .finally(() => setSuggestionsLoading(false));
-  }, [id, suggestionThreshold]);
+  }, [id]);
 
   async function saveName() {
     if (!person || savingRef.current || saving) return;
@@ -172,29 +162,6 @@ export default function PersonDetailPage() {
     }
   }
 
-  async function mergeSuggestion(clusterId: number, target: Person) {
-    if (!person || suggestionActionId != null) return;
-    const previous = suggestions;
-    setSuggestionActionId(clusterId);
-    setSuggestionError(null);
-    setSuggestions((items) => items.filter((item) => item.cluster_id !== clusterId));
-    setSuggestionTotal((total) => Math.max(0, total - 1));
-    try {
-      const updated = await apiClient.mergeCluster(clusterId, target.id);
-      if (target.id === person.id) {
-        setPerson(updated);
-        setName(updated.name);
-        setMedia(await apiClient.personMedia(person.id));
-      }
-    } catch (e) {
-      setSuggestions(previous);
-      setSuggestionTotal((total) => total + 1);
-      setSuggestionError(formatApiError(e, "Could not merge this cluster"));
-    } finally {
-      setSuggestionActionId(null);
-    }
-  }
-
   async function loadMoreSuggestions() {
     if (!person || suggestionsLoadingMore || suggestions.length >= suggestionTotal) return;
     setSuggestionsLoadingMore(true);
@@ -203,7 +170,6 @@ export default function PersonDetailPage() {
       const result = await apiClient.personClusterSuggestions(person.id, {
         limit: 12,
         offset: suggestions.length,
-        minSimilarity: suggestionThreshold,
       });
       setSuggestions((items) => [...items, ...result.items]);
       setSuggestionTotal(result.total);
@@ -371,32 +337,14 @@ export default function PersonDetailPage() {
           <div className="min-w-0">
             <h3 className="font-medium">Potential matches</h3>
             <p className="text-xs text-muted-foreground">
-              Unknown face clusters at least {Math.round(suggestionThreshold * 100)}% similar to{" "}
-              {person.name}
+              Unknown face clusters at least 50% similar to {person.name}
             </p>
           </div>
-          <div className="flex shrink-0 items-center gap-2">
-            <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
-              Threshold
-              <select
-                value={suggestionThreshold}
-                onChange={(event) => setSuggestionThreshold(Number(event.target.value))}
-                disabled={suggestionsLoading || suggestionActionId != null}
-                className="rounded-md border border-input bg-background px-2 py-1.5 text-xs font-medium text-foreground"
-              >
-                {[0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8].map((value) => (
-                  <option key={value} value={value}>
-                    {Math.round(value * 100)}%
-                  </option>
-                ))}
-              </select>
-            </label>
-            {suggestionTotal > 0 && (
-              <span className="rounded-full bg-primary/10 px-2.5 py-1 text-xs font-semibold tabular-nums text-primary">
-                {suggestionTotal} suggested
-              </span>
-            )}
-          </div>
+          {suggestionTotal > 0 && (
+            <span className="shrink-0 rounded-full bg-primary/10 px-2.5 py-1 text-xs font-semibold tabular-nums text-primary">
+              {suggestionTotal} suggested
+            </span>
+          )}
         </div>
         {suggestionsLoading ? (
           <p className="px-4 py-6 text-sm text-muted-foreground">
@@ -404,8 +352,7 @@ export default function PersonDetailPage() {
           </p>
         ) : suggestions.length === 0 ? (
           <p className="px-4 py-6 text-sm text-muted-foreground">
-            No unreviewed clusters currently match this person above{" "}
-            {Math.round(suggestionThreshold * 100)}%.
+            No unreviewed clusters currently match this person above 50%.
           </p>
         ) : (
           <ul className="divide-y divide-border">
@@ -439,62 +386,33 @@ export default function PersonDetailPage() {
                         </span>
                       </div>
                       {suggestion.sample_files.length > 0 && (
-                        <div className="mt-2 flex max-w-full gap-1.5 overflow-x-auto pb-1">
-                          {suggestion.sample_files.map((file) => (
-                            <a
-                              key={file.drive_file_id}
-                              href={driveGoogleViewUrl(file.drive_file_id)}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              title={file.name}
-                              className="relative h-14 w-14 shrink-0 overflow-hidden rounded-md border border-border bg-muted"
-                            >
-                              {file.media_type.toLowerCase() === "video" ? (
-                                <span className="flex h-full items-center justify-center text-muted-foreground">
-                                  <FileVideo size={17} />
-                                </span>
-                              ) : (
-                                // eslint-disable-next-line @next/next/no-img-element
-                                <img
-                                  src={driveFileThumbnailUrl(file.drive_file_id)}
-                                  alt={file.name}
-                                  loading="lazy"
-                                  className="h-full w-full object-cover"
-                                />
-                              )}
-                            </a>
-                          ))}
-                        </div>
+                        <p
+                          className="mt-1 truncate text-xs text-muted-foreground"
+                          title={suggestion.sample_files.map((file) => file.name).join(", ")}
+                        >
+                          {suggestion.sample_files.map((file) => file.name).join(" · ")}
+                        </p>
                       )}
                     </div>
                   </div>
-                  <div className="flex min-w-0 shrink-0 flex-col gap-2 xl:min-w-[27rem]">
-                    <PersonMergeSearch
+                  <div className="flex shrink-0 gap-2">
+                    <Button
+                      onClick={() => decideSuggestion(suggestion.cluster_id, "accept")}
                       disabled={suggestionActionId != null}
-                      busy={busy}
-                      busyLabel="Merging cluster…"
-                      onSelect={(target) => void mergeSuggestion(suggestion.cluster_id, target)}
-                    />
-                    <div className="flex gap-2">
-                      <Button
-                        onClick={() => decideSuggestion(suggestion.cluster_id, "accept")}
-                        disabled={suggestionActionId != null}
-                        className="min-w-0 flex-1"
-                      >
-                        <Check size={15} aria-hidden />
-                        {busy ? "Saving…" : `Add to ${person.name}`}
-                      </Button>
-                      <Button
-                        variant="secondary"
-                        onClick={() => decideSuggestion(suggestion.cluster_id, "reject")}
-                        disabled={suggestionActionId != null}
-                        title={`This cluster is not ${person.name}`}
-                        className="flex-1"
-                      >
-                        <X size={15} aria-hidden />
-                        Not {person.name}
-                      </Button>
-                    </div>
+                      className="min-w-0"
+                    >
+                      <Check size={15} aria-hidden />
+                      {busy ? "Saving…" : `Add to ${person.name}`}
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      onClick={() => decideSuggestion(suggestion.cluster_id, "reject")}
+                      disabled={suggestionActionId != null}
+                      title={`This cluster is not ${person.name}`}
+                    >
+                      <X size={15} aria-hidden />
+                      Not {person.name}
+                    </Button>
                   </div>
                 </li>
               );

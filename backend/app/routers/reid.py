@@ -232,7 +232,6 @@ async def reid_official_image_search(
 async def search_uploaded_face(
     file: UploadFile = File(...),
     limit: int = 20,
-    min_similarity: float = 0.45,
     session: AsyncSession = Depends(get_db),
 ) -> dict:
     """Upload a face photo → ArcFace embed → pgvector ANN → ranked internal profiles."""
@@ -241,14 +240,8 @@ async def search_uploaded_face(
         raise HTTPException(status_code=400, detail="Empty upload")
     if len(raw) > 12 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="Image too large (max 12MB)")
-    min_similarity = max(0.2, min(float(min_similarity), 0.95))
     try:
-        return await search_faces_by_image_bytes(
-            session,
-            raw,
-            limit=max(1, min(limit, 50)),
-            max_distance=1.0 - min_similarity,
-        )
+        return await search_faces_by_image_bytes(session, raw, limit=max(1, min(limit, 50)))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -285,7 +278,6 @@ async def face_match_appearances(
 class FaceSearchByUrlRequest(BaseModel):
     image_url: str = Field(..., min_length=8)
     limit: int = Field(default=20, ge=1, le=50)
-    min_similarity: float = Field(default=0.45, ge=0.2, le=0.95)
 
 
 @router.post("/faces/search-by-url")
@@ -295,12 +287,7 @@ async def search_face_by_url(
 ) -> dict:
     """Reverse-match a public portrait URL (used by Executive Leaders mini-cards)."""
     try:
-        return await search_faces_by_image_url(
-            session,
-            body.image_url,
-            limit=body.limit,
-            max_distance=1.0 - body.min_similarity,
-        )
+        return await search_faces_by_image_url(session, body.image_url, limit=body.limit)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001

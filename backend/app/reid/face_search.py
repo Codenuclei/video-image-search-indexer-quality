@@ -6,14 +6,22 @@ import logging
 import cv2
 import httpx
 import numpy as np
-from sqlalchemy import func, or_, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import DriveFile, Face, FaceCluster, FaceEmbedding, Media, Person
+from app.db.models import (
+    DriveFile,
+    Face,
+    FaceCluster,
+    FaceEmbedding,
+    Media,
+    MediaType,
+    Person,
+)
 from app.faces.engine import get_face_engine
 from app.pipelines.async_cpu import run_cpu_bound
-from app.reid.reverse_search import linkedin_map
 from app.reid.face_thumbs import resolve_face_thumbnail_id
+from app.reid.reverse_search import linkedin_map
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +69,11 @@ async def _appears_in_for_face(
         .join(DriveFile, DriveFile.id == Media.drive_file_id)
         .where(face_filter)
         .group_by(Media.id, DriveFile.id, DriveFile.name, DriveFile.path, Media.type)
-        .order_by(DriveFile.name)
+        # Images before videos so gallery pages stay visually consistent.
+        .order_by(
+            case((Media.type == MediaType.IMAGE, 0), else_=1),
+            DriveFile.name,
+        )
         .offset(max(0, offset))
         .limit(limit)
     )
@@ -146,6 +158,23 @@ async def _clusters_for_person(
     ]
 
 
+def _identity_key(
+    face_id: int, person_id: int | None, cluster_id: int | None
+) -> tuple[str, int]:
+    """Dedupe key for reverse-search matches.
+
+    Clusters stay distinct even when several are linked to the same person, so
+    the UI can show each face cluster instead of collapsing a person into one
+    identity result. Person-linked faces without a cluster still group per
+    person; unlinked faces fall back to their own face id.
+    """
+    if cluster_id is not None:
+        return ("cluster", int(cluster_id))
+    if person_id is not None:
+        return ("person", int(person_id))
+    return ("face", int(face_id))
+
+
 async def search_faces_by_image_bytes(
     session: AsyncSession,
     image_bytes: bytes,
@@ -190,40 +219,49 @@ async def search_faces_by_image_bytes(
             .outerjoin(FaceCluster, FaceCluster.id == Face.cluster_id)
             .outerjoin(Person, Person.id == identity_person_id)
             .order_by(dist)
-            .limit(max(limit * 3, 30))
+            # Extra headroom: one person can legitimately surface several
+            # clusters, so rows are consumed faster than one-per-identity.
+            .limit(max(limit * 4, 60))
         )
     ).all()
 
     li_map = await linkedin_map(session)
     matches: list[dict[str, object]] = []
-    seen_people: set[int] = set()
-    seen_clusters: set[int] = set()
+    seen_identities: set[tuple[str, int]] = set()
+    person_clusters_cache: dict[int, list[dict[str, object]]] = {}
+    person_face_count_cache: dict[int, int] = {}
     for face_id, distance, person_id, person_name, cluster_id, cluster_status, member_count in rows:
         d = float(distance)
         if d > max_distance:
             continue
         score = max(0.0, 1.0 - d)
-        if person_id is not None:
-            if person_id in seen_people:
-                continue
-            seen_people.add(person_id)
-        elif cluster_id is not None:
-            if cluster_id in seen_clusters:
-                continue
-            seen_clusters.add(cluster_id)
+        key = _identity_key(int(face_id), person_id, cluster_id)
+        if key in seen_identities:
+            continue
+        seen_identities.add(key)
 
         name = person_name or "Unknown"
         pid = int(person_id) if person_id is not None else None
         cid = int(cluster_id) if cluster_id is not None else None
-        file_count = await _file_count_for_face(session, person_id=pid, cluster_id=cid)
+        # Cluster-keyed matches report cluster-scoped counts so each cluster
+        # row stands on its own; person-keyed matches keep person-wide counts.
+        count_person_id = pid if cid is None else None
+        file_count = await _file_count_for_face(
+            session, person_id=count_person_id, cluster_id=cid
+        )
         # Keep reverse search bounded. Returning hundreds of files for every
         # candidate holds a transaction open and can exhaust the API DB pool.
         # file_count still reports the complete total to the UI.
         appears_limit = min(max(file_count, 1), _MAX_APPEARANCES_PER_MATCH)
         appears_in = await _appears_in_for_face(
-            session, person_id=pid, cluster_id=cid, limit=appears_limit
+            session, person_id=count_person_id, cluster_id=cid, limit=appears_limit
         )
-        person_clusters = await _clusters_for_person(session, pid) if pid is not None else []
+        if pid is not None:
+            if pid not in person_clusters_cache:
+                person_clusters_cache[pid] = await _clusters_for_person(session, pid)
+            person_clusters = person_clusters_cache[pid]
+        else:
+            person_clusters = []
 
         # If face lost cluster_id after naming, surface the person's top cluster for UI links
         if cid is None and person_clusters:
@@ -237,9 +275,15 @@ async def search_faces_by_image_bytes(
                 else None
             )
 
-        # Named/merged person: face badge = all faces for that person, not one cluster.
-        if pid is not None:
-            display_member_count = await _face_count_for_person(session, pid)
+        if cid is not None and cluster_id is not None:
+            display_member_count = (
+                int(member_count) if member_count is not None else None
+            )
+        elif pid is not None:
+            # Person-wide match (no distinct cluster): badge spans all faces.
+            if pid not in person_face_count_cache:
+                person_face_count_cache[pid] = await _face_count_for_person(session, pid)
+            display_member_count = person_face_count_cache[pid]
         else:
             display_member_count = int(member_count) if member_count is not None else None
 
@@ -250,6 +294,7 @@ async def search_faces_by_image_bytes(
                 "face_id": int(face_id),
                 "thumb_face_id": thumb_face_id,
                 "thumb_source": thumb_source,
+                "match_scope": key[0],
                 "person_id": pid,
                 "person_name": name,
                 "score": round(score, 4),
