@@ -22,6 +22,12 @@ class RuntimeSettings:
     carousel_llm_provider: str
     openrouter_model: str
     claude_model: str
+    object_lane_enabled: bool = False
+    object_backfill_enabled: bool = False
+    object_confidence_floor: float = 0.72
+    object_max_labels: int = 12
+    object_batch_size: int = 8
+    object_face_priority_ratio: int = 10
 
 
 _runtime: RuntimeSettings | None = None
@@ -49,6 +55,12 @@ def _env_defaults() -> RuntimeSettings:
         search_rerank_enabled=settings.search_rerank_enabled,
         search_semantic_min_score=max(0.0, min(1.0, settings.image_caption_min_score)),
         go_indexer_enabled=settings.go_indexer_enabled,
+        object_lane_enabled=False,
+        object_backfill_enabled=False,
+        object_confidence_floor=0.72,
+        object_max_labels=12,
+        object_batch_size=8,
+        object_face_priority_ratio=10,
         # Default Claude-direct when Anthropic key is present; picker can override.
         carousel_llm_provider="claude"
         if (settings.anthropic_api_key or settings.claude_api_key or "").strip()
@@ -84,6 +96,12 @@ def update_runtime_settings(
     search_rerank_enabled: bool | None = None,
     search_semantic_min_score: float | None = None,
     go_indexer_enabled: bool | None = None,
+    object_lane_enabled: bool | None = None,
+    object_backfill_enabled: bool | None = None,
+    object_confidence_floor: float | None = None,
+    object_max_labels: int | None = None,
+    object_batch_size: int | None = None,
+    object_face_priority_ratio: int | None = None,
     carousel_llm_provider: str | None = None,
     openrouter_model: str | None = None,
     claude_model: str | None = None,
@@ -113,6 +131,18 @@ def update_runtime_settings(
         runtime.search_semantic_min_score = max(0.0, min(1.0, search_semantic_min_score))
     if go_indexer_enabled is not None:
         runtime.go_indexer_enabled = go_indexer_enabled
+    if object_lane_enabled is not None:
+        runtime.object_lane_enabled = object_lane_enabled
+    if object_backfill_enabled is not None:
+        runtime.object_backfill_enabled = object_backfill_enabled
+    if object_confidence_floor is not None:
+        runtime.object_confidence_floor = max(0.0, min(1.0, object_confidence_floor))
+    if object_max_labels is not None:
+        runtime.object_max_labels = max(1, min(50, object_max_labels))
+    if object_batch_size is not None:
+        runtime.object_batch_size = max(1, min(64, object_batch_size))
+    if object_face_priority_ratio is not None:
+        runtime.object_face_priority_ratio = max(1, min(100, object_face_priority_ratio))
     if carousel_llm_provider is not None:
         runtime.carousel_llm_provider = _normalize_provider(carousel_llm_provider)
     if openrouter_model is not None:

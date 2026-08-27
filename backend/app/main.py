@@ -285,10 +285,14 @@ async def lifespan(app: FastAPI):
 
         if settings_now.run_face_worker:
             from app.workers.face_queue import FaceWorkerLoop
+            from app.workers.object_queue import ObjectWorkerLoop
 
             face_loop = FaceWorkerLoop(settings=settings_now)
             face_loop.ensure_started()
             app.state.face_worker_loop = face_loop
+            object_loop = ObjectWorkerLoop()
+            object_loop.ensure_started()
+            app.state.object_worker_loop = object_loop
             logger.info(
                 "Face worker loop started concurrency=%s",
                 settings_now.face_worker_concurrency,
@@ -332,6 +336,12 @@ async def lifespan(app: FastAPI):
             await face_loop.stop()
         except Exception:  # noqa: BLE001
             logger.exception("Face worker loop stop failed")
+    object_loop = getattr(app.state, "object_worker_loop", None)
+    if object_loop is not None:
+        try:
+            await object_loop.stop()
+        except Exception:  # noqa: BLE001
+            logger.exception("Object worker loop stop failed")
     worker_tasks = getattr(app.state, "worker_tasks", ())
     for task in (workers_starter, boot_task, *worker_tasks):
         try:

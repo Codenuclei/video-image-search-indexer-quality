@@ -461,6 +461,12 @@ export type Settings = {
   search_rerank_enabled: boolean;
   search_semantic_min_score: number;
   go_indexer_enabled: boolean;
+  object_lane_enabled: boolean;
+  object_backfill_enabled: boolean;
+  object_confidence_floor: number;
+  object_max_labels: number;
+  object_batch_size: number;
+  object_face_priority_ratio: number;
 };
 
 export type FileFace = {
@@ -485,6 +491,16 @@ export type SearchCitation = {
   metadata?: Record<string, string>;
 };
 
+export type ObjectEvidence = {
+  label: string;
+  category: string;
+  confidence: number;
+  source: string;
+  evidence_text?: string | null;
+  best_timestamp?: number | null;
+  hit_count: number;
+};
+
 export type SearchResultFile = {
   drive_file_id: string;
   name: string;
@@ -493,6 +509,7 @@ export type SearchResultFile = {
   person_names: string[];
   score?: number | null;
   caption?: string | null;
+  matched_objects?: ObjectEvidence[];
 };
 
 export type SearchMoment = {
@@ -509,6 +526,7 @@ export type SearchMoment = {
   person_names: string[];
   snippet?: string | null;
   score?: number | null;
+  matched_objects?: ObjectEvidence[];
 };
 
 export type SearchResponse = {
@@ -1412,6 +1430,24 @@ export const apiClient = {
   },
   triggerIndex: () => api<IndexStatus>("/index", { method: "POST" }),
   triggerReindex: () => api<IndexStatus>("/reindex", { method: "POST" }),
+  objectStatus: () =>
+    api<{
+      depth: number;
+      throughput_completed: number;
+      retries: number;
+      errors: number;
+      average_latency_ms: number;
+      backfill_estimate: { eligible: number; paused: boolean };
+    }>("/objects/status", { silent: true }),
+  objectBackfill: (dryRun = true, limit = 500) =>
+    api<{ eligible: number; enqueued: number; paused: boolean }>(
+      `/objects/backfill?dry_run=${dryRun}&limit=${limit}`,
+      { method: "POST" }
+    ),
+  objectRequeue: (includeDone = false) =>
+    api<{ requeued: number }>(`/objects/requeue?include_done=${includeDone}`, {
+      method: "POST",
+    }),
   cacheCleanupDryRun: () =>
     api<CacheCleanupResult>("/admin/cache-cleanup", { silent: true }),
   cacheCleanupApply: () =>

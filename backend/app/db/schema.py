@@ -104,6 +104,10 @@ _ONLINE_INDEX_DDLS = (
     "ON drive_files (status, created_at)",
     "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_face_jobs_pending_created "
     "ON face_jobs (created_at, id) WHERE status = 'PENDING'",
+    "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_object_jobs_pending_created "
+    "ON object_jobs (created_at, id) WHERE status = 'PENDING'",
+    "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_media_object_labels_search "
+    "ON media_object_labels (canonical_label, confidence DESC, media_id)",
 )
 
 
@@ -170,6 +174,21 @@ async def ensure_schema(engine: AsyncEngine) -> None:
             "detected_face_count",
             "ALTER TABLE face_jobs ADD COLUMN detected_face_count INTEGER",
         )
+        object_settings = (
+            ("object_lane_enabled", "BOOLEAN NOT NULL DEFAULT false"),
+            ("object_backfill_enabled", "BOOLEAN NOT NULL DEFAULT false"),
+            ("object_confidence_floor", "DOUBLE PRECISION NOT NULL DEFAULT 0.72"),
+            ("object_max_labels", "INTEGER NOT NULL DEFAULT 12"),
+            ("object_batch_size", "INTEGER NOT NULL DEFAULT 8"),
+            ("object_face_priority_ratio", "INTEGER NOT NULL DEFAULT 10"),
+        )
+        for column, ddl_type in object_settings:
+            await _ensure_column(
+                conn,
+                "app_settings",
+                column,
+                f"ALTER TABLE app_settings ADD COLUMN {column} {ddl_type}",
+            )
 
         # Warm prod DBs already have additive columns. Skip ALTER TABLE entirely —
         # even IF NOT EXISTS takes AccessExclusiveLock and can 503 the API on boot.

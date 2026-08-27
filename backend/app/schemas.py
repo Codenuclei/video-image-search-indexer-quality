@@ -132,6 +132,12 @@ class SettingsOut(BaseModel):
     search_rerank_enabled: bool
     search_semantic_min_score: float
     go_indexer_enabled: bool
+    object_lane_enabled: bool = False
+    object_backfill_enabled: bool = False
+    object_confidence_floor: float = 0.72
+    object_max_labels: int = 12
+    object_batch_size: int = 8
+    object_face_priority_ratio: int = 10
     carousel_llm_provider: str = "auto"
     openrouter_model: str = "anthropic/claude-sonnet-4"
     claude_model: str = "claude-sonnet-4-5-20250929"
@@ -153,6 +159,12 @@ class SettingsUpdate(BaseModel):
     search_rerank_enabled: bool | None = None
     search_semantic_min_score: float | None = Field(default=None, ge=0.0, le=1.0)
     go_indexer_enabled: bool | None = None
+    object_lane_enabled: bool | None = None
+    object_backfill_enabled: bool | None = None
+    object_confidence_floor: float | None = Field(default=None, ge=0.0, le=1.0)
+    object_max_labels: int | None = Field(default=None, ge=1, le=50)
+    object_batch_size: int | None = Field(default=None, ge=1, le=64)
+    object_face_priority_ratio: int | None = Field(default=None, ge=1, le=100)
     carousel_llm_provider: str | None = None
     openrouter_model: str | None = None
     claude_model: str | None = None
@@ -299,6 +311,16 @@ class SearchCitationOut(BaseModel):
     metadata: dict[str, str] = {}
 
 
+class ObjectEvidence(BaseModel):
+    label: str
+    category: str
+    confidence: float
+    source: str
+    evidence_text: str | None = None
+    best_timestamp: float | None = None
+    hit_count: int = 1
+
+
 class SearchResultFile(BaseModel):
     drive_file_id: str
     name: str
@@ -307,6 +329,7 @@ class SearchResultFile(BaseModel):
     person_names: list[str] = []
     score: float | None = None
     caption: str | None = None
+    matched_objects: list[ObjectEvidence] = []
 
 
 class SearchMoment(BaseModel):
@@ -323,6 +346,7 @@ class SearchMoment(BaseModel):
     person_names: list[str] = []
     snippet: str | None = None
     score: float | None = None
+    matched_objects: list[ObjectEvidence] = []
 
 
 class SearchResponse(BaseModel):

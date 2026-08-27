@@ -12,6 +12,20 @@ from app.runtime_settings import (
 )
 
 
+def _plain_attr(row: AppSettings, name: str, default):
+    """Ignore unset mock/legacy descriptor values and use a safe default."""
+    value = getattr(row, name, default)
+    if isinstance(default, bool):
+        return value if type(value) is bool else default
+    if isinstance(default, int):
+        return value if type(value) is int else default
+    if isinstance(default, float):
+        return value if type(value) in (int, float) else default
+    if isinstance(default, str):
+        return value if isinstance(value, str) else default
+    return value
+
+
 def _defaults_from_env() -> RuntimeSettings:
     s = get_settings()
     has_claude = bool((s.anthropic_api_key or s.claude_api_key or "").strip())
@@ -28,6 +42,12 @@ def _defaults_from_env() -> RuntimeSettings:
         search_rerank_enabled=s.search_rerank_enabled,
         search_semantic_min_score=max(0.0, min(1.0, s.image_caption_min_score)),
         go_indexer_enabled=getattr(s, "go_indexer_enabled", False),
+        object_lane_enabled=False,
+        object_backfill_enabled=False,
+        object_confidence_floor=0.72,
+        object_max_labels=12,
+        object_batch_size=8,
+        object_face_priority_ratio=10,
         carousel_llm_provider="claude" if has_claude else "auto",
         openrouter_model=(s.openrouter_model or "anthropic/claude-sonnet-4").strip(),
         claude_model=(s.claude_model or "claude-sonnet-4-5-20250929").strip(),
@@ -36,35 +56,55 @@ def _defaults_from_env() -> RuntimeSettings:
 
 def _row_to_runtime(row: AppSettings) -> RuntimeSettings:
     s = get_settings()
-    provider = getattr(row, "carousel_llm_provider", None) or "auto"
-    or_model = (getattr(row, "openrouter_model", None) or "").strip() or (
+    provider = _plain_attr(row, "carousel_llm_provider", "auto") or "auto"
+    or_model = (_plain_attr(row, "openrouter_model", "") or "").strip() or (
         s.openrouter_model or "anthropic/claude-sonnet-4"
     ).strip()
-    claude_model = (getattr(row, "claude_model", None) or "").strip() or (
+    claude_model = (_plain_attr(row, "claude_model", "") or "").strip() or (
         s.claude_model or "claude-sonnet-4-5-20250929"
     ).strip()
     raw = (provider or "auto").strip().lower()
     if raw not in {"auto", "openrouter", "claude", "gemini"}:
         raw = "auto"
     return RuntimeSettings(
-        auto_index_enabled=row.auto_index_enabled,
-        auto_index_interval_seconds=max(30, row.auto_index_interval_seconds),
-        reindex_errored_files=getattr(row, "reindex_errored_files", False),
-        reindex_skipped_files=getattr(row, "reindex_skipped_files", False),
-        follow_shortcut_folders=getattr(row, "follow_shortcut_folders", True),
-        experimental_manual_face_tag=getattr(row, "experimental_manual_face_tag", False),
-        gemini_file_search_search_enabled=row.gemini_file_search_search_enabled,
-        search_parallel_variants_enabled=row.search_parallel_variants_enabled,
-        search_use_captions=row.search_use_captions,
-        search_rerank_enabled=row.search_rerank_enabled,
+        auto_index_enabled=_plain_attr(row, "auto_index_enabled", False),
+        auto_index_interval_seconds=max(
+            30, _plain_attr(row, "auto_index_interval_seconds", 30)
+        ),
+        reindex_errored_files=_plain_attr(row, "reindex_errored_files", False),
+        reindex_skipped_files=_plain_attr(row, "reindex_skipped_files", False),
+        follow_shortcut_folders=_plain_attr(row, "follow_shortcut_folders", True),
+        experimental_manual_face_tag=_plain_attr(
+            row, "experimental_manual_face_tag", False
+        ),
+        gemini_file_search_search_enabled=_plain_attr(
+            row, "gemini_file_search_search_enabled", False
+        ),
+        search_parallel_variants_enabled=_plain_attr(
+            row, "search_parallel_variants_enabled", False
+        ),
+        search_use_captions=_plain_attr(row, "search_use_captions", False),
+        search_rerank_enabled=_plain_attr(row, "search_rerank_enabled", True),
         search_semantic_min_score=max(
             0.0,
             min(
                 1.0,
-                getattr(row, "search_semantic_min_score", s.image_caption_min_score),
+                _plain_attr(
+                    row, "search_semantic_min_score", s.image_caption_min_score
+                ),
             ),
         ),
-        go_indexer_enabled=getattr(row, "go_indexer_enabled", False),
+        go_indexer_enabled=_plain_attr(row, "go_indexer_enabled", False),
+        object_lane_enabled=_plain_attr(row, "object_lane_enabled", False),
+        object_backfill_enabled=_plain_attr(row, "object_backfill_enabled", False),
+        object_confidence_floor=max(
+            0.0, min(1.0, _plain_attr(row, "object_confidence_floor", 0.72))
+        ),
+        object_max_labels=max(1, min(50, _plain_attr(row, "object_max_labels", 12))),
+        object_batch_size=max(1, min(64, _plain_attr(row, "object_batch_size", 8))),
+        object_face_priority_ratio=max(
+            1, min(100, _plain_attr(row, "object_face_priority_ratio", 10))
+        ),
         carousel_llm_provider=raw,
         openrouter_model=or_model,
         claude_model=claude_model,
@@ -84,6 +124,12 @@ def _apply_runtime_to_row(row: AppSettings, runtime: RuntimeSettings) -> None:
     row.search_rerank_enabled = runtime.search_rerank_enabled
     row.search_semantic_min_score = runtime.search_semantic_min_score
     row.go_indexer_enabled = runtime.go_indexer_enabled
+    row.object_lane_enabled = runtime.object_lane_enabled
+    row.object_backfill_enabled = runtime.object_backfill_enabled
+    row.object_confidence_floor = runtime.object_confidence_floor
+    row.object_max_labels = runtime.object_max_labels
+    row.object_batch_size = runtime.object_batch_size
+    row.object_face_priority_ratio = runtime.object_face_priority_ratio
     row.carousel_llm_provider = runtime.carousel_llm_provider
     row.openrouter_model = runtime.openrouter_model
     row.claude_model = runtime.claude_model

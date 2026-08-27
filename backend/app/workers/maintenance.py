@@ -575,6 +575,18 @@ async def maintenance_tick(worker: IndexingWorker) -> None:
         if await global_indexing_is_paused(session):
             logger.info("Maintenance skipped: global indexing pause is active")
             return
+        from app.db.app_settings_store import refresh_runtime_settings_from_db
+
+        runtime = await refresh_runtime_settings_from_db(session)
+        if runtime.object_backfill_enabled:
+            from app.workers.object_queue import produce_object_backfill
+
+            produced = await produce_object_backfill(
+                session,
+                limit=runtime.object_batch_size * 10,
+            )
+            if int(produced.get("enqueued", 0)):
+                logger.info("Object backfill enqueued=%s", produced["enqueued"])
         saved = await restore_archived_when_index_complete(session)
         if saved:
             await session.commit()

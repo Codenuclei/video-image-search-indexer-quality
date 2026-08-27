@@ -665,6 +665,11 @@ async def process_video_file(
         await enqueue_face_job(session, drive_file.id)
         face_job_queued = True
 
+    # Independent addon lane: queue after sampled vectors/text are durable.
+    from app.workers.object_queue import enqueue_object_job
+
+    await enqueue_object_job(session, drive_file.id)
+
     logger.info(
         "Indexed video %s: %d segments, %d frames, %d faces (local Qdrant RAG)%s",
         drive_file.name,

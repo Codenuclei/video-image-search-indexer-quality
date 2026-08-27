@@ -192,3 +192,41 @@ def embed_text_sync(text: str) -> list[float]:
     Call via asyncio.to_thread() from async code.
     """
     return _embed_with_retry(contents=text, task_type="RETRIEVAL_QUERY")
+
+
+def embed_texts_batch_sync(texts: list[str]) -> list[list[float]]:
+    """Embed taxonomy/search texts in one batch request."""
+    if not texts:
+        return []
+    from google.genai import types
+    from google.genai.types import EmbedContentConfig
+
+    client = _get_client()
+    contents = [
+        types.Content(parts=[types.Part(text=text)])
+        for text in texts
+    ]
+    for attempt in range(8):
+        try:
+            with gemini_embed_slot():
+                result = client.models.embed_content(
+                    model=_MODEL,
+                    contents=contents,
+                    config=EmbedContentConfig(
+                        task_type="RETRIEVAL_QUERY",
+                        output_dimensionality=_DIM,
+                    ),
+                )
+            embeddings = list(result.embeddings or [])
+            if len(embeddings) != len(texts):
+                raise RuntimeError(
+                    f"batch text embed returned {len(embeddings)} vectors for {len(texts)} texts"
+                )
+            return [list(item.values or []) for item in embeddings]
+        except Exception as exc:  # noqa: BLE001
+            msg = str(exc)
+            if any(code in msg for code in ("503", "429", "UNAVAILABLE", "RESOURCE_EXHAUSTED")):
+                time.sleep(5 * (2**attempt))
+                continue
+            raise
+    raise RuntimeError("Gemini taxonomy embed failed after 8 retries")

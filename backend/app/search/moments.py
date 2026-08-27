@@ -85,6 +85,8 @@ async def search_video_moments(
         )
         face_hits = []
 
+    object_hits = await _object_moments(session, search_text, person_name, folder_path)
+
     gemini_reranked = False
     if use_rerank and gemini_hits:
         gemini_hits = await rerank_moments(
@@ -112,7 +114,12 @@ async def search_video_moments(
 
     # Regex + vector transcript hits first, then face, visual frames, legacy keyword transcript
     for moment in (
-        regex_transcript_hits + vector_transcript_hits + face_hits + gemini_hits + transcript_hits
+        object_hits
+        + regex_transcript_hits
+        + vector_transcript_hits
+        + face_hits
+        + gemini_hits
+        + transcript_hits
     ):
         key = (moment.drive_file_id, round(moment.timestamp_sec, 2))
         if key in seen:
@@ -184,6 +191,10 @@ def _filter_certain_moments(
                 kept.append(moment)
             continue
 
+        if match_type == "object_exact":
+            kept.append(moment)
+            continue
+
         if match_type == "transcript_regex":
             if score >= 0.45:
                 kept.append(moment)
@@ -230,19 +241,79 @@ def _filter_certain_moments(
 def _moment_priority_key(moment: SearchMoment) -> tuple[int, float]:
     """Transcript hits first, then score within each tier."""
     priority = {
-        "transcript_regex": 0,
-        "transcript_vector": 1,
-        "transcript": 2,
-        "svs_transcript": 3,
-        "face_detected": 4,
-        "gemini_visual": 5,
-        "svs_visual": 6,
+        "object_exact": 0,
+        "transcript_regex": 1,
+        "transcript_vector": 2,
+        "transcript": 3,
+        "svs_transcript": 4,
+        "face_detected": 5,
+        "gemini_visual": 6,
+        "svs_visual": 7,
     }.get(moment.match_type, 7)
     if moment.match_type.startswith("svs_transcript"):
         priority = 2
     if moment.match_type.startswith("svs_visual"):
         priority = 5
     return (priority, -(moment.score or 0))
+
+
+async def _object_moments(
+    session: AsyncSession,
+    query: str,
+    person_name: str | None,
+    folder_path: str | None,
+) -> list[SearchMoment]:
+    from app.gemini.tags import person_names_for_drive_files
+    from app.objects.search import fuse_object_score, object_matches_for_query
+
+    matches = await object_matches_for_query(session, query)
+    if not matches:
+        return []
+    rows = list(
+        (
+            await session.execute(
+                select(DriveFile).where(DriveFile.id.in_(list(matches)))
+            )
+        ).scalars().all()
+    )
+    names_by_file = await person_names_for_drive_files(session, [row.id for row in rows])
+    moments: list[SearchMoment] = []
+    for drive_file in rows:
+        if not drive_file.mime_type.startswith("video/"):
+            continue
+        if folder_path and folder_path.strip() and folder_path.strip() != "/":
+            fp = folder_path.strip().rstrip("/")
+            if not (drive_file.path.startswith(fp + "/") or drive_file.path == fp):
+                continue
+        person_names = names_by_file.get(drive_file.id, [])
+        if person_name and not any(
+            name.casefold() == person_name.casefold() for name in person_names
+        ):
+            continue
+        evidence = matches[drive_file.id]
+        best = max(evidence, key=lambda item: item.confidence)
+        timestamp = float(best.best_timestamp or 0.0)
+        moments.append(
+            SearchMoment(
+                drive_file_id=drive_file.id,
+                name=drive_file_display_name(drive_file),
+                path=drive_file.path,
+                mime_type=drive_file.mime_type,
+                timestamp_sec=timestamp,
+                match_type="object_exact",
+                preview_url=f"/media/video/{drive_file.id}/frame?ts={timestamp:.3f}",
+                video_url=_video_playback_url(drive_file, timestamp),
+                person_names=person_names,
+                snippet=f"Matched object: {', '.join(item.label for item in evidence)}",
+                score=fuse_object_score(
+                    best.confidence,
+                    len(evidence),
+                    best.confidence,
+                ),
+                matched_objects=evidence,
+            )
+        )
+    return moments
 
 
 async def _best_face_thumbnail(session: AsyncSession, person_name: str) -> str | None:
