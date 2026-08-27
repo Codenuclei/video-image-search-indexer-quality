@@ -371,7 +371,7 @@ async def _require_boot_ready(request, call_next):
     from fastapi.responses import JSONResponse
 
     path = request.url.path
-    # Railway healthcheck must never block on DB.
+    # /health does its own readiness gating (see handler) — skip the 20s wait.
     if path == "/health":
         return await call_next(request)
     # Google Drive push must ACK quickly even during deferred boot.
@@ -423,12 +423,29 @@ app.include_router(diagnostics.router)
 
 @app.get("/health")
 async def health():
-    """Liveness probe: always 200 while the process is accepting requests.
+    """Readiness probe: 200 only once deferred boot finished.
 
-    Railway and load balancers use this path. Keep it free of DB/Qdrant/Drive
-    I/O so a busy Drive sync or slow dependency cannot fail the deploy check.
+    Railway keeps the previous deployment serving until this passes, so
+    gating on ``_boot_ready`` makes deploys hitless — otherwise traffic is
+    swapped to workers that still 503/hang for up to 20s while the DB boot
+    runs. No direct DB/Qdrant/Drive I/O here: ``_boot_ready`` is set by the
+    boot task, and the Drive cache seed happens after it, so a slow Drive
+    sync can never fail the deploy check. Railway only uses this at deploy
+    time, so a later dependency blip cannot take a live service offline.
     Use ``/health/detail`` for dependency diagnostics.
     """
+    from fastapi.responses import JSONResponse
+
+    if not _boot_ready.is_set():
+        try:
+            await asyncio.wait_for(_boot_ready.wait(), timeout=8.0)
+        except asyncio.TimeoutError:
+            return JSONResponse(status_code=503, content={"status": "starting"})
+    if _boot_error:
+        return JSONResponse(
+            status_code=503,
+            content={"status": "boot_failed", "error": _boot_error},
+        )
     return {"status": "ok"}
 
 
