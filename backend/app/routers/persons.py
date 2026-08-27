@@ -227,30 +227,36 @@ async def person_suggestion_counts(
         await session.execute(
             text(
                 """
-                WITH suggestions AS (
-                    SELECT best.person_id
+                WITH ranked AS (
+                    SELECT
+                        candidate.id AS cluster_id,
+                        reference.person_id,
+                        candidate.centroid <=> reference.centroid AS distance,
+                        row_number() OVER (
+                            PARTITION BY candidate.id
+                            ORDER BY candidate.centroid <=> reference.centroid,
+                                     reference.person_id
+                        ) AS person_rank
                     FROM face_clusters AS candidate
-                    JOIN LATERAL (
-                        SELECT
-                            reference.person_id,
-                            candidate.centroid <=> reference.centroid AS distance
-                        FROM face_clusters AS reference
-                        WHERE reference.person_id IS NOT NULL
-                          AND reference.centroid IS NOT NULL
-                          AND NOT EXISTS (
-                              SELECT 1
-                              FROM person_cluster_decisions AS decision
-                              WHERE decision.cluster_id = candidate.id
-                                AND decision.person_id = reference.person_id
-                                AND decision.decision = 'rejected'
-                          )
-                        ORDER BY reference.centroid <=> candidate.centroid
-                        LIMIT 1
-                    ) AS best ON true
+                    JOIN face_clusters AS reference
+                      ON reference.person_id IS NOT NULL
+                     AND reference.centroid IS NOT NULL
                     WHERE candidate.status = 'UNKNOWN'
                       AND candidate.person_id IS NULL
                       AND candidate.centroid IS NOT NULL
-                      AND best.distance <= 0.5
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM person_cluster_decisions AS decision
+                          WHERE decision.cluster_id = candidate.id
+                            AND decision.person_id = reference.person_id
+                            AND decision.decision = 'rejected'
+                      )
+                ),
+                suggestions AS (
+                    SELECT person_id
+                    FROM ranked
+                    WHERE person_rank = 1
+                      AND distance <= 0.5
                 )
                 SELECT person_id, count(*)
                 FROM suggestions
@@ -316,18 +322,24 @@ async def suggested_clusters_for_person(
             text(
                 """
                 WITH suggestions AS (
-                    SELECT
-                        candidate.id AS cluster_id,
-                        best.person_id,
-                        1 - best.distance AS similarity
-                    FROM face_clusters AS candidate
-                    JOIN LATERAL (
+                    SELECT cluster_id, person_id, similarity
+                    FROM (
                         SELECT
+                            candidate.id AS cluster_id,
                             reference.person_id,
-                            candidate.centroid <=> reference.centroid AS distance
-                        FROM face_clusters AS reference
-                        WHERE reference.person_id IS NOT NULL
-                          AND reference.centroid IS NOT NULL
+                            1 - (candidate.centroid <=> reference.centroid) AS similarity,
+                            row_number() OVER (
+                                PARTITION BY candidate.id
+                                ORDER BY candidate.centroid <=> reference.centroid,
+                                         reference.person_id
+                            ) AS person_rank
+                        FROM face_clusters AS candidate
+                        JOIN face_clusters AS reference
+                          ON reference.person_id IS NOT NULL
+                         AND reference.centroid IS NOT NULL
+                        WHERE candidate.status = 'UNKNOWN'
+                          AND candidate.person_id IS NULL
+                          AND candidate.centroid IS NOT NULL
                           AND NOT EXISTS (
                               SELECT 1
                               FROM person_cluster_decisions AS decision
@@ -335,13 +347,9 @@ async def suggested_clusters_for_person(
                                 AND decision.person_id = reference.person_id
                                 AND decision.decision = 'rejected'
                           )
-                        ORDER BY reference.centroid <=> candidate.centroid
-                        LIMIT 1
-                    ) AS best ON true
-                    WHERE candidate.status = 'UNKNOWN'
-                      AND candidate.person_id IS NULL
-                      AND candidate.centroid IS NOT NULL
-                      AND best.distance <= 1 - :min_similarity
+                    ) AS ranked
+                    WHERE person_rank = 1
+                      AND similarity >= :min_similarity
                 )
                 SELECT cluster_id, similarity, count(*) OVER () AS total
                 FROM suggestions
