@@ -199,6 +199,9 @@ class Media(Base):
     video_segments: Mapped[list["VideoSegment"]] = relationship(
         back_populates="media", cascade="all, delete-orphan"
     )
+    object_labels: Mapped[list["MediaObjectLabel"]] = relationship(
+        back_populates="media", cascade="all, delete-orphan"
+    )
 
 
 class Person(Base):
@@ -359,6 +362,12 @@ class AppSettings(Base):
     search_rerank_enabled: Mapped[bool] = mapped_column(default=True, nullable=False)
     search_semantic_min_score: Mapped[float] = mapped_column(Float, default=0.32, nullable=False)
     go_indexer_enabled: Mapped[bool] = mapped_column(default=False, nullable=False)
+    object_lane_enabled: Mapped[bool] = mapped_column(default=False, nullable=False)
+    object_backfill_enabled: Mapped[bool] = mapped_column(default=False, nullable=False)
+    object_confidence_floor: Mapped[float] = mapped_column(Float, default=0.72, nullable=False)
+    object_max_labels: Mapped[int] = mapped_column(Integer, default=12, nullable=False)
+    object_batch_size: Mapped[int] = mapped_column(Integer, default=8, nullable=False)
+    object_face_priority_ratio: Mapped[int] = mapped_column(Integer, default=10, nullable=False)
     # Carousel LLM: auto | openrouter | claude | gemini (key stays in env).
     carousel_llm_provider: Mapped[str] = mapped_column(String, default="auto", nullable=False)
     openrouter_model: Mapped[str] = mapped_column(
@@ -590,6 +599,79 @@ class FaceJob(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class ObjectJobStatus(str, enum.Enum):
+    PENDING = "pending"
+    PROCESSING = "processing"
+    DONE = "done"
+    ERROR = "error"
+
+
+class ObjectJob(Base):
+    """Durable, version-aware object classification work item."""
+
+    __tablename__ = "object_jobs"
+    __table_args__ = (
+        UniqueConstraint("drive_file_id", "model_version", name="uq_object_job_file_model"),
+        Index("ix_object_jobs_status_created", "status", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    drive_file_id: Mapped[str] = mapped_column(
+        ForeignKey("drive_files.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    status: Mapped[ObjectJobStatus] = mapped_column(
+        Enum(ObjectJobStatus, name="object_job_status"),
+        default=ObjectJobStatus.PENDING,
+        nullable=False,
+        index=True,
+    )
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    lock_token: Mapped[str | None] = mapped_column(String(96), nullable=True)
+    locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    model_version: Mapped[str] = mapped_column(String(96), nullable=False)
+    scan_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    label_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class MediaObjectLabel(Base):
+    """Canonical object evidence aggregated to one media item."""
+
+    __tablename__ = "media_object_labels"
+    __table_args__ = (
+        UniqueConstraint(
+            "media_id", "canonical_label", "model_version",
+            name="uq_media_object_label_media_label_model",
+        ),
+        Index("ix_media_object_labels_label_conf", "canonical_label", "confidence"),
+        Index("ix_media_object_labels_media_model", "media_id", "model_version"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    media_id: Mapped[int] = mapped_column(
+        ForeignKey("media.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    canonical_label: Mapped[str] = mapped_column(String(96), nullable=False)
+    category: Mapped[str] = mapped_column(String(48), nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    evidence_source: Mapped[str] = mapped_column(String(32), nullable=False)
+    evidence_text: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    best_timestamp: Mapped[float | None] = mapped_column(Float, nullable=True)
+    hit_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    taxonomy_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    model_version: Mapped[str] = mapped_column(String(96), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    media: Mapped[Media] = relationship(back_populates="object_labels")
 
 
 class CarouselItemReference(Base):

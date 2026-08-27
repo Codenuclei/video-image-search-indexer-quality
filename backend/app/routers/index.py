@@ -204,6 +204,46 @@ async def backfill_image_captions(
     return {"ok": True, "scheduled": True}
 
 
+@router.get("/objects/status")
+async def object_status(
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, object]:
+    from app.workers.object_queue import object_queue_status, produce_object_backfill
+
+    status = await object_queue_status(session)
+    estimate = await produce_object_backfill(session, limit=5000, dry_run=True)
+    return {"ok": True, **status, "backfill_estimate": estimate}
+
+
+@router.post("/objects/backfill")
+async def object_backfill(
+    dry_run: bool = Query(True),
+    limit: int = Query(500, ge=1, le=5000),
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, object]:
+    from app.workers.object_queue import produce_object_backfill
+
+    runtime = await refresh_runtime_settings_from_db(session)
+    if not dry_run and not runtime.object_backfill_enabled:
+        raise HTTPException(
+            status_code=409,
+            detail="Enable object_backfill_enabled before enqueueing historical media",
+        )
+    result = await produce_object_backfill(session, limit=limit, dry_run=dry_run)
+    return {"ok": True, "dry_run": dry_run, **result}
+
+
+@router.post("/objects/requeue")
+async def object_requeue(
+    include_done: bool = Query(False),
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, object]:
+    from app.workers.object_queue import requeue_object_jobs
+
+    count = await requeue_object_jobs(session, include_done=include_done)
+    return {"ok": True, "requeued": count, "include_done": include_done}
+
+
 @router.post("/index/recover-from-qdrant")
 async def recover_from_qdrant_endpoint(
     session: AsyncSession = Depends(get_db),

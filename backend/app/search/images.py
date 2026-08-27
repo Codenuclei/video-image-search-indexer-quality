@@ -160,7 +160,10 @@ async def search_image_files(
                 caption_scores[fid] = max(caption_scores.get(fid, 0.0), v * 0.75)
                 captions[fid] = cap
 
-    all_ids = set(visual_scores) | set(caption_scores)
+    from app.objects.search import fuse_object_score, object_matches_for_query
+
+    object_matches = await object_matches_for_query(session, query)
+    all_ids = set(visual_scores) | set(caption_scores) | set(object_matches)
     if not all_ids:
         return []
 
@@ -171,7 +174,8 @@ async def search_image_files(
     for fid in all_ids:
         v = visual_scores.get(fid, 0.0)
         c = caption_scores.get(fid, 0.0)
-        if max(v, c) < semantic_min_score:
+        has_object_hit = fid in object_matches
+        if max(v, c) < semantic_min_score and not has_object_hit:
             continue
         has_caption_hit = fid in caption_scores
         if use_captions and settings.image_caption_enabled:
@@ -183,10 +187,20 @@ async def search_image_files(
                 fused = vw * v + cw * c
             else:
                 fused = v
-        elif action_query:
+        elif action_query and not has_object_hit:
             continue
         else:
             fused = v
+        object_evidence = object_matches.get(fid, ())
+        object_confidence = max(
+            (item.confidence for item in object_evidence),
+            default=0.0,
+        )
+        fused = fuse_object_score(
+            fused,
+            len(object_evidence),
+            object_confidence,
+        )
         ranked.append((fid, fused, captions.get(fid)))
 
     ranked.sort(key=lambda x: -x[1])
@@ -236,6 +250,7 @@ async def search_image_files(
                 person_names=person_names,
                 score=round(score, 4),
                 caption=caption,
+                matched_objects=object_matches.get(drive_file_id, []),
             )
         )
 
@@ -277,6 +292,19 @@ async def attach_stored_captions(files: list[SearchResultFile]) -> list[SearchRe
     return enriched
 
 
+async def _refresh_object_jobs_for_captions(drive_file_ids: list[str]) -> None:
+    """Reclassify completed object jobs when richer caption evidence arrives."""
+    if not drive_file_ids:
+        return
+    from app.db.session import get_session_factory
+    from app.workers.object_queue import enqueue_object_job
+
+    async with get_session_factory()() as session:
+        for drive_file_id in drive_file_ids:
+            await enqueue_object_job(session, drive_file_id, force=True)
+        await session.commit()
+
+
 async def index_image_caption(jpeg_bytes: bytes, drive_file_id: str) -> None:
     """Describe image (batched at backfill; single here) and embed caption text."""
     from app.gemini.captions import describe_image_sync
@@ -297,6 +325,7 @@ async def index_image_caption(jpeg_bytes: bytes, drive_file_id: str) -> None:
         vector=vec,
         caption=caption,
     )
+    await _refresh_object_jobs_for_captions([drive_file_id])
     try:
         from app.workers.index_tat import stamp_completed_at_ids
 
@@ -333,6 +362,7 @@ async def index_image_captions_batch(items: list[tuple[str, bytes]]) -> int:
         captioned_ids.append(fid)
         done += 1
     if captioned_ids:
+        await _refresh_object_jobs_for_captions(captioned_ids)
         try:
             from app.workers.index_tat import stamp_completed_at_ids
 
@@ -363,6 +393,7 @@ async def index_image_embeddings_batch(items: list[tuple[str, bytes]]) -> int:
 
     batch_size = max(1, settings.image_embed_batch_size)
     done = 0
+    embedded_ids: list[str] = []
 
     def _embed_chunk(payloads: list[bytes]) -> list[list[float]]:
         # Prepare path already downscales — keep PIL off the Gemini I/O pool.
@@ -385,10 +416,19 @@ async def index_image_embeddings_batch(items: list[tuple[str, bytes]]) -> int:
                 *[_upsert_one(fid, vec) for fid, vec in zip(ids, vectors)]
             )
             done += sum(1 for ok in results if ok)
+            embedded_ids.extend(fid for fid, ok in zip(ids, results) if ok)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "Image batch embed failed for %d file(s): %s",
                 len(chunk),
                 exc,
             )
+    if embedded_ids:
+        from app.db.session import get_session_factory
+        from app.workers.object_queue import enqueue_object_job
+
+        async with get_session_factory()() as session:
+            for fid in embedded_ids:
+                await enqueue_object_job(session, fid)
+            await session.commit()
     return done

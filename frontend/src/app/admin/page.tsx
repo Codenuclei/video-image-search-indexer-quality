@@ -8,6 +8,7 @@ import {
   type ControlReaderStatus,
   type IndexStatus,
   type IndexTatStats,
+  type Settings,
   type SkipStats,
 } from "@/lib/api";
 import { useAuthSession } from "@/components/auth-gate";
@@ -59,6 +60,9 @@ export default function AdminPage() {
   const [semanticThreshold, setSemanticThreshold] = useState("0.32");
   const [semanticBusy, setSemanticBusy] = useState(false);
   const [semanticStatus, setSemanticStatus] = useState<string | null>(null);
+  const [objectSettings, setObjectSettings] = useState<Settings | null>(null);
+  const [objectStatus, setObjectStatus] = useState<Awaited<ReturnType<typeof apiClient.objectStatus>> | null>(null);
+  const [objectBusy, setObjectBusy] = useState(false);
 
   useEffect(() => {
     if (!allowed) router.replace("/");
@@ -68,19 +72,24 @@ export default function AdminPage() {
     if (!allowed) return;
     void apiClient
       .settings()
-      .then((settings) => setSemanticThreshold(settings.search_semantic_min_score.toFixed(2)))
+      .then((settings) => {
+        setSemanticThreshold(settings.search_semantic_min_score.toFixed(2));
+        setObjectSettings(settings);
+      })
       .catch(() => setSemanticStatus("Could not load the current threshold."));
   }, [allowed]);
 
   const loadSecondary = useCallback(async () => {
-    const [skips, control, tat] = await Promise.all([
+    const [skips, control, tat, objects] = await Promise.all([
       apiClient.skipStats().catch(() => null),
       apiClient.controlReaderStatus().catch(() => null),
       apiClient.indexTatStats().catch(() => null),
+      apiClient.objectStatus().catch(() => null),
     ]);
     setSkipStats(skips);
     setControlStatus(control);
     setTatStats(tat);
+    setObjectStatus(objects);
   }, []);
 
   useEffect(() => {
@@ -190,6 +199,36 @@ export default function AdminPage() {
     }
   }
 
+  async function saveObjectSettings() {
+    if (!objectSettings) return;
+    setObjectBusy(true);
+    try {
+      setObjectSettings(
+        await apiClient.updateSettings({
+          object_lane_enabled: objectSettings.object_lane_enabled,
+          object_backfill_enabled: objectSettings.object_backfill_enabled,
+          object_confidence_floor: objectSettings.object_confidence_floor,
+          object_max_labels: objectSettings.object_max_labels,
+          object_batch_size: objectSettings.object_batch_size,
+          object_face_priority_ratio: objectSettings.object_face_priority_ratio,
+        })
+      );
+      setObjectStatus(await apiClient.objectStatus());
+    } finally {
+      setObjectBusy(false);
+    }
+  }
+
+  async function runObjectBackfill(dryRun: boolean) {
+    setObjectBusy(true);
+    try {
+      await apiClient.objectBackfill(dryRun, 500);
+      setObjectStatus(await apiClient.objectStatus());
+    } finally {
+      setObjectBusy(false);
+    }
+  }
+
   async function restartReader() {
     setControlBusy("reader");
     try {
@@ -294,6 +333,81 @@ export default function AdminPage() {
           </Button>
         </div>
         {semanticStatus && <p className="text-xs text-muted-foreground">{semanticStatus}</p>}
+      </Card>
+
+      <Card className="space-y-3">
+        <div>
+          <h3 className="font-medium">Object identification side lane</h3>
+          <p className="text-sm text-muted-foreground">
+            Uses existing captions and Gemini vectors. Both processing toggles default off.
+          </p>
+        </div>
+        {objectSettings && (
+          <>
+            <div className="flex flex-wrap gap-4 text-sm">
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={objectSettings.object_lane_enabled}
+                  onChange={(e) => setObjectSettings({ ...objectSettings, object_lane_enabled: e.target.checked })}
+                />
+                Enable worker lane
+              </label>
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={objectSettings.object_backfill_enabled}
+                  onChange={(e) => setObjectSettings({ ...objectSettings, object_backfill_enabled: e.target.checked })}
+                />
+                Enable historical producer
+              </label>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-4">
+              {([
+                ["object_confidence_floor", "Confidence", 0.01],
+                ["object_max_labels", "Max labels", 1],
+                ["object_batch_size", "Batch size", 1],
+                ["object_face_priority_ratio", "Face priority ratio", 1],
+              ] as const).map(([key, label, step]) => (
+                <label key={key} className="space-y-1 text-xs text-muted-foreground">
+                  <span>{label}</span>
+                  <Input
+                    type="number"
+                    step={step}
+                    value={objectSettings[key]}
+                    onChange={(e) =>
+                      setObjectSettings({ ...objectSettings, [key]: Number(e.target.value) })
+                    }
+                  />
+                </label>
+              ))}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button disabled={objectBusy} onClick={() => void saveObjectSettings()}>
+                Save object settings
+              </Button>
+              <Button variant="secondary" disabled={objectBusy} onClick={() => void runObjectBackfill(true)}>
+                Dry-run count
+              </Button>
+              <Button
+                variant="secondary"
+                disabled={objectBusy || !objectSettings.object_backfill_enabled}
+                onClick={() => void runObjectBackfill(false)}
+              >
+                Enqueue 500
+              </Button>
+            </div>
+          </>
+        )}
+        {objectStatus && (
+          <p className="text-xs text-muted-foreground">
+            Queue {formatCount(objectStatus.depth)} · eligible{" "}
+            {formatCount(objectStatus.backfill_estimate.eligible)} · completed{" "}
+            {formatCount(objectStatus.throughput_completed)} · retries{" "}
+            {formatCount(objectStatus.retries)} · errors {formatCount(objectStatus.errors)} · avg{" "}
+            {formatTatMs(objectStatus.average_latency_ms)}
+          </p>
+        )}
       </Card>
 
       <Card className="space-y-3">

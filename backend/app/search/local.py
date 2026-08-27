@@ -343,6 +343,10 @@ def is_local_keyword_query(query: str) -> bool:
 
 def _query_tokens(query: str) -> list[str]:
     words = re.findall(r"\w+", query.lower())
+    from app.objects.taxonomy import object_query_labels
+
+    for label in object_query_labels(query):
+        words.extend(re.findall(r"\w+", label))
     tokens: set[str] = set(words)
     for word in list(tokens):
         if len(word) < 3:

@@ -8,6 +8,7 @@ import {
   driveFileThumbnailUrl,
   driveGoogleViewUrl,
   driveVideoStreamUrl,
+  type ObjectEvidence,
   type SearchMoment,
 } from "@/lib/api";
 import { Button, Card, DownloadButton, FilePreview, IconButton, IconLink, Input, LoadingLabel, PersonTags } from "@/components/ui";
@@ -25,6 +26,23 @@ import {
 } from "@/lib/search-session";
 
 const SEARCH_RESULTS_PAGE_SIZE = 30;
+
+function ObjectChips({ items }: { items?: ObjectEvidence[] }) {
+  if (!items?.length) return null;
+  return (
+    <div className="flex flex-wrap gap-1" aria-label="Matched objects">
+      {items.map((item) => (
+        <span
+          key={`${item.label}:${item.source}`}
+          title={`${item.source} · ${Math.round(item.confidence * 100)}%${item.hit_count > 1 ? ` · ${item.hit_count} hits` : ""}`}
+          className="rounded-full border border-violet-500/30 bg-violet-500/10 px-2 py-0.5 text-[10px] font-medium text-violet-700 dark:text-violet-300"
+        >
+          {item.label}
+        </span>
+      ))}
+    </div>
+  );
+}
 
 function formatTimestamp(sec: number): string {
   const m = Math.floor(sec / 60);
@@ -310,6 +328,7 @@ export function SearchPage({
                           {file.caption}
                         </p>
                       )}
+                      <ObjectChips items={file.matched_objects} />
                       {(file.person_names ?? []).length > 0 && (
                         <PersonTags names={file.person_names ?? []} links={linkedinMap} />
                       )}
@@ -370,6 +389,7 @@ export function SearchPage({
               {previewFile.caption && (
                 <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{previewFile.caption}</p>
               )}
+              <ObjectChips items={previewFile.matched_objects} />
               {(previewFile.person_names ?? []).length > 0 && (
                 <PersonTags names={previewFile.person_names ?? []} className="mt-2" links={linkedinMap} />
               )}
@@ -475,6 +495,7 @@ function MomentCard({ moment, onPreview }: { moment: SearchMoment; onPreview: ()
             {moment.snippet}
           </p>
         )}
+        <ObjectChips items={moment.matched_objects} />
         <div className="mt-2 flex flex-wrap items-center gap-2">
           <span className={`rounded-full px-2 py-0.5 text-xs ${matchBadgeStyle(moment.match_type)}`}>
             {matchLabel(moment.match_type, moment.score ?? null)}
@@ -551,6 +572,7 @@ function MomentPreviewPanel({ moment, onClose }: { moment: SearchMoment; onClose
             {moment.snippet}
           </p>
         )}
+        <ObjectChips items={moment.matched_objects} />
         {(moment.person_names ?? []).length > 0 && (
           <PersonTags names={moment.person_names ?? []} className="mt-2" />
         )}
