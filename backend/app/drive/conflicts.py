@@ -420,7 +420,6 @@ async def requeue_circular_duplicate_canonicals(
             FROM drive_files AS owner
             WHERE owner.status = 'PROCESSED'
               AND owner.mime_type LIKE 'image/%'
-              AND COALESCE(owner.error_message, '') NOT LIKE 'duplicate_content:%'
               AND EXISTS (
                   SELECT 1 FROM media
                   WHERE media.drive_file_id = owner.id
