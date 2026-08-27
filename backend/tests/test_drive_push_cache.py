@@ -60,7 +60,13 @@ def test_push_channel_token_verification():
     state.token = "secret-token"
     assert state.verify_notification(channel_id="ch-1", channel_token="secret-token")
     assert not state.verify_notification(channel_id="ch-1", channel_token="wrong")
-    assert not state.verify_notification(channel_id="other", channel_token="secret-token")
+    # Deploys and renewals leave older Google channel ids active temporarily.
+    # The shared secret authenticates those notifications across processes.
+    assert state.verify_notification(channel_id="other", channel_token="secret-token")
+
+    state.token = None
+    assert state.verify_notification(channel_id="ch-1", channel_token=None)
+    assert not state.verify_notification(channel_id="other", channel_token=None)
 
 
 def test_google_drive_push_sync_and_change(monkeypatch):

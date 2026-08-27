@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
   Check,
@@ -16,6 +16,7 @@ import {
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
+  apiClient,
   driveFilePreviewUrl,
   type FaceSearchAppearance,
   type FaceSearchMatch,
@@ -135,8 +136,55 @@ function ResultsSidePanel({
   onNameTag: () => void;
 }) {
   const clusters = useMemo(() => collectClusters(result.matches), [result.matches]);
-  const files = useMemo(() => collectAppearances(result.matches), [result.matches]);
+  const initialFiles = useMemo(() => collectAppearances(result.matches), [result.matches]);
+  const [files, setFiles] = useState(initialFiles);
+  const [appearanceOffsets, setAppearanceOffsets] = useState<Record<string, number>>({});
+  const [loadingMoreFiles, setLoadingMoreFiles] = useState(false);
   const totalFileCount = useMemo(() => totalMatchFileCount(result.matches), [result.matches]);
+  useEffect(() => {
+    setFiles(initialFiles);
+    setAppearanceOffsets(
+      Object.fromEntries(
+        result.matches.map((match) => [
+          match.person_id != null ? `p:${match.person_id}` : `c:${match.cluster_id}`,
+          match.appears_in?.length ?? 0,
+        ])
+      )
+    );
+  }, [initialFiles, result.matches]);
+  const nextAppearanceMatch = result.matches.find((match) => {
+    const key = match.person_id != null ? `p:${match.person_id}` : `c:${match.cluster_id}`;
+    return (appearanceOffsets[key] ?? 0) < (match.file_count ?? match.appears_in?.length ?? 0);
+  });
+
+  async function loadMoreFiles() {
+    if (!nextAppearanceMatch || loadingMoreFiles) return;
+    const key =
+      nextAppearanceMatch.person_id != null
+        ? `p:${nextAppearanceMatch.person_id}`
+        : `c:${nextAppearanceMatch.cluster_id}`;
+    const offset = appearanceOffsets[key] ?? 0;
+    setLoadingMoreFiles(true);
+    try {
+      const page = await apiClient.faceMatchAppearances({
+        personId: nextAppearanceMatch.person_id,
+        clusterId:
+          nextAppearanceMatch.person_id == null ? nextAppearanceMatch.cluster_id : null,
+        offset,
+        limit: 50,
+      });
+      setAppearanceOffsets((current) => ({
+        ...current,
+        [key]: offset + page.items.length,
+      }));
+      setFiles((current) => {
+        const seen = new Set(current.map((item) => item.drive_file_id));
+        return [...current, ...page.items.filter((item) => !seen.has(item.drive_file_id))];
+      });
+    } finally {
+      setLoadingMoreFiles(false);
+    }
+  }
   const canTag =
     !!leader &&
     result.matches.length > 0 &&
@@ -297,6 +345,16 @@ function ResultsSidePanel({
                 </li>
               ))}
             </ul>
+          )}
+          {nextAppearanceMatch && (
+            <Button
+              variant="secondary"
+              onClick={() => void loadMoreFiles()}
+              disabled={loadingMoreFiles}
+              className="w-full"
+            >
+              {loadingMoreFiles ? <LoadingLabel>Loading files…</LoadingLabel> : "Load more files"}
+            </Button>
           )}
         </section>
       </div>

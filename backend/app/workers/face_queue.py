@@ -10,11 +10,19 @@ import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select, text, update
+from sqlalchemy import func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import Settings, get_settings
-from app.db.models import DriveFile, DriveFileStatus, FaceJob, FaceJobStatus, Media, MediaType
+from app.db.models import (
+    DriveFile,
+    DriveFileStatus,
+    Face,
+    FaceJob,
+    FaceJobStatus,
+    Media,
+    MediaType,
+)
 from app.db.session import get_session_factory
 from app.drive.media_cache import unlink_drive_source_cache
 from app.workers.index_batch import IndexStatusBatcher, StatusWrite
@@ -119,18 +127,35 @@ async def process_face_job(
         job.error_message = "drive_file_missing"
         return
 
+    repair_processed_zero_face = False
     if drive_file.status == DriveFileStatus.PROCESSED:
-        job.status = FaceJobStatus.DONE
-        job.error_message = None
-        job.lock_token = None
-        job.locked_at = None
-        await session.commit()
+        existing_face = await session.scalar(
+            select(Face.id)
+            .join(Media, Media.id == Face.media_id)
+            .where(Media.drive_file_id == drive_file.id)
+            .limit(1)
+        )
+        if existing_face is not None:
+            job.status = FaceJobStatus.DONE
+            job.error_message = None
+            job.lock_token = None
+            job.locked_at = None
+            await session.commit()
+            logger.info(
+                "face_job_skip_already_processed job_id=%s file_id=%s",
+                job.id,
+                drive_file.id[:12],
+            )
+            return
+        # Explicit backfill jobs repair PROCESSED duplicate placeholders that
+        # have Qdrant artifacts but never ran InsightFace. Do not let the broad
+        # file status suppress the missing face scan.
+        repair_processed_zero_face = True
         logger.info(
-            "face_job_skip_already_processed job_id=%s file_id=%s",
+            "face_job_repair_processed_zero_face job_id=%s file_id=%s",
             job.id,
             drive_file.id[:12],
         )
-        return
 
     try:
         media = await session.scalar(
@@ -139,6 +164,10 @@ async def process_face_job(
         if media is None:
             raise RuntimeError("face_job_missing_media")
 
+        # Release the claim/metadata transaction before Drive download and
+        # InsightFace inference. expire_on_commit=False keeps these snapshots
+        # usable while the connection returns to the pool.
+        await session.commit()
         client = get_drive_client()
         if media.type == MediaType.VIDEO:
             await apply_faces_to_prepared_video(
@@ -157,11 +186,22 @@ async def process_face_job(
                 client=client,
                 settings=settings,
                 engine=get_face_engine(),
+                allow_redownload=repair_processed_zero_face,
             )
+        detected_face_count = int(
+            await session.scalar(
+                select(func.count(Face.id))
+                .join(Media, Media.id == Face.media_id)
+                .where(Media.drive_file_id == drive_file.id)
+            )
+            or 0
+        )
         job.status = FaceJobStatus.DONE
         job.error_message = None
         job.lock_token = None
         job.locked_at = None
+        job.scan_completed_at = datetime.now(timezone.utc)
+        job.detected_face_count = detected_face_count
         await session.commit()
 
         if media.type == MediaType.VIDEO:
@@ -197,23 +237,6 @@ async def process_face_job(
         )
     except Exception as exc:  # noqa: BLE001
         msg = friendly_index_error_message(exc, max_len=500)
-        # Cache was cleaned after PROCESSED — treat as success for the Drive row.
-        if "media_cache reclaimed for PROCESSED" in msg:
-            job.status = FaceJobStatus.DONE
-            job.error_message = msg[:500]
-            job.lock_token = None
-            job.locked_at = None
-            if drive_file.status != DriveFileStatus.PROCESSED:
-                # Should already be PROCESSED; never force ERROR for this case.
-                drive_file.status = DriveFileStatus.PROCESSED
-                drive_file.error_message = None
-            await session.commit()
-            logger.info(
-                "face_job_done_cache_gone job_id=%s file_id=%s",
-                job.id,
-                drive_file.id[:12],
-            )
-            return
         max_attempts = max(1, settings.face_job_max_attempts)
         if job.attempts >= max_attempts:
             job.status = FaceJobStatus.ERROR

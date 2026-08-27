@@ -128,6 +128,30 @@ export type ClusterListResponse = {
   limit: number;
 };
 
+export type PersonClusterSuggestion = {
+  cluster_id: number;
+  similarity: number;
+  member_count: number;
+  representative_face_id: number | null;
+  representative_confidence: number | null;
+  file_count: number;
+  sample_files: {
+    media_id: number;
+    drive_file_id: string;
+    name: string;
+    path: string;
+    media_type: string;
+    frame_timestamp?: number | null;
+  }[];
+};
+
+export type PersonClusterSuggestionList = {
+  items: PersonClusterSuggestion[];
+  total: number;
+  offset: number;
+  limit: number;
+};
+
 export type DriveFile = {
   id: string;
   name: string;
@@ -266,7 +290,7 @@ export type FaceSearchMatch = {
   cluster_member_count?: number | null;
   /** Unique Drive files for person (merged) or cluster — not capped like appears_in. */
   file_count?: number | null;
-  /** Drive file previews; server returns up to min(file_count, 500). */
+  /** Bounded first page of Drive files; load the remainder via faceMatchAppearances. */
   appears_in?: FaceSearchAppearance[];
 };
 
@@ -1209,6 +1233,7 @@ export const apiClient = {
     const params = new URLSearchParams({ q, limit: String(limit) });
     return api<Person[]>(`/persons/search?${params}`);
   },
+  personSuggestionCounts: () => api<Record<number, number>>("/persons/suggestion-counts"),
   person: (id: number) => api<Person>(`/persons/${id}`),
   renamePerson: (id: number, name: string) =>
     api<Person>(`/persons/${id}`, { method: "PATCH", body: JSON.stringify({ name }) }),
@@ -1226,6 +1251,23 @@ export const apiClient = {
         frame_timestamp?: number | null;
       }[]
     >(`/persons/${id}/media`),
+  personClusterSuggestions: (id: number, opts?: { limit?: number; offset?: number }) => {
+    const params = new URLSearchParams();
+    if (opts?.limit != null) params.set("limit", String(opts.limit));
+    if (opts?.offset != null) params.set("offset", String(opts.offset));
+    const qs = params.toString();
+    return api<PersonClusterSuggestionList>(
+      `/persons/${id}/suggested-clusters${qs ? `?${qs}` : ""}`
+    );
+  },
+  acceptPersonClusterSuggestion: (personId: number, clusterId: number) =>
+    api<Person>(`/persons/${personId}/suggested-clusters/${clusterId}/accept`, {
+      method: "POST",
+    }),
+  rejectPersonClusterSuggestion: (personId: number, clusterId: number) =>
+    api<void>(`/persons/${personId}/suggested-clusters/${clusterId}/reject`, {
+      method: "POST",
+    }),
   clusters: (opts?: { includeIgnored?: boolean; limit?: number; offset?: number }) => {
     const params = new URLSearchParams();
     if (opts?.includeIgnored) params.set("include_ignored", "true");
@@ -1649,6 +1691,25 @@ export const apiClient = {
       method: "POST",
       body: JSON.stringify({ image_url: imageUrl, limit }),
     }),
+  faceMatchAppearances: (opts: {
+    personId?: number | null;
+    clusterId?: number | null;
+    limit?: number;
+    offset?: number;
+  }) => {
+    const params = new URLSearchParams({
+      limit: String(opts.limit ?? 50),
+      offset: String(opts.offset ?? 0),
+    });
+    if (opts.personId != null) params.set("person_id", String(opts.personId));
+    else if (opts.clusterId != null) params.set("cluster_id", String(opts.clusterId));
+    return api<{
+      items: FaceSearchAppearance[];
+      total: number;
+      offset: number;
+      limit: number;
+    }>(`/reid/faces/appearances?${params}`);
+  },
   crawlFaceUrls: (urls: string[]) =>
     api<FaceCrawlResponse>("/reid/faces/crawl", {
       method: "POST",

@@ -7,7 +7,15 @@ from unittest.mock import AsyncMock, patch
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import DriveFile, DriveFileStatus, FileIndexConflict
+from app.db.models import (
+    DriveFile,
+    DriveFileStatus,
+    FaceJob,
+    FaceJobStatus,
+    FileIndexConflict,
+    Media,
+    MediaType,
+)
 from app.drive.content_hash import (
     DUPLICATE_CONTENT_PREFIX,
     NAME_CONFLICT_PREFIX,
@@ -18,12 +26,12 @@ from app.drive.conflicts import (
     KIND_SAME_CONTENT,
     KIND_SAME_CONTENT_DIFF_NAME,
     KIND_SAME_NAME_DIFF_CONTENT,
-    STATUS_AUTOSKIPPED,
     STATUS_MERGED,
     STATUS_PENDING,
     STATUS_REPLACED,
     apply_dedupe_on_upsert,
     find_older_pending_same_hash,
+    requeue_circular_duplicate_canonicals,
     resolve_conflict,
 )
 from app.drive.indexed_folders import list_indexed_folders, record_indexed_folder
@@ -94,7 +102,125 @@ async def test_autoskip_duplicate_content(db_session: AsyncSession) -> None:
 
     conflict = (await db_session.execute(select(FileIndexConflict).limit(1))).scalar_one()
     assert conflict.conflict_kind == KIND_SAME_CONTENT
-    assert conflict.status == STATUS_AUTOSKIPPED
+    assert conflict.status == STATUS_MERGED
+    assert conflict.resolved_at is not None
+
+
+@requires_postgres
+@pytest.mark.asyncio
+async def test_duplicate_placeholder_cannot_become_canonical_twin(
+    db_session: AsyncSession,
+) -> None:
+    placeholder = DriveFile(
+        id="placeholder",
+        name="photo.jpg",
+        mime_type="image/jpeg",
+        path="/copy/photo.jpg",
+        status=DriveFileStatus.PROCESSED,
+        content_hash="circular-hash",
+        content_hash_algo="md5",
+        error_message="duplicate_content: identical to incoming",
+    )
+    incoming = DriveFile(
+        id="incoming",
+        name="photo.jpg",
+        mime_type="image/jpeg",
+        path="/photo.jpg",
+        status=DriveFileStatus.PENDING,
+    )
+    db_session.add_all([placeholder, incoming])
+    await db_session.flush()
+
+    reason = await apply_dedupe_on_upsert(
+        db_session,
+        incoming,
+        algo="md5",
+        digest="circular-hash",
+    )
+
+    assert reason is None
+    assert incoming.status == DriveFileStatus.PENDING
+    assert incoming.error_message is None
+
+
+@requires_postgres
+@pytest.mark.asyncio
+async def test_backfill_requeues_one_owner_for_circular_duplicate_group(
+    db_session: AsyncSession,
+) -> None:
+    copies = [
+        DriveFile(
+            id=f"circular-{index}",
+            name="same.jpg",
+            mime_type="image/jpeg",
+            path=f"/copy-{index}/same.jpg",
+            status=DriveFileStatus.PROCESSED,
+            content_hash="same-circular-content",
+            content_hash_algo="md5",
+            error_message=f"duplicate_content: identical to circular-{1 - index}",
+        )
+        for index in range(2)
+    ]
+    db_session.add_all(copies)
+    await db_session.flush()
+
+    repaired = await requeue_circular_duplicate_canonicals(db_session)
+    await db_session.flush()
+
+    assert len(repaired) == 1
+    statuses = [copy.status for copy in copies]
+    assert statuses.count(DriveFileStatus.PENDING) == 1
+    assert statuses.count(DriveFileStatus.PROCESSED) == 1
+    owner = next(copy for copy in copies if copy.status == DriveFileStatus.PENDING)
+    assert owner.error_message is None
+
+
+@requires_postgres
+@pytest.mark.asyncio
+async def test_backfill_enqueues_face_job_when_media_already_exists(
+    db_session: AsyncSession,
+) -> None:
+    older = datetime.now(timezone.utc) - timedelta(minutes=1)
+    first = DriveFile(
+        id="face-backfill-owner",
+        name="event.jpg",
+        mime_type="image/jpeg",
+        path="/event.jpg",
+        status=DriveFileStatus.PROCESSED,
+        content_hash="face-backfill-content",
+        content_hash_algo="md5",
+        error_message="duplicate_content: identical to face-backfill-copy",
+        created_at=older,
+    )
+    second = DriveFile(
+        id="face-backfill-copy",
+        name="event.jpg",
+        mime_type="image/jpeg",
+        path="/copy/event.jpg",
+        status=DriveFileStatus.PROCESSED,
+        content_hash="face-backfill-content",
+        content_hash_algo="md5",
+        error_message="duplicate_content: identical to face-backfill-owner",
+        created_at=older + timedelta(seconds=1),
+    )
+    db_session.add_all([first, second])
+    await db_session.flush()
+    db_session.add(
+        Media(drive_file_id=first.id, type=MediaType.IMAGE)
+    )
+    await db_session.flush()
+
+    repaired = await requeue_circular_duplicate_canonicals(db_session)
+    await db_session.flush()
+
+    assert repaired == [first.id]
+    assert first.status == DriveFileStatus.PROCESSING
+    job = (
+        await db_session.execute(
+            select(FaceJob).where(FaceJob.drive_file_id == first.id)
+        )
+    ).scalar_one()
+    assert job.status == FaceJobStatus.PENDING
 
 
 @requires_postgres

@@ -97,6 +97,7 @@ async def trigger_reindex(
     """Backfill missing index artifacts only — never wipe PROCESSED media/faces.
 
     Queues ERROR rows and PROCESSED/ERROR images that have no Media row.
+    Repairs duplicate-only groups by requeuing one copy as the canonical owner.
     Does not bulk-demote PROCESSED → PENDING (permanent library).
     """
     if worker.is_running:
@@ -122,6 +123,14 @@ async def trigger_reindex(
         )
         .values(status=DriveFileStatus.PENDING, error_message=None)
     )
+    from app.drive.conflicts import requeue_circular_duplicate_canonicals
+
+    repaired_duplicate_ids = await requeue_circular_duplicate_canonicals(session)
+    if repaired_duplicate_ids:
+        logger.info(
+            "Reindex backfill queued %d duplicate-only canonical image(s)",
+            len(repaired_duplicate_ids),
+        )
     await session.commit()
     background_tasks.add_task(_run_cycle, worker)
     return await _build_index_status(worker, session)
@@ -564,7 +573,6 @@ async def index_conflicts(
     from app.drive.conflicts import (
         KIND_SAME_CONTENT_DIFF_NAME,
         KIND_SAME_NAME_DIFF_CONTENT,
-        STATUS_AUTOSKIPPED,
         STATUS_PENDING,
         list_conflicts,
     )
@@ -572,46 +580,19 @@ async def index_conflicts(
 
     limit = max(1, min(limit, 200))
     offset = max(0, offset)
-    # Include autoskipped same-content-diff-name so Merge is visible on dashboard.
-    if status == "pending":
-        from app.db.models import FileIndexConflict
-        from sqlalchemy import or_
-
-        q = (
-            select(FileIndexConflict)
-            .where(
-                or_(
-                    FileIndexConflict.status == STATUS_PENDING,
-                    FileIndexConflict.status == STATUS_AUTOSKIPPED,
-                )
-            )
-            .order_by(FileIndexConflict.created_at.desc())
-            .offset(offset)
-            .limit(limit)
-        )
-        count_q = select(func.count()).select_from(FileIndexConflict).where(
-            or_(
-                FileIndexConflict.status == STATUS_PENDING,
-                FileIndexConflict.status == STATUS_AUTOSKIPPED,
-            )
-        )
-        total = int((await session.execute(count_q)).scalar_one())
-        rows = list((await session.execute(q)).scalars().all())
-    else:
-        rows, total = await list_conflicts(session, status=status, limit=limit, offset=offset)
+    rows, total = await list_conflicts(session, status=status, limit=limit, offset=offset)
 
     items = []
     for r in rows:
         out = FileIndexConflictOut.model_validate(r)
-        out.can_replace = r.conflict_kind == KIND_SAME_NAME_DIFF_CONTENT and r.status in (
-            STATUS_PENDING,
-            STATUS_AUTOSKIPPED,
+        out.can_replace = (
+            r.conflict_kind == KIND_SAME_NAME_DIFF_CONTENT and r.status == STATUS_PENDING
         )
         out.can_merge = r.conflict_kind in (
             KIND_SAME_CONTENT_DIFF_NAME,
             "same_content",
-        ) and r.status in (STATUS_PENDING, STATUS_AUTOSKIPPED)
-        out.can_skip = r.status in (STATUS_PENDING, STATUS_AUTOSKIPPED)
+        ) and r.status == STATUS_PENDING
+        out.can_skip = r.status == STATUS_PENDING
         items.append(out.model_dump(mode="json"))
     return {"total": total, "offset": offset, "limit": limit, "items": items}
 

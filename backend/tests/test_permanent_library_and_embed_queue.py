@@ -9,7 +9,11 @@ import pytest
 from app.config import Settings
 from app.db.models import DriveFileStatus
 from app.workers.embed_queue import ImageEmbedQueue
-from app.workers.index_batch import IndexStatusBatcher, StatusWrite
+from app.workers.index_batch import (
+    IndexStatusBatcher,
+    StatusWrite,
+    bulk_apply_status_writes,
+)
 
 
 @pytest.mark.asyncio
@@ -33,6 +37,31 @@ async def test_status_batcher_flushes_at_100():
             )
         assert bulk.await_count == 1
         assert batcher.pending_count == 0
+
+
+@pytest.mark.asyncio
+async def test_bulk_status_write_uses_one_update_from_values():
+    session = AsyncMock()
+    result = MagicMock(rowcount=2)
+    session.execute = AsyncMock(return_value=result)
+
+    count = await bulk_apply_status_writes(
+        session,
+        [
+            StatusWrite(file_id="a", status=DriveFileStatus.PROCESSED),
+            StatusWrite(
+                file_id="b",
+                status=DriveFileStatus.ERROR,
+                error_message="failed",
+            ),
+        ],
+    )
+
+    assert count == 2
+    assert session.execute.await_count == 1
+    statement = str(session.execute.await_args.args[0])
+    assert "UPDATE drive_files AS target" in statement
+    assert "VALUES" in statement
 
 
 @pytest.mark.asyncio

@@ -11,7 +11,7 @@ from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from sqlalchemy import update
+from sqlalchemy import text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db.models import DriveFile, DriveFileStatus
@@ -87,74 +87,70 @@ async def bulk_apply_status_writes(
     session: AsyncSession,
     writes: list[StatusWrite],
 ) -> int:
-    """Apply many status finals in one transaction (grouped by identical payload)."""
+    """Apply one bounded status batch with one UPDATE ... FROM VALUES statement."""
     if not writes:
         return 0
 
     fallback_stamp = datetime.now(timezone.utc)
-
-    # Group identical status+error payloads so each group is one UPDATE.
-    # Timestamps stay per-file (finished_at) so TAT is not inflated by batch wait.
-    groups: dict[tuple, list[str]] = {}
-    for w in writes:
-        key = (
-            w.status,
-            w.error_message,
-            w.gemini_document_name,
-            w.clear_gemini_document,
+    rows_sql: list[str] = []
+    params: dict[str, object] = {}
+    for index, write in enumerate(writes):
+        rows_sql.append(
+            f"(CAST(:id_{index} AS varchar), CAST(:status_{index} AS varchar), "
+            f"CAST(:error_{index} AS text), CAST(:gemini_{index} AS varchar), "
+            f"CAST(:clear_{index} AS boolean), CAST(:bump_{index} AS boolean), "
+            f"CAST(:finished_{index} AS timestamptz))"
         )
-        groups.setdefault(key, []).append(w.file_id)
+        params[f"id_{index}"] = write.file_id
+        params[f"status_{index}"] = write.status.name
+        params[f"error_{index}"] = write.error_message
+        params[f"gemini_{index}"] = write.gemini_document_name
+        params[f"clear_{index}"] = write.clear_gemini_document
+        params[f"bump_{index}"] = write.bump_synced_at
+        params[f"finished_{index}"] = write.finished_at or fallback_stamp
 
-    total = 0
-    for (status, error_message, gemini_doc, clear_gemini), ids in groups.items():
-        values: dict = {
-            "status": status,
-            "error_message": error_message,
-        }
-        if clear_gemini:
-            values["gemini_document_name"] = None
-        elif gemini_doc is not None:
-            values["gemini_document_name"] = gemini_doc
-        result = await session.execute(
-            update(DriveFile).where(DriveFile.id.in_(ids)).values(**values)
-        )
-        total += int(result.rowcount or 0)
-
-    # Per finished_at second-bucket: last_synced_at + completed_at for TAT.
-    by_end: dict[datetime, list[StatusWrite]] = {}
-    for w in writes:
-        end = w.finished_at or fallback_stamp
-        by_end.setdefault(end, []).append(w)
-
-    for end, group in by_end.items():
-        bump_ids = [
-            w.file_id
-            for w in group
-            if w.bump_synced_at
-            or w.status in (DriveFileStatus.PROCESSED, DriveFileStatus.ERROR)
-        ]
-        if bump_ids:
-            await session.execute(
-                update(DriveFile)
-                .where(DriveFile.id.in_(bump_ids))
-                .values(last_synced_at=end)
+    result = await session.execute(
+        text(
+            f"""
+            UPDATE drive_files AS target
+            SET status = batch.status::drive_file_status,
+                error_message = batch.error_message,
+                gemini_document_name = CASE
+                    WHEN batch.clear_gemini THEN NULL
+                    WHEN batch.gemini_document_name IS NOT NULL
+                        THEN batch.gemini_document_name
+                    ELSE target.gemini_document_name
+                END,
+                last_synced_at = CASE
+                    WHEN batch.bump_synced
+                      OR batch.status IN ('PROCESSED', 'ERROR')
+                        THEN batch.finished_at
+                    ELSE target.last_synced_at
+                END,
+                completed_at = CASE
+                    WHEN batch.status IN ('PROCESSED', 'ERROR')
+                     AND target.processing_started_at IS NOT NULL
+                     AND target.completed_at IS NULL
+                        THEN batch.finished_at
+                    ELSE target.completed_at
+                END
+            FROM (
+                VALUES {", ".join(rows_sql)}
+            ) AS batch(
+                file_id,
+                status,
+                error_message,
+                gemini_document_name,
+                clear_gemini,
+                bump_synced,
+                finished_at
             )
-        try:
-            from app.workers.index_tat import stamp_completed_at
-
-            err_ids = [w.file_id for w in group if w.status == DriveFileStatus.ERROR]
-            ok_ids = [
-                w.file_id for w in group if w.status == DriveFileStatus.PROCESSED
-            ]
-            if err_ids:
-                await stamp_completed_at(session, err_ids, now=end, reason="error")
-            if ok_ids:
-                await stamp_completed_at(session, ok_ids, now=end, reason="processed")
-        except Exception:  # noqa: BLE001
-            logger.exception(
-                "index_tat_complete_stamp_failed count=%d", len(group)
-            )
-    return total
+            WHERE target.id = batch.file_id
+            """
+        ),
+        params,
+    )
+    return int(result.rowcount or 0)
 
 
 class IndexStatusBatcher:

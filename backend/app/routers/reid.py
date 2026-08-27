@@ -18,7 +18,12 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.reid.face_search import search_faces_by_image_bytes, search_faces_by_image_url
+from app.reid.face_search import (
+    _appears_in_for_face,
+    _file_count_for_face,
+    search_faces_by_image_bytes,
+    search_faces_by_image_url,
+)
 from app.reid.body import (
     backfill_body_signatures,
     body_gallery,
@@ -239,6 +244,35 @@ async def search_uploaded_face(
         return await search_faces_by_image_bytes(session, raw, limit=max(1, min(limit, 50)))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/faces/appearances")
+async def face_match_appearances(
+    person_id: int | None = None,
+    cluster_id: int | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    session: AsyncSession = Depends(get_db),
+) -> dict:
+    """Cursor-like bounded pages for one reverse-search identity."""
+    if (person_id is None) == (cluster_id is None):
+        raise HTTPException(
+            status_code=400,
+            detail="Provide exactly one of person_id or cluster_id",
+        )
+    limit = max(1, min(limit, 100))
+    offset = max(0, offset)
+    total = await _file_count_for_face(
+        session, person_id=person_id, cluster_id=cluster_id
+    )
+    items = await _appears_in_for_face(
+        session,
+        person_id=person_id,
+        cluster_id=cluster_id,
+        limit=limit,
+        offset=offset,
+    )
+    return {"items": items, "total": total, "offset": offset, "limit": limit}
 
 
 class FaceSearchByUrlRequest(BaseModel):

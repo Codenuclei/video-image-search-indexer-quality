@@ -8,6 +8,7 @@ HTTPS webhook. Channel expiration is renewed by re-calling watch with a new id.
 from __future__ import annotations
 
 import asyncio
+import hmac
 import logging
 import secrets
 import time
@@ -72,14 +73,12 @@ class PushChannelState:
     ) -> bool:
         expected = (self.token or "").strip()
         provided = (channel_token or "").strip()
-        if expected and provided != expected:
-            return False
-        # After registration, channel id must match. Before/during the race with
-        # Google's sync message, accept when the token matches (or no token set).
-        if self.channel_id and channel_id and channel_id != self.channel_id:
-            return False
         if expected:
-            return True
+            # Channel ids are process-local and change on every registration.
+            # During deploys Google can still deliver an older valid channel to a
+            # new process (or another replica). The stable shared token is the
+            # authentication boundary; requiring the local id rejects valid pushes.
+            return bool(provided) and hmac.compare_digest(provided, expected)
         return bool(self.channel_id and channel_id == self.channel_id)
 
 

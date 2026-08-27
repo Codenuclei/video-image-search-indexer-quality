@@ -13,7 +13,14 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import DriveFile, DriveFileStatus, Media, MediaType
+from app.db.models import (
+    DriveFile,
+    DriveFileStatus,
+    FaceJob,
+    FaceJobStatus,
+    Media,
+    MediaType,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -250,10 +257,38 @@ async def recover_from_qdrant(
         result.notes.append("No drive_file_id payloads found in image/frame collections.")
         return result
 
-    rows = list((await session.execute(select(DriveFile))).scalars().all())
+    rows: list[DriveFile] = []
+    media_rows: list[Media] = []
+    qdrant_id_list = list(qdrant_ids)
+    for start in range(0, len(qdrant_id_list), 5000):
+        id_chunk = qdrant_id_list[start : start + 5000]
+        rows.extend(
+            (
+                await session.execute(
+                    select(DriveFile).where(DriveFile.id.in_(id_chunk))
+                )
+            ).scalars().all()
+        )
+        media_rows.extend(
+            (
+                await session.execute(
+                    select(Media).where(Media.drive_file_id.in_(id_chunk))
+                )
+            ).scalars().all()
+        )
     by_id = {r.id: r for r in rows}
-    media_rows = list((await session.execute(select(Media))).scalars().all())
     media_by_file = {m.drive_file_id: m for m in media_rows}
+    open_face_job_ids = set(
+        (
+            await session.execute(
+                select(FaceJob.drive_file_id).where(
+                    FaceJob.status.in_(
+                        (FaceJobStatus.PENDING, FaceJobStatus.PROCESSING)
+                    )
+                )
+            )
+        ).scalars()
+    )
 
     now = datetime.now(timezone.utc)
 
@@ -310,7 +345,13 @@ async def recover_from_qdrant(
         media = media_by_file.get(fid)
         media_type = _infer_media_type(row, from_images=from_images, from_frames=from_frames)
         needs_media = media is None
-        needs_status = row.status != DriveFileStatus.PROCESSED
+        # A visual Qdrant vector can predate InsightFace completion. Preserve
+        # PROCESSING while an explicit face job is open so recovery cannot race
+        # the face worker and falsely finalize a zero-face image.
+        needs_status = (
+            row.status != DriveFileStatus.PROCESSED
+            and fid not in open_face_job_ids
+        )
 
         if from_images:
             result.linked_images += 1

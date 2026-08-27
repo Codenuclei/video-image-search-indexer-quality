@@ -203,6 +203,23 @@ class ClusterListResponse(BaseModel):
     limit: int
 
 
+class PersonClusterSuggestion(BaseModel):
+    cluster_id: int
+    similarity: float
+    member_count: int
+    representative_face_id: int | None
+    representative_confidence: float | None = None
+    file_count: int = 0
+    sample_files: list[MediaOccurrence] = Field(default_factory=list)
+
+
+class PersonClusterSuggestionList(BaseModel):
+    items: list[PersonClusterSuggestion]
+    total: int
+    offset: int
+    limit: int
+
+
 class NameClusterRequest(BaseModel):
     name: str
 

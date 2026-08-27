@@ -6,7 +6,7 @@ import logging
 import cv2
 import httpx
 import numpy as np
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import DriveFile, Face, FaceCluster, FaceEmbedding, Media, Person
@@ -16,6 +16,8 @@ from app.reid.reverse_search import linkedin_map
 from app.reid.face_thumbs import resolve_face_thumbnail_id
 
 logger = logging.getLogger(__name__)
+
+_MAX_APPEARANCES_PER_MATCH = 24
 
 _FETCH_HEADERS = {
     "User-Agent": (
@@ -31,10 +33,16 @@ async def _appears_in_for_face(
     person_id: int | None,
     cluster_id: int | None,
     limit: int = 24,
+    offset: int = 0,
 ) -> list[dict[str, object]]:
     """Files where this matched face's person or unknown cluster appears."""
     if person_id is not None:
-        face_filter = Face.person_id == person_id
+        face_filter = or_(
+            Face.person_id == person_id,
+            Face.cluster_id.in_(
+                select(FaceCluster.id).where(FaceCluster.person_id == person_id)
+            ),
+        )
     elif cluster_id is not None:
         face_filter = Face.cluster_id == cluster_id
     else:
@@ -54,6 +62,7 @@ async def _appears_in_for_face(
         .where(face_filter)
         .group_by(Media.id, DriveFile.id, DriveFile.name, DriveFile.path, Media.type)
         .order_by(DriveFile.name)
+        .offset(max(0, offset))
         .limit(limit)
     )
     rows = (await session.execute(stmt)).all()
@@ -78,7 +87,12 @@ async def _file_count_for_face(
 ) -> int:
     """Unique Drive files linked to this person (all merged clusters) or one cluster."""
     if person_id is not None:
-        face_filter = Face.person_id == person_id
+        face_filter = or_(
+            Face.person_id == person_id,
+            Face.cluster_id.in_(
+                select(FaceCluster.id).where(FaceCluster.person_id == person_id)
+            ),
+        )
     elif cluster_id is not None:
         face_filter = Face.cluster_id == cluster_id
     else:
@@ -95,7 +109,18 @@ async def _file_count_for_face(
 
 
 async def _face_count_for_person(session: AsyncSession, person_id: int) -> int:
-    stmt = select(func.count()).select_from(Face).where(Face.person_id == person_id)
+    stmt = (
+        select(func.count())
+        .select_from(Face)
+        .where(
+            or_(
+                Face.person_id == person_id,
+                Face.cluster_id.in_(
+                    select(FaceCluster.id).where(FaceCluster.person_id == person_id)
+                ),
+            )
+        )
+    )
     return int((await session.execute(stmt)).scalar_one() or 0)
 
 
@@ -147,20 +172,23 @@ async def search_faces_by_image_bytes(
     )
     query = detections[0]
     dist = FaceEmbedding.embedding.cosine_distance(query.embedding).label("dist")
+    identity_person_id = func.coalesce(Face.person_id, FaceCluster.person_id).label(
+        "identity_person_id"
+    )
     rows = (
         await session.execute(
             select(
                 FaceEmbedding.face_id,
                 dist,
-                Face.person_id,
+                identity_person_id,
                 Person.name,
                 Face.cluster_id,
                 FaceCluster.status,
                 FaceCluster.member_count,
             )
             .join(Face, Face.id == FaceEmbedding.face_id)
-            .outerjoin(Person, Person.id == Face.person_id)
             .outerjoin(FaceCluster, FaceCluster.id == Face.cluster_id)
+            .outerjoin(Person, Person.id == identity_person_id)
             .order_by(dist)
             .limit(max(limit * 3, 30))
         )
@@ -188,7 +216,10 @@ async def search_faces_by_image_bytes(
         pid = int(person_id) if person_id is not None else None
         cid = int(cluster_id) if cluster_id is not None else None
         file_count = await _file_count_for_face(session, person_id=pid, cluster_id=cid)
-        appears_limit = min(max(file_count, 1), 500)
+        # Keep reverse search bounded. Returning hundreds of files for every
+        # candidate holds a transaction open and can exhaust the API DB pool.
+        # file_count still reports the complete total to the UI.
+        appears_limit = min(max(file_count, 1), _MAX_APPEARANCES_PER_MATCH)
         appears_in = await _appears_in_for_face(
             session, person_id=pid, cluster_id=cid, limit=appears_limit
         )

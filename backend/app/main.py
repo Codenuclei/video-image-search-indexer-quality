@@ -465,12 +465,29 @@ async def health_detail():
     t0 = time.monotonic()
 
     async def _ping_db() -> dict:
+        db_started = time.monotonic()
         try:
             async with get_session_factory()() as session:
                 await session.execute(sa_text("SELECT 1"))
-            return {"status": "ok"}
+            from app.db.session import get_engine
+
+            pool = get_engine().sync_engine.pool
+            return {
+                "status": "ok",
+                "ping_ms": round((time.monotonic() - db_started) * 1000, 1),
+                "pool": {
+                    "size": pool.size(),
+                    "checked_in": pool.checkedin(),
+                    "checked_out": pool.checkedout(),
+                    "overflow": pool.overflow(),
+                },
+            }
         except Exception as exc:
-            return {"status": "unreachable", "error": str(exc)[:120]}
+            return {
+                "status": "unreachable",
+                "ping_ms": round((time.monotonic() - db_started) * 1000, 1),
+                "error": str(exc)[:120],
+            }
 
     async def _ping_qdrant() -> dict:
         try:

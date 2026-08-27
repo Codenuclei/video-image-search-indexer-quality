@@ -10,6 +10,7 @@ from sqlalchemy import (
     Enum,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -240,6 +241,37 @@ class FaceCluster(Base):
 
     person: Mapped[Person | None] = relationship(back_populates="clusters")
     faces: Mapped[list["Face"]] = relationship(back_populates="cluster", foreign_keys="Face.cluster_id")
+
+
+class PersonClusterDecision(Base):
+    """Append-only audit trail for manual person/cluster suggestion decisions."""
+
+    __tablename__ = "person_cluster_decisions"
+    __table_args__ = (
+        UniqueConstraint(
+            "person_id",
+            "cluster_id",
+            "decision",
+            name="uq_person_cluster_decision",
+        ),
+        Index(
+            "ix_person_cluster_decisions_cluster_person",
+            "cluster_id",
+            "person_id",
+            "decision",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # Keep identifiers even if a person is later unnamed/deleted. This table is
+    # an audit record, not ownership of either source row.
+    person_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    cluster_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    decision: Mapped[str] = mapped_column(String(16), nullable=False)
+    similarity: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
 
 
 class Face(Base):
@@ -550,6 +582,10 @@ class FaceJob(Base):
     lock_token: Mapped[str | None] = mapped_column(String(64), nullable=True)
     locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    scan_completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    detected_face_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

@@ -4,10 +4,17 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
-from sqlalchemy import case, func, select
+from sqlalchemy import case, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import DriveFile, DriveFileStatus, FileIndexConflict
+from app.db.models import (
+    DriveFile,
+    DriveFileStatus,
+    FaceJob,
+    FaceJobStatus,
+    FileIndexConflict,
+    Media,
+)
 from app.drive.content_hash import (
     DUPLICATE_CONTENT_PREFIX,
     NAME_CONFLICT_PREFIX,
@@ -50,6 +57,13 @@ async def find_by_content_hash(
                 DriveFile.content_hash_algo == algo,
                 DriveFile.id != exclude_id,
                 DriveFile.error_message.is_distinct_from("folder_marker"),
+                # A processed duplicate pointer is not itself a canonical
+                # searchable copy. Allowing it as a twin lets two concurrent
+                # copies point at each other and leaves both without faces.
+                or_(
+                    DriveFile.error_message.is_(None),
+                    DriveFile.error_message.not_like(f"{DUPLICATE_CONTENT_PREFIX}%"),
+                ),
                 DriveFile.status.in_(
                     (
                         DriveFileStatus.PROCESSING,
@@ -125,6 +139,10 @@ async def find_by_visual_hash_exact(
                 DriveFile.visual_hash == vh,
                 DriveFile.id != exclude_id,
                 DriveFile.error_message.is_distinct_from("folder_marker"),
+                or_(
+                    DriveFile.error_message.is_(None),
+                    DriveFile.error_message.not_like(f"{DUPLICATE_CONTENT_PREFIX}%"),
+                ),
                 DriveFile.status.in_(
                     (
                         DriveFileStatus.PROCESSING,
@@ -243,7 +261,7 @@ async def apply_visual_dedupe_on_image(
         incoming=drive_file,
         existing=twin,
         kind=kind,
-        status=STATUS_AUTOSKIPPED,
+        status=STATUS_MERGED,
         message=msg,
     )
     logger.info(
@@ -335,6 +353,149 @@ async def promote_duplicate_content_skips(session: AsyncSession) -> int:
     return len(rows)
 
 
+async def requeue_circular_duplicate_canonicals(
+    session: AsyncSession,
+    *,
+    limit: int = 5000,
+) -> list[str]:
+    """Backfill one real index owner for duplicate-only content groups.
+
+    Older concurrent indexing runs could mark every copy PROCESSED while making
+    each row point at another duplicate. Those groups have captions but no
+    canonical face/media owner. Keep every Drive row, but requeue one copy so
+    normal indexing creates the shared searchable artifacts.
+    """
+    result = await session.execute(
+        text(
+            """
+            WITH ranked AS (
+                SELECT
+                    candidate.id,
+                    row_number() OVER (
+                        PARTITION BY candidate.content_hash, candidate.content_hash_algo
+                        ORDER BY candidate.created_at, candidate.id
+                    ) AS group_rank
+                FROM drive_files AS candidate
+                WHERE candidate.status = 'PROCESSED'
+                  AND candidate.mime_type LIKE 'image/%'
+                  AND candidate.content_hash IS NOT NULL
+                  AND candidate.content_hash_algo IS NOT NULL
+                  AND candidate.error_message LIKE 'duplicate_content:%'
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM drive_files AS canonical
+                      WHERE canonical.id <> candidate.id
+                        AND canonical.content_hash = candidate.content_hash
+                        AND canonical.content_hash_algo = candidate.content_hash_algo
+                        AND canonical.status IN ('PENDING', 'PROCESSING', 'PROCESSED')
+                        AND COALESCE(canonical.error_message, '') NOT LIKE 'duplicate_content:%'
+                  )
+            ),
+            selected AS (
+                SELECT id
+                FROM ranked
+                WHERE group_rank = 1
+                LIMIT :limit
+            )
+            UPDATE drive_files AS target
+            SET status = 'PENDING',
+                error_message = NULL,
+                processing_started_at = NULL,
+                completed_at = NULL
+            FROM selected
+            WHERE target.id = selected.id
+            RETURNING target.id
+            """
+        ),
+        {"limit": max(1, int(limit))},
+    )
+    ids = [str(row[0]) for row in result.fetchall()]
+    # Also catch owners from an earlier repair that Qdrant recovery prematurely
+    # finalized before a face job was created. A completed FaceJob is the durable
+    # marker for a valid zero-face scan, so those rows are not retried forever.
+    face_gap_result = await session.execute(
+        text(
+            """
+            SELECT owner.id
+            FROM drive_files AS owner
+            WHERE owner.status = 'PROCESSED'
+              AND owner.mime_type LIKE 'image/%'
+              AND COALESCE(owner.error_message, '') NOT LIKE 'duplicate_content:%'
+              AND EXISTS (
+                  SELECT 1 FROM media
+                  WHERE media.drive_file_id = owner.id
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM media
+                  JOIN faces ON faces.media_id = media.id
+                  WHERE media.drive_file_id = owner.id
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM face_jobs
+                  WHERE face_jobs.drive_file_id = owner.id
+                    AND (
+                        face_jobs.status IN ('PENDING', 'PROCESSING')
+                        OR (
+                            face_jobs.status = 'DONE'
+                            AND face_jobs.scan_completed_at IS NOT NULL
+                        )
+                    )
+              )
+            ORDER BY owner.created_at, owner.id
+            LIMIT :limit
+            """
+        ),
+        {"limit": max(1, int(limit))},
+    )
+    ids = list(dict.fromkeys(ids + [str(row[0]) for row in face_gap_result.fetchall()]))
+    if ids:
+        media_ids = set(
+            (
+                await session.execute(
+                    select(Media.drive_file_id).where(Media.drive_file_id.in_(ids))
+                )
+            ).scalars()
+        )
+        open_job_ids = set(
+            (
+                await session.execute(
+                    select(FaceJob.drive_file_id).where(
+                        FaceJob.drive_file_id.in_(media_ids),
+                        FaceJob.status.in_(
+                            (FaceJobStatus.PENDING, FaceJobStatus.PROCESSING)
+                        ),
+                    )
+                )
+            ).scalars()
+        )
+        direct_face_ids = media_ids - open_job_ids
+        if direct_face_ids:
+            await session.execute(
+                update(DriveFile)
+                .where(DriveFile.id.in_(direct_face_ids))
+                .values(status=DriveFileStatus.PROCESSING)
+            )
+            session.add_all(
+                [
+                    FaceJob(
+                        drive_file_id=drive_file_id,
+                        status=FaceJobStatus.PENDING,
+                        attempts=0,
+                    )
+                    for drive_file_id in direct_face_ids
+                ]
+            )
+            await session.flush()
+    if ids:
+        logger.warning(
+            "Requeued %d circular duplicate image group(s) for canonical face backfill "
+            "(%d direct face job(s))",
+            len(ids),
+            len(direct_face_ids),
+        )
+    return ids
+
+
 async def apply_dedupe_on_upsert(
     session: AsyncSession,
     drive_file: DriveFile,
@@ -379,7 +540,7 @@ async def apply_dedupe_on_upsert(
                 incoming=drive_file,
                 existing=twin,
                 kind=kind,
-                status=STATUS_AUTOSKIPPED,
+                status=STATUS_MERGED,
                 message=msg,
             )
             logger.info(

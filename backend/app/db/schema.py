@@ -86,10 +86,67 @@ async def _ensure_index(conn, index_name: str, ddl: str) -> None:
     await conn.execute(text(ddl))
 
 
+_ONLINE_INDEX_DDLS = (
+    "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_faces_media_id ON faces (media_id)",
+    "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_faces_person_media "
+    "ON faces (person_id, media_id) WHERE person_id IS NOT NULL",
+    "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_faces_cluster_media "
+    "ON faces (cluster_id, media_id) WHERE cluster_id IS NOT NULL",
+    "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_face_clusters_person_id "
+    "ON face_clusters (person_id) WHERE person_id IS NOT NULL",
+    "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_face_embeddings_embedding_cosine "
+    "ON face_embeddings USING hnsw (embedding vector_cosine_ops)",
+    "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_face_clusters_centroid_cosine "
+    "ON face_clusters USING hnsw (centroid vector_cosine_ops) WHERE centroid IS NOT NULL",
+    "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_drive_files_content_algo_hash "
+    "ON drive_files (content_hash_algo, content_hash) WHERE content_hash IS NOT NULL",
+    "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_drive_files_status_created "
+    "ON drive_files (status, created_at)",
+    "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_face_jobs_pending_created "
+    "ON face_jobs (created_at, id) WHERE status = 'PENDING'",
+)
+
+
+async def _ensure_online_indexes(engine: AsyncEngine) -> None:
+    """Repair production index drift without blocking table reads/writes."""
+    async with engine.connect() as raw_conn:
+        conn = await raw_conn.execution_options(isolation_level="AUTOCOMMIT")
+        acquired = bool(
+            await conn.scalar(
+                text("SELECT pg_try_advisory_lock(hashtext('dfi-online-indexes'))")
+            )
+        )
+        if not acquired:
+            logger.info("Online index verification already running on another replica")
+            return
+        try:
+            for ddl in _ONLINE_INDEX_DDLS:
+                try:
+                    await conn.execute(text(ddl))
+                except Exception:  # noqa: BLE001
+                    # A failed optional online index must not take down API boot.
+                    # It remains visible in logs and will be retried next boot.
+                    logger.exception("Online index creation failed: %s", ddl)
+        finally:
+            await conn.execute(
+                text("SELECT pg_advisory_unlock(hashtext('dfi-online-indexes'))")
+            )
+
+
 async def ensure_schema(engine: AsyncEngine) -> None:
     """Create pgvector extension and tables if missing (idempotent)."""
     async with engine.begin() as conn:
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+        try:
+            async with conn.begin_nested():
+                await conn.execute(
+                    text("CREATE EXTENSION IF NOT EXISTS pg_stat_statements")
+                )
+        except Exception:  # noqa: BLE001
+            logger.info(
+                "pg_stat_statements unavailable; enable it in Railway Postgres "
+                "shared_preload_libraries for per-query telemetry"
+            )
         await conn.run_sync(Base.metadata.create_all)
 
         # Required by the current ORM at startup. Keep this ahead of the warm-DB
@@ -100,6 +157,18 @@ async def ensure_schema(engine: AsyncEngine) -> None:
             "search_semantic_min_score",
             "ALTER TABLE app_settings ADD COLUMN search_semantic_min_score "
             "DOUBLE PRECISION NOT NULL DEFAULT 0.32",
+        )
+        await _ensure_column(
+            conn,
+            "face_jobs",
+            "scan_completed_at",
+            "ALTER TABLE face_jobs ADD COLUMN scan_completed_at TIMESTAMPTZ",
+        )
+        await _ensure_column(
+            conn,
+            "face_jobs",
+            "detected_face_count",
+            "ALTER TABLE face_jobs ADD COLUMN detected_face_count INTEGER",
         )
 
         # Warm prod DBs already have additive columns. Skip ALTER TABLE entirely —
@@ -138,6 +207,10 @@ async def ensure_schema(engine: AsyncEngine) -> None:
         if warm and face_jobs and (algo_len or 0) >= 64 and size_type == "bigint":
             await _ensure_enum_label(conn, "drive_file_status", "ARCHIVED")
             logger.info("ensure_schema: warm DB — skipped additive ALTER TABLE locks")
+            # CONCURRENTLY must use a separate autocommit connection after all
+            # startup DDL is visible and this transaction has released locks.
+            await conn.commit()
+            await _ensure_online_indexes(engine)
             return
 
         await _ensure_column(
@@ -530,6 +603,7 @@ async def ensure_schema(engine: AsyncEngine) -> None:
             "CREATE INDEX ix_face_jobs_drive_file_id ON face_jobs (drive_file_id)",
         )
         await conn.run_sync(Base.metadata.create_all)
+    await _ensure_online_indexes(engine)
     logger.info("Database schema verified")
 
 

@@ -11,6 +11,7 @@ import pytest
 from PIL import Image
 
 from app.config import Settings
+from app.db import session as db_session_module
 from app.workers.backup import (
     prune_daily_backups,
     prune_forever_backups,
@@ -28,6 +29,40 @@ def test_db_pool_fits_under_max_connections_200():
     # Prefer 4 workers (OpenBLAS-safe). Allow a brief 8-worker spike under 200.
     assert 4 * (pool + overflow) <= 120
     assert 8 * (pool + overflow) < 200
+
+
+def test_db_engine_recycles_connections_and_expires_idle_transactions(monkeypatch):
+    captured: dict[str, object] = {}
+    fake_engine = MagicMock()
+
+    def fake_create_async_engine(url, **kwargs):
+        captured["url"] = url
+        captured.update(kwargs)
+        return fake_engine
+
+    monkeypatch.setattr(db_session_module, "_engine", None)
+    monkeypatch.setattr(db_session_module, "create_async_engine", fake_create_async_engine)
+    monkeypatch.setattr(
+        db_session_module,
+        "get_settings",
+        lambda: MagicMock(
+            database_url="postgresql://example",
+            db_pool_size=5,
+            db_max_overflow=5,
+            db_pool_timeout=30,
+        ),
+    )
+
+    assert db_session_module.get_engine() is fake_engine
+    assert captured["pool_recycle"] == 300
+    assert captured["pool_use_lifo"] is True
+    assert captured["connect_args"] == {
+        "timeout": 15,
+        "server_settings": {
+            "application_name": "dfi-local",
+            "idle_in_transaction_session_timeout": "120000",
+        },
+    }
 
 
 def test_backup_retention_prunes_daily_and_forever(tmp_path: Path):

@@ -107,7 +107,7 @@ async def _handle_google_drive_push(request: Request, settings: Settings) -> Res
         ):
             if not unverified_ok:
                 logger.warning(
-                    "Rejected Drive push: channel_id=%s token_match=%s",
+                    "Rejected Drive push: channel_id=%s token_present=%s",
                     channel_id,
                     bool(channel_token),
                 )

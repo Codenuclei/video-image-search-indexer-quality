@@ -2,13 +2,14 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, usePathname, useRouter } from "next/navigation";
-import { ArrowLeft, FileVideo, Pencil } from "lucide-react";
+import { ArrowLeft, Check, FileVideo, Pencil, X } from "lucide-react";
 import {
   apiClient,
   driveFileThumbnailUrl,
   driveGoogleViewUrl,
   formatApiError,
   type Person,
+  type PersonClusterSuggestion,
   type PersonRole,
 } from "@/lib/api";
 import { Button, Card, ConfirmDialog, FaceThumb, Input, LoadingLabel } from "@/components/ui";
@@ -47,6 +48,12 @@ export default function PersonDetailPage() {
   const [deleting, setDeleting] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [suggestions, setSuggestions] = useState<PersonClusterSuggestion[]>([]);
+  const [suggestionTotal, setSuggestionTotal] = useState(0);
+  const [suggestionsLoading, setSuggestionsLoading] = useState(true);
+  const [suggestionsLoadingMore, setSuggestionsLoadingMore] = useState(false);
+  const [suggestionActionId, setSuggestionActionId] = useState<number | null>(null);
+  const [suggestionError, setSuggestionError] = useState<string | null>(null);
   const savingRef = useRef(false);
 
   useEffect(() => {
@@ -56,6 +63,16 @@ export default function PersonDetailPage() {
       setName(p.name);
     });
     apiClient.personMedia(id).then(setMedia);
+    setSuggestionsLoading(true);
+    apiClient
+      .personClusterSuggestions(id, { limit: 12, offset: 0 })
+      .then((result) => {
+        setSuggestions(result.items);
+        setSuggestionTotal(result.total);
+        setSuggestionError(null);
+      })
+      .catch((e) => setSuggestionError(formatApiError(e, "Could not load potential matches")))
+      .finally(() => setSuggestionsLoading(false));
   }, [id]);
 
   async function saveName() {
@@ -118,6 +135,49 @@ export default function PersonDetailPage() {
     if (person) setName(person.name);
     setError(null);
     setEditing(false);
+  }
+
+  async function decideSuggestion(clusterId: number, decision: "accept" | "reject") {
+    if (!person || suggestionActionId != null) return;
+    const previous = suggestions;
+    setSuggestionActionId(clusterId);
+    setSuggestionError(null);
+    setSuggestions((items) => items.filter((item) => item.cluster_id !== clusterId));
+    setSuggestionTotal((total) => Math.max(0, total - 1));
+    try {
+      if (decision === "accept") {
+        const updated = await apiClient.acceptPersonClusterSuggestion(person.id, clusterId);
+        setPerson(updated);
+        setName(updated.name);
+        setMedia(await apiClient.personMedia(person.id));
+      } else {
+        await apiClient.rejectPersonClusterSuggestion(person.id, clusterId);
+      }
+    } catch (e) {
+      setSuggestions(previous);
+      setSuggestionTotal((total) => total + 1);
+      setSuggestionError(formatApiError(e, "Could not save this decision"));
+    } finally {
+      setSuggestionActionId(null);
+    }
+  }
+
+  async function loadMoreSuggestions() {
+    if (!person || suggestionsLoadingMore || suggestions.length >= suggestionTotal) return;
+    setSuggestionsLoadingMore(true);
+    setSuggestionError(null);
+    try {
+      const result = await apiClient.personClusterSuggestions(person.id, {
+        limit: 12,
+        offset: suggestions.length,
+      });
+      setSuggestions((items) => [...items, ...result.items]);
+      setSuggestionTotal(result.total);
+    } catch (e) {
+      setSuggestionError(formatApiError(e, "Could not load more potential matches"));
+    } finally {
+      setSuggestionsLoadingMore(false);
+    }
   }
 
   const mediaBreakdown = useMemo(() => {
@@ -271,6 +331,113 @@ export default function PersonDetailPage() {
           {error && !editing && !inTestShell && <p className="mt-2 text-sm text-destructive">{error}</p>}
         </div>
       </div>
+
+      <Card className="min-w-0 overflow-hidden p-0">
+        <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
+          <div className="min-w-0">
+            <h3 className="font-medium">Potential matches</h3>
+            <p className="text-xs text-muted-foreground">
+              Unknown face clusters at least 50% similar to {person.name}
+            </p>
+          </div>
+          {suggestionTotal > 0 && (
+            <span className="shrink-0 rounded-full bg-primary/10 px-2.5 py-1 text-xs font-semibold tabular-nums text-primary">
+              {suggestionTotal} suggested
+            </span>
+          )}
+        </div>
+        {suggestionsLoading ? (
+          <p className="px-4 py-6 text-sm text-muted-foreground">
+            <LoadingLabel>Finding matches…</LoadingLabel>
+          </p>
+        ) : suggestions.length === 0 ? (
+          <p className="px-4 py-6 text-sm text-muted-foreground">
+            No unreviewed clusters currently match this person above 50%.
+          </p>
+        ) : (
+          <ul className="divide-y divide-border">
+            {suggestions.map((suggestion) => {
+              const percent = Math.round(suggestion.similarity * 100);
+              const busy = suggestionActionId === suggestion.cluster_id;
+              return (
+                <li
+                  key={suggestion.cluster_id}
+                  className="flex min-w-0 flex-col gap-3 px-4 py-3 lg:flex-row lg:items-center"
+                >
+                  <div className="flex min-w-0 flex-1 items-center gap-3">
+                    <FaceThumb
+                      faceId={suggestion.representative_face_id}
+                      className="h-14 w-14 shrink-0"
+                    />
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span
+                          className={`rounded-full px-2 py-0.5 text-xs font-semibold tabular-nums ${
+                            percent >= 60
+                              ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
+                              : "bg-amber-500/15 text-amber-700 dark:text-amber-300"
+                          }`}
+                        >
+                          {percent}% match
+                        </span>
+                        <span className="text-xs text-muted-foreground">
+                          {suggestion.member_count} face{suggestion.member_count === 1 ? "" : "s"} ·{" "}
+                          {suggestion.file_count} file{suggestion.file_count === 1 ? "" : "s"}
+                        </span>
+                      </div>
+                      {suggestion.sample_files.length > 0 && (
+                        <p
+                          className="mt-1 truncate text-xs text-muted-foreground"
+                          title={suggestion.sample_files.map((file) => file.name).join(", ")}
+                        >
+                          {suggestion.sample_files.map((file) => file.name).join(" · ")}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex shrink-0 gap-2">
+                    <Button
+                      onClick={() => decideSuggestion(suggestion.cluster_id, "accept")}
+                      disabled={suggestionActionId != null}
+                      className="min-w-0"
+                    >
+                      <Check size={15} aria-hidden />
+                      {busy ? "Saving…" : `Add to ${person.name}`}
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      onClick={() => decideSuggestion(suggestion.cluster_id, "reject")}
+                      disabled={suggestionActionId != null}
+                      title={`This cluster is not ${person.name}`}
+                    >
+                      <X size={15} aria-hidden />
+                      Not {person.name}
+                    </Button>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+        {(suggestionError || suggestions.length < suggestionTotal) && (
+          <div className="flex items-center justify-between gap-3 border-t border-border px-4 py-3">
+            {suggestionError ? (
+              <p className="text-sm text-destructive">{suggestionError}</p>
+            ) : (
+              <span />
+            )}
+            {suggestions.length < suggestionTotal && (
+              <Button
+                variant="secondary"
+                onClick={loadMoreSuggestions}
+                disabled={suggestionsLoadingMore}
+              >
+                {suggestionsLoadingMore ? <LoadingLabel>Loading…</LoadingLabel> : "Load more"}
+              </Button>
+            )}
+          </div>
+        )}
+      </Card>
 
       <Card className="flex min-h-0 min-w-0 max-h-[min(28rem,calc(100dvh-14rem))] flex-col overflow-hidden p-0">
         <div className="flex shrink-0 items-baseline justify-between gap-2 border-b border-border px-4 py-3">

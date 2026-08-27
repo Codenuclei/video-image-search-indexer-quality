@@ -75,12 +75,16 @@ async def test_recover_marks_skipped_with_vectors_dry_run() -> None:
     )
 
     session = AsyncMock()
-    # First execute → drive_files, second → media
+    # First execute → drive_files, second → media, third → open face jobs
     drive_result = MagicMock()
     drive_result.scalars.return_value.all.return_value = [skipped_img, skipped_vid, folder]
     media_result = MagicMock()
     media_result.scalars.return_value.all.return_value = []
-    session.execute = AsyncMock(side_effect=[drive_result, media_result])
+    face_jobs_result = MagicMock()
+    face_jobs_result.scalars.return_value = []
+    session.execute = AsyncMock(
+        side_effect=[drive_result, media_result, face_jobs_result]
+    )
     session.commit = AsyncMock()
     session.add = MagicMock()
 
@@ -130,7 +134,11 @@ async def test_recover_apply_updates_status_and_media() -> None:
     drive_result.scalars.return_value.all.return_value = [row]
     media_result = MagicMock()
     media_result.scalars.return_value.all.return_value = []
-    session.execute = AsyncMock(side_effect=[drive_result, media_result])
+    face_jobs_result = MagicMock()
+    face_jobs_result.scalars.return_value = []
+    session.execute = AsyncMock(
+        side_effect=[drive_result, media_result, face_jobs_result]
+    )
     session.commit = AsyncMock()
     session.add = MagicMock()
 
@@ -147,3 +155,48 @@ async def test_recover_apply_updates_status_and_media() -> None:
     assert row.error_message.startswith("recovered_from_qdrant")
     session.add.assert_called()
     session.commit.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_recover_does_not_finalize_image_with_open_face_job() -> None:
+    img = CollectionInventory(
+        collection="dfi_images",
+        points=1,
+        unique_drive_file_ids=1,
+        drive_file_ids={"img1"},
+    )
+    empty = CollectionInventory(collection="empty", points=0)
+    row = SimpleNamespace(
+        id="img1",
+        mime_type="image/jpeg",
+        status=DriveFileStatus.PROCESSING,
+        error_message=None,
+        last_synced_at=None,
+    )
+    media = SimpleNamespace(
+        drive_file_id="img1",
+        type=MediaType.IMAGE,
+        duration_seconds=None,
+    )
+    session = AsyncMock()
+    drive_result = MagicMock()
+    drive_result.scalars.return_value.all.return_value = [row]
+    media_result = MagicMock()
+    media_result.scalars.return_value.all.return_value = [media]
+    face_jobs_result = MagicMock()
+    face_jobs_result.scalars.return_value = ["img1"]
+    session.execute = AsyncMock(
+        side_effect=[drive_result, media_result, face_jobs_result]
+    )
+
+    result = await recover_from_qdrant(
+        session,
+        dry_run=False,
+        image_inv=img,
+        frame_inv=empty,
+        caption_inv=empty,
+    )
+
+    assert result.status_marked_processed == 0
+    assert row.status == DriveFileStatus.PROCESSING
+    session.commit.assert_not_awaited()

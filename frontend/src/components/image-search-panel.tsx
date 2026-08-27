@@ -1,10 +1,10 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { ExternalLink, ImagePlus, Linkedin, X } from "lucide-react";
-import { driveGoogleViewUrl, type FaceSearchMatch } from "@/lib/api";
+import { apiClient, driveGoogleViewUrl, type FaceSearchAppearance, type FaceSearchMatch } from "@/lib/api";
 import { Button, ConfirmDialog, FaceThumb, Input, LoadingLabel, Spinner } from "@/components/ui";
 import {
   clearReverseFaceSearch,
@@ -18,18 +18,40 @@ import {
 } from "@/lib/reverse-face-session";
 
 function MatchCard({ match, tagging }: { match: FaceSearchMatch; tagging: boolean }) {
-  const appearances = match.appears_in ?? [];
+  const [appearances, setAppearances] = useState<FaceSearchAppearance[]>(match.appears_in ?? []);
+  const [loadingMore, setLoadingMore] = useState(false);
   const fileCount = match.file_count ?? appearances.length;
   const unknown = isUnknownFaceMatch(match);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const pathname = usePathname();
   const personBase = pathname.startsWith("/test") ? "/test/people" : "/people";
-  const previewLimit = 6;
-  const hiddenCount = Math.max(0, fileCount - previewLimit);
-  const canExpand = fileCount > previewLimit;
-  const visibleAppearances = appearances.slice(0, previewLimit);
+  const hiddenCount = Math.max(0, fileCount - appearances.length);
+  const canExpand = fileCount > appearances.length;
   const profileHref = match.person_id != null ? `${personBase}/${match.person_id}` : null;
+
+  useEffect(() => {
+    setAppearances(match.appears_in ?? []);
+  }, [match.appears_in, match.face_id]);
+
+  async function loadMoreAppearances() {
+    if (loadingMore || !canExpand) return;
+    setLoadingMore(true);
+    try {
+      const page = await apiClient.faceMatchAppearances({
+        personId: match.person_id,
+        clusterId: match.person_id == null ? match.cluster_id : null,
+        offset: appearances.length,
+        limit: 50,
+      });
+      setAppearances((current) => {
+        const seen = new Set(current.map((item) => item.drive_file_id));
+        return [...current, ...page.items.filter((item) => !seen.has(item.drive_file_id))];
+      });
+    } finally {
+      setLoadingMore(false);
+    }
+  }
 
   async function submitName() {
     const name = draft.trim();
@@ -108,7 +130,7 @@ function MatchCard({ match, tagging }: { match: FaceSearchMatch; tagging: boolea
       )}
       {(appearances.length > 0 || fileCount > 0) && (
         <div className="mt-2 flex flex-wrap gap-1">
-          {visibleAppearances.map((a) => (
+          {appearances.map((a) => (
             <a
               key={`${a.drive_file_id}-${a.frame_timestamp ?? 0}`}
               href={driveGoogleViewUrl(a.drive_file_id)}
@@ -120,23 +142,17 @@ function MatchCard({ match, tagging }: { match: FaceSearchMatch; tagging: boolea
               {a.name}
             </a>
           ))}
-          {canExpand &&
-            (profileHref ? (
-              <Link
-                href={profileHref}
-                title={`View all ${fileCount} files on profile`}
-                className="rounded-full border border-dashed border-border bg-card px-2 py-0.5 text-[10px] font-medium tabular-nums text-muted-foreground transition-colors hover:border-ring hover:bg-accent hover:text-accent-foreground"
-              >
-                +{hiddenCount}
-              </Link>
-            ) : (
-              <span
-                title={`${fileCount} files`}
-                className="rounded-full border border-dashed border-border bg-card px-2 py-0.5 text-[10px] font-medium tabular-nums text-muted-foreground"
-              >
-                +{hiddenCount}
-              </span>
-            ))}
+          {canExpand && (
+            <button
+              type="button"
+              onClick={() => void loadMoreAppearances()}
+              disabled={loadingMore}
+              title={`Load more of ${fileCount} files`}
+              className="rounded-full border border-dashed border-border bg-card px-2 py-0.5 text-[10px] font-medium tabular-nums text-muted-foreground transition-colors hover:border-ring hover:bg-accent hover:text-accent-foreground disabled:opacity-60"
+            >
+              {loadingMore ? "Loading…" : `Load ${Math.min(50, hiddenCount)} more`}
+            </button>
+          )}
         </div>
       )}
     </div>

@@ -170,11 +170,16 @@ async def name_cluster(session: AsyncSession, cluster_id: int, name: str) -> Per
     session.add(person)
     await session.flush()
 
-    faces = (await session.execute(select(Face).where(Face.cluster_id == cluster_id))).scalars().all()
-    face_ids = []
-    for face in faces:
-        face.person_id = person.id
-        face_ids.append(face.id)
+    face_ids = list(
+        (
+            await session.execute(
+                update(Face)
+                .where(Face.cluster_id == cluster_id)
+                .values(person_id=person.id)
+                .returning(Face.id)
+            )
+        ).scalars()
+    )
 
     cluster.person_id = person.id
     cluster.status = ClusterStatus.NAMED
@@ -205,20 +210,19 @@ async def _find_best_cluster(
     session: AsyncSession,
     embedding: list[float],
 ) -> tuple[FaceCluster | None, float]:
-    clusters = (
-        await session.execute(select(FaceCluster).where(FaceCluster.centroid.isnot(None)))
-    ).scalars().all()
-
-    best_cluster: FaceCluster | None = None
-    best_sim = -1.0
-    for cluster in clusters:
-        if cluster.centroid is None:
-            continue
-        sim = cosine_similarity(embedding, list(cluster.centroid))
-        if sim > best_sim:
-            best_sim = sim
-            best_cluster = cluster
-    return best_cluster, best_sim
+    distance = FaceCluster.centroid.cosine_distance(embedding).label("distance")
+    row = (
+        await session.execute(
+            select(FaceCluster, distance)
+            .where(FaceCluster.centroid.isnot(None))
+            .order_by(distance, FaceCluster.id)
+            .limit(1)
+        )
+    ).first()
+    if row is None:
+        return None, -1.0
+    cluster, cosine_distance = row
+    return cluster, 1.0 - float(cosine_distance)
 
 
 async def _assign_face_once(
@@ -341,11 +345,16 @@ async def merge_cluster_into_person(session: AsyncSession, cluster_id: int, pers
     if cluster.status == ClusterStatus.NAMED and cluster.person_id == person_id:
         return person
 
-    faces = (await session.execute(select(Face).where(Face.cluster_id == cluster_id))).scalars().all()
-    face_ids = []
-    for face in faces:
-        face.person_id = person.id
-        face_ids.append(face.id)
+    face_ids = list(
+        (
+            await session.execute(
+                update(Face)
+                .where(Face.cluster_id == cluster_id)
+                .values(person_id=person.id)
+                .returning(Face.id)
+            )
+        ).scalars()
+    )
 
     cluster.person_id = person.id
     cluster.status = ClusterStatus.NAMED

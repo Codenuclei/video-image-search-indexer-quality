@@ -18,6 +18,7 @@ function PersonCard({
   onDeleted,
   onDeleteFailed,
   personHref,
+  suggestionCount = 0,
 }: {
   person: Person;
   onRenamed: (updated: Person) => void;
@@ -25,6 +26,7 @@ function PersonCard({
   onDeleteFailed: (person: Person) => void;
   /** Base path for person detail links (e.g. /people or /test/people). */
   personHref?: (id: number) => string;
+  suggestionCount?: number;
 }) {
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(person.name);
@@ -173,6 +175,11 @@ function PersonCard({
                       {person.file_count ?? person.occurrence_count} file
                       {(person.file_count ?? person.occurrence_count) === 1 ? "" : "s"}
                     </span>
+                    {suggestionCount > 0 && (
+                      <span className="rounded-full bg-primary/10 px-1.5 py-0.5 font-semibold text-primary">
+                        {suggestionCount} suggested
+                      </span>
+                    )}
                   </p>
                 </div>
                 <div className="flex shrink-0 items-center gap-0.5 rounded-lg border border-transparent bg-transparent p-0.5 transition-colors group-hover:border-border/60 group-hover:bg-muted/40">
@@ -252,6 +259,15 @@ export function PeoplePage({
 
   const list = persons ?? [];
   const error = cacheError;
+  const [suggestionCounts, setSuggestionCounts] = useState<Record<number, number>>({});
+
+  useEffect(() => {
+    if (loading || list.length === 0) return;
+    apiClient
+      .personSuggestionCounts()
+      .then(setSuggestionCounts)
+      .catch(() => setSuggestionCounts({}));
+  }, [loading, list.length]);
 
   return (
     <div className="space-y-6">
@@ -293,6 +309,7 @@ export function PeoplePage({
               writeCache("persons", next, personsRevision(next), true);
             }}
             personHref={personHref}
+            suggestionCount={suggestionCounts[p.id] ?? 0}
           />
         ))}
       </div>
