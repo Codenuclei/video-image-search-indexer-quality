@@ -272,6 +272,13 @@ async def _claim_carousel(
 
 
 async def _release_carousel(session: AsyncSession, drive_file_id: str, token: str) -> None:
+    # A timeout that cancelled a query mid-flight leaves the transaction
+    # invalid; without this rollback the release fails and the video stays
+    # locked for the full stale window (15 min of 409s).
+    try:
+        await session.rollback()
+    except Exception:  # noqa: BLE001
+        pass
     await session.execute(
         update(DriveFile)
         .where(DriveFile.id == drive_file_id, DriveFile.carousel_lock_token == token)
@@ -3596,10 +3603,17 @@ async def carousel_pipeline_select_images(
 ) -> dict[str, Any]:
     drive_file_id = body.drive_file_id.strip()
     token = ""
-    try:
+
+    async def _claim_and_run() -> dict[str, Any]:
+        nonlocal token
         token = await _claim_carousel(session, drive_file_id)
+        return await _carousel_pipeline_select_images_impl(body, session)
+
+    try:
+        # Claim included in the budget: a wedged claim must still answer the
+        # socket instead of letting the proxy cancel with no response.
         return await asyncio.wait_for(
-            _carousel_pipeline_select_images_impl(body, session),
+            _claim_and_run(),
             timeout=_SELECT_IMAGES_REQUEST_TIMEOUT_SEC,
         )
     except HTTPException:
@@ -3692,6 +3706,7 @@ async def _carousel_pipeline_select_images_impl(
         timeout_sec=_SELECT_IMAGES_TIMEOUT_SEC,
         style_copy_refs=copy_refs,
         llm_pack=llm_pack,
+        allow_extracts=False,
     )
     for s in selected_slides:
         if isinstance(s.get("frame_quality"), dict):
@@ -4274,6 +4289,7 @@ async def _polish_outline_frames(
     max_rank_batches: int = _SELECT_IMAGES_RANK_BATCHES,
     timeout_sec: float = _SELECT_IMAGES_TIMEOUT_SEC,
     llm_pack: dict[str, Any] | None = None,
+    allow_extracts: bool = True,
 ) -> list[dict[str, Any]]:
     """Studio-picker rank + Instagram-ready check (span text unchanged)."""
     from app.llm.carousel_llm import vision_ready
@@ -4362,7 +4378,10 @@ async def _polish_outline_frames(
                 api_key=settings.gemini_api_key or "",
                 model=settings.gemini_model or "",
                 max_candidates=max_candidates,
-                ensure_frame=ensure_frame,
+                # Interactive paths must never ffmpeg/Drive-extract mid-request:
+                # a cancelled extract poisons the DB session and blows the proxy
+                # budget. Cache-only there; background generate keeps extracts.
+                ensure_frame=ensure_frame if allow_extracts else None,
                 concurrency=3,
                 prefer_local=prefer_local,
                 style_copy_refs=style_copy_refs,
