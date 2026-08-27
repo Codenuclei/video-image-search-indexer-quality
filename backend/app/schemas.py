@@ -220,6 +220,18 @@ class PersonClusterSuggestionList(BaseModel):
     limit: int
 
 
+class SuggestedClusterMatch(PersonClusterSuggestion):
+    """A suggestion annotated with the matched person (batch reverse-search use)."""
+
+    person_id: int
+    person_name: str
+
+
+class SuggestedClusterMatchList(BaseModel):
+    items: list[SuggestedClusterMatch]
+    total: int
+
+
 class NameClusterRequest(BaseModel):
     name: str
 

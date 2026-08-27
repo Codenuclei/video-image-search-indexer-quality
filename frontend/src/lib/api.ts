@@ -152,6 +152,12 @@ export type PersonClusterSuggestionList = {
   limit: number;
 };
 
+/** Batch suggestion row: which matched person this unknown cluster is recommended for. */
+export type SuggestedClusterMatch = PersonClusterSuggestion & {
+  person_id: number;
+  person_name: string;
+};
+
 export type DriveFile = {
   id: string;
   name: string;
@@ -1712,6 +1718,19 @@ export const apiClient = {
       limit: number;
     }>(`/reid/faces/appearances?${params}`);
   },
+  suggestedClustersForPersons: (opts: {
+    personIds: number[];
+    minSimilarity?: number;
+    limit?: number;
+  }) =>
+    api<{ items: SuggestedClusterMatch[]; total: number }>("/reid/faces/suggested-clusters", {
+      method: "POST",
+      body: JSON.stringify({
+        person_ids: opts.personIds,
+        min_similarity: opts.minSimilarity ?? 0.5,
+        limit: opts.limit ?? 24,
+      }),
+    }),
   crawlFaceUrls: (urls: string[]) =>
     api<FaceCrawlResponse>("/reid/faces/crawl", {
       method: "POST",

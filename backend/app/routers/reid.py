@@ -35,8 +35,10 @@ from app.reid.body import (
 from app.reid.person_detect import yolov8_available
 from app.pipelines.common import body_crop_path
 from app.config import get_settings
-from app.db.models import BodySignature, FaceWebMatch, Media
+from app.db.models import BodySignature, FaceWebMatch, Media, Person
 from app.db.session import get_db
+from app.matching.suggestions import ranked_cluster_suggestions
+from app.schemas import SuggestedClusterMatch, SuggestedClusterMatchList
 from app.reid.reverse_search import (
     ReverseSearchNotConfigured,
     linkedin_map,
@@ -273,6 +275,47 @@ async def face_match_appearances(
         offset=offset,
     )
     return {"items": items, "total": total, "offset": offset, "limit": limit}
+
+
+class SuggestedClustersForMatchesRequest(BaseModel):
+    person_ids: list[int] = Field(..., min_length=1, max_length=20)
+    min_similarity: float = Field(default=0.5, ge=0.2, le=1.0)
+    limit: int = Field(default=24, ge=1, le=50)
+
+
+@router.post("/faces/suggested-clusters", response_model=SuggestedClusterMatchList)
+async def suggested_clusters_for_matches(
+    body: SuggestedClustersForMatchesRequest,
+    session: AsyncSession = Depends(get_db),
+) -> SuggestedClusterMatchList:
+    """Batch: unknown-cluster recommendations for all matched people at once.
+
+    One bounded query using the exact person-suggestion ranking, so reverse
+    image search can show recommendations without per-person request storms.
+    """
+    names = {
+        int(pid): str(name)
+        for pid, name in (
+            await session.execute(
+                select(Person.id, Person.name).where(Person.id.in_(body.person_ids))
+            )
+        ).all()
+    }
+    if not names:
+        return SuggestedClusterMatchList(items=[], total=0)
+    items, total = await ranked_cluster_suggestions(
+        session,
+        person_ids=list(names),
+        min_similarity=body.min_similarity,
+        limit=body.limit,
+    )
+    return SuggestedClusterMatchList(
+        items=[
+            SuggestedClusterMatch(person_name=names[item["person_id"]], **item)
+            for item in items
+        ],
+        total=total,
+    )
 
 
 class FaceSearchByUrlRequest(BaseModel):

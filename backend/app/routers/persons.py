@@ -12,6 +12,7 @@ from app.matching.service import (
     refresh_gemini_for_person_background,
     update_person,
 )
+from app.matching.suggestions import ranked_cluster_suggestions
 from app.schemas import (
     MediaOccurrence,
     PersonClusterSuggestion,
@@ -315,181 +316,18 @@ async def suggested_clusters_for_person(
         raise HTTPException(status_code=404, detail="Person not found")
     limit = max(1, min(limit, 50))
     offset = max(0, offset)
-    min_similarity = max(0.5, min(float(min_similarity), 1.0))
 
-    rows = (
-        await session.execute(
-            text(
-                """
-                WITH suggestions AS (
-                    SELECT cluster_id, person_id, similarity
-                    FROM (
-                        SELECT
-                            candidate.id AS cluster_id,
-                            reference.person_id,
-                            1 - (candidate.centroid <=> reference.centroid) AS similarity,
-                            row_number() OVER (
-                                PARTITION BY candidate.id
-                                ORDER BY candidate.centroid <=> reference.centroid,
-                                         reference.person_id
-                            ) AS person_rank
-                        FROM face_clusters AS candidate
-                        JOIN face_clusters AS reference
-                          ON reference.person_id IS NOT NULL
-                         AND reference.centroid IS NOT NULL
-                        WHERE candidate.status = 'UNKNOWN'
-                          AND candidate.person_id IS NULL
-                          AND candidate.centroid IS NOT NULL
-                          AND NOT EXISTS (
-                              SELECT 1
-                              FROM person_cluster_decisions AS decision
-                              WHERE decision.cluster_id = candidate.id
-                                AND decision.person_id = reference.person_id
-                                AND decision.decision = 'rejected'
-                          )
-                    ) AS ranked
-                    WHERE person_rank = 1
-                      AND similarity >= :min_similarity
-                )
-                SELECT cluster_id, similarity, count(*) OVER () AS total
-                FROM suggestions
-                WHERE person_id = :person_id
-                ORDER BY similarity DESC, cluster_id
-                OFFSET :offset
-                LIMIT :limit
-                """
-            ),
-            {
-                "person_id": person_id,
-                "min_similarity": min_similarity,
-                "offset": offset,
-                "limit": limit,
-            },
-        )
-    ).all()
-    if not rows:
-        return PersonClusterSuggestionList(items=[], total=0, offset=offset, limit=limit)
-
-    similarities = {int(row.cluster_id): float(row.similarity) for row in rows}
-    total = int(rows[0].total)
-    cluster_ids = list(similarities)
-    clusters = {
-        cluster.id: cluster
-        for cluster in (
-            await session.execute(
-                select(FaceCluster).where(FaceCluster.id.in_(cluster_ids))
-            )
-        ).scalars()
-    }
-
-    file_counts = {
-        int(cluster_id): int(file_count)
-        for cluster_id, file_count in (
-            await session.execute(
-                select(
-                    Face.cluster_id,
-                    func.count(func.distinct(Media.drive_file_id)),
-                )
-                .join(Media, Face.media_id == Media.id)
-                .where(
-                    Face.cluster_id.in_(cluster_ids),
-                    Media.drive_file_id.is_not(None),
-                )
-                .group_by(Face.cluster_id)
-            )
-        ).all()
-        if cluster_id is not None
-    }
-
-    ranked_occurrences = (
-        select(
-            Face.cluster_id.label("cluster_id"),
-            Media.id.label("media_id"),
-            DriveFile.id.label("drive_file_id"),
-            DriveFile.name.label("name"),
-            DriveFile.path.label("path"),
-            Media.type.label("media_type"),
-            func.min(Face.frame_timestamp).label("frame_timestamp"),
-            func.row_number()
-            .over(partition_by=Face.cluster_id, order_by=Media.id)
-            .label("sample_rank"),
-        )
-        .join(Media, Face.media_id == Media.id)
-        .join(DriveFile, DriveFile.id == Media.drive_file_id)
-        .where(Face.cluster_id.in_(cluster_ids))
-        .group_by(
-            Face.cluster_id,
-            Media.id,
-            DriveFile.id,
-            DriveFile.name,
-            DriveFile.path,
-            Media.type,
-        )
-        .subquery()
+    items, total = await ranked_cluster_suggestions(
+        session,
+        person_ids=[person_id],
+        min_similarity=min_similarity,
+        limit=limit,
+        offset=offset,
     )
-    occurrence_rows = (
-        await session.execute(
-            select(
-                ranked_occurrences.c.cluster_id,
-                ranked_occurrences.c.media_id,
-                ranked_occurrences.c.drive_file_id,
-                ranked_occurrences.c.name,
-                ranked_occurrences.c.path,
-                ranked_occurrences.c.media_type,
-                ranked_occurrences.c.frame_timestamp,
-            )
-            .where(ranked_occurrences.c.sample_rank <= 4)
-            .order_by(
-                ranked_occurrences.c.cluster_id,
-                ranked_occurrences.c.sample_rank,
-            )
-        )
-    ).all()
-    samples: dict[int, list[MediaOccurrence]] = {cluster_id: [] for cluster_id in cluster_ids}
-    for cluster_id, media_id, drive_id, name, path, media_type, frame_timestamp in occurrence_rows:
-        if cluster_id is None:
-            continue
-        samples[int(cluster_id)].append(
-            MediaOccurrence(
-                media_id=media_id,
-                drive_file_id=drive_id,
-                name=name,
-                path=path,
-                media_type=media_type.value,
-                frame_timestamp=frame_timestamp,
-            )
-        )
-
-    representative_ids = [
-        cluster.representative_face_id
-        for cluster in clusters.values()
-        if cluster.representative_face_id is not None
-    ]
-    confidences = {
-        int(face_id): float(confidence)
-        for face_id, confidence in (
-            await session.execute(
-                select(Face.id, Face.detection_confidence).where(
-                    Face.id.in_(representative_ids)
-                )
-            )
-        ).all()
-    }
     return PersonClusterSuggestionList(
         items=[
-            PersonClusterSuggestion(
-                cluster_id=cluster_id,
-                similarity=similarities[cluster_id],
-                member_count=clusters[cluster_id].member_count,
-                representative_face_id=clusters[cluster_id].representative_face_id,
-                representative_confidence=confidences.get(
-                    clusters[cluster_id].representative_face_id
-                ),
-                file_count=file_counts.get(cluster_id, 0),
-                sample_files=samples.get(cluster_id, []),
-            )
-            for cluster_id in cluster_ids
-            if cluster_id in clusters
+            PersonClusterSuggestion(**{k: v for k, v in item.items() if k != "person_id"})
+            for item in items
         ],
         total=total,
         offset=offset,

@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
+  Check,
   ChevronRight,
   ExternalLink,
   FileVideo,
@@ -19,6 +20,7 @@ import {
   type FaceSearchAppearance,
   type FaceSearchMatch,
   type Person,
+  type SuggestedClusterMatch,
 } from "@/lib/api";
 import { Button, ConfirmDialog, FaceThumb, Input, LoadingLabel, Spinner } from "@/components/ui";
 import { ModalOverlay } from "@/components/modal";
@@ -37,6 +39,27 @@ import {
 } from "@/lib/reverse-face-session";
 
 const APPEARANCES_PAGE_SIZE = 60;
+
+/** Suggestion policy floor is 50% on the backend; never offer less. */
+const REC_THRESHOLD_OPTIONS = [0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8];
+
+function recToMatch(rec: SuggestedClusterMatch): FaceSearchMatch {
+  return {
+    face_id: rec.representative_face_id ?? 0,
+    thumb_face_id: rec.representative_face_id,
+    match_scope: "cluster",
+    person_id: null,
+    person_name: "Unknown",
+    score: rec.similarity,
+    distance: 1 - rec.similarity,
+    linkedin_url: null,
+    cluster_id: rec.cluster_id,
+    cluster_status: "unknown",
+    cluster_member_count: rec.member_count,
+    file_count: rec.file_count,
+    appears_in: rec.sample_files ?? [],
+  };
+}
 
 type MatchScope = "cluster" | "person" | "face";
 
@@ -62,7 +85,15 @@ function usePersonBase() {
   return pathname.startsWith("/test") ? "/test/people" : "/people";
 }
 
-function ClusterRow({ match, onOpen }: { match: FaceSearchMatch; onOpen: () => void }) {
+function ClusterRow({
+  match,
+  recommendedFor,
+  onOpen,
+}: {
+  match: FaceSearchMatch;
+  recommendedFor?: string;
+  onOpen: () => void;
+}) {
   const personBase = usePersonBase();
   const scope = scopeOf(match);
   const status = (match.cluster_status ?? (match.person_id != null ? "named" : "unknown")).toLowerCase();
@@ -92,7 +123,7 @@ function ClusterRow({ match, onOpen }: { match: FaceSearchMatch; onOpen: () => v
       <FaceThumb faceId={match.thumb_face_id ?? match.face_id} className="h-12 w-12 shrink-0 rounded-lg" />
       <div className="min-w-0 flex-1">
         <p className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-sm leading-snug">
-          {scope === "cluster" && match.person_id != null && profileHref ? (
+          {scope === "cluster" && match.person_id != null && profileHref && !recommendedFor ? (
             <Link
               href={profileHref}
               onClick={(e) => e.stopPropagation()}
@@ -103,17 +134,26 @@ function ClusterRow({ match, onOpen }: { match: FaceSearchMatch; onOpen: () => v
           ) : (
             <span className="truncate font-semibold text-foreground">{titled}</span>
           )}
-          <span
-            className={cn(
-              "rounded-full px-1.5 py-0.5 text-[10px] font-semibold",
-              statusBadgeClass(status)
-            )}
-          >
-            {status}
-          </span>
+          {recommendedFor ? (
+            <span className="rounded-full bg-sky-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-sky-700 dark:text-sky-300">
+              recommended
+            </span>
+          ) : (
+            <span
+              className={cn(
+                "rounded-full px-1.5 py-0.5 text-[10px] font-semibold",
+                statusBadgeClass(status)
+              )}
+            >
+              {status}
+            </span>
+          )}
         </p>
         <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
-          {scope === "cluster" && match.person_id != null ? `cluster #${match.cluster_id} · ` : ""}
+          {recommendedFor ? `Recommended for ${recommendedFor} · ` : ""}
+          {!recommendedFor && scope === "cluster" && match.person_id != null
+            ? `cluster #${match.cluster_id} · `
+            : ""}
           {Math.round(match.score * 100)}% similar
           {faceCount != null ? ` · ${faceCount} face${faceCount === 1 ? "" : "s"}` : ""}
           {fileCount > 0 ? ` · ${fileCount} file${fileCount === 1 ? "" : "s"}` : ""}
@@ -150,12 +190,17 @@ function ClusterRow({ match, onOpen }: { match: FaceSearchMatch; onOpen: () => v
 
 function ClusterGalleryDialog({
   match,
+  recommendedFor,
   tagging,
   onClose,
+  onResolved,
 }: {
   match: FaceSearchMatch;
+  recommendedFor?: { id: number; name: string };
   tagging: boolean;
   onClose: () => void;
+  /** Called after a successful name/merge/add so the parent can refresh recommendations. */
+  onResolved?: () => void;
 }) {
   const personBase = usePersonBase();
   const scope = scopeOf(match);
@@ -168,6 +213,7 @@ function ClusterGalleryDialog({
   const [draft, setDraft] = useState("");
   const [naming, setNaming] = useState(false);
   const [merging, setMerging] = useState(false);
+  const [adding, setAdding] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
   const total = match.file_count ?? items.length;
@@ -221,7 +267,10 @@ function ClusterGalleryDialog({
       const clusterIds = match.cluster_id != null ? [match.cluster_id] : [];
       const faceIds = clusterIds.length === 0 && match.person_id == null ? [match.face_id] : [];
       const ok = await runReverseFaceNameTag({ name, clusterIds, faceIds });
-      if (ok) onClose();
+      if (ok) {
+        onResolved?.();
+        onClose();
+      }
     } finally {
       setNaming(false);
     }
@@ -236,12 +285,31 @@ function ClusterGalleryDialog({
       patchReverseFaceSession({
         tagMessage: `Merged cluster #${match.cluster_id} into ${person.name}.`,
       });
-      await runReverseFaceSearch();
+      onResolved?.();
+      if (!recommendedFor) await runReverseFaceSearch();
       onClose();
     } catch (e) {
       setActionError(formatApiError(e, "Could not merge this cluster"));
     } finally {
       setMerging(false);
+    }
+  }
+
+  async function addToRecommended() {
+    if (!recommendedFor || match.cluster_id == null || adding) return;
+    setAdding(true);
+    setActionError(null);
+    try {
+      await apiClient.acceptPersonClusterSuggestion(recommendedFor.id, match.cluster_id);
+      patchReverseFaceSession({
+        tagMessage: `Added cluster #${match.cluster_id} to ${recommendedFor.name}.`,
+      });
+      onResolved?.();
+      onClose();
+    } catch (e) {
+      setActionError(formatApiError(e, `Could not add to ${recommendedFor.name}`));
+    } finally {
+      setAdding(false);
     }
   }
 
@@ -273,6 +341,7 @@ function ClusterGalleryDialog({
             </p>
             <p className="mt-0.5 text-[11px] text-muted-foreground">
               {scope === "cluster" ? `Cluster #${match.cluster_id} · ` : ""}
+              {recommendedFor ? `recommended for ${recommendedFor.name} · ` : ""}
               {Math.round(match.score * 100)}% similar
               {match.cluster_member_count != null
                 ? ` · ${match.cluster_member_count} face${match.cluster_member_count === 1 ? "" : "s"}`
@@ -383,13 +452,30 @@ function ClusterGalleryDialog({
 
         {unknown && (
           <div className="shrink-0 space-y-2 rounded-b-xl border-t border-border px-4 py-3">
+            {recommendedFor && match.cluster_id != null && (
+              <Button
+                type="button"
+                className="h-8 w-full px-3 text-xs"
+                disabled={naming || tagging || merging || adding}
+                onClick={() => void addToRecommended()}
+              >
+                {adding ? (
+                  <Spinner size={12} />
+                ) : (
+                  <>
+                    <Check size={13} aria-hidden />
+                    Add to {recommendedFor.name}
+                  </>
+                )}
+              </Button>
+            )}
             <div className="flex items-center gap-2">
               <Input
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
                 placeholder="Name this person"
                 className="h-8 text-xs"
-                disabled={naming || tagging || merging}
+                disabled={naming || tagging || merging || adding}
                 onKeyDown={(e) => {
                   if (e.key === "Enter") void submitName();
                 }}
@@ -397,7 +483,7 @@ function ClusterGalleryDialog({
               <Button
                 type="button"
                 className="h-8 shrink-0 px-3 text-xs"
-                disabled={!draft.trim() || naming || tagging || merging}
+                disabled={!draft.trim() || naming || tagging || merging || adding}
                 onClick={() => void submitName()}
               >
                 {naming ? <Spinner size={12} /> : "Name"}
@@ -407,7 +493,7 @@ function ClusterGalleryDialog({
               <div className="flex items-center gap-2">
                 <span className="shrink-0 text-[11px] text-muted-foreground">or merge into</span>
                 <PersonMergeSearch
-                  disabled={naming || tagging}
+                  disabled={naming || tagging || adding}
                   busy={merging}
                   busyLabel="Merging cluster…"
                   onSelect={(person) => void mergeInto(person)}
@@ -422,12 +508,17 @@ function ClusterGalleryDialog({
   );
 }
 
+type OpenTarget = {
+  match: FaceSearchMatch;
+  recommendedFor?: { id: number; name: string };
+};
+
 export function ImageSearchPanel() {
   const { file, previewUrl, searching, result, error, tagging, tagMessage } = useReverseFaceSession();
   const uploadRef = useRef<HTMLInputElement>(null);
   const [bulkName, setBulkName] = useState("");
   const [confirmBulkOpen, setConfirmBulkOpen] = useState(false);
-  const [openMatchKey, setOpenMatchKey] = useState<string | null>(null);
+  const [openTarget, setOpenTarget] = useState<OpenTarget | null>(null);
 
   const matches = useMemo(() => result?.matches ?? [], [result?.matches]);
   const unknownIds = useMemo(() => collectUnknownNameTagIds(matches), [matches]);
@@ -437,20 +528,78 @@ export function ImageSearchPanel() {
     () => matches.filter((m) => scopeOf(m) === "cluster").length,
     [matches]
   );
-  const openMatch = useMemo(() => {
-    if (openMatchKey == null) return null;
-    return (
-      matches.find(
-        (m) => `${scopeOf(m)}:${m.cluster_id ?? m.person_id ?? m.face_id}` === openMatchKey
-      ) ?? null
-    );
-  }, [matches, openMatchKey]);
+
+  const matchedPeople = useMemo(() => {
+    const seen = new Map<number, string>();
+    for (const m of matches) {
+      if (m.person_id != null && !seen.has(m.person_id)) seen.set(m.person_id, m.person_name);
+    }
+    return Array.from(seen, ([id, name]) => ({ id, name }));
+  }, [matches]);
+  const matchedIdsKey = matchedPeople.map((p) => p.id).join(",");
+  const directClusterIds = useMemo(
+    () =>
+      new Set(
+        matches
+          .map((m) => m.cluster_id)
+          .filter((value): value is number => value != null)
+      ),
+    [matches]
+  );
+
+  const [recThreshold, setRecThreshold] = useState(0.5);
+  const [recs, setRecs] = useState<SuggestedClusterMatch[]>([]);
+  const [recsLoading, setRecsLoading] = useState(false);
+  const [recsError, setRecsError] = useState<string | null>(null);
+  const [recsRefreshKey, setRecsRefreshKey] = useState(0);
+
+  useEffect(() => {
+    if (!matchedIdsKey) {
+      setRecs([]);
+      setRecsError(null);
+      setRecsLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setRecsLoading(true);
+    setRecsError(null);
+    apiClient
+      .suggestedClustersForPersons({
+        personIds: matchedIdsKey.split(",").map(Number),
+        minSimilarity: recThreshold,
+        limit: 24,
+      })
+      .then((res) => {
+        if (cancelled) return;
+        setRecs(res.items);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setRecs([]);
+        setRecsError(formatApiError(e, "Could not load recommendations"));
+      })
+      .finally(() => {
+        if (!cancelled) setRecsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [matchedIdsKey, recThreshold, recsRefreshKey]);
+
+  const visibleRecs = useMemo(() => {
+    const seen = new Set<number>();
+    return recs.filter((rec) => {
+      if (directClusterIds.has(rec.cluster_id) || seen.has(rec.cluster_id)) return false;
+      seen.add(rec.cluster_id);
+      return true;
+    });
+  }, [recs, directClusterIds]);
 
   function onPick(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file) return;
-    setOpenMatchKey(null);
+    setOpenTarget(null);
     setReverseFaceFile(file);
     void runReverseFaceSearch(file);
   }
@@ -519,13 +668,32 @@ export function ImageSearchPanel() {
           )}
           {error && <p className="mt-1 text-red-600 dark:text-red-400">{error}</p>}
           {tagMessage && <p className="mt-1 text-emerald-700 dark:text-emerald-400">{tagMessage}</p>}
+          {result && matchedPeople.length > 0 && (
+            <label className="mt-1.5 flex items-center gap-1.5 text-[11px] text-muted-foreground">
+              Recommend unknown clusters ≥
+              <select
+                value={recThreshold}
+                onChange={(e) => setRecThreshold(Number(e.target.value))}
+                className="rounded-md border border-input bg-background px-1.5 py-0.5 text-[11px] font-medium text-foreground"
+                aria-label="Recommendation similarity threshold"
+              >
+                {REC_THRESHOLD_OPTIONS.map((value) => (
+                  <option key={value} value={value}>
+                    {Math.round(value * 100)}%
+                  </option>
+                ))}
+              </select>
+              similar to matched {matchedPeople.length === 1 ? "person" : "people"}
+              {recsLoading && <Spinner size={11} />}
+            </label>
+          )}
         </div>
         {(searching || tagging) && <Spinner size={16} />}
         {(file || result) && (
           <button
             type="button"
             onClick={() => {
-              setOpenMatchKey(null);
+              setOpenTarget(null);
               clearReverseFaceSearch();
             }}
             title="Clear image search"
@@ -564,16 +732,68 @@ export function ImageSearchPanel() {
         <div className="divide-y divide-border overflow-hidden rounded-xl border border-border/60 bg-card">
           {matches.map((m) => {
             const key = `${scopeOf(m)}:${m.cluster_id ?? m.person_id ?? m.face_id}`;
-            return <ClusterRow key={`${key}-${m.face_id}`} match={m} onOpen={() => setOpenMatchKey(key)} />;
+            return (
+              <ClusterRow
+                key={`${key}-${m.face_id}`}
+                match={m}
+                onOpen={() => setOpenTarget({ match: m })}
+              />
+            );
           })}
         </div>
       )}
 
-      {openMatch && (
+      {result && matchedPeople.length > 0 && (
+        <section className="space-y-2">
+          <div className="flex items-center justify-between gap-2">
+            <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+              Recommended unknown clusters
+            </h3>
+            {visibleRecs.length > 0 && (
+              <span className="rounded-full bg-sky-500/15 px-2 py-0.5 text-[10px] font-semibold tabular-nums text-sky-700 dark:text-sky-300">
+                {visibleRecs.length}
+              </span>
+            )}
+          </div>
+          {recsLoading && visibleRecs.length === 0 ? (
+            <p className="text-xs text-muted-foreground">
+              <LoadingLabel size={12}>Finding recommended clusters…</LoadingLabel>
+            </p>
+          ) : recsError ? (
+            <p className="text-xs text-destructive">{recsError}</p>
+          ) : visibleRecs.length === 0 ? (
+            <p className="text-xs text-muted-foreground">
+              No unknown clusters at ≥{Math.round(recThreshold * 100)}% whose closest named match
+              {matchedPeople.length === 1 ? " is " : " is one of "}
+              {matchedPeople.map((p) => p.name).join(", ")}.
+            </p>
+          ) : (
+            <div className="divide-y divide-border overflow-hidden rounded-xl border border-dashed border-sky-500/40 bg-sky-500/5">
+              {visibleRecs.map((rec) => (
+                <ClusterRow
+                  key={`rec-${rec.cluster_id}`}
+                  match={recToMatch(rec)}
+                  recommendedFor={rec.person_name}
+                  onOpen={() =>
+                    setOpenTarget({
+                      match: recToMatch(rec),
+                      recommendedFor: { id: rec.person_id, name: rec.person_name },
+                    })
+                  }
+                />
+              ))}
+            </div>
+          )}
+        </section>
+      )}
+
+      {openTarget && (
         <ClusterGalleryDialog
-          match={openMatch}
+          match={openTarget.match}
+          recommendedFor={openTarget.recommendedFor}
           tagging={tagging}
-          onClose={() => setOpenMatchKey(null)}
+          onClose={() => setOpenTarget(null)}
+          onResolved={() => setRecsRefreshKey((key) => key + 1)}
         />
       )}
 
