@@ -356,7 +356,7 @@ async def promote_duplicate_content_skips(session: AsyncSession) -> int:
 async def requeue_circular_duplicate_canonicals(
     session: AsyncSession,
     *,
-    limit: int = 5000,
+    limit: int = 250,
 ) -> list[str]:
     """Backfill one real index owner for duplicate-only content groups.
 
