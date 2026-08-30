@@ -10,6 +10,7 @@ import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import {
+  ArrowLeft,
   ArrowRight,
   Check,
   Clapperboard,
@@ -58,6 +59,15 @@ import { TopicsHooksTree } from "../topics-hooks-tree";
 
 type Phase = 1 | 2 | 3 | 4 | 5 | 6;
 type StageState = "cache" | "generated" | null;
+
+const PHASE_STEPS = [
+  { n: 1, label: "Video", title: "Video", Icon: Video },
+  { n: 2, label: "Themes", title: "Themes", Icon: Sparkles },
+  { n: 3, label: "Topics", title: "Topics & hooks", Icon: Target },
+  { n: 4, label: "Copy", title: "Edit copy", Icon: Target },
+  { n: 5, label: "Images", title: "Preview with images", Icon: ImageIcon },
+  { n: 6, label: "Finalize", title: "Finalize", Icon: Clapperboard },
+] as const;
 
 function StageBadge({ state }: { state: StageState }) {
   if (!state) return null;
@@ -129,33 +139,59 @@ function applyTestHookFrames(
   });
 }
 
-function PhaseRail({ phase }: { phase: Phase }) {
-  const steps = [
-    { n: 1, label: "Video", Icon: Video },
-    { n: 2, label: "Themes", Icon: Sparkles },
-    { n: 3, label: "Topics", Icon: Target },
-    { n: 4, label: "Copy", Icon: Target },
-    { n: 5, label: "Images", Icon: ImageIcon },
-    { n: 6, label: "Finalize", Icon: Clapperboard },
-  ] as const;
+function PhaseRail({
+  phase,
+  canVisit,
+  onNavigate,
+}: {
+  phase: Phase;
+  canVisit: (n: Phase) => boolean;
+  onNavigate: (n: Phase) => void;
+}) {
   return (
     <ol className="studio-phase-rail" aria-label="Test studio steps">
-      {steps.map((s) => (
-        <li
-          key={s.n}
-          className={cn(
-            "studio-phase-chip",
-            phase === s.n && "is-active",
-            phase > s.n && "is-done"
-          )}
-        >
-          {phase > s.n ? <Check size={12} /> : <s.Icon size={12} />}
-          <span>
-            {s.n}. {s.label}
-          </span>
-        </li>
-      ))}
+      {PHASE_STEPS.map((s) => {
+        const n = s.n as Phase;
+        const enabled = canVisit(n);
+        return (
+          <li key={s.n}>
+            <button
+              type="button"
+              className={cn(
+                "studio-phase-chip",
+                phase === s.n && "is-active",
+                phase > s.n && "is-done"
+              )}
+              disabled={!enabled}
+              aria-current={phase === s.n ? "step" : undefined}
+              aria-disabled={!enabled}
+              onClick={() => {
+                if (enabled) onNavigate(n);
+              }}
+            >
+              {phase > s.n ? <Check size={12} /> : <s.Icon size={12} />}
+              <span>
+                {s.n}. {s.label}
+              </span>
+            </button>
+          </li>
+        );
+      })}
     </ol>
+  );
+}
+
+function WizardBack({ onBack }: { onBack: () => void }) {
+  return (
+    <button
+      type="button"
+      className="studio-btn studio-btn-ghost"
+      onClick={onBack}
+      data-testid="test-wizard-back"
+    >
+      <ArrowLeft size={14} />
+      Back
+    </button>
   );
 }
 
@@ -212,6 +248,7 @@ function TestStudioInner() {
   const videoParam = searchParams.get("video");
 
   const [phase, setPhase] = useState<Phase>(1);
+  const [maxPhase, setMaxPhase] = useState<Phase>(1);
   const [videos, setVideos] = useState<TestVideo[]>([]);
   const [selected, setSelected] = useState<TestVideo | null>(null);
   const [loadingVideos, setLoadingVideos] = useState(true);
@@ -728,7 +765,7 @@ function TestStudioInner() {
         return;
       }
       setTranscriptModal((prev) => ({ ...prev, open: false }));
-      setPhase(2);
+      resetProgressTo(2);
     } catch (e) {
       setError(
         formatApiError(e, "We couldn’t generate themes for this video. Please try again.")
@@ -798,7 +835,7 @@ function TestStudioInner() {
       setCarousels([]);
       setLayouts(null);
       setCopySource(null);
-      setPhase(3);
+      resetProgressTo(3);
     } catch (e) {
       if (job !== extractJobRef.current) return;
       setError(
@@ -891,7 +928,8 @@ function TestStudioInner() {
       }
 
       applyGenerateResult(merged, lastLayouts, lastCopySource);
-      setPhase(4);
+      setImageStage(null);
+      resetProgressTo(4);
     } catch (e) {
       setError(formatApiError(e, "We couldn’t generate copy. Please try again."));
     } finally {
@@ -919,7 +957,7 @@ function TestStudioInner() {
       }));
       applyGenerateResult(withImages, selectedImgs.layouts ?? null, copySource);
       setImageStage(selectedImgs.cache_hit ? "cache" : "generated");
-      setPhase(5);
+      raisePhase(5);
     } catch (e) {
       setError(formatApiError(e, "We couldn’t select images. Please try again."));
     } finally {
@@ -934,14 +972,55 @@ function TestStudioInner() {
 
   function finalize() {
     if (!carousels.length) return;
-    setPhase(6);
+    raisePhase(6);
+  }
+
+  function goToPhase(next: Phase) {
+    setPhase(next);
+  }
+
+  function goBack() {
+    setPhase((current) => (current > 1 ? ((current - 1) as Phase) : current));
+  }
+
+  function raisePhase(next: Phase) {
+    setPhase(next);
+    setMaxPhase((prev) => (prev < next ? next : prev));
+  }
+
+  function resetProgressTo(next: Phase) {
+    setPhase(next);
+    setMaxPhase(next);
   }
 
   function resetGeneratedFromPhase(nextPhase: Phase) {
     setCarousels([]);
     setLayouts(null);
     setCopySource(null);
+    if (nextPhase < 5) setImageStage(null);
+    if (nextPhase < 4) setCopyStage(null);
     setPhase((current) => (current > nextPhase ? nextPhase : current));
+    setMaxPhase((current) => (current > nextPhase ? nextPhase : current));
+  }
+
+  function canVisitPhase(n: Phase): boolean {
+    if (n > maxPhase) return false;
+    switch (n) {
+      case 1:
+        return true;
+      case 2:
+        return themes.length > 0;
+      case 3:
+        return Boolean(extract);
+      case 4:
+        return carousels.length > 0;
+      case 5:
+        return Boolean(imageStage);
+      case 6:
+        return maxPhase >= 6;
+      default:
+        return false;
+    }
   }
 
   function toggleSelectedTheme(theme: TestTheme) {
@@ -999,6 +1078,11 @@ function TestStudioInner() {
   }
 
   const transcriptBusy = transcriptModal.open && !transcriptModal.error;
+  const currentStep = PHASE_STEPS[phase - 1];
+
+  useEffect(() => {
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }, [phase]);
 
   return (
     <div className="mx-auto max-w-5xl space-y-8 px-4 pb-24 pt-8 sm:px-6 sm:pt-10">
@@ -1008,11 +1092,15 @@ function TestStudioInner() {
         <p className="studio-lede">
           Pick a video, choose themes, select topics &amp; hooks, generate copy, then select images and finalize.
         </p>
-        <PhaseRail phase={phase} />
+        <PhaseRail phase={phase} canVisit={canVisitPhase} onNavigate={goToPhase} />
+        <p className="studio-step-caption">
+          Step {phase} of 6 · {currentStep.title}
+        </p>
       </header>
 
       {/* Step 1 — Video */}
-      <section className="studio-panel p-5 sm:p-8" data-testid="test-phase-1">
+      {phase === 1 && (
+      <section key={1} className="studio-panel studio-rise p-5 sm:p-8" data-testid="test-phase-1">
         <p className="studio-section-label">Step 1</p>
         <h2 className="studio-section-heading">
           <Video size={20} />
@@ -1131,7 +1219,7 @@ function TestStudioInner() {
                       )}
                       onClick={() => {
                         setSelected(v);
-                        setPhase(1);
+                        resetProgressTo(1);
                         setThemes([]);
                         setSelectedThemes([]);
                         setExtract(null);
@@ -1206,10 +1294,11 @@ function TestStudioInner() {
           </div>
         )}
       </section>
+      )}
 
       {/* Step 2 — Themes */}
-      {phase >= 2 && themes.length > 0 && (
-        <section className="studio-panel p-5 sm:p-7" data-testid="test-phase-2-themes">
+      {phase === 2 && themes.length > 0 && (
+        <section key={2} className="studio-panel studio-rise p-5 sm:p-7" data-testid="test-phase-2-themes">
           <p className="studio-section-label">Step 2</p>
           <h2 className="studio-section-heading">
             <Sparkles size={20} />
@@ -1278,7 +1367,8 @@ function TestStudioInner() {
               );
             })}
           </ul>
-          <div className="mt-4 flex flex-wrap items-center gap-3">
+          <div className="studio-wizard-nav mt-4 flex flex-wrap items-center gap-3">
+            <WizardBack onBack={goBack} />
             <StageLlmGenerate
               label="Generate themes"
               busy={themesLoading}
@@ -1316,8 +1406,8 @@ function TestStudioInner() {
       )}
 
       {/* Step 3 — Topics → Hooks */}
-      {extract && phase >= 3 && (
-        <section className="studio-panel p-5 sm:p-7" data-testid="test-phase-2">
+      {extract && phase === 3 && (
+        <section key={3} className="studio-panel studio-rise p-5 sm:p-7" data-testid="test-phase-2">
           <p className="studio-section-label">Step 3</p>
           <h2 className="studio-section-heading">
             Topics &amp; hooks
@@ -1363,7 +1453,8 @@ function TestStudioInner() {
             )}
           </div>
 
-          <div className="thd-generate-bar mt-4 flex flex-wrap items-center gap-3">
+          <div className="thd-generate-bar studio-wizard-nav mt-4 flex flex-wrap items-center gap-3">
+            <WizardBack onBack={goBack} />
             <button
               type="button"
               className="studio-btn studio-btn-primary studio-btn-continue"
@@ -1396,8 +1487,8 @@ function TestStudioInner() {
       )}
 
       {/* Step 4 — Edit copy (text-first, no images yet) */}
-      {phase >= 4 && (
-        <section className="studio-panel p-5 sm:p-7" data-testid="test-phase-3">
+      {phase === 4 && (
+        <section key={4} className="studio-panel studio-rise p-5 sm:p-7" data-testid="test-phase-3">
           <p className="studio-section-label">Step 4</p>
           <h2 className="studio-section-heading">
             <Target size={20} />
@@ -1426,7 +1517,8 @@ function TestStudioInner() {
             <CopyEditor carousels={displayCarousels} onChangeSlideText={onChangeSlideText} />
           </div>
 
-          <div className="mt-5 flex flex-wrap gap-3">
+          <div className="studio-wizard-nav mt-5 flex flex-wrap gap-3">
+            <WizardBack onBack={goBack} />
             <StageLlmGenerate
               label="Generate copy"
               busy={copyLoading}
@@ -1457,8 +1549,8 @@ function TestStudioInner() {
       )}
 
       {/* Step 5 — Preview with images */}
-      {phase >= 5 && (
-        <section className="studio-panel p-5 sm:p-7" data-testid="test-phase-4">
+      {phase === 5 && (
+        <section key={5} className="studio-panel studio-rise p-5 sm:p-7" data-testid="test-phase-4">
           <p className="studio-section-label">Step 5</p>
           <h2 className="studio-section-heading">
             <ImageIcon size={20} />
@@ -1494,7 +1586,8 @@ function TestStudioInner() {
             )}
           </div>
 
-          <div className="mt-5 flex flex-wrap gap-3">
+          <div className="studio-wizard-nav mt-5 flex flex-wrap gap-3">
+            <WizardBack onBack={goBack} />
             <StageLlmGenerate
               label="Generate images"
               busy={imagesLoading}
@@ -1519,8 +1612,8 @@ function TestStudioInner() {
       )}
 
       {/* Step 6 — Finalize (polished IgPost; distinct from image preview) */}
-      {phase >= 6 && (
-        <section className="studio-panel space-y-4 p-5 sm:p-7" data-testid="test-phase-5">
+      {phase === 6 && (
+        <section key={6} className="studio-panel studio-rise space-y-4 p-5 sm:p-7" data-testid="test-phase-5">
           <p className="studio-section-label">Step 6</p>
           <h2 className="studio-section-heading">
             <Clapperboard size={20} />
@@ -1562,6 +1655,9 @@ function TestStudioInner() {
             {" · "}
             <span className="font-medium text-foreground">{runConfig.model}</span>
           </p>
+          <div className="studio-wizard-nav">
+            <WizardBack onBack={goBack} />
+          </div>
         </section>
       )}
 
