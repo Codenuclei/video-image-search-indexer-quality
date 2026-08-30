@@ -7,11 +7,12 @@ import contextvars
 import hashlib
 import logging
 import re
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Header, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -3600,14 +3601,55 @@ async def carousel_pipeline_quality_check(
 async def carousel_pipeline_select_images(
     body: CarouselSelectImagesBody,
     session: AsyncSession = Depends(get_db),
+    request_id: str | None = Header(default=None, alias="X-Request-ID"),
 ) -> dict[str, Any]:
     drive_file_id = body.drive_file_id.strip()
+    trace_id = (request_id or uuid.uuid4().hex)[:64]
+    started = time.monotonic()
     token = ""
+    slide_count = sum(
+        len(item.get("slides") or [])
+        for item in (body.carousels or [])
+        if isinstance(item, dict)
+    )
+    logger.info(
+        "select-images trace=%s event=request_start drive=%s carousels=%d slides=%d provider=%s model=%s budget_sec=%.0f",
+        trace_id,
+        drive_file_id,
+        len(body.carousels or []),
+        slide_count,
+        body.llm_provider or "default",
+        body.llm_model or "default",
+        _SELECT_IMAGES_REQUEST_TIMEOUT_SEC,
+    )
 
     async def _claim_and_run() -> dict[str, Any]:
         nonlocal token
+        claim_started = time.monotonic()
+        logger.info(
+            "select-images trace=%s event=lock_claim_start drive=%s elapsed_ms=%d",
+            trace_id,
+            drive_file_id,
+            round((claim_started - started) * 1000),
+        )
         token = await _claim_carousel(session, drive_file_id)
-        return await _carousel_pipeline_select_images_impl(body, session)
+        logger.info(
+            "select-images trace=%s event=lock_claim_done drive=%s stage_ms=%d elapsed_ms=%d",
+            trace_id,
+            drive_file_id,
+            round((time.monotonic() - claim_started) * 1000),
+            round((time.monotonic() - started) * 1000),
+        )
+        result = await _carousel_pipeline_select_images_impl(
+            body, session, trace_id=trace_id
+        )
+        logger.info(
+            "select-images trace=%s event=pipeline_done drive=%s elapsed_ms=%d",
+            trace_id,
+            drive_file_id,
+            round((time.monotonic() - started) * 1000),
+        )
+        return result
 
     try:
         # Claim included in the budget: a wedged claim must still answer the
@@ -3616,31 +3658,67 @@ async def carousel_pipeline_select_images(
             _claim_and_run(),
             timeout=_SELECT_IMAGES_REQUEST_TIMEOUT_SEC,
         )
-    except HTTPException:
+    except HTTPException as exc:
+        logger.warning(
+            "select-images trace=%s event=http_error drive=%s status=%d elapsed_ms=%d detail=%s",
+            trace_id,
+            drive_file_id,
+            exc.status_code,
+            round((time.monotonic() - started) * 1000),
+            str(exc.detail)[:160],
+        )
         raise
     except (asyncio.TimeoutError, TimeoutError) as exc:
-        logger.warning("select-images timed out drive=%s", drive_file_id)
+        logger.warning(
+            "select-images trace=%s event=request_timeout drive=%s elapsed_ms=%d budget_sec=%.0f",
+            trace_id,
+            drive_file_id,
+            round((time.monotonic() - started) * 1000),
+            _SELECT_IMAGES_REQUEST_TIMEOUT_SEC,
+        )
         raise HTTPException(
             status_code=504,
             detail="Image selection took too long. Retry — local frames will be used.",
         ) from exc
     except asyncio.CancelledError as exc:
-        logger.warning("select-images cancelled drive=%s", drive_file_id)
+        logger.warning(
+            "select-images trace=%s event=request_cancelled drive=%s elapsed_ms=%d",
+            trace_id,
+            drive_file_id,
+            round((time.monotonic() - started) * 1000),
+        )
         raise HTTPException(
             status_code=504,
             detail="Image selection was interrupted. Retry — local frames will be used.",
         ) from exc
     finally:
         if token:
+            release_started = time.monotonic()
             try:
                 await asyncio.shield(_release_carousel(session, drive_file_id, token))
+                logger.info(
+                    "select-images trace=%s event=lock_release_done drive=%s stage_ms=%d elapsed_ms=%d",
+                    trace_id,
+                    drive_file_id,
+                    round((time.monotonic() - release_started) * 1000),
+                    round((time.monotonic() - started) * 1000),
+                )
             except Exception as exc:  # noqa: BLE001
-                logger.warning("select-images lock release failed drive=%s: %s", drive_file_id, exc)
+                logger.warning(
+                    "select-images trace=%s event=lock_release_failed drive=%s stage_ms=%d elapsed_ms=%d error=%s",
+                    trace_id,
+                    drive_file_id,
+                    round((time.monotonic() - release_started) * 1000),
+                    round((time.monotonic() - started) * 1000),
+                    str(exc)[:240],
+                )
 
 
 async def _carousel_pipeline_select_images_impl(
     body: CarouselSelectImagesBody,
     session: AsyncSession = Depends(get_db),
+    *,
+    trace_id: str = "-",
 ) -> dict[str, Any]:
     """Final image selection pass after the user reviewed/edited slide transcripts."""
     drive_file_id = body.drive_file_id.strip()
@@ -3652,11 +3730,27 @@ async def _carousel_pipeline_select_images_impl(
 
     polished: list[dict[str, Any]] = [dict(car) for car in raw]
     # Snap any user-edited invented lines back to transcript before frame select.
+    stage_started = time.monotonic()
     try:
         _df, cues = await _load_video_cues(session, drive_file_id)
         transcript_guard = _enforce_slides_match_transcript(polished, cues)
+        logger.info(
+            "select-images trace=%s event=transcript_guard_done drive=%s stage_ms=%d cues=%d checked=%d snapped=%d",
+            trace_id,
+            drive_file_id,
+            round((time.monotonic() - stage_started) * 1000),
+            len(cues),
+            int(transcript_guard.get("checked") or 0),
+            int(transcript_guard.get("snapped") or 0),
+        )
     except Exception as exc:  # noqa: BLE001
-        logger.warning("select-images transcript guard skipped: %s", exc)
+        logger.warning(
+            "select-images trace=%s event=transcript_guard_failed drive=%s stage_ms=%d error=%s",
+            trace_id,
+            drive_file_id,
+            round((time.monotonic() - stage_started) * 1000),
+            str(exc)[:240],
+        )
         transcript_guard = {"checked": 0, "ok": 0, "snapped": 0, "empty": 0}
     polished, quality_summary = apply_carousel_quality_pass(polished)
     quality_rollup: list[dict[str, Any]] = []
@@ -3685,6 +3779,7 @@ async def _carousel_pipeline_select_images_impl(
                 style_refs.append(r)
     if not style_refs:
         # Fall back to persisted theme/hook refs for this video.
+        stage_started = time.monotonic()
         style_refs = await _load_attached_references(
             session,
             drive_file_id=drive_file_id,
@@ -3692,12 +3787,27 @@ async def _carousel_pipeline_select_images_impl(
             themes=[],
             include_all_for_drive=True,
         )
+        logger.info(
+            "select-images trace=%s event=references_loaded drive=%s stage_ms=%d references=%d",
+            trace_id,
+            drive_file_id,
+            round((time.monotonic() - stage_started) * 1000),
+            len(style_refs),
+        )
     llm_pack = resolve_carousel_llm(body.llm_provider, body.llm_model)
     copy_refs = [
         str(r.get("copy_text") or "").strip()
         for r in style_refs
         if (r.get("ref_kind") or "").strip().lower() == "copy" and (r.get("copy_text") or "").strip()
     ]
+    stage_started = time.monotonic()
+    logger.info(
+        "select-images trace=%s event=frame_polish_start drive=%s slides=%d prefer_local=true allow_extracts=false llm=%s",
+        trace_id,
+        drive_file_id,
+        len(all_slides),
+        carousel_llm_cache_id(llm_pack),
+    )
     selected_slides = await _polish_outline_frames(
         all_slides,
         session,
@@ -3707,6 +3817,19 @@ async def _carousel_pipeline_select_images_impl(
         style_copy_refs=copy_refs,
         llm_pack=llm_pack,
         allow_extracts=False,
+        trace_id=trace_id,
+    )
+    frame_sources: dict[str, int] = {}
+    for slide in selected_slides:
+        source = str(slide.get("frame_source") or "unknown")
+        frame_sources[source] = frame_sources.get(source, 0) + 1
+    logger.info(
+        "select-images trace=%s event=frame_polish_done drive=%s stage_ms=%d slides=%d sources=%s",
+        trace_id,
+        drive_file_id,
+        round((time.monotonic() - stage_started) * 1000),
+        len(selected_slides),
+        ",".join(f"{key}:{value}" for key, value in sorted(frame_sources.items())),
     )
     for s in selected_slides:
         if isinstance(s.get("frame_quality"), dict):
@@ -3771,6 +3894,14 @@ async def _carousel_pipeline_select_images_impl(
         "transcript_guard": transcript_guard,
     }
     try:
+        stage_started = time.monotonic()
+        logger.info(
+            "select-images trace=%s event=persist_start drive=%s payload_carousels=%d payload_slides=%d",
+            trace_id,
+            drive_file_id,
+            len(polished),
+            len(all_slides),
+        )
         save = await _persist_carousel_artifact(
             session,
             drive_file_id=drive_file_id,
@@ -3778,8 +3909,21 @@ async def _carousel_pipeline_select_images_impl(
             source="select_images",
         )
         result["save_id"] = save.id if save else None
+        logger.info(
+            "select-images trace=%s event=persist_done drive=%s stage_ms=%d saved=%s",
+            trace_id,
+            drive_file_id,
+            round((time.monotonic() - stage_started) * 1000),
+            bool(save),
+        )
     except Exception as exc:  # noqa: BLE001
-        logger.warning("selected carousel artifact save failed: %s", exc)
+        logger.warning(
+            "select-images trace=%s event=persist_failed drive=%s stage_ms=%d error=%s",
+            trace_id,
+            drive_file_id,
+            round((time.monotonic() - stage_started) * 1000),
+            str(exc)[:240],
+        )
         await session.rollback()
     return result
 
@@ -4290,6 +4434,7 @@ async def _polish_outline_frames(
     timeout_sec: float = _SELECT_IMAGES_TIMEOUT_SEC,
     llm_pack: dict[str, Any] | None = None,
     allow_extracts: bool = True,
+    trace_id: str = "-",
 ) -> list[dict[str, Any]]:
     """Studio-picker rank + Instagram-ready check (span text unchanged)."""
     from app.llm.carousel_llm import vision_ready
@@ -4297,6 +4442,12 @@ async def _polish_outline_frames(
 
     settings = get_settings()
     if not slides or not vision_ready(llm_pack, api_key=settings.gemini_api_key or ""):
+        logger.info(
+            "select-images trace=%s event=frame_polish_heuristic reason=%s slides=%d",
+            trace_id,
+            "no_slides" if not slides else "vision_not_configured",
+            len(slides),
+        )
         from app.search.carousel_frame_select import focal_point_for_slide
         for s in slides:
             s.setdefault("frame_source", "heuristic")
@@ -4320,6 +4471,7 @@ async def _polish_outline_frames(
         # Feed indexed InsightFace detections into the local candidate scorer.
         # Older rows have no yaw; confidence and normalized box area still
         # provide a useful front-facing/portrait prior.
+        face_started = time.monotonic()
         face_rows: dict[str, list[dict[str, Any]]] = {}
         for fid in {str(s.get("drive_file_id") or "") for s in slides}:
             if not fid:
@@ -4367,6 +4519,13 @@ async def _polish_outline_frames(
                 }
                 for f in faces
             ]
+        logger.info(
+            "select-images trace=%s event=face_metadata_done files=%d faces=%d stage_ms=%d",
+            trace_id,
+            len(face_rows),
+            sum(len(rows) for rows in face_rows.values()),
+            round((time.monotonic() - face_started) * 1000),
+        )
         for slide in slides:
             fid = str(slide.get("drive_file_id") or "")
             if face_rows.get(fid):
@@ -4389,18 +4548,29 @@ async def _polish_outline_frames(
                 max_rank_batches=max_rank_batches,
                 timeout_sec=timeout_sec,
                 llm_pack=llm_pack,
+                trace_id=trace_id,
             ),
             timeout=timeout_sec,
         )
         return [_strip_slide_ranking_fields(s) for s in polished]
     except asyncio.TimeoutError:
-        logger.warning("Instagram frame polish timed out after %.0fs", timeout_sec)
+        logger.warning(
+            "select-images trace=%s event=frame_polish_timeout timeout_sec=%.0f slides=%d",
+            trace_id,
+            timeout_sec,
+            len(slides),
+        )
         for s in slides:
             s.setdefault("frame_source", "heuristic")
             s.setdefault("instagram_ready", False)
         return [_strip_slide_ranking_fields(s) for s in slides]
     except Exception as exc:  # noqa: BLE001
-        logger.warning("Instagram frame polish skipped: %s", exc)
+        logger.warning(
+            "select-images trace=%s event=frame_polish_failed slides=%d error=%s",
+            trace_id,
+            len(slides),
+            str(exc)[:240],
+        )
         for s in slides:
             s.setdefault("frame_source", "heuristic")
             s.setdefault("instagram_ready", False)

@@ -34,6 +34,9 @@ export async function proxyToBackend(
 ): Promise<Response> {
   const upstreamPath = pathParts.map(encodeURIComponent).join("/");
   const url = `${API_PROXY_TARGET}/${upstreamPath}${req.nextUrl.search}`;
+  const isSelectImages = upstreamPath === "search/carousel/pipeline/select-images";
+  const started = Date.now();
+  const requestId = (req.headers.get("x-request-id") || crypto.randomUUID()).slice(0, 64);
 
   const headers = new Headers();
   req.headers.forEach((value, key) => {
@@ -41,20 +44,46 @@ export async function proxyToBackend(
   });
   // Ask upstream for plain bytes so Node fetch + our buffer stay consistent.
   headers.set("accept-encoding", "identity");
+  headers.set("x-request-id", requestId);
 
   const method = req.method.toUpperCase();
   const init: RequestInit = { method, headers, cache: "no-store" };
   if (method !== "GET" && method !== "HEAD") {
     init.body = await req.arrayBuffer();
   }
+  if (isSelectImages) {
+    console.info(
+      `select-images-proxy trace=${requestId} event=upstream_start method=${method} request_bytes=${
+        init.body instanceof ArrayBuffer ? init.body.byteLength : 0
+      }`
+    );
+  }
 
   let upstream: Response;
   try {
     upstream = await fetch(url, init);
-  } catch {
+    if (isSelectImages) {
+      console.info(
+        `select-images-proxy trace=${requestId} event=upstream_headers status=${upstream.status} elapsed_ms=${
+          Date.now() - started
+        }`
+      );
+    }
+  } catch (error) {
+    if (isSelectImages) {
+      console.error(
+        `select-images-proxy trace=${requestId} event=upstream_error elapsed_ms=${
+          Date.now() - started
+        } error=${error instanceof Error ? error.message.slice(0, 240) : "unknown"}`
+      );
+    }
     return NextResponse.json(
-      { detail: "Can't reach the API right now. It may be starting up or temporarily unavailable." },
-      { status: 502 }
+      {
+        detail:
+          "Can't reach the API right now. It may be starting up or temporarily unavailable.",
+        request_id: requestId,
+      },
+      { status: 502, headers: { "X-Request-ID": requestId } }
     );
   }
 
@@ -62,6 +91,7 @@ export async function proxyToBackend(
   upstream.headers.forEach((value, key) => {
     if (!HOP_BY_HOP.has(key.toLowerCase())) outHeaders.set(key, value);
   });
+  outHeaders.set("x-request-id", requestId);
 
   const contentType = upstream.headers.get("content-type")?.toLowerCase() ?? "";
   const streamBody =
@@ -86,6 +116,13 @@ export async function proxyToBackend(
 
   // Preserve the existing buffered JSON/error behavior.
   const body = await upstream.arrayBuffer();
+  if (isSelectImages) {
+    console.info(
+      `select-images-proxy trace=${requestId} event=response_buffered status=${upstream.status} response_bytes=${
+        body.byteLength
+      } elapsed_ms=${Date.now() - started}`
+    );
+  }
   return new NextResponse(body, {
     status: upstream.status,
     statusText: upstream.statusText,
