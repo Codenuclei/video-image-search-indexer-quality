@@ -262,6 +262,56 @@ def test_list_cached_timestamps_in_span(tmp_path):
     assert 20.0 not in found
 
 
+def test_cached_frame_index_reuses_one_directory_scan(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from app.search.carousel_frame_select import (
+        build_cache_first_candidates,
+        index_cached_video_frames,
+        load_cached_frame_bytes,
+        nearest_cached_frame,
+    )
+
+    fid = "single-scan"
+    frames = tmp_path / "video" / fid
+    frames.mkdir(parents=True)
+    for ts in (1.0, 2.0, 3.0, 4.0):
+        (frames / f"{ts:.3f}.jpg").write_bytes(b"jpeg")
+
+    original_glob = Path.glob
+    scans = 0
+
+    def counting_glob(path, pattern):
+        nonlocal scans
+        scans += 1
+        return original_glob(path, pattern)
+
+    monkeypatch.setattr(Path, "glob", counting_glob)
+    frame_index = index_cached_video_frames(str(tmp_path), {fid})[fid]
+
+    for start in (1.0, 2.0, 3.0):
+        candidates = build_cache_first_candidates(
+            fid,
+            start,
+            start + 1.0,
+            thumbnail_dir=str(tmp_path),
+            max_candidates=4,
+            cached_frames=frame_index,
+        )
+        assert candidates
+        assert load_cached_frame_bytes(
+            str(tmp_path),
+            fid,
+            candidates[0].timestamp_sec,
+            cached_frames=frame_index,
+        )
+        assert nearest_cached_frame(
+            str(tmp_path), fid, start, cached_frames=frame_index
+        )
+
+    assert scans == 1
+
+
 
 def _jpeg_from_gray(gray, quality: int = 90) -> bytes:
     import cv2

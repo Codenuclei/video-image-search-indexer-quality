@@ -3769,6 +3769,28 @@ async def _carousel_pipeline_select_images_impl(
             slide_locations.append((car_index, len(all_slides)))
             all_slides.append(s)
 
+    from app.search.carousel_frame_select import index_cached_video_frames
+
+    settings = get_settings()
+    index_started = time.monotonic()
+    cached_frame_index = await asyncio.to_thread(
+        index_cached_video_frames,
+        str(settings.thumbnail_dir),
+        {
+            str(slide.get("drive_file_id") or "").strip()
+            for slide in all_slides
+            if str(slide.get("drive_file_id") or "").strip()
+        },
+    )
+    logger.info(
+        "select-images trace=%s event=frame_index_done drive=%s stage_ms=%d files=%d frames=%d",
+        trace_id,
+        drive_file_id,
+        round((time.monotonic() - index_started) * 1000),
+        len(cached_frame_index),
+        sum(len(index.timestamps) for index in cached_frame_index.values()),
+    )
+
     # Harvest all slides locally and rank in grouped requests. This keeps the
     # default image pass at the hard three-call Gemini cap even with several
     # carousel tabs.
@@ -3818,6 +3840,7 @@ async def _carousel_pipeline_select_images_impl(
         llm_pack=llm_pack,
         allow_extracts=False,
         trace_id=trace_id,
+        cached_frame_index=cached_frame_index,
     )
     frame_sources: dict[str, int] = {}
     for slide in selected_slides:
@@ -3841,8 +3864,12 @@ async def _carousel_pipeline_select_images_impl(
             car_slides[local_index] = slide
     for item in polished:
         slides = list(item.get("slides") or [])
-        _attach_layout_panels([{"slides": slides}])
-        _snap_slides_to_cached_preview(slides, get_settings())
+        _attach_layout_panels(
+            [{"slides": slides}], cached_frame_index=cached_frame_index
+        )
+        _snap_slides_to_cached_preview(
+            slides, settings, cached_frame_index=cached_frame_index
+        )
         item["slides"] = slides
         item["slide_count"] = len(slides)
         item["images_ready"] = True
@@ -4375,7 +4402,12 @@ def _strip_slide_ranking_fields(slide: dict[str, Any]) -> dict[str, Any]:
     return cleaned
 
 
-def _snap_slides_to_cached_preview(slides: list[dict[str, Any]], settings) -> None:
+def _snap_slides_to_cached_preview(
+    slides: list[dict[str, Any]],
+    settings,
+    *,
+    cached_frame_index: dict[str, Any] | None = None,
+) -> None:
     """Point each slide at a nearby indexer JPEG. Never ffmpeg/Drive on this path."""
     from app.search.carousel_frame_select import HARVEST_NEAREST_TOLERANCE_SEC, nearest_cached_frame
 
@@ -4399,6 +4431,7 @@ def _snap_slides_to_cached_preview(slides: list[dict[str, Any]], settings) -> No
             target,
             nearest_tolerance_sec=tolerance,
             exclude_ts=used,
+            cached_frames=(cached_frame_index or {}).get(fid),
         )
         if snapped is None:
             snapped = nearest_cached_frame(
@@ -4407,6 +4440,7 @@ def _snap_slides_to_cached_preview(slides: list[dict[str, Any]], settings) -> No
                 target,
                 nearest_tolerance_sec=tolerance,
                 exclude_ts=None,
+                cached_frames=(cached_frame_index or {}).get(fid),
             )
         if snapped is not None:
             snap_ts, _path = snapped
@@ -4435,6 +4469,7 @@ async def _polish_outline_frames(
     llm_pack: dict[str, Any] | None = None,
     allow_extracts: bool = True,
     trace_id: str = "-",
+    cached_frame_index: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Studio-picker rank + Instagram-ready check (span text unchanged)."""
     from app.llm.carousel_llm import vision_ready
@@ -4549,6 +4584,7 @@ async def _polish_outline_frames(
                 timeout_sec=timeout_sec,
                 llm_pack=llm_pack,
                 trace_id=trace_id,
+                cached_frame_index=cached_frame_index,
             ),
             timeout=timeout_sec,
         )
@@ -4701,6 +4737,7 @@ def _pick_split_frame_timestamps(
     end_f: float,
     drive_file_id: str,
     thumbnail_dir: str | None,
+    cached_frames: Any | None = None,
 ) -> tuple[float, float]:
     """Pick two panel timestamps that resolve to different stills when possible.
 
@@ -4719,6 +4756,7 @@ def _pick_split_frame_timestamps(
             start,
             end_f,
             limit=32,
+            cached_frames=cached_frames,
         )
     if len(cached) >= 2:
         anchor = min(cached, key=lambda t: abs(t - left))
@@ -4762,7 +4800,11 @@ def _highlight_for_caption(
     return indices, hl_words
 
 
-def _attach_layout_panels(carousels: list[dict[str, Any]]) -> None:
+def _attach_layout_panels(
+    carousels: list[dict[str, Any]],
+    *,
+    cached_frame_index: dict[str, Any] | None = None,
+) -> None:
     """Attach cache-backed single and two-panel layout metadata to slides."""
     from app.search.carousel_frame_select import focal_point_for_slide
 
@@ -4787,6 +4829,7 @@ def _attach_layout_panels(carousels: list[dict[str, Any]]) -> None:
                 end_f=end_f,
                 drive_file_id=fid,
                 thumbnail_dir=thumbnail_dir,
+                cached_frames=(cached_frame_index or {}).get(fid),
             )
             text = str(
                 slide.get("transcript_text")

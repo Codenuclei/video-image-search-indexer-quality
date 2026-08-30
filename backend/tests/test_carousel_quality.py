@@ -470,6 +470,7 @@ async def test_select_images_uses_studio_llm_pack(monkeypatch) -> None:
     assert seen.get("max_rank_batches") == 2
     assert seen.get("allow_extracts") is False
     assert seen.get("trace_id") == "test-trace"
+    assert seen.get("cached_frame_index")
     assert seen.get("llm_pack", {}).get("provider") == "openrouter"
     assert out["images_ready"] is True
     assert out["slides"][0]["preview_url"]
