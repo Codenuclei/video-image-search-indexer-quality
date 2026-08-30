@@ -189,6 +189,15 @@ export type CarouselOutlineSlide = {
   images_ready?: boolean | null;
   frames_prewarmed?: boolean | null;
   frame_candidates?: number[] | null;
+  frame_candidate_items?: Array<{
+    frame_ts: number;
+    preview_url?: string | null;
+    label?: string | null;
+    order?: number | null;
+    quality_score?: number | null;
+    front_face_score?: number | null;
+    selected?: boolean | null;
+  }> | null;
   frame_quality?: Record<string, unknown> | null;
   frame_diversity?: {
     adjacent_duplicate_avoided?: boolean;

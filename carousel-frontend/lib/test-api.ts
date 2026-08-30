@@ -23,8 +23,15 @@ const API_BASE = USE_REAL_API ? REAL_API_BASE : "/api/test";
 export { API_BASE, USE_REAL_API };
 
 /** Prefix relative media paths (e.g. `/media/video/.../frame`) with API_BASE. */
-export const testAssetUrl = (path: string) =>
-  !path || path.startsWith("http") ? path : `${API_BASE}${path}`;
+export const testAssetUrl = (path: string) => {
+  if (!path) return path;
+  let url = path.startsWith("http") ? path : `${API_BASE}${path}`;
+  if (url.includes("/media/video/") && url.includes("/frame?")) {
+    if (!url.includes("ar=")) url = `${url}&ar=4x5`;
+    if (!url.includes("cache_only=")) url = `${url}&cache_only=1`;
+  }
+  return url;
+};
 
 /** Playable preview stream for browser frame capture (same-origin via proxy). */
 export const testVideoStreamUrl = (driveFileId: string) =>
@@ -134,6 +141,16 @@ export type TestSlidePanel = {
   front_face_score?: number | null;
 };
 
+export type TestFrameCandidateItem = {
+  frame_ts: number;
+  preview_url?: string | null;
+  label?: string | null;
+  order?: number | null;
+  quality_score?: number | null;
+  front_face_score?: number | null;
+  selected?: boolean | null;
+};
+
 export type TestSlide = {
   index: number;
   hook_line: string;
@@ -144,6 +161,9 @@ export type TestSlide = {
   preview_url?: string | null;
   frame_ts?: number | null;
   frame_source?: string | null;
+  frame_candidates?: number[] | null;
+  frame_candidate_items?: TestFrameCandidateItem[] | null;
+  frame_quality?: Record<string, unknown> | null;
   highlight?: number[] | null;
   highlight_words?: string[] | null;
   focal_x?: number | null;

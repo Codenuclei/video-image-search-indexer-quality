@@ -2,7 +2,7 @@
 
 /**
  * Redesigned carousel studio — /test/studio only.
- * Flow: Video → Themes → Topics → Generate copy → Edit → Select images → Finalize.
+ * Flow: Video → Themes → Topics → Generate copy → Edit → Choose images.
  * API: real backend via /api/proxy (NEXT_PUBLIC_TEST_USE_REAL_API=0 for mocks).
  */
 
@@ -13,7 +13,6 @@ import {
   ArrowLeft,
   ArrowRight,
   Check,
-  Clapperboard,
   ImageIcon,
   Sparkles,
   Target,
@@ -52,12 +51,13 @@ import {
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { toastApiError } from "@/lib/toast-api-error";
+import { toast } from "sonner";
 import { loadRunConfig, persistRunConfig } from "../carousel-llm-picker";
 import { StageLlmGenerate } from "../stage-llm-generate";
 import { TestIgPost } from "../test-ig-post";
 import { TopicsHooksTree } from "../topics-hooks-tree";
 
-type Phase = 1 | 2 | 3 | 4 | 5 | 6;
+type Phase = 1 | 2 | 3 | 4 | 5;
 type StageState = "cache" | "generated" | null;
 
 const PHASE_STEPS = [
@@ -65,8 +65,7 @@ const PHASE_STEPS = [
   { n: 2, label: "Themes", title: "Themes", Icon: Sparkles },
   { n: 3, label: "Topics", title: "Topics & hooks", Icon: Target },
   { n: 4, label: "Copy", title: "Edit copy", Icon: Target },
-  { n: 5, label: "Images", title: "Preview with images", Icon: ImageIcon },
-  { n: 6, label: "Finalize", title: "Finalize", Icon: Clapperboard },
+  { n: 5, label: "Images", title: "Choose images", Icon: ImageIcon },
 ] as const;
 
 function StageBadge({ state }: { state: StageState }) {
@@ -357,11 +356,10 @@ function TestStudioInner() {
   );
 
   const displayCarousels = useMemo(() => {
-    const fromLayout =
-      carouselLayout === "split_2" ? layouts?.split_2 : layouts?.single_1;
-    if (fromLayout?.length) return fromLayout;
-    return carousels;
-  }, [carouselLayout, layouts, carousels]);
+    // One carousel version only — prefer single-image layout, then first item.
+    const fromLayout = layouts?.single_1?.length ? layouts.single_1 : carousels;
+    return fromLayout.slice(0, 1);
+  }, [layouts, carousels]);
 
   function applyGenerateResult(
     merged: TestCarousel[],
@@ -950,12 +948,29 @@ function TestStudioInner() {
         force: Boolean(opts?.force),
         run_config: cfg,
       });
-      const withImages = (selectedImgs.carousels ?? carousels).map((c, idx) => ({
-        ...c,
-        id: c.id || `hook_${idx + 1}`,
-        images_ready: true,
-      }));
-      applyGenerateResult(withImages, selectedImgs.layouts ?? null, copySource);
+      const withImages = (selectedImgs.carousels ?? carousels)
+        .slice(0, 1)
+        .map((c, idx) => ({
+          ...c,
+          id: c.id || `hook_${idx + 1}`,
+          images_ready: true,
+        }));
+      applyGenerateResult(
+        withImages,
+        selectedImgs.layouts
+          ? {
+              single_1: {
+                carousels: (selectedImgs.layouts.single_1?.carousels ?? withImages).slice(
+                  0,
+                  1
+                ),
+              },
+              split_2: undefined,
+            }
+          : { single_1: { carousels: withImages }, split_2: undefined },
+        copySource
+      );
+      setCarouselLayout("single_1");
       setImageStage(selectedImgs.cache_hit ? "cache" : "generated");
       raisePhase(5);
     } catch (e) {
@@ -970,9 +985,45 @@ function TestStudioInner() {
     setRunConfig(next);
   }
 
-  function finalize() {
-    if (!carousels.length) return;
-    raisePhase(6);
+  const [savingFinal, setSavingFinal] = useState(false);
+
+  async function finishCarousel() {
+    if (!selected || !displayCarousels.length || savingFinal) return;
+    const carousel = displayCarousels[0];
+    setSavingFinal(true);
+    setError(null);
+    try {
+      await apiClient.carouselCopySave({
+        drive_file_id: selected.id,
+        layout_mode: "single_1",
+        slides: (carousel.slides || []).map((slide, index) => ({
+          index: slide.index ?? index,
+          hook_line: slide.hook_line,
+          transcript_text: slide.transcript_text,
+          caption: slide.caption,
+          drive_file_id: selected.id,
+          name: selected.name || selected.id,
+          timestamp_sec: slide.timestamp_sec,
+          end_timestamp_sec: slide.end_timestamp_sec,
+          preview_url: slide.preview_url,
+          frame_ts: slide.frame_ts,
+          frame_source: slide.frame_source || "manual",
+          frame_candidates: slide.frame_candidates,
+          frame_candidate_items: slide.frame_candidate_items,
+          focal_x: slide.focal_x,
+          focal_y: slide.focal_y,
+          front_face_score: slide.front_face_score,
+          highlight: slide.highlight,
+          highlight_words: slide.highlight_words,
+          moment_index: index,
+        })),
+      });
+      toast.success("Carousel saved");
+    } catch (e) {
+      setError(formatApiError(e, "Could not save the carousel. Please try again."));
+    } finally {
+      setSavingFinal(false);
+    }
   }
 
   function goToPhase(next: Phase) {
@@ -1016,8 +1067,6 @@ function TestStudioInner() {
         return carousels.length > 0;
       case 5:
         return Boolean(imageStage);
-      case 6:
-        return maxPhase >= 6;
       default:
         return false;
     }
@@ -1090,11 +1139,11 @@ function TestStudioInner() {
         <p className="studio-eyebrow">Test studio · real API</p>
         <h1 className="studio-title">Create a carousel</h1>
         <p className="studio-lede">
-          Pick a video, choose themes, select topics &amp; hooks, generate copy, then select images and finalize.
+          Pick a video, choose themes, select topics &amp; hooks, generate copy, then choose images.
         </p>
         <PhaseRail phase={phase} canVisit={canVisitPhase} onNavigate={goToPhase} />
         <p className="studio-step-caption">
-          Step {phase} of 6 · {currentStep.title}
+          Step {phase} of 5 · {currentStep.title}
         </p>
       </header>
 
@@ -1548,17 +1597,17 @@ function TestStudioInner() {
         </section>
       )}
 
-      {/* Step 5 — Preview with images */}
+      {/* Step 5 — Choose one image per slide */}
       {phase === 5 && (
         <section key={5} className="studio-panel studio-rise p-5 sm:p-7" data-testid="test-phase-4">
-          <p className="studio-section-label">Step 5</p>
+          <p className="studio-section-label">Step 5 of 5</p>
           <h2 className="studio-section-heading">
             <ImageIcon size={20} />
-            Preview with images
+            Choose images
             <StageBadge state={imageStage} />
           </h2>
           <p className="mt-2 text-sm text-slate-500">
-            Frames attached. Swap frames or keep editing, then finalize when ready.
+            One carousel at a time. Pick the best 4:5 frame for each slide, then save.
           </p>
 
           <div className="test-ig-stack mt-6" data-testid="carousel-image-preview">
@@ -1570,17 +1619,12 @@ function TestStudioInner() {
                   key={`preview-${c.id}`}
                   carousel={c}
                   driveFileId={selected?.id || ""}
-                  layoutMode={carouselLayout}
-                  onLayoutModeChange={setCarouselLayout}
+                  layoutMode="single_1"
+                  onLayoutModeChange={() => undefined}
                   imagesReady
+                  simpleMode
                   runConfig={runConfig}
                   onSlideUpdated={(si, slide) => updateSlide(c.id, si, slide)}
-                  onOpenClip={setPreviewItem}
-                  feedbackByKey={itemFeedback}
-                  referencesByKey={itemReferences}
-                  onFeedbackSaved={feedbackHandlers.onSaved}
-                  onReferenceAdded={feedbackHandlers.onAdded}
-                  onReferenceRemoved={feedbackHandlers.onRemoved}
                 />
               ))
             )}
@@ -1588,75 +1632,25 @@ function TestStudioInner() {
 
           <div className="studio-wizard-nav mt-5 flex flex-wrap gap-3">
             <WizardBack onBack={goBack} />
-            <StageLlmGenerate
-              label="Generate images"
-              busy={imagesLoading}
-              disabled={!carousels.length}
-              runConfig={runConfig}
-              onRunConfigChange={applyRunConfig}
-              onGenerate={(cfg) => selectImages({ force: true, runConfig: cfg })}
-              testId="test-regen-images-llm"
-            />
+            <button
+              type="button"
+              className="studio-btn studio-btn-ghost"
+              disabled={imagesLoading || !carousels.length}
+              onClick={() => void selectImages({ force: true })}
+              data-testid="test-regen-images-llm"
+            >
+              {imagesLoading ? "Refreshing…" : "Refresh candidates"}
+            </button>
             <button
               type="button"
               className="studio-btn studio-btn-primary"
-              onClick={() => finalize()}
-              disabled={!carousels.length}
+              onClick={() => void finishCarousel()}
+              disabled={!displayCarousels.length || savingFinal}
               data-testid="test-finalize"
             >
-              Finalize carousel
-              <ArrowRight size={14} />
+              {savingFinal ? "Saving…" : "Save carousel"}
+              <Check size={14} />
             </button>
-          </div>
-        </section>
-      )}
-
-      {/* Step 6 — Finalize (polished IgPost; distinct from image preview) */}
-      {phase === 6 && (
-        <section key={6} className="studio-panel studio-rise space-y-4 p-5 sm:p-7" data-testid="test-phase-5">
-          <p className="studio-section-label">Step 6</p>
-          <h2 className="studio-section-heading">
-            <Clapperboard size={20} />
-            {displayCarousels.length
-              ? `${displayCarousels.length} carousel${displayCarousels.length === 1 ? "" : "s"}`
-              : "Your carousels"}
-          </h2>
-          <p className="mt-2 text-sm text-slate-500">
-            Final output — yellow highlights, layout toggle, Frame / Regenerate. Production studio
-            remains at{" "}
-            <Link href="/carousel" className="underline underline-offset-2">
-              /carousel
-            </Link>
-            .
-          </p>
-
-          <div className="test-ig-stack mt-4">
-            {displayCarousels.map((c) => (
-              <TestIgPost
-                key={`final-${c.id}`}
-                carousel={c}
-                driveFileId={selected?.id || ""}
-                layoutMode={carouselLayout}
-                onLayoutModeChange={setCarouselLayout}
-                imagesReady
-                runConfig={runConfig}
-                onSlideUpdated={(si, slide) => updateSlide(c.id, si, slide)}
-                onOpenClip={setPreviewItem}
-                feedbackByKey={itemFeedback}
-                referencesByKey={itemReferences}
-                onFeedbackSaved={feedbackHandlers.onSaved}
-                onReferenceAdded={feedbackHandlers.onAdded}
-                onReferenceRemoved={feedbackHandlers.onRemoved}
-              />
-            ))}
-          </div>
-          <p className="text-xs text-muted-foreground" data-testid="test-run-summary">
-            Run LLM: <span className="font-medium text-foreground">{runConfig.provider}</span>
-            {" · "}
-            <span className="font-medium text-foreground">{runConfig.model}</span>
-          </p>
-          <div className="studio-wizard-nav">
-            <WizardBack onBack={goBack} />
           </div>
         </section>
       )}

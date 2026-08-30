@@ -312,6 +312,97 @@ def test_cached_frame_index_reuses_one_directory_scan(tmp_path, monkeypatch):
     assert scans == 1
 
 
+@pytest.mark.asyncio
+async def test_polish_returns_structured_candidate_items(tmp_path, monkeypatch):
+    from app.search.carousel_frame_select import polish_slides_instagram_frames
+
+    fid = "cand-vid"
+    frames = tmp_path / "video" / fid
+    frames.mkdir(parents=True)
+    for ts in (1.0, 1.5, 2.0, 2.5):
+        (frames / f"{ts:.3f}.jpg").write_bytes(b"jpeg-bytes")
+
+    monkeypatch.setattr(
+        "app.search.carousel_frame_select.filter_frame_candidates_by_quality",
+        lambda images, **_k: (list(range(len(images))), {"rejected": {}}),
+    )
+    monkeypatch.setattr(
+        "app.search.carousel_frame_select.score_frame_quality",
+        lambda _img: {"score": 50.0, "phash": "0" * 64},
+    )
+    monkeypatch.setattr(
+        "app.llm.carousel_llm.vision_ready",
+        lambda *_a, **_k: True,
+    )
+
+    slides = [
+        {
+            "drive_file_id": fid,
+            "timestamp_sec": 1.0,
+            "end_timestamp_sec": 3.0,
+            "transcript_text": "Hello world",
+            "hook_line": "Hello world",
+        }
+    ]
+    out = await polish_slides_instagram_frames(
+        slides,
+        thumbnail_dir=str(tmp_path),
+        api_key="unused",
+        model="unused",
+        prefer_local=True,
+        max_rank_batches=0,
+        ensure_frame=None,
+    )
+    assert len(out) == 1
+    items = out[0]["frame_candidate_items"]
+    assert isinstance(items, list) and items
+    assert all("preview_url" in item and "ar=4x5" in item["preview_url"] for item in items)
+    assert any(item.get("selected") for item in items)
+    assert out[0]["frame_quality"]["rank_source"] == "local"
+    assert "ar=4x5" in (out[0]["preview_url"] or "")
+
+
+@pytest.mark.asyncio
+async def test_polish_preserves_manual_frame(tmp_path, monkeypatch):
+    from app.search.carousel_frame_select import polish_slides_instagram_frames
+
+    monkeypatch.setattr(
+        "app.llm.carousel_llm.vision_ready",
+        lambda *_a, **_k: True,
+    )
+    slides = [
+        {
+            "drive_file_id": "manual-vid",
+            "timestamp_sec": 1.0,
+            "end_timestamp_sec": 3.0,
+            "transcript_text": "Hello",
+            "frame_ts": 1.75,
+            "preview_url": "/media/video/manual-vid/frame?ts=1.750&cache_only=1&ar=4x5",
+            "frame_source": "manual",
+            "frame_candidate_items": [
+                {
+                    "frame_ts": 1.75,
+                    "preview_url": "/media/video/manual-vid/frame?ts=1.750&cache_only=1&ar=4x5",
+                    "label": "manual",
+                    "order": 0,
+                    "selected": True,
+                }
+            ],
+        }
+    ]
+    out = await polish_slides_instagram_frames(
+        slides,
+        thumbnail_dir=str(tmp_path),
+        api_key="unused",
+        model="unused",
+        prefer_local=True,
+        max_rank_batches=2,
+    )
+    assert out[0]["frame_source"] == "manual"
+    assert out[0]["frame_ts"] == 1.75
+    assert out[0]["frame_quality"]["rank_source"] == "manual"
+
+
 
 def _jpeg_from_gray(gray, quality: int = 90) -> bytes:
     import cv2
