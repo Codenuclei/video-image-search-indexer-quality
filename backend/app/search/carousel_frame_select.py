@@ -1558,6 +1558,7 @@ async def polish_slides_instagram_frames(
     style_image_bytes: list[bytes] | None = None,
     max_rank_batches: int = _DEFAULT_MAX_GEMINI_RANK_BATCHES,
     llm_pack: dict[str, Any] | None = None,
+    trace_id: str = "-",
 ) -> list[dict[str, Any]]:
     """Apply frame polish with concurrent harvest and studio-picker ranking.
 
@@ -1570,8 +1571,14 @@ async def polish_slides_instagram_frames(
     from app.llm.carousel_llm import vision_ready
 
     if not slides:
+        logger.info("frame-select trace=%s event=empty_input", trace_id)
         return slides
     if not vision_ready(llm_pack, api_key=api_key):
+        logger.info(
+            "frame-select trace=%s event=heuristic_only reason=vision_not_configured slides=%d",
+            trace_id,
+            len(slides),
+        )
         for s in slides:
             s.setdefault("frame_source", "heuristic")
             s.setdefault("instagram_ready", False)
@@ -1587,6 +1594,16 @@ async def polish_slides_instagram_frames(
 
     # Keep harvest small: indexer frames + a few samples beat 10 ffmpeg extracts.
     candidate_cap = max(3, min(int(max_candidates), 4))
+    pipeline_started = time.monotonic()
+    logger.info(
+        "frame-select trace=%s event=start slides=%d candidate_cap=%d prefer_local=%s allow_extracts=%s timeout_sec=%.0f",
+        trace_id,
+        len(slides),
+        candidate_cap,
+        prefer_local,
+        ensure_frame is not None,
+        timeout_sec,
+    )
     extract_sem = asyncio.Semaphore(max(1, min(3, int(concurrency or 2))))
 
     async def _harvest(slide: dict[str, Any]) -> dict[str, Any]:
@@ -1738,9 +1755,22 @@ async def polish_slides_instagram_frames(
             },
         }
 
+    harvest_started = time.monotonic()
     harvested = await asyncio.wait_for(
         asyncio.gather(*[_harvest(slide) for slide in slides]),
         timeout=timeout_sec,
+    )
+    logger.info(
+        "frame-select trace=%s event=harvest_done stage_ms=%d elapsed_ms=%d slides=%d raw_candidates=%d kept_candidates=%d cache_hits=%d extracts=%d local_ok=%d",
+        trace_id,
+        round((time.monotonic() - harvest_started) * 1000),
+        round((time.monotonic() - pipeline_started) * 1000),
+        len(harvested),
+        sum(int(item["quality"].get("candidates") or 0) for item in harvested),
+        sum(len(item["candidates"]) for item in harvested),
+        sum(int(item["quality"].get("cache_hits") or 0) for item in harvested),
+        sum(int(item["quality"].get("extracts") or 0) for item in harvested),
+        sum(1 for item in harvested if item.get("local_ok")),
     )
 
     groups: list[tuple[int, str, list[FrameCandidate], list[bytes | None]]] = []
@@ -1767,7 +1797,16 @@ async def polish_slides_instagram_frames(
     batches = [groups[i : i + batch_size] for i in range(0, len(groups), batch_size)]
     batches = batches[:batch_limit]
     gemini_attempted = {idx for batch in batches for idx, *_ in batch}
+    logger.info(
+        "frame-select trace=%s event=rank_plan ambiguous_slides=%d batches=%d batch_size=%d candidate_images=%d",
+        trace_id,
+        len(groups),
+        len(batches),
+        batch_size,
+        sum(len(group[2]) for batch in batches for group in batch),
+    )
     if batches:
+        rank_started = time.monotonic()
         results = await asyncio.gather(
             *[
                 asyncio.to_thread(
@@ -1784,6 +1823,13 @@ async def polish_slides_instagram_frames(
         )
         for result in results:
             ranked.update(result)
+        logger.info(
+            "frame-select trace=%s event=rank_done stage_ms=%d batches=%d ranked_slides=%d",
+            trace_id,
+            round((time.monotonic() - rank_started) * 1000),
+            len(batches),
+            len(ranked),
+        )
     # Local-ok slides: identity order (already sorted by face+quality).
     for idx, item in enumerate(harvested):
         if item.get("local_ok") and item["candidates"] and idx not in ranked:
@@ -1931,4 +1977,12 @@ async def polish_slides_instagram_frames(
             quality["rank_source"] = "fallback"
         out["frame_quality"] = quality
         out_slides.append(out)
+    logger.info(
+        "frame-select trace=%s event=done elapsed_ms=%d slides=%d llm_attempted=%d diversity_swaps=%d",
+        trace_id,
+        round((time.monotonic() - pipeline_started) * 1000),
+        len(out_slides),
+        len(gemini_attempted),
+        len(diversity_swaps),
+    )
     return out_slides
