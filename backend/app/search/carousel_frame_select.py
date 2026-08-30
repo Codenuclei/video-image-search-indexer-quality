@@ -10,6 +10,7 @@ Pipeline per slide (spoken span stays fixed; only the display frame changes):
 from __future__ import annotations
 
 import asyncio
+import bisect
 import json
 import logging
 import re
@@ -63,6 +64,40 @@ class FrameCandidate:
     quality_score: float = 0.0
     front_face: float = 0.0
     perceptual_hash: str | None = None
+
+
+@dataclass(frozen=True)
+class CachedVideoFrameIndex:
+    """One directory scan's sorted frame timestamps and paths."""
+
+    timestamps: tuple[float, ...]
+    paths: tuple[Path, ...]
+
+
+def index_cached_video_frames(
+    thumbnail_dir: str,
+    drive_file_ids: set[str] | list[str] | tuple[str, ...],
+) -> dict[str, CachedVideoFrameIndex]:
+    """Scan each video's frame directory once for reuse throughout a request."""
+    indexed: dict[str, CachedVideoFrameIndex] = {}
+    for raw_fid in drive_file_ids:
+        fid = str(raw_fid or "").strip()
+        if not fid or fid in indexed:
+            continue
+        frames_dir = Path(thumbnail_dir) / "video" / fid
+        entries: list[tuple[float, Path]] = []
+        if frames_dir.is_dir():
+            for path in frames_dir.glob("*.jpg"):
+                try:
+                    entries.append((float(path.stem), path))
+                except ValueError:
+                    continue
+        entries.sort(key=lambda item: item[0])
+        indexed[fid] = CachedVideoFrameIndex(
+            timestamps=tuple(item[0] for item in entries),
+            paths=tuple(item[1] for item in entries),
+        )
+    return indexed
 
 
 @dataclass
@@ -1165,6 +1200,7 @@ def nearest_cached_frame(
     *,
     nearest_tolerance_sec: float = HARVEST_NEAREST_TOLERANCE_SEC,
     exclude_ts: set[float] | None = None,
+    cached_frames: CachedVideoFrameIndex | None = None,
 ) -> tuple[float, Path] | None:
     """Return (timestamp, path) for the closest on-disk JPEG within tolerance.
 
@@ -1176,10 +1212,21 @@ def nearest_cached_frame(
     fid = (drive_file_id or "").strip()
     if not fid:
         return None
+    excluded = {round(float(x), 3) for x in (exclude_ts or set())}
+    if cached_frames is not None:
+        choices = (
+            (abs(cand - float(ts)), cand, path)
+            for cand, path in zip(cached_frames.timestamps, cached_frames.paths)
+            if round(cand, 3) not in excluded
+        )
+        nearest = min(choices, default=None, key=lambda item: item[0])
+        if nearest is None or nearest[0] > float(nearest_tolerance_sec):
+            return None
+        return round(nearest[1], 3), nearest[2]
+
     frames_dir = Path(thumbnail_dir) / "video" / fid
     if not frames_dir.is_dir():
         return None
-    excluded = {round(float(x), 3) for x in (exclude_ts or set())}
     best: Path | None = None
     best_ts = 0.0
     best_dist = float("inf")
@@ -1210,13 +1257,11 @@ def list_cached_timestamps_in_span(
     *,
     pad_sec: float = 0.75,
     limit: int = 24,
+    cached_frames: CachedVideoFrameIndex | None = None,
 ) -> list[float]:
     """Return on-disk frame timestamps inside a spoken span (fast path)."""
     fid = (drive_file_id or "").strip()
     if not fid:
-        return []
-    frames_dir = Path(thumbnail_dir) / "video" / fid
-    if not frames_dir.is_dir():
         return []
     s = float(start_sec or 0.0)
     try:
@@ -1226,15 +1271,23 @@ def list_cached_timestamps_in_span(
     if e < s:
         e = s
     lo, hi = s - pad_sec, e + pad_sec
-    found: list[float] = []
-    for p in frames_dir.glob("*.jpg"):
-        try:
-            ts = float(p.stem)
-        except ValueError:
-            continue
-        if lo - 1e-6 <= ts <= hi + 1e-6 and p.stat().st_size > 0:
-            found.append(round(ts, 3))
-    found.sort()
+    if cached_frames is not None:
+        left = bisect.bisect_left(cached_frames.timestamps, lo - 1e-6)
+        right = bisect.bisect_right(cached_frames.timestamps, hi + 1e-6)
+        found = [round(ts, 3) for ts in cached_frames.timestamps[left:right]]
+    else:
+        frames_dir = Path(thumbnail_dir) / "video" / fid
+        if not frames_dir.is_dir():
+            return []
+        found = []
+        for p in frames_dir.glob("*.jpg"):
+            try:
+                ts = float(p.stem)
+            except ValueError:
+                continue
+            if lo - 1e-6 <= ts <= hi + 1e-6 and p.stat().st_size > 0:
+                found.append(round(ts, 3))
+        found.sort()
     if len(found) <= limit:
         return found
     # Evenly thin while keeping endpoints.
@@ -1255,8 +1308,22 @@ def load_cached_frame_bytes(
     ts: float,
     *,
     nearest_tolerance_sec: float = _NEAREST_TOLERANCE_SEC,
+    cached_frames: CachedVideoFrameIndex | None = None,
 ) -> bytes | None:
     """Load exact or nearest cached JPEG under the video frames dir."""
+    if cached_frames is not None:
+        nearest = nearest_cached_frame(
+            thumbnail_dir,
+            drive_file_id,
+            ts,
+            nearest_tolerance_sec=nearest_tolerance_sec,
+            cached_frames=cached_frames,
+        )
+        if nearest is None:
+            return None
+        data = nearest[1].read_bytes()
+        return data if data and len(data) <= _MAX_JPEG_BYTES else None
+
     exact = cached_frame_path(thumbnail_dir, drive_file_id, ts)
     if exact.is_file():
         data = exact.read_bytes()
@@ -1289,13 +1356,19 @@ def build_cache_first_candidates(
     *,
     thumbnail_dir: str,
     max_candidates: int = DEFAULT_MAX_CANDIDATES,
+    cached_frames: CachedVideoFrameIndex | None = None,
 ) -> list[FrameCandidate]:
     """Prefer precomputed on-disk frames in-span; fill gaps with span samples."""
     fid = (drive_file_id or "").strip()
     heuristic = heuristic_frame_ts(start_sec, end_sec)
     cap = max(1, min(int(max_candidates), _HARD_CAP_CANDIDATES))
     cached = list_cached_timestamps_in_span(
-        thumbnail_dir, fid, start_sec, end_sec, limit=cap
+        thumbnail_dir,
+        fid,
+        start_sec,
+        end_sec,
+        limit=cap,
+        cached_frames=cached_frames,
     )
     samples = sample_candidate_timestamps(start_sec, end_sec, max_candidates=cap)
     stamps: list[float] = []
@@ -1559,6 +1632,7 @@ async def polish_slides_instagram_frames(
     max_rank_batches: int = _DEFAULT_MAX_GEMINI_RANK_BATCHES,
     llm_pack: dict[str, Any] | None = None,
     trace_id: str = "-",
+    cached_frame_index: dict[str, CachedVideoFrameIndex] | None = None,
 ) -> list[dict[str, Any]]:
     """Apply frame polish with concurrent harvest and studio-picker ranking.
 
@@ -1615,6 +1689,7 @@ async def polish_slides_instagram_frames(
         except (TypeError, ValueError):
             end_f = None
         fid = str(out.get("drive_file_id") or "")
+        video_frames = (cached_frame_index or {}).get(fid)
         heuristic = heuristic_frame_ts(start, end_f)
         avoid = [
             float(x)
@@ -1627,6 +1702,7 @@ async def polish_slides_instagram_frames(
             end_f,
             thumbnail_dir=thumbnail_dir,
             max_candidates=candidate_cap,
+            cached_frames=video_frames,
         )
         if avoid:
             filtered = [
@@ -1646,15 +1722,18 @@ async def polish_slides_instagram_frames(
                 ]
 
         # Cache-first pass (wide nearest so 1s indexer samples hit).
-        images: list[bytes | None] = [
-            load_cached_frame_bytes(
-                thumbnail_dir,
-                fid,
-                c.timestamp_sec,
-                nearest_tolerance_sec=_HARVEST_NEAREST_TOLERANCE_SEC,
-            )
-            for c in raw
-        ]
+        images: list[bytes | None] = await asyncio.to_thread(
+            lambda: [
+                load_cached_frame_bytes(
+                    thumbnail_dir,
+                    fid,
+                    c.timestamp_sec,
+                    nearest_tolerance_sec=_HARVEST_NEAREST_TOLERANCE_SEC,
+                    cached_frames=video_frames,
+                )
+                for c in raw
+            ]
+        )
         cache_hits = sum(1 for data in images if data is not None)
         miss_order = sorted(
             (i for i, data in enumerate(images) if data is None),
