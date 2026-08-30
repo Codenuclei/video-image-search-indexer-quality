@@ -7,7 +7,7 @@
  * Frame picker prefers browser canvas capture when a playable stream exists.
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Check,
   ChevronLeft,
@@ -64,6 +64,7 @@ export function TestIgPost({
   layoutMode,
   onLayoutModeChange,
   imagesReady = true,
+  simpleMode = false,
   runConfig,
   onSlideUpdated,
   onOpenClip,
@@ -79,6 +80,8 @@ export function TestIgPost({
   layoutMode: "single_1" | "split_2";
   onLayoutModeChange: (mode: "single_1" | "split_2") => void;
   imagesReady?: boolean;
+  /** Focused picker: one carousel, candidate strip, no clutter. */
+  simpleMode?: boolean;
   runConfig: CarouselRunConfig;
   onSlideUpdated?: (slideIndex: number, slide: TestSlide) => void;
   onOpenClip?: (item: { start_sec: number; text: string }) => void;
@@ -143,17 +146,33 @@ export function TestIgPost({
 
   function applySlideImage(previewUrl: string, frameTs?: number | null) {
     if (!current) return;
+    const chosenTs = frameTs ?? current.frame_ts ?? current.timestamp_sec;
+    const items = (current.frame_candidate_items || []).map((item) => ({
+      ...item,
+      selected: Math.abs(Number(item.frame_ts) - Number(chosenTs)) < 0.011,
+    }));
     const next: TestSlide = {
       ...current,
       preview_url: previewUrl,
-      frame_ts: frameTs ?? current.frame_ts ?? current.timestamp_sec,
+      frame_ts: chosenTs,
       frame_source: "manual",
+      frame_candidate_items: items.length ? items : current.frame_candidate_items,
     };
     onSlideUpdated?.(active, next);
     setChangingImage(false);
     setImageUrlDraft("");
     setImageNote("Image updated");
     setTimeout(() => setImageNote(null), 1200);
+  }
+
+  function pickCandidate(item: {
+    frame_ts: number;
+    preview_url?: string | null;
+  }) {
+    const url =
+      item.preview_url ||
+      `/media/video/${encodeURIComponent(driveFileId)}/frame?ts=${Number(item.frame_ts).toFixed(3)}&cache_only=1&ar=4x5`;
+    applySlideImage(url, item.frame_ts);
   }
 
   async function uploadSlideImage(file: File | null | undefined) {
@@ -248,6 +267,21 @@ export function TestIgPost({
     }
   }
 
+  const effectiveLayout = simpleMode ? "single_1" : layoutMode;
+  const candidateItems = useMemo(() => {
+    const items = current?.frame_candidate_items;
+    if (Array.isArray(items) && items.length) return items;
+    const stamps = current?.frame_candidates;
+    if (!Array.isArray(stamps) || !stamps.length) return [];
+    return stamps.map((ts, order) => ({
+      frame_ts: Number(ts),
+      preview_url: `/media/video/${encodeURIComponent(driveFileId)}/frame?ts=${Number(ts).toFixed(3)}&cache_only=1&ar=4x5`,
+      label: "candidate",
+      order,
+      selected: Math.abs(Number(ts) - Number(current?.frame_ts ?? -1)) < 0.011,
+    }));
+  }, [current, driveFileId]);
+
   if (!n || !current) {
     return <p className="text-sm text-muted-foreground">No slides yet.</p>;
   }
@@ -263,6 +297,26 @@ export function TestIgPost({
             {active + 1}/{n}
           </span>
         </div>
+        {simpleMode ? (
+          <div className="ig-post-actions" role="toolbar" aria-label="Slide navigation">
+            <button
+              type="button"
+              className="studio-btn studio-btn-ghost studio-btn-sm"
+              disabled={active <= 0}
+              onClick={() => goTo(active - 1)}
+            >
+              Prev
+            </button>
+            <button
+              type="button"
+              className="studio-btn studio-btn-ghost studio-btn-sm"
+              disabled={active >= n - 1}
+              onClick={() => goTo(active + 1)}
+            >
+              Next
+            </button>
+          </div>
+        ) : (
         <div className="ig-post-actions" role="toolbar" aria-label="Slide frame controls">
           <div className="studio-field studio-field-inline">
             <label htmlFor={`test-layout-${carousel.id}`} className="sr-only">
@@ -340,9 +394,10 @@ export function TestIgPost({
             </button>
           )}
         </div>
+        )}
       </div>
 
-      {changingImage ? (
+      {!simpleMode && changingImage ? (
         <div className="mt-3 rounded-lg border border-border bg-white px-3 py-2" data-testid="test-slide-image-changer">
           <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
             Change slide image
@@ -488,7 +543,7 @@ export function TestIgPost({
           {slides.map((slide, i) => {
             const showReal = Boolean(slide.preview_url);
             const rawPanels =
-              layoutMode === "split_2" && (slide.panels?.length ?? 0) >= 2
+              effectiveLayout === "split_2" && (slide.panels?.length ?? 0) >= 2
                 ? slide.panels!.slice(0, 2)
                 : null;
             const splitPanels =
@@ -613,7 +668,45 @@ export function TestIgPost({
         </div>
       )}
 
-      {current && driveFileId ? (
+      {simpleMode && candidateItems.length > 0 ? (
+        <div className="test-frame-candidates mt-4" data-testid="test-frame-candidates">
+          <p className="mb-2 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+            Choose a frame for this slide
+          </p>
+          <ul className="test-frame-candidate-grid">
+            {candidateItems.map((item, i) => {
+              const selected =
+                item.selected ||
+                Math.abs(Number(item.frame_ts) - Number(current.frame_ts ?? -1)) < 0.011;
+              const src = testAssetUrl(item.preview_url || "");
+              return (
+                <li key={`cand-${item.frame_ts}-${i}`}>
+                  <button
+                    type="button"
+                    className={cn(
+                      "test-frame-candidate",
+                      selected && "is-selected"
+                    )}
+                    aria-pressed={selected}
+                    onClick={() => pickCandidate(item)}
+                  >
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={src} alt="" />
+                    <span className="test-frame-candidate-meta">
+                      {item.label || `Option ${i + 1}`}
+                    </span>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+          {imageNote ? (
+            <p className="mt-2 text-center text-[11px] text-muted-foreground">{imageNote}</p>
+          ) : null}
+        </div>
+      ) : null}
+
+      {!simpleMode && current && driveFileId ? (
         <div className="mt-3 px-1" data-testid="test-slide-feedback">
           <ItemFeedback
             driveFileId={driveFileId}
@@ -637,7 +730,7 @@ export function TestIgPost({
         </div>
       ) : null}
 
-      {onOpenClip && current ? (
+      {!simpleMode && onOpenClip && current ? (
         <div className="mt-3 flex justify-center">
           <button
             type="button"
@@ -656,6 +749,7 @@ export function TestIgPost({
         </div>
       ) : null}
 
+      {!simpleMode ? (
       <button
         type="button"
         className="studio-btn studio-btn-ghost mt-3 w-full"
@@ -665,11 +759,12 @@ export function TestIgPost({
       >
         {savingCopy ? "Saving…" : "Save copy for this generation"}
       </button>
-      {imageNote && !changingImage ? (
+      ) : null}
+      {!simpleMode && imageNote && !changingImage ? (
         <p className="mt-1 text-center text-[11px] text-muted-foreground">{imageNote}</p>
       ) : null}
 
-      {imagesReady && n > 1 && (
+      {!simpleMode && imagesReady && n > 1 && (
         <div className="ig-filmstrip" aria-label="Slide filmstrip">
           {slides.map((slide, i) => (
             <button
@@ -698,7 +793,7 @@ export function TestIgPost({
         </div>
       )}
 
-      {pickingFrame && (
+      {!simpleMode && pickingFrame && (
         <ModalOverlay open={pickingFrame} onClose={() => setPickingFrame(false)}>
           <TestFramePicker
             driveFileId={driveFileId}
@@ -709,13 +804,10 @@ export function TestIgPost({
             onSave={(picked) => {
               if (!picked.length) return;
               const first = picked[0];
-              const next: TestSlide = {
-                ...current,
+              pickCandidate({
                 frame_ts: first.frame_ts,
                 preview_url: first.preview_url,
-                frame_source: "manual",
-              };
-              onSlideUpdated?.(active, next);
+              });
               setPickingFrame(false);
             }}
           />

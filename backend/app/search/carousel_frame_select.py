@@ -1193,6 +1193,33 @@ def cached_frame_path(thumbnail_dir: str, drive_file_id: str, ts: float) -> Path
     return Path(thumbnail_dir) / "video" / drive_file_id / f"{ts:.3f}.jpg"
 
 
+def carousel_frame_preview_url(drive_file_id: str, ts: float) -> str | None:
+    """Cache-only 4:5 preview URL for carousel/studio clients."""
+    fid = (drive_file_id or "").strip()
+    if not fid:
+        return None
+    return f"/media/video/{fid}/frame?ts={float(ts):.3f}&cache_only=1&ar=4x5"
+
+
+def frame_candidate_item(
+    *,
+    drive_file_id: str,
+    candidate: FrameCandidate,
+    order: int,
+    selected: bool = False,
+) -> dict[str, Any]:
+    """JSON-safe candidate a human can pick without re-harvesting."""
+    return {
+        "frame_ts": round(float(candidate.timestamp_sec), 3),
+        "preview_url": carousel_frame_preview_url(drive_file_id, candidate.timestamp_sec),
+        "label": candidate.label,
+        "order": int(order),
+        "quality_score": round(float(candidate.quality_score or 0.0), 4),
+        "front_face_score": round(float(candidate.front_face or 0.0), 6),
+        "selected": bool(selected),
+    }
+
+
 def nearest_cached_frame(
     thumbnail_dir: str,
     drive_file_id: str,
@@ -1395,7 +1422,7 @@ def build_cache_first_candidates(
     out: list[FrameCandidate] = []
     for i, ts in enumerate(stamps):
         label = "heuristic" if abs(ts - heuristic) < 0.011 else "sample"
-        url = f"/media/video/{fid}/frame?ts={ts}&cache_only=1" if fid else None
+        url = carousel_frame_preview_url(fid, ts)
         out.append(FrameCandidate(index=i, timestamp_sec=ts, label=label, preview_url=url))
     if out and not any(c.label == "heuristic" for c in out):
         mid_i = min(range(len(out)), key=lambda i: abs(out[i].timestamp_sec - heuristic))
@@ -1682,6 +1709,60 @@ async def polish_slides_instagram_frames(
 
     async def _harvest(slide: dict[str, Any]) -> dict[str, Any]:
         out = dict(slide)
+        # Human-picked / locked frames must survive re-runs of select-images.
+        source = str(out.get("frame_source") or "").strip().lower()
+        locked = bool(out.get("frame_locked")) or source == "manual"
+        if locked and out.get("frame_ts") is not None:
+            try:
+                locked_ts = float(out["frame_ts"])
+            except (TypeError, ValueError):
+                locked_ts = None
+            if locked_ts is not None:
+                fid = str(out.get("drive_file_id") or "")
+                out["frame_ts"] = locked_ts
+                out["preview_url"] = (
+                    out.get("preview_url")
+                    or carousel_frame_preview_url(fid, locked_ts)
+                )
+                out["frame_source"] = "manual"
+                out["instagram_ready"] = True
+                fx, fy, fs = focal_point_for_slide(out, locked_ts)
+                out["focal_x"] = fx
+                out["focal_y"] = fy
+                out["front_face_score"] = fs
+                existing = out.get("frame_candidate_items")
+                if not isinstance(existing, list) or not existing:
+                    out["frame_candidate_items"] = [
+                        {
+                            "frame_ts": round(locked_ts, 3),
+                            "preview_url": out["preview_url"],
+                            "label": "manual",
+                            "order": 0,
+                            "quality_score": 0.0,
+                            "front_face_score": float(fs or 0.0),
+                            "selected": True,
+                        }
+                    ]
+                out["frame_candidates"] = [
+                    float(item.get("frame_ts") or locked_ts)
+                    for item in out["frame_candidate_items"]
+                    if isinstance(item, dict)
+                ] or [locked_ts]
+                out["frame_quality"] = {
+                    "rank_source": "manual",
+                    "candidates": len(out["frame_candidates"]),
+                    "kept": len(out["frame_candidates"]),
+                }
+                return {
+                    "slide": out,
+                    "candidates": [],
+                    "images": [],
+                    "heuristic": locked_ts,
+                    "local_ok": True,
+                    "locked": True,
+                    "quality": out["frame_quality"],
+                }
+
         start = float(out.get("timestamp_sec") or 0)
         end = out.get("end_timestamp_sec")
         try:
@@ -1825,6 +1906,7 @@ async def polish_slides_instagram_frames(
             "images": kept_images,
             "heuristic": heuristic,
             "local_ok": local_ok,
+            "locked": False,
             "quality": {
                 "candidates": len(raw),
                 "kept": len(candidates),
@@ -1854,6 +1936,8 @@ async def polish_slides_instagram_frames(
 
     groups: list[tuple[int, str, list[FrameCandidate], list[bytes | None]]] = []
     for idx, item in enumerate(harvested):
+        if item.get("locked"):
+            continue
         if item["candidates"] and not item.get("local_ok"):
             slide = item["slide"]
             hook = str(
@@ -1921,6 +2005,8 @@ async def polish_slides_instagram_frames(
     previous_hash: str | None = None
     diversity_swaps: set[int] = set()
     for idx, item in enumerate(harvested):
+        if item.get("locked"):
+            continue
         candidates = item["candidates"]
         if not candidates:
             assignments[idx] = (0, "heuristic", False)
@@ -1999,7 +2085,9 @@ async def polish_slides_instagram_frames(
         used.append(candidates[choice].timestamp_sec)
         previous_hash = candidates[choice].perceptual_hash
 
-    local_ranked = sum(1 for item in harvested if item.get("local_ok"))
+    local_ranked = sum(
+        1 for item in harvested if item.get("local_ok") and not item.get("locked")
+    )
     gemini_ranked = sum(1 for idx in gemini_attempted if idx in ranked)
     rank_coverage = {
         "ambiguous": len(groups),
@@ -2016,11 +2104,27 @@ async def polish_slides_instagram_frames(
         out = dict(item["slide"])
         out.pop("_avoid_timestamps", None)
         out.pop("avoid_timestamps", None)
+        if item.get("locked"):
+            out_slides.append(out)
+            continue
         candidates = item["candidates"]
+        fid = str(out.get("drive_file_id") or "")
         if candidates:
             choice, source, ready_flag = assignments[idx]
             chosen = candidates[choice]
-            out["preview_url"] = chosen.preview_url
+            ranked_order = list(
+                ranked.get(idx, (None, None))[0] or range(len(candidates))
+            )
+            if not ranked_order:
+                ranked_order = list(range(len(candidates)))
+            ordered = [choice] + [i for i in ranked_order if i != choice]
+            for i in range(len(candidates)):
+                if i not in ordered:
+                    ordered.append(i)
+            out["preview_url"] = (
+                carousel_frame_preview_url(fid, chosen.timestamp_sec)
+                or chosen.preview_url
+            )
             out["frame_ts"] = chosen.timestamp_sec
             out["frame_source"] = source
             out["instagram_ready"] = ready_flag
@@ -2029,29 +2133,46 @@ async def polish_slides_instagram_frames(
                 "phash_available": bool(chosen.perceptual_hash),
             }
             out["frame_candidates"] = [
-                candidates[i].timestamp_sec
-                for i in (ranked.get(idx, (None, None))[0] or range(len(candidates)))
+                candidates[i].timestamp_sec for i in ordered
+            ][:16]
+            out["frame_candidate_items"] = [
+                frame_candidate_item(
+                    drive_file_id=fid,
+                    candidate=candidates[i],
+                    order=order_i,
+                    selected=(i == choice),
+                )
+                for order_i, i in enumerate(ordered)
             ][:16]
         else:
             ts = item["heuristic"]
-            fid = str(out.get("drive_file_id") or "")
             out["frame_ts"] = ts
-            out["preview_url"] = (
-                f"/media/video/{fid}/frame?ts={ts}&cache_only=1" if fid else None
-            )
+            out["preview_url"] = carousel_frame_preview_url(fid, ts)
             out["frame_source"] = "heuristic"
             out["instagram_ready"] = False
             out["frame_warning"] = "no frame images available"
+            out["frame_candidates"] = [ts]
+            out["frame_candidate_items"] = [
+                {
+                    "frame_ts": round(float(ts), 3),
+                    "preview_url": out["preview_url"],
+                    "label": "heuristic",
+                    "order": 0,
+                    "quality_score": 0.0,
+                    "front_face_score": 0.0,
+                    "selected": True,
+                }
+            ]
         focal_x, focal_y, face_score = focal_point_for_slide(out, float(out["frame_ts"]))
         out["focal_x"] = focal_x
         out["focal_y"] = focal_y
         out["front_face_score"] = face_score
         quality = dict(item["quality"] or {})
         quality["rank_coverage"] = rank_coverage
-        if idx in gemini_attempted:
-            quality["rank_source"] = "gemini"
-        elif item.get("local_ok"):
+        if prefer_local or item.get("local_ok"):
             quality["rank_source"] = "local"
+        elif idx in gemini_attempted:
+            quality["rank_source"] = "gemini"
         else:
             quality["rank_source"] = "fallback"
         out["frame_quality"] = quality

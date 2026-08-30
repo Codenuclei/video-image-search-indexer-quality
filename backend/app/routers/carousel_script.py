@@ -4409,7 +4409,11 @@ def _snap_slides_to_cached_preview(
     cached_frame_index: dict[str, Any] | None = None,
 ) -> None:
     """Point each slide at a nearby indexer JPEG. Never ffmpeg/Drive on this path."""
-    from app.search.carousel_frame_select import HARVEST_NEAREST_TOLERANCE_SEC, nearest_cached_frame
+    from app.search.carousel_frame_select import (
+        HARVEST_NEAREST_TOLERANCE_SEC,
+        carousel_frame_preview_url,
+        nearest_cached_frame,
+    )
 
     used: set[float] = set()
     tolerance = max(float(HARVEST_NEAREST_TOLERANCE_SEC), 5.0)
@@ -4417,12 +4421,22 @@ def _snap_slides_to_cached_preview(
         fid = str(slide.get("drive_file_id") or "").strip()
         if not fid:
             continue
+        source = str(slide.get("frame_source") or "").strip().lower()
+        if source == "manual" or slide.get("frame_locked"):
+            if slide.get("frame_ts") is not None:
+                used.add(round(float(slide["frame_ts"]), 3))
+                slide["preview_url"] = (
+                    slide.get("preview_url")
+                    or carousel_frame_preview_url(fid, float(slide["frame_ts"]))
+                )
+            continue
         ts = slide.get("frame_ts")
         if ts is None:
             ts = _frame_ts(float(slide.get("timestamp_sec") or 0), slide.get("end_timestamp_sec"))
             slide["frame_ts"] = ts
         target = float(ts)
         if slide.get("preview_url") and slide.get("frame_ts") is not None:
+            slide["preview_url"] = carousel_frame_preview_url(fid, float(slide["frame_ts"]))
             used.add(round(float(slide["frame_ts"]), 3))
             continue
         snapped = nearest_cached_frame(
@@ -4445,14 +4459,12 @@ def _snap_slides_to_cached_preview(
         if snapped is not None:
             snap_ts, _path = snapped
             slide["frame_ts"] = snap_ts
-            slide["preview_url"] = (
-                f"/media/video/{fid}/frame?ts={snap_ts:.3f}&cache_only=1"
-            )
+            slide["preview_url"] = carousel_frame_preview_url(fid, snap_ts)
             used.add(snap_ts)
         else:
             slide.setdefault(
                 "preview_url",
-                f"/media/video/{fid}/frame?ts={target:.3f}&cache_only=1",
+                carousel_frame_preview_url(fid, target),
             )
 
 
@@ -4806,7 +4818,7 @@ def _attach_layout_panels(
     cached_frame_index: dict[str, Any] | None = None,
 ) -> None:
     """Attach cache-backed single and two-panel layout metadata to slides."""
-    from app.search.carousel_frame_select import focal_point_for_slide
+    from app.search.carousel_frame_select import carousel_frame_preview_url, focal_point_for_slide
 
     try:
         thumbnail_dir = str(get_settings().thumbnail_dir)
@@ -4858,10 +4870,7 @@ def _attach_layout_panels(
                 return {
                     "drive_file_id": fid,
                     "frame_ts": ts,
-                    "preview_url": (
-                        f"/media/video/{fid}/frame?ts={ts:.3f}&cache_only=1"
-                        if fid else None
-                    ),
+                    "preview_url": carousel_frame_preview_url(fid, ts) if fid else None,
                     "caption": caption[:400] or None,
                     "highlight": hl,
                     "highlight_words": hl_words,
@@ -4959,7 +4968,9 @@ def _frame_preview_url(drive_file_id: str, start: float, end: float | None) -> s
     fid = (drive_file_id or "").strip()
     if not fid:
         return None
-    return f"/media/video/{fid}/frame?ts={_frame_ts(start, end)}&cache_only=1"
+    from app.search.carousel_frame_select import carousel_frame_preview_url
+
+    return carousel_frame_preview_url(fid, _frame_ts(start, end))
 
 
 def _translate_cache_path() -> str:

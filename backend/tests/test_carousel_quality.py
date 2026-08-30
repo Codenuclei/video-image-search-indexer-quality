@@ -377,7 +377,8 @@ def test_snap_slides_keeps_existing_preview_url() -> None:
         }
     ]
     carousel_script._snap_slides_to_cached_preview(slides, type("S", (), {"thumbnail_dir": "/tmp"})())
-    assert slides[0]["preview_url"].endswith("cache_only=1")
+    assert "cache_only=1" in slides[0]["preview_url"]
+    assert "ar=4x5" in slides[0]["preview_url"]
     assert slides[0]["frame_ts"] == 2.1
 
 
