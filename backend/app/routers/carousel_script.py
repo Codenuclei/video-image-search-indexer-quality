@@ -733,7 +733,6 @@ async def generate_script(body: ScriptRequest) -> dict[str, Any]:
                 resp = client.messages.create(
                     model=settings.claude_model,
                     max_tokens=1200,
-                    temperature=0.75,
                     system=system,
                     messages=[{"role": "user", "content": user_prompt}],
                 )

@@ -967,7 +967,6 @@ def rank_grouped_candidates_with_claude_sync(
     response = Anthropic(api_key=api_key).messages.create(
         model=model,
         max_tokens=2048,
-        temperature=0.1,
         system="Return ONLY valid JSON that ranks the attached slide frames.",
         messages=[{"role": "user", "content": content}],
     )
