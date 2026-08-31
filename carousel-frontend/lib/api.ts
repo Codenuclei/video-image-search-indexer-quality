@@ -705,7 +705,7 @@ export const apiClient = {
         generate: Boolean(opts?.generate),
       }),
       signal: opts?.signal,
-      timeoutMs: opts?.force || opts?.generate ? 300_000 : 90_000,
+      timeoutMs: opts?.force || opts?.generate ? 600_000 : 90_000,
     }),
   carouselPipelineExtract: (body: {
     drive_file_id: string;
