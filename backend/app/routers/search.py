@@ -382,6 +382,12 @@ async def search(
                 folder_path=folder_path,
                 use_captions=use_captions,
                 action_query=action_query,
+                enable_conjunctive_object_gate=(
+                    not effective_persons
+                    and not action_query
+                    and not role_context_active(role_ctx)
+                    and not role_ctx.student_context
+                ),
             )
 
     local_files, vector_image_files = await asyncio.gather(

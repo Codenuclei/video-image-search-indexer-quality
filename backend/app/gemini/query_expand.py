@@ -31,9 +31,11 @@ def _deterministic_variants(query: str) -> list[str]:
     """Recall-critical variants that must not depend on an LLM response."""
     lower = query.lower()
     variants: list[str] = []
-    from app.objects.taxonomy import object_query_labels
+    from app.objects.query_concepts import parse_query_concepts
 
-    variants.extend(object_query_labels(query))
+    concepts = parse_query_concepts(query)
+    if not concepts.is_conjunctive_object_query:
+        variants.extend(concepts.taxonomy_labels)
     if re.search(r"\b(?:graduate|graduates|graduation|convocation)\b", lower):
         variants.extend(
             [
