@@ -38,6 +38,48 @@ def test_query_concepts_use_longest_non_overlapping_alias() -> None:
     assert object_query_labels("t-shirt mastersunion") == ("t-shirt",)
 
 
+def test_apparel_print_scaffold_is_not_a_required_object() -> None:
+    """Users say 'tshirt with text X' to mean brand-on-garment, not a text object."""
+    concepts = parse_query_concepts("tshirt with text mastesunion")
+    assert concepts.taxonomy_labels == ("t-shirt",)
+    assert concepts.residual_terms == ("mastersunion",)
+    assert all_query_concepts_supported(
+        concepts,
+        structured_labels=("t-shirt",),
+        caption="A person wears a Masters' Union tee.",
+    )
+    # Bare signage queries still keep text/logo as objects.
+    signage = parse_query_concepts("text mastersunion")
+    assert "text" in signage.taxonomy_labels
+    assert signage.residual_terms == ("mastersunion",)
+
+
+def test_background_brand_query_requires_signage_not_random_plaques() -> None:
+    concepts = parse_query_concepts("background with text mastersunion")
+    assert concepts.residual_terms == ("mastersunion",)
+    assert "background" not in concepts.residual_terms
+    assert concepts.require_signage_brand is True
+    assert all_query_concepts_supported(
+        concepts,
+        caption=(
+            "Two women stand smiling in front of a dark backdrop featuring "
+            "the text Masters' Union."
+        ),
+    )
+    assert not all_query_concepts_supported(
+        concepts,
+        caption=(
+            "A metallic silver award plaque stands against a black background "
+            "with the text FINANCIAL EXPRESS AICONIC SUMMIT."
+        ),
+    )
+    # "in the background" alone must not satisfy a Masters' Union backdrop query.
+    assert not all_query_concepts_supported(
+        concepts,
+        caption="A group poses outdoors with a city skyline in the background.",
+    )
+
+
 def test_search_scaffolding_does_not_make_single_object_query_conjunctive() -> None:
     concepts = parse_query_concepts("show photos of people wearing t-shirts")
     assert concepts.taxonomy_labels == ("t-shirt",)
@@ -58,6 +100,16 @@ def test_conjunctive_support_requires_brand_and_every_taxonomy_label() -> None:
         structured_labels=("t-shirt",),
         caption="A person wears a Masters' Union tee.",
     )
+    assert all_query_concepts_supported(
+        branded_shirt,
+        structured_labels=("t-shirt",),
+        caption="Students in matching Masters' Union t-shirts pose together.",
+    )
+    assert all_query_concepts_supported(
+        branded_shirt,
+        structured_labels=("t-shirt",),
+        caption="A man wears a black t-shirt with Masters' Union printed on the chest.",
+    )
     assert not all_query_concepts_supported(
         branded_shirt,
         structured_labels=("t-shirt",),
@@ -67,6 +119,23 @@ def test_conjunctive_support_requires_brand_and_every_taxonomy_label() -> None:
         branded_shirt,
         structured_labels=("sign",),
         caption="A Masters' Union banner hangs on a wall.",
+    )
+    # Brand on backdrop/signage while wearing an unrelated tee must not match.
+    assert not all_query_concepts_supported(
+        branded_shirt,
+        structured_labels=("t-shirt",),
+        caption=(
+            "A man wearing a black t-shirt stands in front of a promotional "
+            "backdrop featuring the words Masters' Union."
+        ),
+    )
+    assert not all_query_concepts_supported(
+        branded_shirt,
+        structured_labels=("t-shirt",),
+        caption=(
+            "Two people in plain tees pose beneath a Masters' Union banner "
+            "and CLASS OF HYROX signage."
+        ),
     )
 
     two_objects = parse_query_concepts("t-shirt with phone")

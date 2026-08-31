@@ -11,6 +11,8 @@ from qdrant_client.models import Distance, PointStruct, VectorParams
 logger = logging.getLogger(__name__)
 
 _DIM = 3072
+# Dense ANN query offset is unreliable; fetch up to this many above-threshold hits.
+_QDRANT_QUERY_MAX = 10_000
 
 
 @lru_cache(maxsize=1)
@@ -81,31 +83,17 @@ def search_images_sync(
 
     client = _client()
     collection = get_settings().qdrant_images_collection
-    if limit is not None:
-        hits = client.query_points(
-            collection,
-            query=query_vector,
-            limit=limit,
-            score_threshold=min_score if min_score > 0 else None,
-        ).points
-    else:
-        hits = []
-        offset = 0
-        batch_size = max(1, page_size)
-        while True:
-            page = client.query_points(
-                collection,
-                query=query_vector,
-                limit=batch_size,
-                offset=offset,
-                score_threshold=min_score if min_score > 0 else None,
-            ).points
-            if not page:
-                break
-            hits.extend(page)
-            if len(page) < batch_size:
-                break
-            offset += len(page)
+    fetch = (
+        max(1, limit)
+        if limit is not None
+        else min(_QDRANT_QUERY_MAX, max(page_size, _QDRANT_QUERY_MAX))
+    )
+    hits = client.query_points(
+        collection,
+        query=query_vector,
+        limit=fetch,
+        score_threshold=min_score if min_score > 0 else None,
+    ).points
     return [
         {"drive_file_id": h.payload["drive_file_id"], "score": h.score}
         for h in hits

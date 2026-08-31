@@ -43,6 +43,22 @@ def caption_matches_query_text(caption: str, query: str) -> bool:
     normalized_query = re.sub(r"\bgradutes\b", "graduates", query.lower())
     if re.search(r"\b(?:graduate|graduates|graduation|convocation)\b", normalized_query):
         return bool(_GRADUATION_CONCEPT_RE.search(caption))
+
+    # Object/brand queries: same concept rules as fusion (aliases, compact forms,
+    # apparel↔brand association) so lexical recall is not stuck on raw tokens
+    # like "tshirt" vs "t-shirt" or "text" scaffolding.
+    try:
+        from app.objects.query_concepts import (
+            all_query_concepts_supported,
+            parse_query_concepts,
+        )
+
+        concepts = parse_query_concepts(normalized_query)
+        if concepts.taxonomy_labels or concepts.residual_terms:
+            return all_query_concepts_supported(concepts, caption=caption)
+    except Exception:  # noqa: BLE001
+        logger.debug("concept lexical match failed for %r", query, exc_info=True)
+
     tokens = [
         token
         for token in re.findall(r"\w+", normalized_query)
@@ -195,36 +211,22 @@ def search_captions_sync(
     page_size: int = 200,
 ) -> list[dict]:
     from app.config import get_settings
+    from app.qdrant.images import _QDRANT_QUERY_MAX
 
     client = _client()
     collection = get_settings().qdrant_image_captions_collection
-    if limit is not None:
-        hits = client.query_points(
-            collection,
-            query=query_vector,
-            limit=limit,
-            score_threshold=min_score if min_score > 0 else None,
-            with_payload=True,
-        ).points
-    else:
-        hits = []
-        offset = 0
-        batch_size = max(1, page_size)
-        while True:
-            page = client.query_points(
-                collection,
-                query=query_vector,
-                limit=batch_size,
-                offset=offset,
-                score_threshold=min_score if min_score > 0 else None,
-                with_payload=True,
-            ).points
-            if not page:
-                break
-            hits.extend(page)
-            if len(page) < batch_size:
-                break
-            offset += len(page)
+    fetch = (
+        max(1, limit)
+        if limit is not None
+        else min(_QDRANT_QUERY_MAX, max(page_size, _QDRANT_QUERY_MAX))
+    )
+    hits = client.query_points(
+        collection,
+        query=query_vector,
+        limit=fetch,
+        score_threshold=min_score if min_score > 0 else None,
+        with_payload=True,
+    ).points
     return [
         {
             "drive_file_id": h.payload["drive_file_id"],

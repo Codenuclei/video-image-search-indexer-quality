@@ -20,6 +20,7 @@ from app.db.models import (
 )
 from app.schemas import SearchResponse, SearchResultFile
 from app.search.query_cache import (
+    SEARCH_CACHE_VERSION,
     SEMANTIC_MIN_COSINE,
     cosine_similarity,
     exact_row_is_fresh,
@@ -27,6 +28,7 @@ from app.search.query_cache import (
     lookup_exact,
     lookup_semantic,
     make_cache_key,
+    row_matches_search_cache_version,
     store_search_cache,
 )
 from tests.conftest import requires_postgres
@@ -51,6 +53,17 @@ def _response(query: str, file_id: str = "f1") -> SearchResponse:
         ],
         cache="miss",
     )
+
+
+def test_semantic_cache_requires_current_logic_version() -> None:
+    current = SimpleNamespace(
+        response_json={"_search_cache_version": SEARCH_CACHE_VERSION, "query": "x"}
+    )
+    stale = SimpleNamespace(response_json={"query": "x"})
+    other = SimpleNamespace(response_json={"_search_cache_version": "v1-old"})
+    assert row_matches_search_cache_version(current) is True
+    assert row_matches_search_cache_version(stale) is False
+    assert row_matches_search_cache_version(other) is False
 
 
 async def _add_file(session, *, file_id: str, path: str, synced: datetime) -> DriveFile:

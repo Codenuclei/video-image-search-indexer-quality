@@ -22,11 +22,12 @@ logger = logging.getLogger(__name__)
 
 # Balanced paraphrases in the same folder (e.g. "wine glass" ≈ "glass of wine").
 SEMANTIC_MIN_COSINE = 0.88
-SEARCH_CACHE_VERSION = "v5-conjunctive-object-scope"
+SEARCH_CACHE_VERSION = "v10-signage-brand-no-reject-preserve"
 # Exact repeats should stay fast while the indexer is continuously changing the
 # global library fingerprint. After this grace window, full fingerprint
 # validation restores freshness.
 EXACT_FRESH_TTL = timedelta(minutes=10)
+_CACHE_VERSION_FIELD = "_search_cache_version"
 
 
 def normalize_folder_path(folder_path: str | None) -> str:
@@ -168,8 +169,15 @@ def fingerprints_valid(row: SearchQueryCache, folder_fp: str, cluster_fp: str) -
 
 def response_from_row(row: SearchQueryCache, *, cache: str) -> SearchResponse:
     payload = dict(row.response_json or {})
+    payload.pop(_CACHE_VERSION_FIELD, None)
     payload["cache"] = cache
     return SearchResponse.model_validate(payload)
+
+
+def row_matches_search_cache_version(row: SearchQueryCache) -> bool:
+    """Semantic reuse must not cross logic versions (exact keys already include version)."""
+    payload = row.response_json or {}
+    return payload.get(_CACHE_VERSION_FIELD) == SEARCH_CACHE_VERSION
 
 
 def exact_row_is_fresh(row: SearchQueryCache, now: datetime | None = None) -> bool:
@@ -247,6 +255,8 @@ async def lookup_semantic(
     folder_fp = await folder_fingerprint(session, fp)
     best: tuple[float, SearchQueryCache] | None = None
     for row in rows:
+        if not row_matches_search_cache_version(row):
+            continue
         emb = row.query_embedding or []
         sim = cosine_similarity(query_embedding, [float(x) for x in emb])
         if sim < SEMANTIC_MIN_COSINE:
@@ -295,6 +305,7 @@ async def store_search_cache(
     )
     payload = response.model_dump(mode="json")
     payload.pop("cache", None)
+    payload[_CACHE_VERSION_FIELD] = SEARCH_CACHE_VERSION
     row = await session.get(SearchQueryCache, key)
     if row is None:
         row = SearchQueryCache(cache_key=key)
