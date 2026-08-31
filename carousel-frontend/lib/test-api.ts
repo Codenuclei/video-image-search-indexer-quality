@@ -328,6 +328,8 @@ export const testApi = {
           llm_provider: opts?.runConfig?.provider,
           llm_model: opts?.runConfig?.model,
         }),
+        // Themes runs 5+ sequential OpenRouter hops (~3 min observed).
+        timeoutMs: 600_000,
       }
     ),
   extract: (

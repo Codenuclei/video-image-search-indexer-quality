@@ -1521,6 +1521,7 @@ export const apiClient = {
         force: Boolean(opts?.force),
       }),
       signal: opts?.signal,
+      timeoutMs: 600_000,
     }),
   carouselPipelineExtract: (body: {
     drive_file_id: string;
