@@ -1,12 +1,20 @@
 # Python
 __pycache__/
 *.pyc
+*.pyo
 .venv/
-*.egg-info/
+venv/
+.env/
+.virtualenv/
+.test-venv/
+.deploy-venv/
+**/site-packages/
 .pytest_cache/
+*.egg-info/
 
 # Env / secrets
 .env
+/env
 backend/.env
 # Backups/variants of the real env file also hold secrets.
 backend/.env.*
@@ -33,6 +41,7 @@ face-ab-benchmark/.venv/
 node_modules/
 .next/
 frontend/.env.local
+carousel-frontend/.env.local
 frontend/tsconfig.tsbuildinfo
 *.tsbuildinfo
 
