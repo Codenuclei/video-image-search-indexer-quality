@@ -79,19 +79,10 @@ def canonicalize_object(value: str) -> str | None:
 
 
 def object_query_labels(query: str) -> tuple[str, ...]:
-    """Find canonical object tags explicitly named in a user query."""
-    normalized = re.sub(r"[\s_-]+", " ", (query or "").casefold())
-    found: list[str] = []
-    for alias, canonical in sorted(_ALIAS_TO_NAME.items(), key=lambda item: -len(item[0])):
-        if re.search(rf"(?<!\w){re.escape(alias)}(?:s)?(?!\w)", normalized):
-            if canonical not in found:
-                found.append(canonical)
-    for color in COLORS:
-        if re.search(rf"(?<!\w){re.escape(color)}(?!\w)", normalized):
-            canonical = "gray" if color == "grey" else color
-            if canonical not in found:
-                found.append(canonical)
-    return tuple(found)
+    """Find canonical object tags using longest non-overlapping alias spans."""
+    from app.objects.query_concepts import parse_query_concepts
+
+    return parse_query_concepts(query).taxonomy_labels
 
 
 def taxon_for(name: str) -> Taxon | None:

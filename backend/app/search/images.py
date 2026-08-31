@@ -32,6 +32,7 @@ async def search_image_files(
     folder_path: str | None = None,
     use_captions: bool = False,
     action_query: bool = False,
+    enable_conjunctive_object_gate: bool = True,
 ) -> list[SearchResultFile]:
     """Text→image retrieval; optional caption fusion when use_captions=True."""
     settings = get_settings()
@@ -171,10 +172,33 @@ async def search_image_files(
                 caption_scores[fid] = max(caption_scores.get(fid, 0.0), v * 0.75)
                 captions[fid] = cap
 
+    from app.objects.query_concepts import (
+        all_query_concepts_supported,
+        parse_query_concepts,
+    )
     from app.objects.search import fuse_object_score, object_matches_for_query
 
     object_matches = await object_matches_for_query(session, query)
+    query_concepts = parse_query_concepts(query)
+    conjunctive_object_gate = (
+        enable_conjunctive_object_gate
+        and not action_query
+        and not person_name
+        and not person_names
+        and query_concepts.is_conjunctive_object_query
+    )
     all_ids = set(visual_scores) | set(caption_scores) | set(object_matches)
+    if conjunctive_object_gate and all_ids:
+        from app.qdrant.image_captions import get_captions_by_ids_sync
+
+        stored = await asyncio.to_thread(
+            get_captions_by_ids_sync,
+            list(all_ids),
+        )
+        for fid, caption in stored.items():
+            if caption and not captions.get(fid):
+                captions[fid] = caption
+
     if not all_ids:
         return []
 
@@ -186,7 +210,20 @@ async def search_image_files(
         v = visual_scores.get(fid, 0.0)
         c = caption_scores.get(fid, 0.0)
         has_object_hit = fid in object_matches
-        if max(v, c) < semantic_min_score and not has_object_hit:
+        object_evidence = object_matches.get(fid, ())
+        fully_satisfies_object_scope = (
+            not conjunctive_object_gate
+            or all_query_concepts_supported(
+                query_concepts,
+                structured_labels=(item.label for item in object_evidence),
+                evidence_texts=(item.evidence_text for item in object_evidence),
+                caption=captions.get(fid),
+            )
+        )
+        if conjunctive_object_gate and not fully_satisfies_object_scope:
+            continue
+        qualified_object_hit = has_object_hit and fully_satisfies_object_scope
+        if max(v, c) < semantic_min_score and not qualified_object_hit:
             continue
         has_caption_hit = fid in caption_scores
         if use_captions and settings.image_caption_enabled:
@@ -202,16 +239,16 @@ async def search_image_files(
             continue
         else:
             fused = v
-        object_evidence = object_matches.get(fid, ())
         object_confidence = max(
             (item.confidence for item in object_evidence),
             default=0.0,
         )
-        fused = fuse_object_score(
-            fused,
-            len(object_evidence),
-            object_confidence,
-        )
+        if not conjunctive_object_gate or fully_satisfies_object_scope:
+            fused = fuse_object_score(
+                fused,
+                len(object_evidence),
+                object_confidence,
+            )
         ranked.append((fid, fused, captions.get(fid)))
 
     ranked.sort(key=lambda x: -x[1])

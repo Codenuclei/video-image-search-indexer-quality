@@ -41,6 +41,18 @@ def test_gradutes_expands_to_graduation_concepts():
     assert "convocation" in normalized
 
 
+def test_object_query_expansion_does_not_drop_residual_intent():
+    expand_queries_sync.cache_clear()
+    settings = SimpleNamespace(gemini_api_key="")
+    with patch("app.config.get_settings", return_value=settings):
+        scoped = expand_queries_sync("t-shirt mastersunion")
+        single = expand_queries_sync("tee")
+    expand_queries_sync.cache_clear()
+
+    assert scoped == ("t-shirt mastersunion",)
+    assert single == ("tee", "t-shirt")
+
+
 def test_graduates_is_broad_but_explicit_students_remain_strict():
     graduate_text, graduate_ctx = parse_role_context("graduates")
     assert graduate_text == "graduates"
@@ -230,6 +242,13 @@ async def test_image_retrieval_does_not_truncate_relevant_candidates():
         patch("app.search.images.search_images_sync", return_value=[]),
         patch("app.search.images.search_captions_sync", return_value=caption_hits),
         patch("app.search.images.search_caption_keywords_sync", return_value=[]),
+        patch(
+            "app.qdrant.image_captions.get_captions_by_ids_sync",
+            return_value={
+                hit["drive_file_id"]: hit["caption"]
+                for hit in caption_hits
+            },
+        ),
         patch(
             "app.search.images.person_names_for_drive_files",
             new=AsyncMock(return_value={}),

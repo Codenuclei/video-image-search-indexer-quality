@@ -6,6 +6,11 @@ from types import SimpleNamespace
 import pytest
 
 from app.objects.search import fuse_object_score
+from app.objects.query_concepts import (
+    all_query_concepts_supported,
+    parse_query_concepts,
+    text_supports_concept,
+)
 from app.objects.taxonomy import (
     OBJECT_MODEL_VERSION,
     TAXONOMY_VERSION,
@@ -24,6 +29,55 @@ def test_apparel_aliases_are_canonical_and_versioned() -> None:
     assert canonicalize_object("kit") == "jersey"
     assert "jersey" in object_query_labels("students wearing team kits")
     assert TAXONOMY_VERSION in OBJECT_MODEL_VERSION
+
+
+def test_query_concepts_use_longest_non_overlapping_alias() -> None:
+    concepts = parse_query_concepts("t-shirt mastersunion")
+    assert concepts.taxonomy_labels == ("t-shirt",)
+    assert concepts.residual_terms == ("mastersunion",)
+    assert object_query_labels("t-shirt mastersunion") == ("t-shirt",)
+
+
+def test_search_scaffolding_does_not_make_single_object_query_conjunctive() -> None:
+    concepts = parse_query_concepts("show photos of people wearing t-shirts")
+    assert concepts.taxonomy_labels == ("t-shirt",)
+    assert concepts.residual_terms == ()
+    assert concepts.is_conjunctive_object_query is False
+
+
+def test_query_concept_matching_normalizes_apostrophes_spaces_and_compact_forms() -> None:
+    assert text_supports_concept("A Masters' Union logo", "mastersunion")
+    assert text_supports_concept("A MastersUnion logo", "masters union")
+    assert text_supports_concept("person wearing a t-shirt", "tshirt")
+
+
+def test_conjunctive_support_requires_brand_and_every_taxonomy_label() -> None:
+    branded_shirt = parse_query_concepts("mastersunion t-shirt")
+    assert all_query_concepts_supported(
+        branded_shirt,
+        structured_labels=("t-shirt",),
+        caption="A person wears a Masters' Union tee.",
+    )
+    assert not all_query_concepts_supported(
+        branded_shirt,
+        structured_labels=("t-shirt",),
+        caption="A person wears a plain tee.",
+    )
+    assert not all_query_concepts_supported(
+        branded_shirt,
+        structured_labels=("sign",),
+        caption="A Masters' Union banner hangs on a wall.",
+    )
+
+    two_objects = parse_query_concepts("t-shirt with phone")
+    assert all_query_concepts_supported(
+        two_objects,
+        structured_labels=("t-shirt", "phone"),
+    )
+    assert not all_query_concepts_supported(
+        two_objects,
+        structured_labels=("t-shirt",),
+    )
 
 
 def test_caption_classifier_uses_phrase_boundaries() -> None:
