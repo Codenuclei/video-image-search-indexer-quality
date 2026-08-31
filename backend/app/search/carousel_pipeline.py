@@ -126,6 +126,10 @@ _LLM_REQUEST_TIMEOUT_MS = 25_000
 # Railway's public edge (carousel → backend) 502s long extracts. Cap each
 # provider hop so Gemini/Claude cannot hold the socket for minutes.
 _LLM_ATTEMPT_TIMEOUT_SEC = 25.0
+# OpenRouter regularly returns successful Claude responses in 25–50 seconds.
+# Give that async, cancellable HTTP hop enough time without relaxing the bound
+# on direct SDK calls, whose worker threads cannot be cancelled by asyncio.
+_OPENROUTER_ATTEMPT_TIMEOUT_SEC = 60.0
 
 
 def _loads_json_array(text: str) -> list[Any]:
@@ -215,7 +219,7 @@ async def _llm_complete_json(
             system=system,
             temperature=temperature,
             max_tokens=max_tokens,
-            timeout=_LLM_ATTEMPT_TIMEOUT_SEC,
+            timeout=_OPENROUTER_ATTEMPT_TIMEOUT_SEC,
             json_root=json_root,
         )
         return text.strip(), "openrouter"
@@ -228,7 +232,6 @@ async def _llm_complete_json(
             response = client.messages.create(
                 model=(claude_model or DEFAULT_CLAUDE_MODEL).strip(),
                 max_tokens=max_tokens,
-                temperature=temperature,
                 system=system,
                 messages=[{"role": "user", "content": prompt}],
             )
@@ -313,7 +316,12 @@ async def _llm_complete_json(
                 errors.append(f"{name} not configured")
             continue
         try:
-            return await asyncio.wait_for(runners[name](), timeout=_LLM_ATTEMPT_TIMEOUT_SEC)
+            attempt_timeout = (
+                _OPENROUTER_ATTEMPT_TIMEOUT_SEC
+                if name == "openrouter"
+                else _LLM_ATTEMPT_TIMEOUT_SEC
+            )
+            return await asyncio.wait_for(runners[name](), timeout=attempt_timeout)
         except Exception as exc:  # noqa: BLE001
             errors.append(f"{name}: {str(exc)[:160]}")
             logger.warning(
@@ -784,7 +792,6 @@ async def _claude_themes(
         response = client.messages.create(
             model=model,
             max_tokens=1800,
-            temperature=0.3,
             system="You are an expert short-form video editor and narrative copywriter.",
             messages=[{"role": "user", "content": prompt}],
         )

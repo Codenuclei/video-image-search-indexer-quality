@@ -97,7 +97,8 @@ async def test_llm_complete_json_auto_prefers_claude(monkeypatch):
         content = [_Block()]
 
     class _Messages:
-        def create(self, **_kwargs):
+        def create(self, **kwargs):
+            assert "temperature" not in kwargs
             called.append("claude")
             return _Resp()
 
@@ -237,7 +238,8 @@ def test_vision_hops_gemini_picker_uses_openrouter_first():
 async def test_llm_complete_json_gemini_uses_openrouter_first(monkeypatch):
     called: list[str] = []
 
-    async def fake_or(*_a, model="", **_k):
+    async def fake_or(*_a, model="", timeout=0, **_k):
+        assert timeout == 60.0
         called.append(f"openrouter:{model}")
         return '{"ok": true}'
 
