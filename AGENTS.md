@@ -4,6 +4,30 @@
 
 Project: `drivefaceindexer` · services: `dfi-backend`, `dfi-frontend`, `dfi-face-worker`, `dfi-carousel`.
 
+### Pre-deploy git sync (required for every service)
+
+Before **any** `railway up` (backend, frontend, face-worker, or carousel), agents **must**:
+
+1. Be on branch **`main`** (never deploy from a feature branch).
+2. **`git pull`** (or `git pull --ff-only origin main`) so local `main` has **no unpulled commits** left versus `origin/main`.
+3. **Commit finished work** so deployable fixes are not stuck only in the working tree (and **push to `origin/main`** when the user wants production/GitHub in sync — unpushed commits are wiped if Railway redeploys from remote).
+4. Confirm sync before uploading:
+
+```bash
+git checkout main
+git pull --ff-only origin main
+git status -sb   # expect: ## main...origin/main  (not "behind" / "ahead" with undeployed intent left uncommitted)
+```
+
+Do **not** deploy if:
+
+- the current branch is not `main`
+- `main` is behind `origin/main` (pull first)
+- `git pull` fails or would require merge/rebase conflict resolution you have not finished
+- search/object/deploy-critical changes are still uncommitted (commit first; do not rely on a one-off local `railway up` archive alone)
+
+Uncommitted deploy-critical work has already caused production to miss files (e.g. `query_concepts.py`) when an env-var or GitHub redeploy rebuilt from older `origin/main`. **Keep committing** as you go so pull + deploy stay safe.
+
 ### Pre-deploy guard (required for backend / face-worker)
 
 Before `railway up` for **`dfi-backend`** or **`dfi-face-worker`**, agents **must** run the import / unbound-name guards and only deploy if they pass:
@@ -14,7 +38,7 @@ cd backend && python -m pytest tests/test_import_guards.py -q
 
 These catch runtime `NameError`s (missing imports used only inside functions) that plain module imports miss. Do **not** skip this for “small” fixes. If the tests fail, fix them first — do not deploy.
 
-Frontend / carousel deploys do not require this pytest file, but still follow the upload commands below.
+Frontend / carousel deploys do not require this pytest file, but still follow the git sync above and the upload commands below.
 
 ### Correct commands
 

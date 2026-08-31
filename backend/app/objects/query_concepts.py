@@ -46,6 +46,36 @@ _CONTENT_STOPWORDS = frozenset(
     }
 )
 
+# Signage taxonomy that users often mean as "printed on the garment", not a
+# separate object that must also appear in the scene.
+_APPAREL_PRINT_SCAFFOLD = frozenset({"text", "logo"})
+
+# Scene words that mean "brand on backdrop/signage", not a literal residual token
+# (otherwise "black background" falsely satisfies "background with text X").
+_SCENE_BRAND_SCAFFOLD = frozenset(
+    {
+        "background",
+        "backdrop",
+        "bg",
+        "scene",
+        "wall",
+        "banner",
+        "signage",
+    }
+)
+
+# High-value residual brand typos seen in search.
+_RESIDUAL_TYPOS = {
+    "mastesunion": "mastersunion",
+    "masterunion": "mastersunion",
+    "mastersuinon": "mastersunion",
+    "mastersunoin": "mastersunion",
+}
+
+
+def _correct_residual_token(token: str) -> str:
+    return _RESIDUAL_TYPOS.get(token, token)
+
 
 def normalized_concept_tokens(value: str | None) -> tuple[str, ...]:
     """Normalize punctuation, apostrophes, separators, and Unicode generically."""
@@ -62,11 +92,13 @@ def normalized_concept_text(value: str | None) -> str:
 class QueryConcepts:
     taxonomy_labels: tuple[str, ...]
     residual_terms: tuple[str, ...]
+    require_signage_brand: bool = False
 
     @property
     def is_conjunctive_object_query(self) -> bool:
         return bool(self.taxonomy_labels) and (
             len(self.taxonomy_labels) + len(self.residual_terms) > 1
+            or self.require_signage_brand
         )
 
 
@@ -150,10 +182,32 @@ def parse_query_concepts(query: str | None) -> QueryConcepts:
             labels.append(canonical)
 
     residual: list[str] = []
+    scene_scaffold_hit = False
     for token, used in zip(tokens, occupied):
-        if not used and token not in _CONTENT_STOPWORDS and token not in residual:
-            residual.append(token)
-    return QueryConcepts(tuple(labels), tuple(residual))
+        if used or token in _CONTENT_STOPWORDS:
+            continue
+        if token in _SCENE_BRAND_SCAFFOLD:
+            scene_scaffold_hit = True
+            continue
+        corrected = _correct_residual_token(token)
+        if corrected not in residual:
+            residual.append(corrected)
+
+    # "t-shirt with text mastersunion" means brand printed on apparel, not a
+    # required separate text/logo object in the scene.
+    apparel = [label for label in labels if label in _APPAREL_LABELS]
+    if apparel and residual:
+        labels = [label for label in labels if label not in _APPAREL_PRINT_SCAFFOLD]
+
+    # "background with text mastersunion" → brand on signage/backdrop.
+    # Only when the user names a scene surface — not for bare "text mastersunion".
+    require_signage_brand = bool(residual) and scene_scaffold_hit and not apparel
+    if require_signage_brand:
+        labels = [label for label in labels if label not in _APPAREL_PRINT_SCAFFOLD]
+        if not labels:
+            labels = ["sign"]
+
+    return QueryConcepts(tuple(labels), tuple(residual), require_signage_brand)
 
 
 def text_supports_concept(text: str | None, concept: str) -> bool:
@@ -174,6 +228,303 @@ def text_supports_concept(text: str | None, concept: str) -> bool:
     return False
 
 
+_APPAREL_LABELS = frozenset(
+    taxon.name for taxon in TAXONOMY if taxon.category == "apparel"
+)
+_ASSOCIATION_LINKERS = frozenset(
+    {
+        "with",
+        "featuring",
+        "bearing",
+        "printed",
+        "print",
+        "logo",
+        "text",
+        "reading",
+        "reads",
+        "says",
+        "saying",
+        "displaying",
+        "showing",
+        "branded",
+        "matching",
+        "wearing",
+        "wears",
+        "in",
+        "a",
+        "an",
+        "the",
+        "and",
+        "black",
+        "white",
+        "red",
+        "blue",
+        "green",
+        "yellow",
+        "orange",
+        "purple",
+        "pink",
+        "brown",
+        "gray",
+        "grey",
+        "gold",
+        "silver",
+    }
+)
+_BACKDROP_MARKERS = frozenset(
+    {
+        "backdrop",
+        "banner",
+        "signage",
+        "billboard",
+        "poster",
+        "pillar",
+        "wall",
+        "sign",
+        "archway",
+        "gateway",
+        "kiosk",
+        "standee",
+        "installation",
+    }
+)
+
+
+def apparel_labels_in(concepts: QueryConcepts) -> tuple[str, ...]:
+    return tuple(label for label in concepts.taxonomy_labels if label in _APPAREL_LABELS)
+
+
+def _concept_spans(
+    haystack: tuple[str, ...],
+    concept: str,
+) -> list[tuple[int, int]]:
+    """Return inclusive token spans where a concept appears, including compact forms."""
+    needle = normalized_concept_tokens(concept)
+    if not haystack or not needle:
+        return []
+    target = "".join(needle)
+    spans: list[tuple[int, int]] = []
+    for start in range(len(haystack)):
+        compact = ""
+        for end in range(start, len(haystack)):
+            compact += haystack[end]
+            if compact in (target, target + "s"):
+                spans.append((start, end))
+            if len(compact) > len(target):
+                break
+    return spans
+
+
+def _apparel_spans(
+    haystack: tuple[str, ...],
+    apparel_labels: Iterable[str],
+) -> list[tuple[int, int]]:
+    spans: list[tuple[int, int]] = []
+    for label in apparel_labels:
+        taxon = next((item for item in TAXONOMY if item.name == label), None)
+        terms = taxon.terms if taxon is not None else (label,)
+        for term in terms:
+            spans.extend(_concept_spans(haystack, term))
+    return spans
+
+
+def _residual_spans(
+    haystack: tuple[str, ...],
+    residual_terms: Iterable[str],
+) -> list[tuple[int, int]]:
+    spans: list[tuple[int, int]] = []
+    residuals = [term for term in residual_terms if term]
+    if not residuals:
+        return []
+    # Prefer the residual phrase as a unit when possible ("mastersunion").
+    joined = " ".join(residuals)
+    spans.extend(_concept_spans(haystack, joined))
+    for term in residuals:
+        spans.extend(_concept_spans(haystack, term))
+    return spans
+
+
+_BRAND_LINKERS = frozenset(
+    {
+        "with",
+        "featuring",
+        "bearing",
+        "printed",
+        "print",
+        "logo",
+        "text",
+        "reading",
+        "reads",
+        "says",
+        "saying",
+        "displaying",
+        "branded",
+        "matching",
+    }
+)
+
+
+def _span_distance(a: tuple[int, int], b: tuple[int, int]) -> int:
+    a_start, a_end = a
+    b_start, b_end = b
+    if a_end < b_start:
+        return b_start - a_end - 1
+    if b_end < a_start:
+        return a_start - b_end - 1
+    return 0
+
+
+def _apparel_in_window(
+    apparel: list[tuple[int, int]],
+    window_start: int,
+    window_end: int,
+) -> bool:
+    return any(not (a_end < window_start or a_start > window_end) for a_start, a_end in apparel)
+
+
+def _residual_backdrop_only(
+    haystack: tuple[str, ...],
+    residual: list[tuple[int, int]],
+    apparel: list[tuple[int, int]],
+) -> bool:
+    """Brand text sits on signage and apparel is outside that local window."""
+    for r_start, r_end in residual:
+        local_start = max(0, r_start - 6)
+        local_end = min(len(haystack) - 1, r_end + 6)
+        local = haystack[local_start : local_end + 1]
+        if not any(token in _BACKDROP_MARKERS for token in local):
+            continue
+        if not _apparel_in_window(apparel, local_start, local_end):
+            return True
+    return False
+
+
+def _garment_brand_associated(
+    apparel: list[tuple[int, int]],
+    residual: list[tuple[int, int]],
+    haystack: tuple[str, ...],
+) -> bool:
+    """True when residual brand/text is attributed to the garment phrase."""
+    for a_span in apparel:
+        for r_span in residual:
+            dist = _span_distance(a_span, r_span)
+            a_start, a_end = a_span
+            r_start, r_end = r_span
+            # "Masters' Union t-shirt" / "t-shirt MastersUnion"
+            if dist <= 1:
+                return True
+
+            left = min(a_start, r_start)
+            right = max(a_end, r_end)
+            between = haystack[left : right + 1]
+            local_start = max(0, r_start - 6)
+            local_end = min(len(haystack) - 1, r_end + 6)
+            residual_on_signage = any(
+                token in _BACKDROP_MARKERS for token in haystack[local_start : local_end + 1]
+            ) and not _apparel_in_window(apparel, local_start, local_end)
+
+            if residual_on_signage:
+                continue
+
+            if dist <= 6 and any(token in _BRAND_LINKERS for token in between):
+                return True
+
+            apparel_tokens = set(haystack[a_start : a_end + 1])
+            residual_tokens = set(haystack[r_start : r_end + 1])
+            if dist <= 4 and all(
+                token in _ASSOCIATION_LINKERS
+                or token in apparel_tokens
+                or token in residual_tokens
+                for token in between
+            ):
+                return True
+    return False
+
+
+def residual_associated_with_apparel(
+    caption: str | None,
+    concepts: QueryConcepts,
+    *,
+    evidence_texts: Iterable[str | None] = (),
+) -> bool:
+    """Require residual brand/text to be linked to apparel, not only the scene."""
+    apparel = apparel_labels_in(concepts)
+    if not apparel or not concepts.residual_terms:
+        return True
+    searchable = " ".join(part for part in [caption, *evidence_texts] if part)
+    haystack = normalized_concept_tokens(searchable)
+    apparel_spans = _apparel_spans(haystack, apparel)
+    residual_spans = _residual_spans(haystack, concepts.residual_terms)
+    if not apparel_spans or not residual_spans:
+        return False
+    if _garment_brand_associated(apparel_spans, residual_spans, haystack):
+        return True
+    # Explicit co-occurrence with brand only on backdrop/signage is not enough.
+    if _residual_backdrop_only(haystack, residual_spans, apparel_spans):
+        return False
+    return False
+
+
+def residual_associated_with_signage(
+    caption: str | None,
+    concepts: QueryConcepts,
+    *,
+    evidence_texts: Iterable[str | None] = (),
+) -> bool:
+    """Require residual brand/text to sit on backdrop/signage, not only elsewhere."""
+    if not concepts.residual_terms:
+        return True
+    searchable = " ".join(part for part in [caption, *evidence_texts] if part)
+    haystack = normalized_concept_tokens(searchable)
+    residual_spans = _residual_spans(haystack, concepts.residual_terms)
+    if not residual_spans:
+        return False
+    for r_start, r_end in residual_spans:
+        local = haystack[max(0, r_start - 8) : r_end + 9]
+        if any(token in _BACKDROP_MARKERS for token in local):
+            return True
+        # Captions often say "promotional wall/backdrop featuring Masters' Union".
+        if any(
+            token in {"featuring", "reads", "reading", "says", "bearing", "displaying", "printed"}
+            for token in local
+        ) and any(
+            token in _BACKDROP_MARKERS | {"wall", "stage", "booth", "display"}
+            for token in local
+        ):
+            return True
+    return False
+
+
+def association_search_phrases(concepts: QueryConcepts) -> tuple[str, ...]:
+    """Recall phrases that keep apparel/signage and residual intent together."""
+    residual = " ".join(concepts.residual_terms)
+    if not residual:
+        return ()
+    phrases: list[str] = []
+    apparel = apparel_labels_in(concepts)
+    for label in apparel:
+        phrases.extend(
+            (
+                f"{residual} {label}",
+                f"{label} with {residual}",
+                f"{label} with {residual} logo",
+                f"wearing {residual} {label}",
+                f"matching {residual} {label}",
+            )
+        )
+    if concepts.require_signage_brand:
+        phrases.extend(
+            (
+                f"{residual} backdrop",
+                f"backdrop with {residual}",
+                f"banner with {residual}",
+                f"promotional wall {residual}",
+                f"background featuring {residual}",
+            )
+        )
+    return tuple(dict.fromkeys(phrases))
+
+
 def all_query_concepts_supported(
     concepts: QueryConcepts,
     *,
@@ -189,11 +540,38 @@ def all_query_concepts_supported(
     for label in concepts.taxonomy_labels:
         if label in labels:
             continue
+        # Scene-brand queries accept backdrop evidence in place of a "sign" tag.
+        if concepts.require_signage_brand and label in {"sign", "text", "logo"}:
+            if residual_associated_with_signage(
+                caption, concepts, evidence_texts=evidence_texts
+            ):
+                continue
         taxon = next((item for item in TAXONOMY if item.name == label), None)
         terms = taxon.terms if taxon is not None else (label,)
         if not any(text_supports_concept(searchable_text, term) for term in terms):
+            # Backdrop vocabulary covers sign intent for scene-brand queries.
+            if concepts.require_signage_brand and any(
+                text_supports_concept(searchable_text, marker)
+                for marker in _BACKDROP_MARKERS
+            ):
+                continue
             return False
-    return all(
+    if not all(
         text_supports_concept(searchable_text, term)
         for term in concepts.residual_terms
-    )
+    ):
+        return False
+    # Apparel + brand/modifier queries must attach the residual to the garment.
+    if apparel_labels_in(concepts) and concepts.residual_terms:
+        return residual_associated_with_apparel(
+            caption,
+            concepts,
+            evidence_texts=evidence_texts,
+        )
+    if concepts.require_signage_brand:
+        return residual_associated_with_signage(
+            caption,
+            concepts,
+            evidence_texts=evidence_texts,
+        )
+    return True

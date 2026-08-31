@@ -587,6 +587,9 @@ async def search(
         elif image_hits:
             pre_filter_hits = list(image_hits)
             try:
+                from app.objects.query_concepts import parse_query_concepts
+
+                query_concepts = parse_query_concepts(query)
                 filtered_images = await filter_images_by_caption_llm(
                     query,
                     image_hits,
@@ -595,7 +598,12 @@ async def search(
                     role_ctx=role_ctx,
                     folder_context=folder_description,
                     strict_action=action_query or person_action,
-                    preserve_rejected=not strict_student_query,
+                    # Conjunctive brand/object queries must not re-append LLM rejects
+                    # (that resurfaced Financial Express plaques for mastersunion).
+                    preserve_rejected=(
+                        not strict_student_query
+                        and not query_concepts.is_conjunctive_object_query
+                    ),
                 )
                 if action_query or person_action:
                     if action_query and not person_action and strict_student_query:
@@ -614,15 +622,19 @@ async def search(
                     if keyword_matched:
                         filtered_images = keyword_matched
                     elif not (person_action or action_query):
-                        filtered_images = sorted(
-                            pre_filter_hits,
-                            key=lambda f: (-(f.score or 0.0), f.name.lower()),
-                        )
-                        logger.warning(
-                            "Caption filter returned 0 for %r — fallback %d hit(s)",
-                            query,
-                            len(filtered_images),
-                        )
+                        # Never un-do conjunctive brand gating with a full-pool fallback.
+                        if query_concepts.is_conjunctive_object_query:
+                            filtered_images = []
+                        else:
+                            filtered_images = sorted(
+                                pre_filter_hits,
+                                key=lambda f: (-(f.score or 0.0), f.name.lower()),
+                            )
+                            logger.warning(
+                                "Caption filter returned 0 for %r — fallback %d hit(s)",
+                                query,
+                                len(filtered_images),
+                            )
                 files = dedupe_search_files(filtered_images + other_hits)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Caption LLM filter failed, keeping unfiltered results: %s", exc)

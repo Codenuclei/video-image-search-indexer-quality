@@ -228,9 +228,9 @@ class Settings(BaseSettings):
     gemini_video_min_score: float = 0.25
     gemini_video_display_min_score: float = 0.32   # cosine threshold — lower = more recall
     gemini_transcript_min_score: float = 0.35
-    # Internal Qdrant page size only; image search continues until every
-    # above-threshold candidate is collected and returned in relevance order.
-    gemini_image_result_limit: int = 200
+    # Max ANN neighbors to pull from Qdrant for Gemini-embedding image search.
+    # UI lazy-loads the returned list; do not use this as a display page size.
+    gemini_image_result_limit: int = 10000
     gemini_image_min_score: float = 0.25
 
     # Query expansion (LLM rewrites → multi-vector fusion) for higher recall

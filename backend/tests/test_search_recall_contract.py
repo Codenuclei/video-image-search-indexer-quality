@@ -49,7 +49,12 @@ def test_object_query_expansion_does_not_drop_residual_intent():
         single = expand_queries_sync("tee")
     expand_queries_sync.cache_clear()
 
-    assert scoped == ("t-shirt mastersunion",)
+    assert scoped[0] == "t-shirt mastersunion"
+    joined = " ".join(scoped).lower()
+    assert "mastersunion" in joined
+    assert "t-shirt" in joined
+    # Must not expand to bare taxonomy aliases that drop the brand.
+    assert not any(v.lower() in {"t-shirt", "tee", "shirt"} for v in scoped)
     assert single == ("tee", "t-shirt")
 
 
@@ -112,7 +117,8 @@ def test_unrelated_caption_does_not_match_gradutes():
     )
 
 
-def test_caption_vector_search_reads_every_threshold_page():
+def test_caption_vector_search_fetches_full_above_threshold_pool():
+    """Unlimited caption ANN uses one high-limit query (offset paging is unreliable)."""
     points = [
         SimpleNamespace(
             payload={
@@ -124,12 +130,7 @@ def test_caption_vector_search_reads_every_threshold_page():
         for i in range(3)
     ]
     client = SimpleNamespace()
-    client.query_points = Mock(
-        side_effect=[
-            SimpleNamespace(points=points[:2]),
-            SimpleNamespace(points=points[2:]),
-        ]
-    )
+    client.query_points = Mock(return_value=SimpleNamespace(points=points))
     settings = SimpleNamespace(
         qdrant_image_captions_collection="captions",
         image_caption_min_words=4,
@@ -151,7 +152,16 @@ def test_caption_vector_search_reads_every_threshold_page():
         "file-1",
         "file-2",
     ]
-    assert [call.kwargs["offset"] for call in client.query_points.call_args_list] == [0, 2]
+    assert client.query_points.call_count == 1
+    assert client.query_points.call_args.kwargs["limit"] == 10_000
+    assert client.query_points.call_args.kwargs["score_threshold"] == 0.32
+
+
+def test_apparel_brand_lexical_match_uses_concepts_not_raw_tokens() -> None:
+    on_shirt = "A man wearing a black Masters Union t-shirt celebrates."
+    backdrop = "A man in a plain tee stands in front of a Masters' Union backdrop."
+    assert caption_matches_query_text(on_shirt, "tshirt with text mastersunion")
+    assert not caption_matches_query_text(backdrop, "tshirt with text mastersunion")
 
 
 def test_gradutes_keyword_scan_reads_all_pages_and_keeps_every_related_caption():
