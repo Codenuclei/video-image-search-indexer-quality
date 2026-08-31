@@ -1386,11 +1386,30 @@ async def carousel_pipeline_themes(
     When person_name is set, only verify that person appears in the video (face match).
     If absent, return person_not_found — never reframe/harmonize themes around the person.
     """
+    from app.search.carousel_trace import carousel_log, set_drive_file_id
+
+    started = time.perf_counter()
+    set_drive_file_id(body.drive_file_id)
+    carousel_log(
+        "themes_request_start",
+        force=bool(body.force),
+        generate=bool(body.generate),
+        llm_provider=(body.llm_provider or "-"),
+        llm_model=(body.llm_model or "-"),
+        person=(body.person_name or body.search_entity or "-"),
+    )
     settings = get_settings()
     # Prefer explicit person_name; search_entity alone is treated as person only when it
     # matches a known Person row used for presence check below.
     explicit_person = (body.person_name or "").strip()
     drive_file, cues = await _load_video_cues(session, body.drive_file_id.strip())
+    set_drive_file_id(drive_file.id)
+    carousel_log(
+        "themes_cues_loaded",
+        cue_count=len(cues),
+        video_name=drive_file.name,
+        elapsed_ms=(time.perf_counter() - started) * 1000.0,
+    )
     # Themes write SAVE_KIND_THEMES only. Do not wait on the slide-generate
     # lock — a 502'd generate/select-images or background carousel job used to
     # 409 this route for up to 15 minutes even on a cache hit.
@@ -1478,6 +1497,13 @@ async def carousel_pipeline_themes(
                 transcript_hash[:12],
                 model_name,
             )
+            carousel_log(
+                "themes_cache_hit",
+                save_id=row.id,
+                theme_count=len(themes),
+                model=model_name,
+                elapsed_ms=(time.perf_counter() - started) * 1000.0,
+            )
             return {
                 "source": row.source or payload.get("source") or "saved",
                 "drive_file_id": drive_file.id,
@@ -1502,6 +1528,11 @@ async def carousel_pipeline_themes(
             drive_file.id,
             transcript_hash[:12],
         )
+        carousel_log(
+            "themes_cache_miss_no_generate",
+            model=model_name,
+            elapsed_ms=(time.perf_counter() - started) * 1000.0,
+        )
         return {
             "source": "cache_miss",
             "drive_file_id": drive_file.id,
@@ -1523,16 +1554,26 @@ async def carousel_pipeline_themes(
     # Serialize cold LLM theme generation so remount storms cannot pile up Gemini
     # calls (process-local + cross-worker). Cache hits above return before this
     # lock; waiters re-check cache after acquire.
+    carousel_log("themes_lock_wait")
     async with _THEMES_GEN_LOCK:
         async with advisory_lock(
             LOCK_CAROUSEL_THEMES, name="carousel_themes", blocking=True
         ) as got:
             if not got:
+                carousel_log(
+                    "themes_lock_unavailable",
+                    level=logging.WARNING,
+                    elapsed_ms=(time.perf_counter() - started) * 1000.0,
+                )
                 raise HTTPException(
                     status_code=503,
                     detail="Theme generation lock unavailable; retry shortly.",
                     headers={"Retry-After": "3"},
                 )
+            carousel_log(
+                "themes_lock_acquired",
+                elapsed_ms=(time.perf_counter() - started) * 1000.0,
+            )
             # Re-check cache under the lock — a sibling request may have just saved.
             # Skip when force=True (explicit regenerate).
             if not body.force:
@@ -1560,6 +1601,12 @@ async def carousel_pipeline_themes(
                         row.id,
                         model_name,
                     )
+                    carousel_log(
+                        "themes_cache_hit_post_lock",
+                        save_id=row.id,
+                        theme_count=len(themes),
+                        elapsed_ms=(time.perf_counter() - started) * 1000.0,
+                    )
                     return {
                         "source": row.source or payload.get("source") or "saved",
                         "drive_file_id": drive_file.id,
@@ -1578,6 +1625,14 @@ async def carousel_pipeline_themes(
                     }
 
             llm = llm_pack
+            carousel_log(
+                "themes_generate_start",
+                provider=llm["provider"],
+                openrouter_model=llm.get("openrouter_model") or "-",
+                claude_model=llm.get("claude_model") or "-",
+                gemini_model=llm.get("model") or "-",
+                cue_count=len(cues),
+            )
             themes, source, warning = await build_harmonized_themes(
                 cues=cues,
                 video_name=drive_file.name,
@@ -1590,6 +1645,13 @@ async def carousel_pipeline_themes(
                 openrouter_api_key=llm["openrouter_api_key"],
                 openrouter_model=llm["openrouter_model"],
                 openrouter_base_url=llm["openrouter_base_url"],
+            )
+            carousel_log(
+                "themes_generate_done",
+                source=source,
+                theme_count=len(themes),
+                warning=warning or "-",
+                elapsed_ms=(time.perf_counter() - started) * 1000.0,
             )
             result: dict[str, Any] = {
                 "source": source,
@@ -1662,6 +1724,17 @@ async def carousel_pipeline_extract(
     Cache-first: without ``force``/``generate``, return a matching save or an empty miss.
     Never silently call Gemini on an ambiguous Continue/Extract click.
     """
+    from app.search.carousel_trace import carousel_log, set_drive_file_id
+
+    set_drive_file_id(body.drive_file_id)
+    carousel_log(
+        "extract_request_start",
+        force=bool(body.force),
+        generate=bool(body.generate),
+        theme_count=len(body.themes or []),
+        llm_provider=(body.llm_provider or "-"),
+        llm_model=(body.llm_model or "-"),
+    )
     # Cache-only reads skip the extract lock so UI polling stays snappy.
     if not body.force and not body.generate:
         return await _carousel_pipeline_extract_impl(body, session, request)
@@ -3042,6 +3115,19 @@ async def carousel_pipeline_generate(
     body: CarouselGenerateRequest,
     session: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
+    from app.search.carousel_trace import carousel_log, set_drive_file_id
+
+    set_drive_file_id(body.drive_file_id)
+    carousel_log(
+        "generate_request_start",
+        force=bool(body.force),
+        generate=bool(body.generate),
+        select_images=bool(body.select_images),
+        hook_count=len(body.hooks or []),
+        topic_count=len(body.topics or []),
+        llm_provider=(body.llm_provider or "-"),
+        llm_model=(body.llm_model or "-"),
+    )
     # Cache-only reads must not claim the carousel lock.
     if not body.force and not body.generate:
         return await _carousel_pipeline_generate_impl(body, session)

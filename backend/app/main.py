@@ -376,6 +376,98 @@ app.add_middleware(
 
 
 @app.middleware("http")
+async def _tag_carousel_vs_search(request, call_next):
+    """Tag carousel vs Drive-search requests so logs are filterable.
+
+    Carousel routes emit ``[carousel]`` lines with a stable ``trace=`` id.
+    Generic ``/search`` (image/moment Drive search) emits ``[drive-search]``.
+    """
+    import time
+
+    from app.search.carousel_trace import (
+        bind_carousel_context,
+        carousel_log,
+        drive_search_log,
+        reset_carousel_context,
+    )
+
+    path = request.url.path
+    started = time.perf_counter()
+    if path.startswith("/search/carousel"):
+        route = path.removeprefix("/search/carousel") or "/"
+        tokens = bind_carousel_context(
+            trace_id=request.headers.get("x-request-id"),
+            route=route,
+        )
+        carousel_log(
+            "http_request_start",
+            method=request.method,
+            path=path,
+            client=(request.client.host if request.client else "-"),
+        )
+        try:
+            response = await call_next(request)
+        except Exception as exc:  # noqa: BLE001
+            carousel_log(
+                "http_request_error",
+                level=40,
+                method=request.method,
+                path=path,
+                elapsed_ms=(time.perf_counter() - started) * 1000.0,
+                error_type=type(exc).__name__,
+                error=str(exc)[:200] or type(exc).__name__,
+            )
+            reset_carousel_context(tokens)
+            raise
+        carousel_log(
+            "http_request_end",
+            method=request.method,
+            path=path,
+            status=getattr(response, "status_code", "-"),
+            elapsed_ms=(time.perf_counter() - started) * 1000.0,
+        )
+        try:
+            response.headers["X-Request-ID"] = (
+                request.headers.get("x-request-id")
+                or response.headers.get("x-request-id")
+                or ""
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        from app.search.carousel_trace import current_trace_id
+
+        try:
+            if not response.headers.get("X-Request-ID"):
+                response.headers["X-Request-ID"] = current_trace_id()
+        except Exception:  # noqa: BLE001
+            pass
+        reset_carousel_context(tokens)
+        return response
+
+    if path == "/search" or path.startswith("/search/"):
+        # Carousel is handled above; remaining /search* is Drive/image/moment search.
+        if path.startswith("/search/carousel"):
+            return await call_next(request)
+        drive_search_log(
+            "http_request_start",
+            method=request.method,
+            path=path,
+            client=(request.client.host if request.client else "-"),
+        )
+        response = await call_next(request)
+        drive_search_log(
+            "http_request_end",
+            method=request.method,
+            path=path,
+            status=getattr(response, "status_code", "-"),
+            elapsed_ms=(time.perf_counter() - started) * 1000.0,
+        )
+        return response
+
+    return await call_next(request)
+
+
+@app.middleware("http")
 async def _require_boot_ready(request, call_next):
     """Liveness (/health) always works; other routes wait briefly then 503."""
     from fastapi.responses import JSONResponse

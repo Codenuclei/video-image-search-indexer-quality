@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from typing import Any
 
 import httpx
@@ -310,9 +311,35 @@ async def _post_once(
     allow_format_retry: bool,
     retry_body: dict[str, Any],
 ) -> str:
+    started = time.perf_counter()
+    model_id = str(body.get("model") or "-")
+    try:
+        from app.search.carousel_trace import carousel_log, current_trace_id
+
+        in_carousel = current_trace_id() != "-"
+    except Exception:  # noqa: BLE001
+        in_carousel = False
+        carousel_log = None  # type: ignore[assignment]
+    if in_carousel and carousel_log is not None:
+        carousel_log(
+            "openrouter_http_start",
+            model=model_id,
+            max_tokens=body.get("max_tokens"),
+            has_response_format=bool(body.get("response_format")),
+            has_reasoning=bool(body.get("reasoning")),
+        )
     try:
         resp = await client.post(url, headers=headers, json=body)
     except httpx.HTTPError as exc:
+        if in_carousel and carousel_log is not None:
+            carousel_log(
+                "openrouter_http_error",
+                level=logging.WARNING,
+                model=model_id,
+                elapsed_ms=(time.perf_counter() - started) * 1000.0,
+                error_type=type(exc).__name__,
+                error=str(exc)[:200],
+            )
         logger.warning("OpenRouter request failed: %s", str(exc)[:200])
         raise RuntimeError(f"OpenRouter request failed: {exc}") from exc
 
@@ -326,15 +353,38 @@ async def _post_once(
             retry_body=retry_body,
         )
 
-    text_or_retry = _read_openrouter_response(
-        resp,
-        body=body,
-        allow_format_retry=allow_format_retry,
-        retry=_retry,
-    )
-    if hasattr(text_or_retry, "__await__"):
-        return await text_or_retry  # type: ignore[misc]
-    return text_or_retry
+    try:
+        text_or_retry = _read_openrouter_response(
+            resp,
+            body=body,
+            allow_format_retry=allow_format_retry,
+            retry=_retry,
+        )
+        if hasattr(text_or_retry, "__await__"):
+            text = await text_or_retry  # type: ignore[misc]
+        else:
+            text = text_or_retry
+    except Exception as exc:  # noqa: BLE001
+        if in_carousel and carousel_log is not None:
+            carousel_log(
+                "openrouter_http_fail",
+                level=logging.WARNING,
+                model=model_id,
+                status=getattr(resp, "status_code", "-"),
+                elapsed_ms=(time.perf_counter() - started) * 1000.0,
+                error_type=type(exc).__name__,
+                error=str(exc)[:200] or type(exc).__name__,
+            )
+        raise
+    if in_carousel and carousel_log is not None:
+        carousel_log(
+            "openrouter_http_ok",
+            model=model_id,
+            status=resp.status_code,
+            elapsed_ms=(time.perf_counter() - started) * 1000.0,
+            response_chars=len(text or ""),
+        )
+    return text
 
 
 def _read_openrouter_response(

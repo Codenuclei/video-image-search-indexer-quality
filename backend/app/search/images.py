@@ -43,6 +43,17 @@ async def search_image_files(
     if not search_text:
         return []
 
+    from app.search.carousel_trace import drive_search_log
+
+    drive_search_log(
+        "image_search_start",
+        query=search_text[:120],
+        use_captions=use_captions,
+        person=person_name or "-",
+        folder=folder_path or "*",
+    )
+    started = __import__("time").perf_counter()
+
     if settings.search_query_expansion:
         from app.gemini.query_expand import expand_queries_sync
         queries = list(await asyncio.to_thread(expand_queries_sync, search_text))
@@ -270,6 +281,11 @@ async def search_image_files(
         results = enriched
 
     logger.info("Image vector search: %d files for query %r", len(results), query)
+    drive_search_log(
+        "image_search_end",
+        result_count=len(results),
+        elapsed_ms=(__import__("time").perf_counter() - started) * 1000.0,
+    )
     return results
 
 
