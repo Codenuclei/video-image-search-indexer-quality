@@ -145,13 +145,33 @@ async def search_image_files(
                 queries[0],
                 page_size=settings.gemini_image_result_limit,
             )
+            from app.objects.query_concepts import (
+                apparel_brand_association_strength,
+                apparel_labels_in,
+                parse_query_concepts,
+            )
+
+            lexical_concepts = parse_query_concepts(queries[0])
             for hit in lexical_hits:
                 fid = hit["drive_file_id"]
+                caption = hit["caption"]
+                # Tight on-garment brand text should outrank a flat semantic floor.
+                if apparel_labels_in(lexical_concepts) and lexical_concepts.residual_terms:
+                    assoc = apparel_brand_association_strength(
+                        caption,
+                        lexical_concepts,
+                    )
+                    # Skip backdrop-only co-occurrence in the lexical lane.
+                    if assoc <= 0:
+                        continue
+                    lexical_score = 0.55 + 0.40 * assoc
+                else:
+                    lexical_score = semantic_min_score
+                captions[fid] = caption
                 caption_scores[fid] = max(
                     caption_scores.get(fid, 0.0),
-                    semantic_min_score,
+                    lexical_score,
                 )
-                captions[fid] = hit["caption"]
     except Exception as exc:
         logger.warning("Image vector search failed (query=%r): %s", query, exc)
         return []
@@ -174,6 +194,8 @@ async def search_image_files(
 
     from app.objects.query_concepts import (
         all_query_concepts_supported,
+        apparel_brand_association_strength,
+        apparel_labels_in,
         parse_query_concepts,
     )
     from app.objects.search import fuse_object_score, object_matches_for_query
@@ -186,6 +208,11 @@ async def search_image_files(
         and not person_name
         and not person_names
         and query_concepts.is_conjunctive_object_query
+    )
+    apparel_brand_rank = bool(
+        conjunctive_object_gate
+        and apparel_labels_in(query_concepts)
+        and query_concepts.residual_terms
     )
     all_ids = set(visual_scores) | set(caption_scores) | set(object_matches)
     if conjunctive_object_gate and all_ids:
@@ -243,7 +270,16 @@ async def search_image_files(
             (item.confidence for item in object_evidence),
             default=0.0,
         )
-        if not conjunctive_object_gate or fully_satisfies_object_scope:
+        if apparel_brand_rank and fully_satisfies_object_scope:
+            # Rank by how clearly the brand sits on the garment, not a flat
+            # object boost that collapses every hit to ~0.97.
+            assoc = apparel_brand_association_strength(
+                captions.get(fid),
+                query_concepts,
+                evidence_texts=(item.evidence_text for item in object_evidence),
+            )
+            fused = min(0.99, 0.50 * fused + 0.50 * assoc + 0.08 * object_confidence)
+        elif not conjunctive_object_gate or fully_satisfies_object_scope:
             fused = fuse_object_score(
                 fused,
                 len(object_evidence),
@@ -251,7 +287,7 @@ async def search_image_files(
             )
         ranked.append((fid, fused, captions.get(fid)))
 
-    ranked.sort(key=lambda x: -x[1])
+    ranked.sort(key=lambda x: (-x[1], x[0]))
 
     results: list[SearchResultFile] = []
     seen: set[str] = set()

@@ -8,6 +8,7 @@ import pytest
 from app.objects.search import fuse_object_score
 from app.objects.query_concepts import (
     all_query_concepts_supported,
+    apparel_brand_association_strength,
     parse_query_concepts,
     text_supports_concept,
 )
@@ -52,6 +53,28 @@ def test_apparel_print_scaffold_is_not_a_required_object() -> None:
     signage = parse_query_concepts("text mastersunion")
     assert "text" in signage.taxonomy_labels
     assert signage.residual_terms == ("mastersunion",)
+
+
+def test_apparel_brand_association_strength_ranks_tight_matches_higher() -> None:
+    concepts = parse_query_concepts("tshirt with text mastersunion")
+    adjacent = apparel_brand_association_strength(
+        concepts=concepts,
+        caption="Students wearing matching Masters' Union t-shirts pose together.",
+    )
+    printed = apparel_brand_association_strength(
+        concepts=concepts,
+        caption="A man wears a black t-shirt with Masters' Union printed on the chest.",
+    )
+    backdrop = apparel_brand_association_strength(
+        concepts=concepts,
+        caption=(
+            "A man wearing a black t-shirt stands in front of a Masters' Union backdrop."
+        ),
+    )
+    assert adjacent >= 0.88
+    assert printed >= 0.8
+    assert adjacent >= printed
+    assert backdrop == 0.0
 
 
 def test_background_brand_query_requires_signage_not_random_plaques() -> None:
