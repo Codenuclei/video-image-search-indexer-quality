@@ -35,6 +35,17 @@ TAXONOMY: tuple[Taxon, ...] = (
     Taxon("dumbbell", "sports_equipment", ("dumbbells", "hand weight")),
     Taxon("barbell", "sports_equipment"),
     Taxon(
+        "sandbag",
+        "sports_equipment",
+        (
+            "sand bag",
+            "sandbags",
+            "sand bags",
+            "weighted sandbag",
+            "fitness sandbag",
+        ),
+    ),
+    Taxon(
         "rowing machine",
         "sports_equipment",
         (

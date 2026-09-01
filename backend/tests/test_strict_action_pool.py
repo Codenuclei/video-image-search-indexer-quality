@@ -138,3 +138,73 @@ def test_rowing_machine_is_object_anchor_but_cooking_is_not():
         object_anchored=False,
     )
     assert hard.require_all_roles == ("student",)
+
+
+def test_lifting_sandbag_requires_sandbag_evidence():
+    from app.search.local import (
+        action_match_keywords,
+        caption_matches_action,
+        caption_contradicts_action,
+        query_has_concrete_object_anchor,
+        is_pure_object_anchor_query,
+        filter_files_to_object_anchor,
+    )
+    from app.objects.taxonomy import classify_text
+    from app.objects.query_concepts import parse_query_concepts
+
+    q = "lifting sandbag"
+    concepts = parse_query_concepts(q)
+    assert "sandbag" in concepts.taxonomy_labels
+    assert query_has_concrete_object_anchor(q)
+    assert not is_pure_object_anchor_query(q)
+    assert any(x["canonical_label"] == "sandbag" for x in classify_text("holding a sandbag"))
+
+    keywords = action_match_keywords(q)
+    assert "sandbag" in keywords
+    assert "dumbbell" not in keywords
+    assert caption_matches_action(
+        "A woman performs weighted lunges holding a sandbag across her shoulders",
+        keywords,
+    )
+    assert not caption_matches_action(
+        "People are lifting heavy medicine balls in an athletic training space",
+        keywords,
+    )
+    assert not caption_matches_action(
+        "A person carries heavy weights at an event",
+        keywords,
+    )
+    assert caption_contradicts_action(
+        "focusing on wall ball throws inside a sports facility",
+        q,
+    )
+
+    keep = _file("s1", "s1.jpg", 0.56, "woman lunges with a sandbag across her shoulders")
+    drop_med = _file("m1", "m1.jpg", 0.56, "people lifting heavy medicine balls indoors")
+    drop_wall = _file("w1", "w1.jpg", 0.56, "athletes focusing on wall ball throws")
+    drop_kb = _file("k1", "k1.jpg", 0.53, "A person carries heavy weights at an event.")
+    drop_kb_named = _file(
+        "k2",
+        "k2.jpg",
+        0.9,
+        "athlete walks with kettlebells in each hand",
+    )
+
+    evidence = filter_files_to_object_anchor(
+        [keep, drop_med, drop_wall, drop_kb, drop_kb_named],
+        q,
+        mode="evidence",
+    )
+    assert {f.drive_file_id for f in evidence} == {"s1"}
+
+    # Soft visual scores must not resurrect medicine-ball / kettlebell misses
+    # when sandbag evidence is required by the router path.
+    soft = filter_files_to_object_anchor(
+        [keep, drop_med, drop_wall, drop_kb, drop_kb_named],
+        q,
+        mode="soft",
+    )
+    assert "s1" in {f.drive_file_id for f in soft}
+    assert "m1" not in {f.drive_file_id for f in soft}
+    assert "w1" not in {f.drive_file_id for f in soft}
+    assert "k2" not in {f.drive_file_id for f in soft}
