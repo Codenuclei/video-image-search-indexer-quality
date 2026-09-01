@@ -76,6 +76,8 @@ let state: SearchSession = initial;
 const listeners = new Set<() => void>();
 let inFlight: Promise<void> | null = null;
 let searchGeneration = 0;
+let searchAbort: AbortController | null = null;
+let activeSearchId: string | null = null;
 
 function emit() {
   listeners.forEach((fn) => fn());
@@ -236,34 +238,101 @@ export async function persistSearchCaptions(value: boolean) {
 
 /** Clear displayed results and query state (does not touch cached responses). */
 export function resetSearchResults() {
+  cancelSearch({ clearQuery: true, clearResults: true });
+}
+
+function notifyBackendCancel(searchId: string | null) {
+  if (!searchId) return;
+  void fetch(`${API_BASE}/search/cancel`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ search_id: searchId }),
+    cache: "no-store",
+    keepalive: true,
+  }).catch(() => {
+    /* best-effort */
+  });
+}
+
+function abortInFlightHttp() {
+  const cancelledId = activeSearchId;
+  if (searchAbort) {
+    searchAbort.abort();
+    searchAbort = null;
+  }
+  activeSearchId = null;
+  notifyBackendCancel(cancelledId);
+}
+
+/** Abort in-flight search and optionally clear results. Notifies the backend. */
+export function cancelSearch(options?: {
+  clearQuery?: boolean;
+  clearResults?: boolean;
+}) {
+  const clearQuery = options?.clearQuery ?? false;
+  const clearResults = options?.clearResults ?? false;
   searchGeneration += 1;
   inFlight = null;
+  abortInFlightHttp();
   patchSearchSession({
-    q: "",
-    results: null,
-    lastSearchMode: null,
-    previewFile: null,
-    previewMoment: null,
+    ...(clearQuery ? { q: "" } : {}),
+    ...(clearResults
+      ? {
+          results: null,
+          lastSearchMode: null,
+          previewFile: null,
+          previewMoment: null,
+        }
+      : {}),
     loading: false,
   });
+}
+
+function newSearchId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `s-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function isAbortError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const name = "name" in error ? String((error as { name?: unknown }).name) : "";
+  return name === "AbortError";
 }
 
 export function runSearch() {
   const current = getSearchSession();
   const q = current.q.trim();
   if (!q) return inFlight;
+
+  // Drop any prior request without clearing the query / cached preview results.
+  abortInFlightHttp();
+
   const mime = current.mime === "video" ? "all" : current.mime;
-  const params = new URLSearchParams({ q });
+  const searchId = newSearchId();
+  activeSearchId = searchId;
+  searchAbort = new AbortController();
+  const signal = searchAbort.signal;
+  const params = new URLSearchParams({ q, search_id: searchId });
   if (current.person) params.set("person", current.person);
   if (mime !== "all") params.set("mime", mime);
   if (current.folderPath) params.set("folder_path", current.folderPath);
   if (!current.rerank) params.set("rerank", "false");
   if (current.useCaptions) params.set("captions", "true");
-  const queryKey = stableJsonHash(params.toString());
+
+  // Cache key must ignore ephemeral search_id.
+  const cacheParams = new URLSearchParams({ q });
+  if (current.person) cacheParams.set("person", current.person);
+  if (mime !== "all") cacheParams.set("mime", mime);
+  if (current.folderPath) cacheParams.set("folder_path", current.folderPath);
+  if (!current.rerank) cacheParams.set("rerank", "false");
+  if (current.useCaptions) cacheParams.set("captions", "true");
+  const stableQueryKey = stableJsonHash(cacheParams.toString());
   hydrateKeyFromDisk(SEARCH_RESULTS_CACHE_KEY);
   const cachedSearches =
     readCache<SearchResultsCache>(SEARCH_RESULTS_CACHE_KEY)?.data ?? {};
-  const cached = cachedSearches[queryKey]?.result ?? null;
+  const cached = cachedSearches[stableQueryKey]?.result ?? null;
   const generation = ++searchGeneration;
   patchSearchSession({
     results: cached,
@@ -276,13 +345,16 @@ export function runSearch() {
   let job!: Promise<void>;
   job = (async () => {
     try {
-      const res = await fetch(`${API_BASE}/search?${params}`, { cache: "no-store" });
+      const res = await fetch(`${API_BASE}/search?${params}`, {
+        cache: "no-store",
+        signal,
+      });
       if (!res.ok) throw new Error(await res.text());
       const results = (await res.json()) as SearchResponse;
       const previous = readCache<SearchResultsCache>(SEARCH_RESULTS_CACHE_KEY)?.data ?? {};
       const entries = Object.entries({
         ...previous,
-        [queryKey]: { result: results, updatedAt: Date.now() },
+        [stableQueryKey]: { result: results, updatedAt: Date.now() },
       })
         .sort(([, a], [, b]) => b.updatedAt - a.updatedAt)
         .slice(0, MAX_CACHED_SEARCHES);
@@ -296,6 +368,10 @@ export function runSearch() {
       patchSearchSession({ results, loading: false });
     } catch (e) {
       if (generation !== searchGeneration) return;
+      if (signal.aborted || isAbortError(e)) {
+        patchSearchSession({ loading: false });
+        return;
+      }
       if (cached) {
         patchSearchSession({ loading: false });
         return;
@@ -304,6 +380,8 @@ export function runSearch() {
       patchSearchSession({ results: null, loading: false });
     } finally {
       if (inFlight === job) inFlight = null;
+      if (searchAbort?.signal === signal) searchAbort = null;
+      if (activeSearchId === searchId) activeSearchId = null;
     }
   })();
   inFlight = job;

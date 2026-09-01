@@ -15,6 +15,7 @@ import { Button, Card, DownloadButton, FilePreview, IconButton, IconLink, Input,
 import { FilterDropdown } from "@/components/filter-dropdown";
 import { ModalOverlay } from "@/components/modal";
 import {
+  cancelSearch,
   hydrateSearchCatalogs,
   hydrateSearchSettings,
   patchSearchSession,
@@ -220,6 +221,18 @@ export function SearchPage({
           <Button className="h-9 rounded-full px-4" onClick={search} disabled={loading}>
             {loading ? <LoadingLabel>Searching…</LoadingLabel> : <span className="inline-flex items-center gap-1.5"><Search size={14} />Search</span>}
           </Button>
+          {loading && (
+            <Button
+              type="button"
+              variant="secondary"
+              className="h-9 rounded-full px-4"
+              onClick={() => cancelSearch()}
+              title="Cancel search"
+              aria-label="Cancel search"
+            >
+              <span className="inline-flex items-center gap-1.5"><X size={14} />Cancel</span>
+            </Button>
+          )}
           <button
             type="button"
             onClick={() => void persistSearchCaptions(!useCaptions)}
@@ -259,6 +272,14 @@ export function SearchPage({
       {loading && (
         <p className="text-sm text-muted-foreground">
           <LoadingLabel size={16}>Searching…</LoadingLabel>
+          {" "}
+          <button
+            type="button"
+            onClick={() => cancelSearch()}
+            className="text-foreground underline-offset-2 hover:underline"
+          >
+            Cancel
+          </button>
         </p>
       )}
 

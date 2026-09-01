@@ -61,3 +61,29 @@ def test_caption_matches_action_for_cooking():
     assert caption_matches_action("students cooking in kitchen", keywords)
     assert not caption_matches_action("students eating lunch", keywords)
     assert not caption_matches_action("students standing in hallway", keywords)
+
+
+def test_rowing_machine_is_object_anchor_but_cooking_is_not():
+    from app.search.local import (
+        query_has_concrete_object_anchor,
+        soften_student_role_for_object_anchor,
+        parse_role_context,
+        SearchRoleContext,
+    )
+
+    assert query_has_concrete_object_anchor("student exercising with rowing machine")
+    assert query_has_concrete_object_anchor("rowing machine")
+    assert not query_has_concrete_object_anchor("students cooking food")
+    assert not query_has_concrete_object_anchor("students exercising")
+
+    _, ctx = parse_role_context("student exercising with rowing machine")
+    assert ctx.require_all_roles == ("student",)
+    soft = soften_student_role_for_object_anchor(ctx, object_anchored=True)
+    assert soft.require_all_roles == ()
+    assert soft.student_context is True
+    # Vague student action stays hard-gated.
+    hard = soften_student_role_for_object_anchor(
+        SearchRoleContext(require_all_roles=("student",), student_context=True),
+        object_anchored=False,
+    )
+    assert hard.require_all_roles == ("student",)

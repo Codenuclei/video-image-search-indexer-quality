@@ -132,12 +132,12 @@ def test_fingerprints_folder_vs_global_person() -> None:
 def test_grids_use_thumbs_enlarge_uses_preview() -> None:
     repo = Path(__file__).resolve().parents[2]
     ui = (repo / "frontend/src/components/ui.tsx").read_text()
-    search = (repo / "frontend/src/app/search/page.tsx").read_text()
+    search = (repo / "frontend/src/components/views/search-view.tsx").read_text()
     api = (repo / "frontend/src/lib/api.ts").read_text()
     library = (repo / "frontend/src/app/library/page.tsx").read_text()
     assert "driveFileThumbnailUrl" in ui
     assert "src={thumbUrl}" in ui
-    assert "driveFilePreviewUrl(previewFile.drive_file_id" in search
+    assert "driveFileThumbnailUrl(previewFile.drive_file_id)" in search
     assert "/thumbnail" in api
     assert "driveFileThumbnailUrl" in library
     assert 'src={`https://drive.google.com' not in ui
@@ -146,14 +146,21 @@ def test_grids_use_thumbs_enlarge_uses_preview() -> None:
     search_src = (REPO / "frontend/src/lib/search-session.ts").read_text()
     reverse_src = (REPO / "frontend/src/lib/reverse-face-session.ts").read_text()
     search_page = (REPO / "frontend/src/app/search/page.tsx").read_text()
+    search_view = (REPO / "frontend/src/components/views/search-view.tsx").read_text()
     reverse_page = (REPO / "frontend/src/app/labs/reverse-face/page.tsx").read_text()
-    assert "AbortController" not in search_src
+    assert "AbortController" in search_src
+    assert "cancelSearch" in search_src
+    assert "/search/cancel" in search_src
     assert "let inFlight" in search_src
     assert "useSyncExternalStore" in search_src
-    assert "useSearchSession" in search_page
-    assert "AbortController" not in reverse_src
+    assert "SearchPage" in search_page
+    assert "useSearchSession" in search_view
+    assert "cancelSearch" in search_view
+    assert "AbortController" in reverse_src
     assert "useSyncExternalStore" in reverse_src
-    assert "useReverseFaceSession" in reverse_page
+    reverse_view = (REPO / "frontend/src/components/views/reverse-face-view.tsx").read_text()
+    assert "ReverseFaceLabPage" in reverse_page
+    assert "useReverseFaceSession" in reverse_view
 
 
 @pytest.mark.asyncio
@@ -162,8 +169,10 @@ async def test_search_exact_hit_skips_gemini_rerank(monkeypatch: pytest.MonkeyPa
 
     cached = SearchResponse(query="wine glass", answer="", citations=[], cache="exact")
     monkeypatch.setattr("app.search.query_cache.lookup_exact", AsyncMock(return_value=cached))
+    monkeypatch.setattr("app.routers.search.refresh_runtime_settings_from_db", AsyncMock(return_value=None))
+    request = SimpleNamespace(is_disconnected=AsyncMock(return_value=False))
     with patch("app.routers.search.rerank_image_files", new_callable=AsyncMock) as rerank:
-        result = await search(q="wine glass", session=AsyncMock())
+        result = await search(request=request, q="wine glass", session=AsyncMock())  # type: ignore[arg-type]
     assert result.cache == "exact"
     rerank.assert_not_called()
 
