@@ -12,7 +12,6 @@ from app.runtime_settings import get_runtime_settings
 from app.db.app_settings_store import load_runtime_settings_from_db
 from app.db.schema import (
     ensure_schema,
-    ensure_app_admins_seed,
     recover_aborted_transaction_errors,
     recover_stuck_processing_files,
 )
@@ -26,32 +25,17 @@ from app.db.advisory_locks import (
 )
 from app.db.session import dispose_engine, get_engine, get_session_factory
 from app.dependencies import get_indexing_worker
-from app.fennec.client import get_fennec_client
 from app.routers import (
-    app_auth,
-    cache as cache_router,
     carousel_script,
-    clusters,
-    control_reader,
-    diagnostics,
     drive,
     drive_oauth,
-    faces,
-    fennec,
-    folder_contexts,
-    help as help_router,
     index,
     media,
     persons,
-    qwen_vlm,
-    reid,
-    search,
     settings,
     transcripts,
-    webhooks,
     youtube,
 )
-from app.svs.client import svs_ready  # kept for backwards compat — SVS disabled
 from app.pipelines.common import register_image_plugins
 from app.workers.auto_indexer import auto_index_loop
 from app.workers.maintenance import startup_maintenance
@@ -71,10 +55,7 @@ async def lifespan(app: FastAPI):
     global _boot_error
     settings_obj = get_settings()
     logger = logging.getLogger(__name__)
-    logger.info(
-        "DriveFaceIndexer starting — connector=%s (local Qdrant RAG; Google File Search disabled)",
-        settings_obj.drive_connector_base_url,
-    )
+    logger.info("Carousel Studio API starting — Drive-search / Qdrant / app-admin auth unmounted")
 
     register_image_plugins()
 
@@ -93,12 +74,7 @@ async def lifespan(app: FastAPI):
     except Exception:  # noqa: BLE001
         logger.exception("Startup: failed to bind default executor")
 
-    # Keep the latency-sensitive Library Qdrant executor alive inside this API
-    # worker. It never uses the indexing/default thread pool.
-    from app.drive.library_reader_runtime import get_library_reader_runtime
-
-    library_reader = get_library_reader_runtime()
-    await library_reader.warm()
+    library_reader = None
 
     # Yield ASAP so Railway /health can pass. Prior deploys hung forever on the
     # first DB call (ensure_schema) after cookies — ASGI never accepted traffic,
@@ -118,7 +94,6 @@ async def lifespan(app: FastAPI):
                 try:
                     logger.info("Startup: ensuring DB schema… (attempt %d/5)", attempt)
                     await ensure_schema(get_engine())
-                    await ensure_app_admins_seed(get_engine())
                     logger.info("Startup: loading runtime settings…")
                     await load_runtime_settings_from_db(get_session_factory())
                     # Warm every API worker's local revision cache before it is
@@ -349,24 +324,23 @@ async def lifespan(app: FastAPI):
         except asyncio.CancelledError:
             pass
     await release_background_leader()
-    library_reader.shutdown()
+    if library_reader is not None:
+        library_reader.shutdown()
     await dispose_engine()
 
 
-app = FastAPI(title="DriveFaceIndexer", version="2.0.0", lifespan=lifespan)
+app = FastAPI(title="Carousel Studio API", version="1.0.0", lifespan=lifespan)
 
 _settings = get_settings()
 _extra_origins = [o.strip() for o in (_settings.allowed_origins or "").split(",") if o.strip()]
+_carousel_origin = (_settings.carousel_frontend_url or "http://localhost:3002").rstrip("/")
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:3001",
-        "http://127.0.0.1:3001",
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
         "http://localhost:3002",
         "http://127.0.0.1:3002",
+        _carousel_origin,
         *_extra_origins,
     ],
     allow_credentials=True,
@@ -387,7 +361,6 @@ async def _tag_carousel_vs_search(request, call_next):
     from app.search.carousel_trace import (
         bind_carousel_context,
         carousel_log,
-        drive_search_log,
         reset_carousel_context,
     )
 
@@ -444,26 +417,6 @@ async def _tag_carousel_vs_search(request, call_next):
         reset_carousel_context(tokens)
         return response
 
-    if path == "/search" or path.startswith("/search/"):
-        # Carousel is handled above; remaining /search* is Drive/image/moment search.
-        if path.startswith("/search/carousel"):
-            return await call_next(request)
-        drive_search_log(
-            "http_request_start",
-            method=request.method,
-            path=path,
-            client=(request.client.host if request.client else "-"),
-        )
-        response = await call_next(request)
-        drive_search_log(
-            "http_request_end",
-            method=request.method,
-            path=path,
-            status=getattr(response, "status_code", "-"),
-            elapsed_ms=(time.perf_counter() - started) * 1000.0,
-        )
-        return response
-
     return await call_next(request)
 
 
@@ -499,28 +452,15 @@ async def _require_boot_ready(request, call_next):
         )
     return await call_next(request)
 
-app.include_router(app_auth.router)
 app.include_router(drive_oauth.router)
 app.include_router(drive.router)
-app.include_router(control_reader.router)
-app.include_router(cache_router.router)
 app.include_router(index.router)
-app.include_router(search.router)
 app.include_router(carousel_script.router)
-app.include_router(webhooks.router)
 app.include_router(settings.router)
 app.include_router(persons.router)
-app.include_router(clusters.router)
-app.include_router(faces.router)
 app.include_router(media.router)
-app.include_router(folder_contexts.router)
-app.include_router(fennec.router)
-app.include_router(qwen_vlm.router)
 app.include_router(youtube.router)
 app.include_router(transcripts.router)
-app.include_router(reid.router)
-app.include_router(help_router.router)
-app.include_router(diagnostics.router)
 
 
 @app.get("/health")
@@ -591,18 +531,6 @@ async def health_detail():
                 "error": str(exc)[:120],
             }
 
-    async def _ping_qdrant() -> dict:
-        try:
-            from app.qdrant.client import collection_info_sync
-            from app.qdrant.images import collection_info_sync as image_collection_info_sync
-            from app.qdrant.image_captions import collection_info_sync as caption_collection_info_sync
-            video = await asyncio.to_thread(collection_info_sync)
-            images = await asyncio.to_thread(image_collection_info_sync)
-            captions = await asyncio.to_thread(caption_collection_info_sync)
-            return {"status": "ok", "video": video, "images": images, "captions": captions}
-        except Exception as exc:
-            return {"status": "error", "error": str(exc)[:120]}
-
     async def _ping_drive() -> dict:
         try:
             async with get_session_factory()() as s:
@@ -617,58 +545,28 @@ async def health_detail():
         except Exception as exc:
             return {"status": "error", "error": str(exc)[:120]}
 
-    db_result, qdrant_result, drive_result = await asyncio.gather(
+    db_result, drive_result = await asyncio.gather(
         _ping_db(),
-        _ping_qdrant(),
         _ping_drive(),
         return_exceptions=False,
     )
 
-    from app.storage import disk_usage_report
-
-    disk_media = disk_usage_report(settings_obj.media_cache_dir)
-    disk_video = disk_usage_report(settings_obj.video_cache_dir)
-    disk_ok = bool(disk_media.get("ok")) and bool(disk_video.get("ok"))
-
     elapsed_ms = round((time.monotonic() - t0) * 1000)
-    all_ok = db_result.get("status") == "ok" and qdrant_result.get("status") == "ok"
+    all_ok = db_result.get("status") == "ok"
 
     return {
         "status": "ok" if all_ok else "degraded",
         "elapsed_ms": elapsed_ms,
         "services": {
-            "dfi_backend": {
+            "carousel_api": {
                 "status": "ok",
-                "search_mode": "gemini-embedding-2-video+images-qdrant+gemini-file-search",
+                "product": "carousel",
                 "video_indexing": settings_obj.video_indexing_enabled,
-                "auto_index_interval_s": settings_obj.auto_index_interval_seconds,
-                "qdrant_video_collection": settings_obj.qdrant_collection,
-                "qdrant_images_collection": settings_obj.qdrant_images_collection,
-                "gemini_video_min_score": settings_obj.gemini_video_min_score,
-                "gemini_image_min_score": settings_obj.gemini_image_min_score,
                 "video_index_max_parallel": settings_obj.video_index_max_parallel,
-                "image_index_max_parallel": settings_obj.image_index_max_parallel,
-                "image_caption_batch_size": settings_obj.image_caption_batch_size,
-                "image_caption_batch_parallel": settings_obj.image_caption_batch_parallel,
-                "image_embed_backfill_parallel": settings_obj.image_embed_backfill_parallel,
-                "maintenance_batches_per_tick": settings_obj.maintenance_batches_per_tick,
-                "gemini_embed_max_concurrent": settings_obj.gemini_embed_max_concurrent,
-                "gemini_vlm_max_concurrent": settings_obj.gemini_vlm_max_concurrent,
-                "gemini_upload_max_concurrent": settings_obj.gemini_upload_max_concurrent,
                 "run_indexer": settings_obj.run_indexer,
-                "run_face_worker": settings_obj.run_face_worker,
-                "face_jobs_enabled": settings_obj.face_jobs_enabled,
-                "face_worker_concurrency": settings_obj.face_worker_concurrency,
-            },
-            "disk": {
-                "status": "ok" if disk_ok else "low",
-                "media_cache": disk_media,
-                "video_cache": disk_video,
-                "index_disk_high_water_bytes": settings_obj.index_disk_high_water_bytes,
             },
             "database": db_result,
             "google_drive": drive_result,
-            "qdrant": qdrant_result,
         },
     }
 

@@ -8,18 +8,16 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    database_url: str = "postgresql+asyncpg://drivefaceindexer:drivefaceindexer@localhost:5432/drivefaceindexer"
+    database_url: str = "postgresql+asyncpg://drivefaceindexer:drivefaceindexer@localhost:5432/carousel"
 
-    # Google OAuth (replaces the external Drive Connector)
+    # Google OAuth for Carousel Studio only — use a distinct redirect URI from Drive search.
     google_client_id: str = ""
     google_client_secret: str = ""
     google_redirect_uri: str = "http://localhost:8000/auth/google/callback"
-    # Browser API key for Google Picker (setDeveloperKey). Not a Gemini / AI Studio key.
     google_api_key: str = ""
 
-    # URL of the Next.js frontend — used to redirect after OAuth
-    frontend_url: str = "http://localhost:3001"
-    # Carousel studio frontend — OAuth return_to allowlist + preferred base for /carousel|/test
+    # Ignored for OAuth allowlisting on this fork (kept so leftover env files parse).
+    frontend_url: str = "http://localhost:3002"
     carousel_frontend_url: str = "http://localhost:3002"
 
     # Comma-separated list of extra CORS origins (e.g. Railway frontend domain)
@@ -82,7 +80,7 @@ class Settings(BaseSettings):
     index_claim_window_multiplier: int = 40
     # Orphan PROCESSING videos (no live task) become ERROR after this many seconds.
     # Live Whisper/index tasks are never cancelled by this watchdog.
-    video_index_stall_seconds: int = 3600
+    video_index_stall_seconds: int = 7200
 
     # Dedicated indexer service sets RUN_INDEXER=true with WEB_CONCURRENCY=1.
     # API-only replicas set RUN_INDEXER=false so search stays responsive.
@@ -186,13 +184,12 @@ class Settings(BaseSettings):
     video_cache_dir: str = "./data/videos"
     # Durable media copies for Drive images/docs (temp → atomic move; stable paths).
     media_cache_dir: str = "./data/media_cache"
-    video_frame_interval_seconds: float = 1.0
-    video_max_sample_frames: int = 300
-    video_max_gemini_frames: int = 12
-    video_vlm_enrich: bool = True
-    # Max videos at once. InsightFace/CPU lock → diminishing returns above ~3–4;
-    # raise via VIDEO_INDEX_MAX_PARALLEL only if ffmpeg/Gemini headroom shows idle.
-    video_index_max_parallel: int = 3
+    video_frame_interval_seconds: float = 480.0
+    video_max_sample_frames: int = 8
+    video_max_gemini_frames: int = 0
+    video_vlm_enrich: bool = False
+    # One hour-long ingest at a time (Whisper + ffmpeg). Do not clone search's parallel image load.
+    video_index_max_parallel: int = 1
     # Local ASR fallback when YouTube/Drive captions are missing (carousel needs text).
     whisper_model_size: str = "base"
     whisper_fallback_enabled: bool = True

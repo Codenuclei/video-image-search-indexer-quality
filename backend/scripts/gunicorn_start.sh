@@ -7,9 +7,9 @@ PORT="${PORT:-8000}"
 # Prefer WEB_CONCURRENCY (12-factor); fall back to GUNICORN_WORKERS.
 # Default 4 (not 24): InsightFace/OpenBLAS + many UvicornWorkers exhausted
 # container thread limits. Raise only after OPENBLAS_NUM_THREADS=1 is proven.
-WORKERS="${WEB_CONCURRENCY:-${GUNICORN_WORKERS:-4}}"
-# Long carousel/Drive jobs can run ~15m; do not kill silent workers early.
-TIMEOUT="${GUNICORN_TIMEOUT:-900}"
+WORKERS="${WEB_CONCURRENCY:-${GUNICORN_WORKERS:-1}}"
+# Hour-long Whisper ingest can exceed 15m; keep workers alive.
+TIMEOUT="${GUNICORN_TIMEOUT:-3600}"
 GRACEFUL="${GUNICORN_GRACEFUL_TIMEOUT:-120}"
 KEEPALIVE="${GUNICORN_KEEPALIVE:-5}"
 

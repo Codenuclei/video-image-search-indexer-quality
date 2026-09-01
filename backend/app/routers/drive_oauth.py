@@ -49,9 +49,9 @@ _USERINFO_URI = "https://www.googleapis.com/oauth2/v2/userinfo"
 
 
 def _oauth_allowed_origins(settings: Settings) -> set[str]:
+    """Carousel-only allowlist. Search frontend origins are not accepted."""
     origins: set[str] = set()
     for raw in (
-        settings.frontend_url,
         settings.carousel_frontend_url,
         *(o.strip() for o in (settings.allowed_origins or "").split(",") if o.strip()),
     ):
@@ -72,8 +72,8 @@ def _with_query(url: str, **extra: str) -> str:
 
 
 def resolve_oauth_return_url(settings: Settings, return_to: str | None) -> str:
-    """Validate return_to against FRONTEND_URL / CAROUSEL_FRONTEND_URL / ALLOWED_ORIGINS."""
-    default = f"{settings.frontend_url.rstrip('/')}/folders"
+    """Validate return_to against CAROUSEL_FRONTEND_URL / ALLOWED_ORIGINS only."""
+    default = f"{(settings.carousel_frontend_url or 'http://localhost:3002').rstrip('/')}/carousel"
     raw = (return_to or "").strip()
     if not raw:
         return default
@@ -82,10 +82,7 @@ def resolve_oauth_return_url(settings: Settings, return_to: str | None) -> str:
     if raw.startswith("/") and not raw.startswith("//"):
         path = raw.split("?", 1)[0]
         query = raw.split("?", 1)[1] if "?" in raw else ""
-        if path.startswith(("/carousel", "/test")):
-            base = (settings.carousel_frontend_url or settings.frontend_url).rstrip("/")
-        else:
-            base = settings.frontend_url.rstrip("/")
+        base = (settings.carousel_frontend_url or default).rstrip("/")
         candidate = f"{base}{path}"
         if query:
             candidate = f"{candidate}?{query}"

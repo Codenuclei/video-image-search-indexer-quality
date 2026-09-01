@@ -51,7 +51,7 @@ def extract_audio_wav(video_path: str, wav_path: str) -> None:
         "16000",
         wav_path,
     ]
-    subprocess.run(cmd, capture_output=True, timeout=600, check=True)
+    subprocess.run(cmd, capture_output=True, timeout=3600, check=True)
 
 
 # Instagram portrait stills for carousel on-demand extracts (does not change indexer sampling).
