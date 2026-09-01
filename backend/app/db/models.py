@@ -552,7 +552,7 @@ class CarouselItemFeedback(Base):
 
 
 class AppAdmin(Base):
-    """Allowlist of emails that may open the Admin UI (SSR/middleware gated)."""
+    """Allowlist of emails that may use Carousel Studio GIS admin checks."""
 
     __tablename__ = "app_admins"
 

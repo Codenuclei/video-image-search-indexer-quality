@@ -1,6 +1,6 @@
 /**
  * Shared Google Drive OAuth / folder / pull helpers for carousel + /test.
- * Uses the same backend routes as the main indexer frontend folders page.
+ * Hits this backend's own auth routes (GIS + Drive OAuth), not the search API.
  */
 
 import { formatApiError } from "@/lib/api";

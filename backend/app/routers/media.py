@@ -10,6 +10,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth_credentials import carousel_google
 from app.config import get_settings
 from app.db.models import DriveFile, Face, Media, MediaType, OcrPage, VideoSegment
 from app.db.session import get_db, get_session_factory
@@ -376,11 +377,12 @@ async def _extract_frame_on_demand(
             logger.warning("Frame on-demand: token expired and no refresh_token")
             return False
         try:
+            creds = carousel_google(settings)
             new_token, new_expiry = await asyncio.to_thread(
                 _do_token_refresh,
                 user.refresh_token,
-                settings.google_client_id,
-                settings.google_client_secret,
+                creds.client_id,
+                creds.client_secret,
             )
             user.access_token = new_token
             user.token_expiry = new_expiry

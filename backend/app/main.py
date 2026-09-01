@@ -11,6 +11,7 @@ from app.config import get_settings
 from app.runtime_settings import get_runtime_settings
 from app.db.app_settings_store import load_runtime_settings_from_db
 from app.db.schema import (
+    ensure_app_admins_seed,
     ensure_schema,
     recover_aborted_transaction_errors,
     recover_stuck_processing_files,
@@ -26,9 +27,10 @@ from app.db.advisory_locks import (
 from app.db.session import dispose_engine, get_engine, get_session_factory
 from app.dependencies import get_indexing_worker
 from app.routers import (
+    carousel_auth,
+    carousel_oauth,
     carousel_script,
     drive,
-    drive_oauth,
     index,
     media,
     persons,
@@ -55,7 +57,7 @@ async def lifespan(app: FastAPI):
     global _boot_error
     settings_obj = get_settings()
     logger = logging.getLogger(__name__)
-    logger.info("Carousel Studio API starting — Drive-search / Qdrant / app-admin auth unmounted")
+    logger.info("Carousel Studio API starting — GIS + Drive OAuth served by this process")
 
     register_image_plugins()
 
@@ -94,6 +96,7 @@ async def lifespan(app: FastAPI):
                 try:
                     logger.info("Startup: ensuring DB schema… (attempt %d/5)", attempt)
                     await ensure_schema(get_engine())
+                    await ensure_app_admins_seed(get_engine())
                     logger.info("Startup: loading runtime settings…")
                     await load_runtime_settings_from_db(get_session_factory())
                     # Warm every API worker's local revision cache before it is
@@ -452,7 +455,8 @@ async def _require_boot_ready(request, call_next):
         )
     return await call_next(request)
 
-app.include_router(drive_oauth.router)
+app.include_router(carousel_auth.router)
+app.include_router(carousel_oauth.router)
 app.include_router(drive.router)
 app.include_router(index.router)
 app.include_router(carousel_script.router)

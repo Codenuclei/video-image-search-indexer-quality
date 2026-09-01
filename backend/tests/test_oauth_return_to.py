@@ -1,7 +1,7 @@
 """OAuth return_to allowlist is carousel-only on this fork (no search frontend)."""
 
 from app.config import Settings
-from app.routers.drive_oauth import resolve_oauth_return_url
+from app.routers.carousel_oauth import resolve_oauth_return_url
 
 
 def test_oauth_return_defaults_to_carousel() -> None:

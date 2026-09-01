@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 import httpx
 from sqlalchemy import select
 
+from app.auth_credentials import carousel_google
 from app.config import get_settings
 from app.drive.schemas import ConnectorFile, ConnectorFolder, ConnectorFolderListing
 from app.drive.traverse import FOLDER_MIME, SHORTCUT_MIME, plan_child_traversal
@@ -86,7 +87,7 @@ class DriveDirectClient:
             if user is None:
                 raise DriveDirectError(
                     "No Google Drive account connected. "
-                    "Open the DFI frontend → Folders and click 'Connect Google Drive'."
+                    "Open Carousel Studio and click Connect Google Drive."
                 )
 
             now = datetime.now(tz=timezone.utc)
@@ -101,11 +102,12 @@ class DriveDirectClient:
                         "Please reconnect Google Drive."
                     )
                 logger.info("Refreshing Drive access token for %s", user.email)
+                creds = carousel_google(self._settings)
                 new_token, new_expiry = await asyncio.to_thread(
                     _do_token_refresh,
                     user.refresh_token,
-                    self._settings.google_client_id,
-                    self._settings.google_client_secret,
+                    creds.client_id,
+                    creds.client_secret,
                 )
                 user.access_token = new_token
                 user.token_expiry = new_expiry
@@ -125,12 +127,12 @@ class DriveDirectClient:
             if user is None:
                 raise DriveDirectError(
                     "No Google Drive account connected. "
-                    "Open the DFI frontend → Folders and click 'Connect Google Drive'."
+                    "Open Carousel Studio and click Connect Google Drive."
                 )
             if not user.selected_folder_id:
                 raise DriveDirectError(
                     "No Drive folder selected. "
-                    "Open the DFI frontend → Folders and choose a folder."
+                    "Open Carousel Studio and choose a Drive folder."
                 )
             folder_id = user.selected_folder_id
 

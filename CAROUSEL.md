@@ -1,14 +1,16 @@
 # pruned-craousel
 
-This clone is the **Carousel Studio** backend + UI. Drive-search HTTP (Qdrant image/moment search, clusters, reid, admin Google ID login) is unmounted.
+This clone is the **Carousel Studio** backend + UI. Drive-search HTTP (Qdrant image/moment search, clusters, reid) is unmounted.
 
-## Auth (separate from Drive search)
+## Auth (this backend is the auth server)
 
-- OAuth allowlist is `CAROUSEL_FRONTEND_URL` + `ALLOWED_ORIGINS` only.
-- Default return is `/carousel`, not the search app `/folders`.
-- Search frontend origins are rejected.
-- `/auth/google-id-token` (admin GIS login) is not mounted.
-- Use a **distinct** `GOOGLE_REDIRECT_URI` from `dfi-backend` (this service’s callback). Tokens live in **this** Postgres (`carousel` DB), not the search DB.
+GIS login and Drive OAuth are **copied into this process**. Studio does not call search (`dfi-backend`) for tokens, sessions, or Google client verification.
+
+- GIS: `POST /auth/google-id-token`, `GET /auth/is-admin` — `backend/app/routers/carousel_auth.py`. Allowlist is `app_admins` in **this** Postgres.
+- Drive OAuth: `/auth/google`, `/auth/google/callback`, `/api/session`, `/api/drive-token` — `backend/app/routers/carousel_oauth.py`. Tokens live in **this** `carousel` DB.
+- Credentials: prefer `CAROUSEL_GOOGLE_CLIENT_ID` / `SECRET` / `REDIRECT_URI` / `API_KEY`. Empty values fall back to `GOOGLE_*` in the **same** process only.
+- OAuth allowlist is `CAROUSEL_FRONTEND_URL` + `ALLOWED_ORIGINS`. Default return is `/carousel`. Search frontend origins are rejected.
+- Register a **distinct** Google redirect URI for this service’s callback (not search’s).
 
 ## Hour-long videos
 

@@ -10,7 +10,13 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql+asyncpg://drivefaceindexer:drivefaceindexer@localhost:5432/carousel"
 
-    # Google OAuth for Carousel Studio only — use a distinct redirect URI from Drive search.
+    # This service's Google OAuth (GIS + Drive). Prefer CAROUSEL_GOOGLE_* so a
+    # leftover search env cannot reuse search's client / callback. Empty values
+    # fall back to GOOGLE_* in the same process — never HTTP to dfi-backend.
+    carousel_google_client_id: str = ""
+    carousel_google_client_secret: str = ""
+    carousel_google_redirect_uri: str = ""
+    carousel_google_api_key: str = ""
     google_client_id: str = ""
     google_client_secret: str = ""
     google_redirect_uri: str = "http://localhost:8000/auth/google/callback"
