@@ -25,6 +25,7 @@ from app.search.cancel import (
 )
 from app.search.moments import search_video_moments
 from app.search.images import attach_stored_captions, search_image_files
+from app.objects.query_concepts import apparel_labels_in, parse_query_concepts
 from app.search.local import (
     expand_visual_query,
     files_for_citation_names,
@@ -183,6 +184,11 @@ async def _gemini_files(
             merged.append(item)
 
     return merged
+
+
+def _is_apparel_brand_query(query: str) -> bool:
+    concepts = parse_query_concepts(query)
+    return bool(apparel_labels_in(concepts) and concepts.residual_terms)
 
 
 class SearchCancelRequest(BaseModel):
@@ -478,9 +484,16 @@ async def _run_search(
                 action_query=vector_action_query,
                 enable_conjunctive_object_gate=(
                     not effective_persons
-                    and not action_query
-                    and not role_context_active(role_ctx)
-                    and not role_ctx.student_context
+                    and (
+                        # Always gate apparel+brand (mastersunion tshirt), even
+                        # when student/wearing would otherwise disable it.
+                        _is_apparel_brand_query(query)
+                        or (
+                            not action_query
+                            and not role_context_active(role_ctx)
+                            and not role_ctx.student_context
+                        )
+                    )
                 ),
             )
 

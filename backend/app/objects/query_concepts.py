@@ -46,6 +46,22 @@ _CONTENT_STOPWORDS = frozenset(
     }
 )
 
+# Role words are handled by SearchRoleContext — do not require them as
+# on-garment residual text ("students wearing mastersunion tshirt").
+_ROLE_RESIDUAL_TOKENS = frozenset(
+    {
+        "student",
+        "students",
+        "pupil",
+        "pupils",
+        "graduate",
+        "graduates",
+        "alumni",
+        "alumnus",
+        "alumna",
+    }
+)
+
 # Signage taxonomy that users often mean as "printed on the garment", not a
 # separate object that must also appear in the scene.
 _APPAREL_PRINT_SCAFFOLD = frozenset({"text", "logo"})
@@ -184,12 +200,14 @@ def parse_query_concepts(query: str | None) -> QueryConcepts:
     residual: list[str] = []
     scene_scaffold_hit = False
     for token, used in zip(tokens, occupied):
-        if used or token in _CONTENT_STOPWORDS:
+        if used or token in _CONTENT_STOPWORDS or token in _ROLE_RESIDUAL_TOKENS:
             continue
         if token in _SCENE_BRAND_SCAFFOLD:
             scene_scaffold_hit = True
             continue
         corrected = _correct_residual_token(token)
+        if corrected in _ROLE_RESIDUAL_TOKENS:
+            continue
         if corrected not in residual:
             residual.append(corrected)
 
