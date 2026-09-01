@@ -53,6 +53,7 @@ from app.search.local import (
     merge_action_search_pool,
     merge_person_scene_results,
     query_has_concrete_object_anchor,
+    concrete_object_anchor_labels,
     object_anchor_search_text,
     is_pure_object_anchor_query,
     filter_files_to_object_anchor,
@@ -617,11 +618,18 @@ async def _run_search(
     # Bound object-anchored results without killing visual ANN.
     # Bare object: drop hard caption negatives only.
     # Compound (student/exercising+object): keep evidence OR strong visual scores.
+    # Sandbag: always require caption/object evidence — visual ANN confuses
+    # sandbags with medicine balls / kettlebells / wall balls.
     if object_anchored and image_files:
+        sandbag_anchored = "sandbag" in concrete_object_anchor_labels(query)
         image_files = filter_files_to_object_anchor(
             image_files,
             query,
-            mode="visual" if pure_object_anchor else "soft",
+            mode=(
+                "evidence"
+                if sandbag_anchored
+                else ("visual" if pure_object_anchor else "soft")
+            ),
         )
 
     keyword_matched: list[SearchResultFile] = []
@@ -783,10 +791,15 @@ async def _run_search(
                 logger.warning("Caption LLM filter failed, keeping unfiltered results: %s", exc)
 
     if object_anchored and files:
+        sandbag_anchored = "sandbag" in concrete_object_anchor_labels(query)
         image_kept = filter_files_to_object_anchor(
             [f for f in files if f.mime_type.startswith("image/")],
             query,
-            mode="visual" if pure_object_anchor else "soft",
+            mode=(
+                "evidence"
+                if sandbag_anchored
+                else ("visual" if pure_object_anchor else "soft")
+            ),
         )
         other_kept = [f for f in files if not f.mime_type.startswith("image/")]
         files = dedupe_search_files(image_kept + other_kept)

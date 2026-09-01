@@ -79,6 +79,9 @@ _ACTION_KEYWORD_GROUPS: dict[str, frozenset[str]] = {
     "lift": frozenset({
         "lift", "lifting", "weight", "weights", "weightlifting", "barbell", "dumbbell",
     }),
+    "sandbag": frozenset({
+        "sandbag", "sandbags", "sand bag", "sand bags", "weighted sandbag", "fitness sandbag",
+    }),
     "give": frozenset({
         "give", "giving", "hand", "handing", "cheque", "cheques", "check", "checks",
         "award", "prize", "certificate", "ceremonial", "ceremony", "scholarship",
@@ -417,6 +420,12 @@ _OBJECT_HARD_NEGATIVE: dict[str, re.Pattern[str]] = {
     "rowing machine": re.compile(
         r"\b(?:medicine\s+balls?|wall\s+balls?|ski[\s-]?ergs?|skiergs?|"
         r"ski\s+ergometers?|jogging|running\s+on\s+(?:an\s+)?(?:indoor\s+)?track)\b",
+        re.IGNORECASE,
+    ),
+    "sandbag": re.compile(
+        r"\b(?:medicine\s+balls?|wall\s+balls?|wallballs?|kettlebells?|"
+        r"dumbbells?|barbells?|sleds?|battle\s+ropes?|slam\s+balls?|"
+        r"centr\s+balls?|ski[\s-]?ergs?|skiergs?)\b",
         re.IGNORECASE,
     ),
 }
@@ -769,6 +778,14 @@ def action_match_keywords(query: str) -> set[str]:
         keywords.add(word)
         if word.endswith("ing") and len(word) > 4:
             keywords.add(word[:-3])
+
+    # Equipment-named queries: require sandbag tokens and drop generic
+    # "lift/weight" flooding that matches medicine balls / kettlebells.
+    if "sandbag" in q or "sand bag" in q:
+        sandbag_terms = set(_ACTION_KEYWORD_GROUPS["sandbag"])
+        lift_generics = {"weight", "weights", "weightlifting", "barbell", "dumbbell"}
+        keywords = (keywords - lift_generics) | sandbag_terms
+        keywords |= {"lift", "lifting", "carry", "carrying", "lunge", "lunges"}
     return keywords
 
 
@@ -782,6 +799,12 @@ _ACTION_NEGATIVE_HINTS: dict[str, frozenset[str]] = {
         "clapperboard", "seminar", "conference hall", "conference", "trophy",
         "instructor", "classroom", "discussion", "celebrates", "tracksuit",
     }),
+    "sandbag": frozenset({
+        "medicine ball", "medicine balls", "wall ball", "wall balls", "wallball",
+        "kettlebell", "kettlebells", "dumbbell", "dumbbells", "barbell",
+        "sled", "rowing", "rower", "ski erg", "skierg", "battle rope", "battle ropes",
+        "centr ball", "slam ball",
+    }),
 }
 
 
@@ -789,7 +812,7 @@ def caption_contradicts_action(caption: str, query: str) -> bool:
     q = query.lower()
     cap = caption.lower()
     for stem, negatives in _ACTION_NEGATIVE_HINTS.items():
-        if stem in q:
+        if stem in q or (stem == "sandbag" and "sand bag" in q):
             return any(neg in cap for neg in negatives)
     return False
 
@@ -798,7 +821,14 @@ def caption_matches_action(caption: str, keywords: set[str]) -> bool:
     if not keywords or not caption.strip():
         return False
     cap = caption.lower()
-    return any(kw in cap for kw in keywords)
+    if not any(kw in cap for kw in keywords):
+        return False
+    # When sandbag terms are in the keyword set, require at least one of them
+    # (do not accept bare "lifting" / "lunge" without a sandbag).
+    sandbag_terms = _ACTION_KEYWORD_GROUPS.get("sandbag", frozenset())
+    if keywords & sandbag_terms:
+        return any(term in cap for term in sandbag_terms)
+    return True
 
 
 def merge_action_search_pool(
