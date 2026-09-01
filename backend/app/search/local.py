@@ -403,31 +403,41 @@ def file_supports_object_anchor(
 
 
 _SKI_ERG_ONLY_RE = re.compile(
-    r"\bski[\s-]?ergs?\b|\bskiergs?\b|\bski\s+ergometer\b",
+    r"\bski[\s-]?ergs?\b|\bskiergs?\b|\bski\s+ergometers?\b",
     re.IGNORECASE,
 )
 _ROWING_POSITIVE_RE = re.compile(
-    r"\b(?:rowing(?:\s+machines?)?|rowers?|rowergs?|row[\s-]?ergs?|ergometers?|"
+    r"\b(?:rowing(?:\s+machines?)?|rowers?|rowergs?|row[\s-]?ergs?|"
     r"row\s+machines?|indoor\s+rowing)\b",
     re.IGNORECASE,
 )
+# Bare "ergometer" is ambiguous (ski vs row). Only count it without ski context.
+_ERGOMETER_RE = re.compile(r"\bergometers?\b", re.IGNORECASE)
 _OBJECT_HARD_NEGATIVE: dict[str, re.Pattern[str]] = {
     "rowing machine": re.compile(
         r"\b(?:medicine\s+balls?|wall\s+balls?|ski[\s-]?ergs?|skiergs?|"
-        r"jogging|running\s+on\s+(?:an\s+)?(?:indoor\s+)?track)\b",
+        r"ski\s+ergometers?|jogging|running\s+on\s+(?:an\s+)?(?:indoor\s+)?track)\b",
         re.IGNORECASE,
     ),
 }
 
 # Keep strong visual ANN hits even when caption/object text is missing/weak.
-_OBJECT_VISUAL_KEEP_SCORE = 0.90
+# True rowing ANN scores cluster ~0.96; HYROX people/event false hits sit <0.50.
+_OBJECT_VISUAL_KEEP_SCORE = 0.55
 
 
 def _caption_is_ski_erg_only(caption: str | None) -> bool:
     cap = caption or ""
     if not _SKI_ERG_ONLY_RE.search(cap):
         return False
-    return not _ROWING_POSITIVE_RE.search(cap)
+    # "ski ergometer" must not be rescued by the shared "ergometer" alias.
+    return not bool(
+        re.search(
+            r"\b(?:rowing(?:\s+machines?)?|rowers?|rowergs?|row[\s-]?ergs?|row\s+machines?)\b",
+            cap,
+            re.IGNORECASE,
+        )
+    )
 
 
 def _caption_supports_rowing_machine(caption: str | None) -> bool:
@@ -438,9 +448,11 @@ def _caption_supports_rowing_machine(caption: str | None) -> bool:
         return False
     if _ROWING_POSITIVE_RE.search(cap):
         return True
+    if _ERGOMETER_RE.search(cap) and not _SKI_ERG_ONLY_RE.search(cap):
+        return True
     # Concept2 / Concept 2 rowers, but not SkiErg.
     if re.search(r"\bconcept\s*2\b", cap, re.IGNORECASE) and not _SKI_ERG_ONLY_RE.search(cap):
-        if re.search(r"\b(?:row|rower|rowing|machine|machines|erg)\b", cap, re.IGNORECASE):
+        if re.search(r"\b(?:row|rower|rowing|machine|machines)\b", cap, re.IGNORECASE):
             return True
     return False
 
@@ -448,14 +460,15 @@ def _caption_supports_rowing_machine(caption: str | None) -> bool:
 def _is_object_anchor_hard_negative(item: SearchResultFile, query: str) -> bool:
     labels = concrete_object_anchor_labels(query)
     cap = item.caption or ""
+    # Ski-erg captions are never rowing-machine hits, even if a bad object label exists.
+    if "rowing machine" in labels and _caption_is_ski_erg_only(cap):
+        return True
     for label in labels:
         rx = _OBJECT_HARD_NEGATIVE.get(label)
         if not rx:
             continue
         if rx.search(cap) and not file_supports_object_anchor(item, query):
             return True
-    if "rowing machine" in labels and _caption_is_ski_erg_only(cap):
-        return True
     return False
 
 
@@ -476,7 +489,15 @@ def filter_files_to_object_anchor(
     if not concrete_object_anchor_labels(query):
         return files
     if mode == "visual":
-        return [item for item in files if not _is_object_anchor_hard_negative(item, query)]
+        # Still require a minimum ANN score so event-people photos in the long
+        # tail (HYROX poses/runs/sleds ~0.25-0.45) do not count as the object.
+        kept: list[SearchResultFile] = []
+        for item in files:
+            if _is_object_anchor_hard_negative(item, query):
+                continue
+            if file_supports_object_anchor(item, query) or (item.score or 0.0) >= min_visual_score:
+                kept.append(item)
+        return kept
     if mode == "soft":
         kept: list[SearchResultFile] = []
         for item in files:
@@ -485,7 +506,11 @@ def filter_files_to_object_anchor(
             if file_supports_object_anchor(item, query) or (item.score or 0.0) >= min_visual_score:
                 kept.append(item)
         return kept
-    return [item for item in files if file_supports_object_anchor(item, query)]
+    return [
+        item
+        for item in files
+        if file_supports_object_anchor(item, query) and not _is_object_anchor_hard_negative(item, query)
+    ]
 
 
 def soften_student_role_for_object_anchor(

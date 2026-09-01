@@ -86,22 +86,47 @@ def test_rowing_machine_is_object_anchor_but_cooking_is_not():
     keep = _file("r1", "r1.jpg", 0.9, "athlete on a Concept2 rowing machine")
     keep_rower = _file("r2", "r2.jpg", 0.9, "athletes sit on rowers indoors at a fitness competition")
     keep_visual = _file("v1", "v1.jpg", 0.94, "athletes training on gym equipment indoors")
+    drop_low = _file("l1", "l1.jpg", 0.39, "man poses in front of CLASS OF HYROX backdrop")
     drop = _file("m1", "m1.jpg", 0.95, "people lifting medicine balls in a gym")
     drop_ski = _file("s1", "s1.jpg", 0.95, "woman exercises on a Concept2 SkiErg machine")
+    drop_ski_obj = _file("s2", "s2.jpg", 0.96, "A young woman using a ski ergometer machine in a gym setting.")
+    drop_ski_obj = drop_ski_obj.model_copy(
+        update={
+            "matched_objects": [
+                {
+                    "label": "rowing machine",
+                    "category": "sports_equipment",
+                    "confidence": 0.9,
+                    "source": "caption",
+                    "evidence_text": "ergometer",
+                    "hit_count": 1,
+                }
+            ]
+        }
+    )
 
     visual_mode = filter_files_to_object_anchor(
-        [keep, keep_rower, keep_visual, drop, drop_ski],
+        [keep, keep_rower, keep_visual, drop_low, drop, drop_ski, drop_ski_obj],
         "rowing machine",
         mode="visual",
     )
     assert {f.drive_file_id for f in visual_mode} == {"r1", "r2", "v1"}
 
     soft = filter_files_to_object_anchor(
-        [keep, keep_rower, keep_visual, drop, drop_ski],
+        [keep, keep_rower, keep_visual, drop_low, drop, drop_ski, drop_ski_obj],
         "student exercising with rowing machine",
         mode="soft",
     )
     assert {f.drive_file_id for f in soft} == {"r1", "r2", "v1"}
+
+    from app.objects.taxonomy import classify_text
+
+    assert not any(x["canonical_label"] == "rowing machine" for x in classify_text(
+        "A young woman using a ski ergometer machine in a gym setting."
+    ))
+    assert any(x["canonical_label"] == "rowing machine" for x in classify_text(
+        "athletes training on rowing machines indoors"
+    ))
 
     _, ctx = parse_role_context("student exercising with rowing machine")
     assert ctx.require_all_roles == ("student",)
