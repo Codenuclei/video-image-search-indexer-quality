@@ -24,6 +24,7 @@ import { apiClient, type DriveSession } from "@/lib/api";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Spinner } from "@/components/ui";
 import {
+  cancelSearch,
   hydrateSearchCatalogs,
   hydrateSearchSettings,
   patchSearchSession,
@@ -361,6 +362,17 @@ export function TestShell({ children }: { children: React.ReactNode }) {
                 >
                   {loading ? <Spinner size={14} /> : <Search size={14} />}
                 </button>
+                {loading && (
+                  <button
+                    type="button"
+                    title="Cancel search"
+                    aria-label="Cancel search"
+                    onClick={() => cancelSearch()}
+                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-border bg-card text-muted-foreground shadow-sm transition-colors hover:bg-accent hover:text-accent-foreground"
+                  >
+                    <X size={15} />
+                  </button>
+                )}
               </div>
             </form>
           ) : (

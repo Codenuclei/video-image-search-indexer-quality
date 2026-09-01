@@ -3,7 +3,8 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -14,6 +15,14 @@ from app.schemas import SearchMoment, SearchResponse, SearchResultFile
 from app.gemini.service import SearchCitation, get_gemini_service
 from app.gemini.caption_filter import filter_images_by_caption_llm
 from app.gemini.rerank import rerank_image_files
+from app.search.cancel import (
+    SearchCancelled,
+    cancel_search,
+    cancelled_http_exception,
+    clear_search,
+    ensure_search_active,
+    register_search,
+)
 from app.search.moments import search_video_moments
 from app.search.images import attach_stored_captions, search_image_files
 from app.search.local import (
@@ -42,11 +51,13 @@ from app.search.local import (
     is_weak_person_visual,
     merge_action_search_pool,
     merge_person_scene_results,
+    query_has_concrete_object_anchor,
     resolve_role_matching_file_ids,
     needs_semantic_search,
     needs_strict_relevance_filter,
     resolve_search_context,
     role_context_active,
+    soften_student_role_for_object_anchor,
     text_matches_query,
     SearchRoleContext,
 )
@@ -171,8 +182,25 @@ async def _gemini_files(
     return merged
 
 
+class SearchCancelRequest(BaseModel):
+    search_id: str = Field(min_length=1, max_length=128)
+
+
+class SearchCancelResponse(BaseModel):
+    cancelled: bool
+    search_id: str
+
+
+@router.post("/cancel", response_model=SearchCancelResponse)
+async def search_cancel(body: SearchCancelRequest) -> SearchCancelResponse:
+    """Mark an in-flight search as cancelled so expensive stages are skipped."""
+    ok = await cancel_search(body.search_id)
+    return SearchCancelResponse(cancelled=ok, search_id=body.search_id.strip())
+
+
 @router.get("", response_model=SearchResponse)
 async def search(
+    request: Request,
     q: str,
     person: str | None = None,
     mime: str | None = None,
@@ -180,6 +208,7 @@ async def search(
     source: str | None = None,
     rerank: bool = True,
     captions: bool = False,
+    search_id: str | None = None,
     session: AsyncSession = Depends(get_db),
 ) -> SearchResponse:
     """Return matching indexed Drive files. Set captions=true to fuse caption vectors at search time."""
@@ -197,9 +226,46 @@ async def search(
     if source_filter == "all":
         source_filter = None
 
+    active_search_id = (search_id or "").strip() or None
+    await register_search(active_search_id)
+
+    async def _checkpoint() -> None:
+        await ensure_search_active(request, active_search_id)
+
+    try:
+        return await _run_search(
+            session=session,
+            query=query,
+            person=person,
+            mime_filter=mime_filter,
+            folder_path=folder_path,
+            source_filter=source_filter,
+            rerank=rerank,
+            captions=captions,
+            checkpoint=_checkpoint,
+        )
+    except SearchCancelled:
+        raise cancelled_http_exception() from None
+    finally:
+        await clear_search(active_search_id)
+
+
+async def _run_search(
+    *,
+    session: AsyncSession,
+    query: str,
+    person: str | None,
+    mime_filter: str,
+    folder_path: str | None,
+    source_filter: str | None,
+    rerank: bool,
+    captions: bool,
+    checkpoint,
+) -> SearchResponse:
     # Settings are persisted globally; refresh this worker before cache lookup
     # so an admin threshold change takes effect on the next search everywhere.
     await refresh_runtime_settings_from_db(session)
+    await checkpoint()
 
     from app.search.query_cache import lookup_exact, lookup_semantic, store_search_cache
     from app.gemini.video_embeddings import embed_text_sync
@@ -221,9 +287,11 @@ async def search(
     if cached is not None:
         return cached
 
+    await checkpoint()
     query_embedding: list[float] | None = None
     try:
         query_embedding = await asyncio.to_thread(embed_text_sync, query)
+        await checkpoint()
         if query_embedding:
             cached = await lookup_semantic(
                 session,
@@ -236,10 +304,13 @@ async def search(
             )
             if cached is not None:
                 return cached
+    except SearchCancelled:
+        raise
     except Exception:  # noqa: BLE001
         logger.debug("search cache embed/semantic lookup skipped", exc_info=True)
 
     effective_persons, visual_query, role_ctx = await resolve_search_context(session, query, person)
+    await checkpoint()
 
     student_role_action = (
         role_context_active(role_ctx)
@@ -275,7 +346,16 @@ async def search(
     # Keep captions when leftover action text remains (e.g. "Pratham Mittal cooking").
     if person_focused and not person_action:
         use_captions = False
-    strict_student_query = bool(role_ctx.student_context)
+    object_anchored = query_has_concrete_object_anchor(query)
+    # Soften hard student face-role filters when an object (rowing machine, etc.)
+    # already constrains the scene — otherwise recall collapses vs the bare object query.
+    role_filter_ctx = soften_student_role_for_object_anchor(
+        role_ctx,
+        object_anchored=object_anchored,
+    )
+    # Strict 30-cap student action pool is for vague student+action floods
+    # ("students cooking"), not object-anchored fitness equipment queries.
+    strict_student_query = bool(role_ctx.student_context) and not object_anchored
     primary_person = effective_persons[0] if len(effective_persons) == 1 else None
 
     # Look up folder context description for re-ranker and scoping
@@ -294,6 +374,7 @@ async def search(
     # Video-only (Carousel / mime=video): skip image pipelines entirely.
     # Uses Gemini Embedding 2 → Qdrant frame search + transcript/face + VLM rerank.
     if mime_filter == "video":
+        await checkpoint()
         moments = await search_video_moments(
             session,
             query=query,
@@ -344,20 +425,20 @@ async def search(
                 return []
             if effective_persons and not person_focused:
                 hits = await find_matching_files(local_session, "", person_names=effective_persons)
-            elif role_context_active(role_ctx) and not effective_persons:
-                hits = await find_files_by_role_context(local_session, role_ctx)
+            elif role_context_active(role_filter_ctx) and not effective_persons:
+                hits = await find_files_by_role_context(local_session, role_filter_ctx)
             else:
                 hits = await find_matching_files(
                     local_session,
                     "" if person_focused else visual_query,
                     person_names=effective_persons if person_focused else None,
                 )
-            if role_context_active(role_ctx):
+            if role_context_active(role_filter_ctx):
                 hits = await filter_files_by_role_context(
                     local_session,
                     hits,
                     person_names=effective_persons,
-                    role_ctx=role_ctx,
+                    role_ctx=role_filter_ctx,
                 )
             if combined_person_student:
                 hits = await filter_files_by_student_evidence(
@@ -390,10 +471,12 @@ async def search(
                 ),
             )
 
+    await checkpoint()
     local_files, vector_image_files = await asyncio.gather(
         _load_local_files(),
         _load_vector_files(),
     )
+    await checkpoint()
     gemini_files: list = []
 
     # Google File Search retired — image RAG is local Qdrant (visual + captions).
@@ -422,7 +505,7 @@ async def search(
                     vector_image_files,
                     default_score_for_tagged=0.45,
                 )
-            elif role_context_active(role_ctx) and local_files:
+            elif role_context_active(role_filter_ctx) and local_files:
                 files = _apply_vector_metadata(
                     local_files,
                     vector_image_files,
@@ -449,12 +532,12 @@ async def search(
             role_ctx=role_ctx,
         )
 
-    if role_context_active(role_ctx):
+    if role_context_active(role_filter_ctx):
         files = await filter_files_by_role_context(
             session,
             files,
             person_names=effective_persons,
-            role_ctx=role_ctx,
+            role_ctx=role_filter_ctx,
         )
     if combined_person_student:
         files = await filter_files_by_student_evidence(
@@ -469,14 +552,14 @@ async def search(
     # conceptual queries (e.g. "purpose") after File Search removal. Old File
     # Search path kept hits whose citation/snippet matched; scored Qdrant hits
     # are the local equivalent.
-    if needs_strict_relevance_filter(query) and not effective_persons and not role_context_active(role_ctx):
+    if needs_strict_relevance_filter(query) and not effective_persons and not role_context_active(role_filter_ctx):
         files = [
             f
             for f in files
             if f.score is not None or text_matches_query(f.name, f.path, query=query)
         ]
 
-    if role_context_active(role_ctx) and not (action_query and not effective_persons):
+    if role_context_active(role_filter_ctx) and not (action_query and not effective_persons):
         files = [
             item.model_copy(update={"score": item.score or 0.55})
             if item.mime_type.startswith("image/") and item.score is None
@@ -501,6 +584,7 @@ async def search(
     other_files = [f for f in files if not f.mime_type.startswith("image/")]
 
     # Captions must exist before keyword match, rerank, and LLM caption filter.
+    await checkpoint()
     if image_files:
         image_files = await attach_stored_captions(image_files)
 
@@ -521,12 +605,16 @@ async def search(
                     keywords,
                     query,
                 )
+            elif object_anchored:
+                # Object already constrains the scene — keep full action recall.
+                pass
             elif keyword_matched:
                 image_files = merge_action_search_pool(image_files, keyword_matched)
         elif keyword_matched:
             image_files = merge_action_search_pool(image_files, keyword_matched)
 
     if use_rerank and image_files and not get_settings().search_caption_filter_enabled:
+        await checkpoint()
         pre_rerank = list(image_files)
         try:
             reranked = await rerank_image_files(
@@ -542,11 +630,14 @@ async def search(
                 image_files = keyword_matched
             else:
                 image_files = pre_rerank
+        except SearchCancelled:
+            raise
         except Exception as exc:  # noqa: BLE001
             logger.warning("Image re-rank failed, returning unfiltered results: %s", exc)
 
     files = dedupe_search_files(image_files + other_files)
 
+    await checkpoint()
     moments = await search_video_moments(
         session,
         query=query,
@@ -558,6 +649,7 @@ async def search(
         action_query=action_query,
         source=source_filter,
     )
+    await checkpoint()
     moments = await _filter_moments_for_context(
         session,
         moments,
@@ -569,9 +661,15 @@ async def search(
 
     # Append-only: caption-text LLM filter (only when caption matching is active).
     if use_rerank and use_captions and mime_filter in ("all", "image"):
+        await checkpoint()
         image_hits = [f for f in files if f.mime_type.startswith("image/")]
         other_hits = [f for f in files if not f.mime_type.startswith("image/")]
-        if image_hits and role_ctx.student_context and not combined_person_student:
+        if (
+            image_hits
+            and role_ctx.student_context
+            and not combined_person_student
+            and not object_anchored
+        ):
             from app.search.local import drive_file_ids_with_student_captions
 
             student_cap_ids = set(
@@ -643,9 +741,12 @@ async def search(
                         f.name.lower(),
                     ),
                 )
+            except SearchCancelled:
+                raise
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Caption LLM filter failed, keeping unfiltered results: %s", exc)
 
+    await checkpoint()
     response = SearchResponse(
         query=query,
         answer="",

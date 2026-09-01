@@ -310,6 +310,54 @@ async def resolve_role_matching_file_ids(
     return await drive_file_ids_with_student_captions(session, drive_file_ids)
 
 
+def query_has_concrete_object_anchor(query: str) -> bool:
+    """True when the query names a concrete searchable object (equipment, etc.).
+
+    Used to avoid over-strict student role/action caps on queries like
+    "student exercising with rowing machine", where the object itself constrains
+    recall. Pure student-action queries ("students cooking") stay strict.
+    """
+    from app.objects.query_concepts import parse_query_concepts
+    from app.objects.taxonomy import COLORS, taxon_for
+
+    color_labels = {("gray" if c == "grey" else c) for c in COLORS} | set(COLORS)
+    # Apparel/signage alone are weak scene anchors for student flood control.
+    weak_categories = frozenset({"apparel", "signage", "color"})
+    for label in parse_query_concepts(query).taxonomy_labels:
+        if label in color_labels:
+            continue
+        taxon = taxon_for(label)
+        if taxon is None:
+            return True
+        if taxon.category not in weak_categories:
+            return True
+    return False
+
+
+def soften_student_role_for_object_anchor(
+    role_ctx: SearchRoleContext,
+    *,
+    object_anchored: bool,
+) -> SearchRoleContext:
+    """Drop hard student face-role requirements when an object anchors the scene.
+
+    Keeps student_context so LLM/caption ranking can still prefer students.
+    """
+    if not object_anchored or not role_ctx.student_context:
+        return role_ctx
+    if role_ctx.co_occur_roles:
+        return role_ctx
+    if set(role_ctx.require_all_roles) - {"student"}:
+        return role_ctx
+    if "student" not in role_ctx.require_all_roles:
+        return role_ctx
+    return SearchRoleContext(
+        co_occur_roles=(),
+        require_all_roles=(),
+        student_context=True,
+    )
+
+
 def is_people_query(query: str) -> bool:
     """True only for browse-all-people queries, not compound scene queries like 'person handing cheque'."""
     if not _PEOPLE_PATTERN.search(query):
