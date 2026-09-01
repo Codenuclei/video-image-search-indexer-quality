@@ -66,6 +66,8 @@ def test_caption_matches_action_for_cooking():
 def test_rowing_machine_is_object_anchor_but_cooking_is_not():
     from app.search.local import (
         query_has_concrete_object_anchor,
+        object_anchor_search_text,
+        filter_files_to_object_anchor,
         soften_student_role_for_object_anchor,
         parse_role_context,
         SearchRoleContext,
@@ -73,8 +75,17 @@ def test_rowing_machine_is_object_anchor_but_cooking_is_not():
 
     assert query_has_concrete_object_anchor("student exercising with rowing machine")
     assert query_has_concrete_object_anchor("rowing machine")
+    assert object_anchor_search_text("student exercising with rowing machine") == "rowing machine"
     assert not query_has_concrete_object_anchor("students cooking food")
     assert not query_has_concrete_object_anchor("students exercising")
+
+    keep = _file("r1", "r1.jpg", 0.9, "athlete on a Concept2 rowing machine")
+    drop = _file("m1", "m1.jpg", 0.95, "people lifting medicine balls in a gym")
+    filtered = filter_files_to_object_anchor(
+        [keep, drop],
+        "student exercising with rowing machine",
+    )
+    assert [f.drive_file_id for f in filtered] == ["r1"]
 
     _, ctx = parse_role_context("student exercising with rowing machine")
     assert ctx.require_all_roles == ("student",)

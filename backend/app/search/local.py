@@ -317,21 +317,64 @@ def query_has_concrete_object_anchor(query: str) -> bool:
     "student exercising with rowing machine", where the object itself constrains
     recall. Pure student-action queries ("students cooking") stay strict.
     """
+    return bool(concrete_object_anchor_labels(query))
+
+
+def concrete_object_anchor_labels(query: str) -> tuple[str, ...]:
+    """Canonical object labels that should bound recall for compound queries."""
     from app.objects.query_concepts import parse_query_concepts
     from app.objects.taxonomy import COLORS, taxon_for
 
     color_labels = {("gray" if c == "grey" else c) for c in COLORS} | set(COLORS)
-    # Apparel/signage alone are weak scene anchors for student flood control.
     weak_categories = frozenset({"apparel", "signage", "color"})
+    labels: list[str] = []
     for label in parse_query_concepts(query).taxonomy_labels:
         if label in color_labels:
             continue
         taxon = taxon_for(label)
-        if taxon is None:
-            return True
-        if taxon.category not in weak_categories:
-            return True
-    return False
+        if taxon is None or taxon.category not in weak_categories:
+            if label not in labels:
+                labels.append(label)
+    return tuple(labels)
+
+
+def object_anchor_search_text(query: str) -> str | None:
+    """ANN/text query constrained to concrete objects (ignores student/action fluff)."""
+    labels = concrete_object_anchor_labels(query)
+    if not labels:
+        return None
+    return " ".join(labels)
+
+
+def file_supports_object_anchor(
+    item: SearchResultFile,
+    query: str,
+) -> bool:
+    """True when caption/object evidence supports the concrete object labels only."""
+    from app.objects.query_concepts import QueryConcepts, all_query_concepts_supported
+
+    labels = concrete_object_anchor_labels(query)
+    if not labels:
+        return True
+    concepts = QueryConcepts(taxonomy_labels=labels, residual_terms=())
+    structured = [m.label for m in (item.matched_objects or [])]
+    evidence = [m.evidence_text for m in (item.matched_objects or [])]
+    return all_query_concepts_supported(
+        concepts,
+        structured_labels=structured,
+        evidence_texts=evidence,
+        caption=item.caption,
+    )
+
+
+def filter_files_to_object_anchor(
+    files: list[SearchResultFile],
+    query: str,
+) -> list[SearchResultFile]:
+    """Keep only hits that actually show the named object (not related gym scenes)."""
+    if not concrete_object_anchor_labels(query):
+        return files
+    return [item for item in files if file_supports_object_anchor(item, query)]
 
 
 def soften_student_role_for_object_anchor(

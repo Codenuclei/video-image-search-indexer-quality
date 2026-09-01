@@ -52,6 +52,8 @@ from app.search.local import (
     merge_action_search_pool,
     merge_person_scene_results,
     query_has_concrete_object_anchor,
+    object_anchor_search_text,
+    filter_files_to_object_anchor,
     resolve_role_matching_file_ids,
     needs_semantic_search,
     needs_strict_relevance_filter,
@@ -417,6 +419,12 @@ async def _run_search(
         return video_response
 
     vector_text = query if person_focused else (visual_query or query)
+    # Object-anchored compounds must retrieve against the object itself
+    # ("rowing machine"), not "exercising …" which floods medicine-ball/gym hits.
+    if object_anchored and not person_focused:
+        anchor_text = object_anchor_search_text(query)
+        if anchor_text:
+            vector_text = anchor_text
     session_factory = get_session_factory()
 
     async def _load_local_files() -> list[SearchResultFile]:
@@ -588,6 +596,11 @@ async def _run_search(
     if image_files:
         image_files = await attach_stored_captions(image_files)
 
+    # Bound compound queries to images that actually depict the named object
+    # (prevents "exercising" from pulling medicine-ball / jogging scenes).
+    if object_anchored and image_files:
+        image_files = filter_files_to_object_anchor(image_files, query)
+
     keyword_matched: list[SearchResultFile] = []
     if (action_query or person_action) and image_files and use_captions:
         keywords = action_match_keywords(query)
@@ -745,6 +758,14 @@ async def _run_search(
                 raise
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Caption LLM filter failed, keeping unfiltered results: %s", exc)
+
+    if object_anchored and files:
+        image_kept = filter_files_to_object_anchor(
+            [f for f in files if f.mime_type.startswith("image/")],
+            query,
+        )
+        other_kept = [f for f in files if not f.mime_type.startswith("image/")]
+        files = dedupe_search_files(image_kept + other_kept)
 
     await checkpoint()
     response = SearchResponse(
