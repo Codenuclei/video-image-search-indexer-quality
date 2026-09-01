@@ -109,8 +109,18 @@ def taxon_for(name: str) -> Taxon | None:
 def classify_text(text: str | None) -> list[dict[str, object]]:
     """Extract high-confidence tags using whole phrase matches only."""
     haystack = re.sub(r"[\s_-]+", " ", (text or "").casefold())
+    ski_erg_context = bool(
+        re.search(r"\bski[\s-]?ergs?\b|\bskiergs?\b|\bski\s+ergometers?\b", haystack)
+    )
     labels: list[dict[str, object]] = []
     for taxon in TAXONOMY:
+        # "ergometer" is shared with ski ergs — never tag pure ski-erg captions as rowing.
+        if (
+            taxon.name == "rowing machine"
+            and ski_erg_context
+            and not re.search(r"\b(?:rowing|rowers?|rowerg|row machines?)\b", haystack)
+        ):
+            continue
         hits = [
             term for term in taxon.terms
             if re.search(rf"(?<!\w){re.escape(term.casefold())}(?:s)?(?!\w)", haystack)
