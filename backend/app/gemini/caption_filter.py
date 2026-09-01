@@ -321,5 +321,9 @@ async def filter_images_by_caption_llm(
     if preserve_rejected:
         kept_ids = {item.drive_file_id for item in kept}
         rejected = [item for item in pool if item.drive_file_id not in kept_ids]
-        return kept + rejected + tail
-    return kept
+        ordered = kept + rejected + tail
+    else:
+        ordered = kept
+    # Caption LLM batches scramble order — restore score ranking for the UI.
+    ordered.sort(key=lambda f: (-(f.score or 0.0), f.name.lower()))
+    return ordered

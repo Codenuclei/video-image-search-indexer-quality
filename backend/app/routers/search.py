@@ -636,6 +636,13 @@ async def search(
                                 len(filtered_images),
                             )
                 files = dedupe_search_files(filtered_images + other_hits)
+                files = sorted(
+                    files,
+                    key=lambda f: (
+                        -(f.score or 0.0),
+                        f.name.lower(),
+                    ),
+                )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Caption LLM filter failed, keeping unfiltered results: %s", exc)
 

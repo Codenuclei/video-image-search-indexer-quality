@@ -405,15 +405,21 @@ def _garment_brand_associated(
     haystack: tuple[str, ...],
 ) -> bool:
     """True when residual brand/text is attributed to the garment phrase."""
+    return apparel_brand_association_strength_from_spans(apparel, residual, haystack) > 0
+
+
+def apparel_brand_association_strength_from_spans(
+    apparel: list[tuple[int, int]],
+    residual: list[tuple[int, int]],
+    haystack: tuple[str, ...],
+) -> float:
+    """0..1 strength for how tightly brand text is attached to apparel."""
+    best = 0.0
     for a_span in apparel:
         for r_span in residual:
             dist = _span_distance(a_span, r_span)
             a_start, a_end = a_span
             r_start, r_end = r_span
-            # "Masters' Union t-shirt" / "t-shirt MastersUnion"
-            if dist <= 1:
-                return True
-
             left = min(a_start, r_start)
             right = max(a_end, r_end)
             between = haystack[left : right + 1]
@@ -422,13 +428,25 @@ def _garment_brand_associated(
             residual_on_signage = any(
                 token in _BACKDROP_MARKERS for token in haystack[local_start : local_end + 1]
             ) and not _apparel_in_window(apparel, local_start, local_end)
-
             if residual_on_signage:
                 continue
 
+            # "Masters' Union t-shirt" / "HYROX tee" (touching spans)
+            if dist == 0:
+                best = max(best, 1.0)
+                continue
+            if dist <= 1:
+                best = max(best, 0.96)
+                continue
             if dist <= 6 and any(token in _BRAND_LINKERS for token in between):
-                return True
-
+                # Prefer printed/logo/text over generic "with"
+                if any(token in {"printed", "print", "logo", "text", "branded"} for token in between):
+                    best = max(best, 0.92)
+                elif any(token in {"matching", "featuring"} for token in between):
+                    best = max(best, 0.88)
+                else:
+                    best = max(best, 0.8)
+                continue
             apparel_tokens = set(haystack[a_start : a_end + 1])
             residual_tokens = set(haystack[r_start : r_end + 1])
             if dist <= 4 and all(
@@ -437,8 +455,29 @@ def _garment_brand_associated(
                 or token in residual_tokens
                 for token in between
             ):
-                return True
-    return False
+                best = max(best, 0.72)
+    return best
+
+
+def apparel_brand_association_strength(
+    caption: str | None,
+    concepts: QueryConcepts,
+    *,
+    evidence_texts: Iterable[str | None] = (),
+) -> float:
+    """Score how clearly residual brand text is on the apparel (0 = not)."""
+    apparel = apparel_labels_in(concepts)
+    if not apparel or not concepts.residual_terms:
+        return 0.0
+    searchable = " ".join(part for part in [caption, *evidence_texts] if part)
+    haystack = normalized_concept_tokens(searchable)
+    apparel_spans = _apparel_spans(haystack, apparel)
+    residual_spans = _residual_spans(haystack, concepts.residual_terms)
+    if not apparel_spans or not residual_spans:
+        return 0.0
+    return apparel_brand_association_strength_from_spans(
+        apparel_spans, residual_spans, haystack
+    )
 
 
 def residual_associated_with_apparel(
@@ -451,18 +490,11 @@ def residual_associated_with_apparel(
     apparel = apparel_labels_in(concepts)
     if not apparel or not concepts.residual_terms:
         return True
-    searchable = " ".join(part for part in [caption, *evidence_texts] if part)
-    haystack = normalized_concept_tokens(searchable)
-    apparel_spans = _apparel_spans(haystack, apparel)
-    residual_spans = _residual_spans(haystack, concepts.residual_terms)
-    if not apparel_spans or not residual_spans:
-        return False
-    if _garment_brand_associated(apparel_spans, residual_spans, haystack):
-        return True
-    # Explicit co-occurrence with brand only on backdrop/signage is not enough.
-    if _residual_backdrop_only(haystack, residual_spans, apparel_spans):
-        return False
-    return False
+    return apparel_brand_association_strength(
+        caption,
+        concepts,
+        evidence_texts=evidence_texts,
+    ) > 0
 
 
 def residual_associated_with_signage(
