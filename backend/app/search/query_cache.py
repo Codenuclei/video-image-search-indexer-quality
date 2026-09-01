@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # Balanced paraphrases in the same folder (e.g. "wine glass" ≈ "glass of wine").
 SEMANTIC_MIN_COSINE = 0.88
-SEARCH_CACHE_VERSION = "v13-object-anchor-subset"
+SEARCH_CACHE_VERSION = "v15-visual-object-anchor"
 # Exact repeats should stay fast while the indexer is continuously changing the
 # global library fingerprint. After this grace window, full fingerprint
 # validation restores freshness.

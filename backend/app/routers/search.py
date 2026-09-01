@@ -53,6 +53,7 @@ from app.search.local import (
     merge_person_scene_results,
     query_has_concrete_object_anchor,
     object_anchor_search_text,
+    is_pure_object_anchor_query,
     filter_files_to_object_anchor,
     resolve_role_matching_file_ids,
     needs_semantic_search,
@@ -349,6 +350,7 @@ async def _run_search(
     if person_focused and not person_action:
         use_captions = False
     object_anchored = query_has_concrete_object_anchor(query)
+    pure_object_anchor = is_pure_object_anchor_query(query)
     # Soften hard student face-role filters when an object (rowing machine, etc.)
     # already constrains the scene — otherwise recall collapses vs the bare object query.
     role_filter_ctx = soften_student_role_for_object_anchor(
@@ -358,6 +360,9 @@ async def _run_search(
     # Strict 30-cap student action pool is for vague student+action floods
     # ("students cooking"), not object-anchored fitness equipment queries.
     strict_student_query = bool(role_ctx.student_context) and not object_anchored
+    # Object names like "rowing machine" also match ACTION_PATTERN ("rowing").
+    # For retrieval, keep visual ANN — caption-only action mode drops visual hits.
+    vector_action_query = action_query and not object_anchored
     primary_person = effective_persons[0] if len(effective_persons) == 1 else None
 
     # Look up folder context description for re-ranker and scoping
@@ -470,7 +475,7 @@ async def _run_search(
                 person_names=effective_persons or None,
                 folder_path=folder_path,
                 use_captions=use_captions,
-                action_query=action_query,
+                action_query=vector_action_query,
                 enable_conjunctive_object_gate=(
                     not effective_persons
                     and not action_query
@@ -596,10 +601,15 @@ async def _run_search(
     if image_files:
         image_files = await attach_stored_captions(image_files)
 
-    # Bound compound queries to images that actually depict the named object
-    # (prevents "exercising" from pulling medicine-ball / jogging scenes).
+    # Bound object-anchored results without killing visual ANN.
+    # Bare object: drop hard caption negatives only.
+    # Compound (student/exercising+object): keep evidence OR strong visual scores.
     if object_anchored and image_files:
-        image_files = filter_files_to_object_anchor(image_files, query)
+        image_files = filter_files_to_object_anchor(
+            image_files,
+            query,
+            mode="visual" if pure_object_anchor else "soft",
+        )
 
     keyword_matched: list[SearchResultFile] = []
     if (action_query or person_action) and image_files and use_captions:
@@ -763,6 +773,7 @@ async def _run_search(
         image_kept = filter_files_to_object_anchor(
             [f for f in files if f.mime_type.startswith("image/")],
             query,
+            mode="visual" if pure_object_anchor else "soft",
         )
         other_kept = [f for f in files if not f.mime_type.startswith("image/")]
         files = dedupe_search_files(image_kept + other_kept)

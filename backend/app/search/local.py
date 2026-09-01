@@ -346,34 +346,145 @@ def object_anchor_search_text(query: str) -> str | None:
     return " ".join(labels)
 
 
+_STUDENT_RESIDUAL_TOKENS = frozenset({"student", "students", "pupil", "pupils"})
+
+
+def object_anchor_non_student_residuals(query: str) -> tuple[str, ...]:
+    """Residuals left after the concrete object (e.g. exercising) — not student tokens."""
+    from app.objects.query_concepts import parse_query_concepts
+
+    return tuple(
+        term
+        for term in parse_query_concepts(query).residual_terms
+        if term not in _STUDENT_RESIDUAL_TOKENS
+    )
+
+
+def is_pure_object_anchor_query(query: str) -> bool:
+    """True for bare object queries like 'rowing machine' (optional leading student)."""
+    return query_has_concrete_object_anchor(query) and not object_anchor_non_student_residuals(
+        query
+    )
+
+
 def file_supports_object_anchor(
     item: SearchResultFile,
     query: str,
 ) -> bool:
     """True when caption/object evidence supports the concrete object labels only."""
-    from app.objects.query_concepts import QueryConcepts, all_query_concepts_supported
+    from app.objects.query_concepts import QueryConcepts, all_query_concepts_supported, text_supports_concept
+    from app.objects.taxonomy import taxon_for
 
     labels = concrete_object_anchor_labels(query)
     if not labels:
         return True
+    if "rowing machine" in labels and _caption_is_ski_erg_only(item.caption):
+        return False
     concepts = QueryConcepts(taxonomy_labels=labels, residual_terms=())
     structured = [m.label for m in (item.matched_objects or [])]
     evidence = [m.evidence_text for m in (item.matched_objects or [])]
-    return all_query_concepts_supported(
+    if all_query_concepts_supported(
         concepts,
         structured_labels=structured,
         evidence_texts=evidence,
         caption=item.caption,
-    )
+    ):
+        return True
+
+    # Fallback: action-keyword groups cover caption phrasings taxonomy missed.
+    if "rowing machine" in labels and _caption_supports_rowing_machine(item.caption):
+        return True
+    for label in labels:
+        taxon = taxon_for(label)
+        terms = taxon.terms if taxon is not None else (label,)
+        if any(text_supports_concept(item.caption, term) for term in terms):
+            return True
+    return False
+
+
+_SKI_ERG_ONLY_RE = re.compile(
+    r"\bski[\s-]?ergs?\b|\bskiergs?\b|\bski\s+ergometer\b",
+    re.IGNORECASE,
+)
+_ROWING_POSITIVE_RE = re.compile(
+    r"\b(?:rowing(?:\s+machines?)?|rowers?|rowergs?|row[\s-]?ergs?|ergometers?|"
+    r"row\s+machines?|indoor\s+rowing)\b",
+    re.IGNORECASE,
+)
+_OBJECT_HARD_NEGATIVE: dict[str, re.Pattern[str]] = {
+    "rowing machine": re.compile(
+        r"\b(?:medicine\s+balls?|wall\s+balls?|ski[\s-]?ergs?|skiergs?|"
+        r"jogging|running\s+on\s+(?:an\s+)?(?:indoor\s+)?track)\b",
+        re.IGNORECASE,
+    ),
+}
+
+# Keep strong visual ANN hits even when caption/object text is missing/weak.
+_OBJECT_VISUAL_KEEP_SCORE = 0.90
+
+
+def _caption_is_ski_erg_only(caption: str | None) -> bool:
+    cap = caption or ""
+    if not _SKI_ERG_ONLY_RE.search(cap):
+        return False
+    return not _ROWING_POSITIVE_RE.search(cap)
+
+
+def _caption_supports_rowing_machine(caption: str | None) -> bool:
+    cap = caption or ""
+    if not cap.strip():
+        return False
+    if _caption_is_ski_erg_only(cap):
+        return False
+    if _ROWING_POSITIVE_RE.search(cap):
+        return True
+    # Concept2 / Concept 2 rowers, but not SkiErg.
+    if re.search(r"\bconcept\s*2\b", cap, re.IGNORECASE) and not _SKI_ERG_ONLY_RE.search(cap):
+        if re.search(r"\b(?:row|rower|rowing|machine|machines|erg)\b", cap, re.IGNORECASE):
+            return True
+    return False
+
+
+def _is_object_anchor_hard_negative(item: SearchResultFile, query: str) -> bool:
+    labels = concrete_object_anchor_labels(query)
+    cap = item.caption or ""
+    for label in labels:
+        rx = _OBJECT_HARD_NEGATIVE.get(label)
+        if not rx:
+            continue
+        if rx.search(cap) and not file_supports_object_anchor(item, query):
+            return True
+    if "rowing machine" in labels and _caption_is_ski_erg_only(cap):
+        return True
+    return False
 
 
 def filter_files_to_object_anchor(
     files: list[SearchResultFile],
     query: str,
+    *,
+    mode: str = "evidence",
+    min_visual_score: float = _OBJECT_VISUAL_KEEP_SCORE,
 ) -> list[SearchResultFile]:
-    """Keep only hits that actually show the named object (not related gym scenes)."""
+    """Filter object-anchored results.
+
+    modes:
+      - evidence: require object/caption evidence (legacy hard gate)
+      - visual: keep visual ANN hits; only drop hard caption negatives
+      - soft: keep evidence hits OR strong visual scores; drop hard negatives
+    """
     if not concrete_object_anchor_labels(query):
         return files
+    if mode == "visual":
+        return [item for item in files if not _is_object_anchor_hard_negative(item, query)]
+    if mode == "soft":
+        kept: list[SearchResultFile] = []
+        for item in files:
+            if _is_object_anchor_hard_negative(item, query):
+                continue
+            if file_supports_object_anchor(item, query) or (item.score or 0.0) >= min_visual_score:
+                kept.append(item)
+        return kept
     return [item for item in files if file_supports_object_anchor(item, query)]
 
 

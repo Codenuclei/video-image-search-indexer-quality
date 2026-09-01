@@ -67,6 +67,7 @@ def test_rowing_machine_is_object_anchor_but_cooking_is_not():
     from app.search.local import (
         query_has_concrete_object_anchor,
         object_anchor_search_text,
+        is_pure_object_anchor_query,
         filter_files_to_object_anchor,
         soften_student_role_for_object_anchor,
         parse_role_context,
@@ -76,23 +77,37 @@ def test_rowing_machine_is_object_anchor_but_cooking_is_not():
     assert query_has_concrete_object_anchor("student exercising with rowing machine")
     assert query_has_concrete_object_anchor("rowing machine")
     assert object_anchor_search_text("student exercising with rowing machine") == "rowing machine"
+    assert is_pure_object_anchor_query("rowing machine")
+    assert is_pure_object_anchor_query("student with rowing machine")
+    assert not is_pure_object_anchor_query("student exercising with rowing machine")
     assert not query_has_concrete_object_anchor("students cooking food")
     assert not query_has_concrete_object_anchor("students exercising")
 
     keep = _file("r1", "r1.jpg", 0.9, "athlete on a Concept2 rowing machine")
+    keep_rower = _file("r2", "r2.jpg", 0.9, "athletes sit on rowers indoors at a fitness competition")
+    keep_visual = _file("v1", "v1.jpg", 0.94, "athletes training on gym equipment indoors")
     drop = _file("m1", "m1.jpg", 0.95, "people lifting medicine balls in a gym")
-    filtered = filter_files_to_object_anchor(
-        [keep, drop],
-        "student exercising with rowing machine",
+    drop_ski = _file("s1", "s1.jpg", 0.95, "woman exercises on a Concept2 SkiErg machine")
+
+    visual_mode = filter_files_to_object_anchor(
+        [keep, keep_rower, keep_visual, drop, drop_ski],
+        "rowing machine",
+        mode="visual",
     )
-    assert [f.drive_file_id for f in filtered] == ["r1"]
+    assert {f.drive_file_id for f in visual_mode} == {"r1", "r2", "v1"}
+
+    soft = filter_files_to_object_anchor(
+        [keep, keep_rower, keep_visual, drop, drop_ski],
+        "student exercising with rowing machine",
+        mode="soft",
+    )
+    assert {f.drive_file_id for f in soft} == {"r1", "r2", "v1"}
 
     _, ctx = parse_role_context("student exercising with rowing machine")
     assert ctx.require_all_roles == ("student",)
-    soft = soften_student_role_for_object_anchor(ctx, object_anchored=True)
-    assert soft.require_all_roles == ()
-    assert soft.student_context is True
-    # Vague student action stays hard-gated.
+    soft_role = soften_student_role_for_object_anchor(ctx, object_anchored=True)
+    assert soft_role.require_all_roles == ()
+    assert soft_role.student_context is True
     hard = soften_student_role_for_object_anchor(
         SearchRoleContext(require_all_roles=("student",), student_context=True),
         object_anchored=False,
