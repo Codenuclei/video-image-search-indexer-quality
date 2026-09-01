@@ -202,9 +202,14 @@ async def search_image_files(
 
     object_matches = await object_matches_for_query(session, query)
     query_concepts = parse_query_concepts(query)
+    apparel_brand_conjunctive = bool(
+        apparel_labels_in(query_concepts) and query_concepts.residual_terms
+    )
+    # Apparel+brand gates must stay on even when "wearing" trips action_query
+    # or the query mentions students (role context).
     conjunctive_object_gate = (
         enable_conjunctive_object_gate
-        and not action_query
+        and (not action_query or apparel_brand_conjunctive)
         and not person_name
         and not person_names
         and query_concepts.is_conjunctive_object_query

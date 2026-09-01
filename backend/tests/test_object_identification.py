@@ -103,6 +103,23 @@ def test_background_brand_query_requires_signage_not_random_plaques() -> None:
     )
 
 
+def test_student_wearing_brand_tee_keeps_brand_residual_only() -> None:
+    concepts = parse_query_concepts("students wearing mastersunion tshirt")
+    assert concepts.taxonomy_labels == ("t-shirt",)
+    assert concepts.residual_terms == ("mastersunion",)
+    assert concepts.is_conjunctive_object_query is True
+    assert all_query_concepts_supported(
+        concepts,
+        structured_labels=("t-shirt",),
+        caption="A man wears a black Masters' Union t-shirt.",
+    )
+    assert not all_query_concepts_supported(
+        concepts,
+        structured_labels=("t-shirt",),
+        caption="A man wears a black t-shirt with NASCOMPANY printed on it.",
+    )
+
+
 def test_search_scaffolding_does_not_make_single_object_query_conjunctive() -> None:
     concepts = parse_query_concepts("show photos of people wearing t-shirts")
     assert concepts.taxonomy_labels == ("t-shirt",)

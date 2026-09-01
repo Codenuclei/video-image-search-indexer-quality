@@ -5,6 +5,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import {
   CircleHelp,
+  ArrowUp,
   FileText,
   FolderOpen,
   HardDrive,
@@ -97,10 +98,12 @@ export function TestShell({ children }: { children: React.ReactNode }) {
   const [headerQuery, setHeaderQuery] = useState("");
   const [accountOpen, setAccountOpen] = useState(false);
   const [confirmAction, setConfirmAction] = useState<"signout" | "drive" | null>(null);
+  const [showGoTop, setShowGoTop] = useState(false);
   const uploadRef = useRef<HTMLInputElement>(null);
   const { file: reverseFaceFile, result: reverseFaceResult } = useReverseFaceSession();
   const pageChrome = useTestShellChrome();
   const accountRef = useRef<HTMLDivElement>(null);
+  const mainRef = useRef<HTMLElement>(null);
 
   const driveEmail = driveSession?.email?.trim() || null;
   const profileEmail = driveEmail ?? authEmail;
@@ -137,6 +140,15 @@ export function TestShell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (searchActive) setHeaderQuery(q);
   }, [searchActive, q]);
+
+  useEffect(() => {
+    const main = mainRef.current;
+    if (!main) return;
+    const onScroll = () => setShowGoTop(main.scrollTop > 400);
+    onScroll();
+    main.addEventListener("scroll", onScroll, { passive: true });
+    return () => main.removeEventListener("scroll", onScroll);
+  }, []);
 
   async function disconnectDrive() {
     try {
@@ -484,6 +496,7 @@ export function TestShell({ children }: { children: React.ReactNode }) {
         </nav>
 
         <main
+          ref={mainRef}
           className={cn(
             "scrollbar-hidden min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-4 md:px-8",
             compactHeader ? "pb-6 pt-2" : "py-6"
@@ -491,6 +504,17 @@ export function TestShell({ children }: { children: React.ReactNode }) {
         >
           {children}
         </main>
+        {showGoTop && (
+          <button
+            type="button"
+            title="Go to top"
+            aria-label="Go to top"
+            onClick={() => mainRef.current?.scrollTo({ top: 0, behavior: "smooth" })}
+            className="fixed bottom-5 right-5 z-40 inline-flex h-10 w-10 items-center justify-center rounded-full border border-border bg-card text-foreground shadow-md transition-colors hover:bg-accent"
+          >
+            <ArrowUp size={18} aria-hidden />
+          </button>
+        )}
       </div>
     </div>
   );
