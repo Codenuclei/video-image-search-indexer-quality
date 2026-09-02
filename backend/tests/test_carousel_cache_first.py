@@ -115,6 +115,44 @@ async def test_themes_cache_hit_returns_saved_without_llm():
     assert len(res["themes"]) == 1
 
 
+@pytest.mark.asyncio
+async def test_themes_never_return_old_fallback_as_cache_hit():
+    drive = SimpleNamespace(id="vid1", name="Talk.mp4")
+    row = SimpleNamespace(
+        id=100,
+        model=f"gemini-test:{THEME_PROMPT_VERSION}",
+        source="fallback",
+        payload={
+            "themes": [{"theme_id": "t1", "title": "Raw transcript bucket"}],
+            "source": "fallback",
+        },
+    )
+    session = AsyncMock()
+    session.execute = AsyncMock(
+        return_value=SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: [row]))
+    )
+
+    with (
+        patch(
+            "app.routers.carousel_script._load_video_cues",
+            new=AsyncMock(return_value=(drive, _cues())),
+        ),
+        patch(
+            "app.routers.carousel_script.carousel_llm_cache_id",
+            return_value="gemini-test",
+        ),
+        patch("app.routers.carousel_script.get_settings"),
+    ):
+        res = await carousel_pipeline_themes(
+            PipelineThemesRequest(drive_file_id="vid1"),
+            session,
+        )
+
+    assert res["source"] == "cache_miss"
+    assert res["themes"] == []
+    assert res["cache_hit"] is False
+
+
 def test_generate_rejects_multiple_hooks_at_schema():
     with pytest.raises(ValidationError):
         CarouselGenerateRequest(
