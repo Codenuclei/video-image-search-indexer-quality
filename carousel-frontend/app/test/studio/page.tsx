@@ -63,7 +63,7 @@ type StageState = "cache" | "generated" | null;
 const PHASE_STEPS = [
   { n: 1, label: "Video", title: "Video", Icon: Video },
   { n: 2, label: "Themes", title: "Themes", Icon: Sparkles },
-  { n: 3, label: "Topics", title: "Topics & hooks", Icon: Target },
+  { n: 3, label: "Topics", title: "Topics → hooks", Icon: Target },
   { n: 4, label: "Copy", title: "Edit copy", Icon: Target },
   { n: 5, label: "Images", title: "Choose images", Icon: ImageIcon },
 ] as const;
@@ -103,7 +103,6 @@ function isExtractBusyError(error: unknown): boolean {
 function extractHasTree(res: TestExtract | null | undefined): boolean {
   if (!res) return false;
   return (
-    (res.hooks?.length ?? 0) > 0 ||
     (res.topics?.length ?? 0) > 0 ||
     (Array.isArray(res.topic_tree) && res.topic_tree.length > 0)
   );
@@ -253,6 +252,7 @@ function TestStudioInner() {
   const [loadingVideos, setLoadingVideos] = useState(true);
   const [themesLoading, setThemesLoading] = useState(false);
   const [extractLoading, setExtractLoading] = useState(false);
+  const [hooksLoading, setHooksLoading] = useState(false);
   const [copyLoading, setCopyLoading] = useState(false);
   const [imagesLoading, setImagesLoading] = useState(false);
   const [, setError] = useState<string | null>(null);
@@ -314,6 +314,7 @@ function TestStudioInner() {
       return true;
     });
   }, [extract]);
+  const hooksReady = (extract?.hooks?.length ?? 0) > 0;
 
   const richExtract = useMemo<CarouselPipelineExtractResponse | null>(() => {
     if (!extract) return null;
@@ -779,7 +780,7 @@ function TestStudioInner() {
   }) {
     if (!selected || extractLoading) return;
     if (!selectedThemes.length) {
-      const msg = "Select at least one theme, then extract topics and hooks.";
+      const msg = "Select at least one theme, then extract topics.";
       setError(msg);
       toastApiError(msg);
       return;
@@ -798,6 +799,7 @@ function TestStudioInner() {
           extractRes = await testApi.extract(selected.id, ordered, {
             force: Boolean(opts?.force),
             generate: true,
+            include_hooks: false,
             runConfig: cfg,
             timeoutMs: 600_000,
             silent: attempt > 0,
@@ -812,6 +814,7 @@ function TestStudioInner() {
           const cached = await testApi.extract(selected.id, ordered, {
             force: false,
             generate: false,
+            include_hooks: false,
             runConfig: cfg,
             timeoutMs: 30_000,
             silent: true,
@@ -823,7 +826,7 @@ function TestStudioInner() {
         }
       }
       if (job !== extractJobRef.current || !extractRes) return;
-      setExtract(extractRes);
+      setExtract({ ...extractRes, hooks: [] });
       setExtractStage(extractRes.cache_hit ? "cache" : "generated");
       setCopyStage(null);
       setImageStage(null);
@@ -836,19 +839,84 @@ function TestStudioInner() {
       resetProgressTo(3);
     } catch (e) {
       if (job !== extractJobRef.current) return;
-      setError(
-        formatApiError(e, "We couldn’t extract topics and hooks. Please try again.")
-      );
+      setError(formatApiError(e, "We couldn’t extract topics. Please try again."));
     } finally {
       if (job === extractJobRef.current) setExtractLoading(false);
+    }
+  }
+
+  async function generateHooksFromSelectedTopics(opts?: {
+    force?: boolean;
+    runConfig?: CarouselRunConfig;
+  }) {
+    if (!selected || !extract || hooksLoading || extractLoading) return;
+    if (!selectedTopics.length) {
+      const msg = "Select at least one topic before generating hooks.";
+      setError(msg);
+      toastApiError(msg);
+      return;
+    }
+    const cfg = opts?.runConfig ?? runConfig;
+    setHooksLoading(true);
+    setError(null);
+    setSelectedHooks([]);
+    try {
+      const topicPicks = selectedTopics
+        .map((text) => topics.find((t) => t.text === text))
+        .filter(Boolean) as TestItem[];
+      const ordered = [...selectedThemes].sort((a, b) => a.start_sec - b.start_sec);
+      const res = await testApi.extractHooks(selected.id, {
+        themes: ordered,
+        topics: topicPicks.map((t) => ({
+          id: t.id,
+          text: t.text,
+          start_sec: t.start_sec,
+          end_sec: t.end_sec ?? null,
+          explanation: t.explanation ?? undefined,
+          theme_id: t.theme_id,
+        })),
+        min_hooks: 2,
+        max_hooks: 4,
+        force: Boolean(opts?.force),
+        runConfig: cfg,
+      });
+      if ((res.hooks?.length ?? 0) < 2) {
+        const msg =
+          res.message ||
+          "Could not craft at least 2 hooks for those topics. Try different topics.";
+        setError(msg);
+        toastApiError(msg);
+        return;
+      }
+      setExtract((prev) =>
+        prev
+          ? {
+              ...prev,
+              hooks: res.hooks ?? [],
+              topic_tree: Array.isArray(res.topic_tree) && res.topic_tree.length
+                ? res.topic_tree
+                : prev.topic_tree,
+              topics: res.topics?.length ? res.topics : prev.topics,
+            }
+          : res
+      );
+      setSelectedHooks([]);
+    } catch (e) {
+      setError(
+        formatApiError(e, "We couldn’t generate hooks for the selected topics. Please try again.")
+      );
+    } finally {
+      setHooksLoading(false);
     }
   }
 
   /** Phase 4 — text-first generate (no frames yet). */
   async function generateCopy(opts?: { force?: boolean; runConfig?: CarouselRunConfig }) {
     if (!selected || !extract || copyLoading) return;
-    if (!selectedHooks.length && !selectedTopics.length) {
-      const msg = "Select at least one topic or hook, then generate copy.";
+    if (!selectedHooks.length) {
+      const msg = hooksReady
+        ? "Select at least one hook, then generate copy."
+        : "Generate hooks from your selected topics first, then pick at least one.";
       setError(msg);
       toastApiError(msg);
       return;
@@ -1083,6 +1151,8 @@ function TestStudioInner() {
 
   function toggleSelectedTopic(text: string) {
     setSelectedTopics((prev) => toggle(prev, text));
+    setSelectedHooks([]);
+    setExtract((prev) => (prev ? { ...prev, hooks: [] } : prev));
     setIntent(null);
     resetGeneratedFromPhase(3);
   }
@@ -1139,7 +1209,8 @@ function TestStudioInner() {
         <p className="studio-eyebrow">Test studio · real API</p>
         <h1 className="studio-title">Create a carousel</h1>
         <p className="studio-lede">
-          Pick a video, choose themes, select topics &amp; hooks, generate copy, then choose images.
+          Pick a video, choose themes, select topics, generate hooks, then generate copy and choose
+          images.
         </p>
         <PhaseRail phase={phase} canVisit={canVisitPhase} onNavigate={goToPhase} />
         <p className="studio-step-caption">
@@ -1355,7 +1426,7 @@ function TestStudioInner() {
             <StageBadge state={themeStage} />
           </h2>
           <p className="mt-2 max-w-[65ch] text-sm leading-relaxed text-slate-500">
-            Themes are non-overlapping segments of the talk. Select one or more, then extract topics &amp; hooks.
+            Themes are non-overlapping segments of the talk. Select one or more, then extract topics.
           </p>
           <ul className="mt-4 space-y-2">
             {themes.map((t) => {
@@ -1440,7 +1511,7 @@ function TestStudioInner() {
               <ArrowRight size={14} className="studio-btn-continue-arrow" />
             </button>
             <StageLlmGenerate
-              label="Generate topics and hooks"
+              label="Generate topics"
               busy={extractLoading}
               disabled={!selectedThemes.length}
               runConfig={runConfig}
@@ -1459,12 +1530,12 @@ function TestStudioInner() {
         <section key={3} className="studio-panel studio-rise p-5 sm:p-7" data-testid="test-phase-2">
           <p className="studio-section-label">Step 3</p>
           <h2 className="studio-section-heading">
-            Topics &amp; hooks
+            Topics, then hooks
             <StageBadge state={extractStage} />
           </h2>
           <p className="mt-2 max-w-[65ch] text-sm leading-relaxed text-slate-500">
-            Browse topics and hooks — nothing is pre-selected. Preview a moment (video + frames),
-            then pick hooks or topics yourself. Topics map directly to hooks (no subtopics).
+            Select one or more topics first. Then generate 2–4 hooks for those topics and pick the
+            ones you want before generating copy.
             {selectedThemes.length
               ? ` Using ${selectedThemes.length} theme${selectedThemes.length === 1 ? "" : "s"}.`
               : ""}
@@ -1504,32 +1575,73 @@ function TestStudioInner() {
 
           <div className="thd-generate-bar studio-wizard-nav mt-4 flex flex-wrap items-center gap-3">
             <WizardBack onBack={goBack} />
-            <button
-              type="button"
-              className="studio-btn studio-btn-primary studio-btn-continue"
-              onClick={() => void generateCopy({ force: false })}
-              disabled={
-                copyLoading || (!selectedHooks.length && !selectedTopics.length)
-              }
-              aria-busy={copyLoading}
-              data-testid="test-generate-copy"
-            >
-              Generate copy
-              <ArrowRight size={14} className="studio-btn-continue-arrow" />
-            </button>
-            <StageLlmGenerate
-              label="Generate copy"
-              busy={copyLoading}
-              disabled={!selectedHooks.length && !selectedTopics.length}
-              runConfig={runConfig}
-              onRunConfigChange={applyRunConfig}
-              onGenerate={(cfg) => generateCopy({ force: true, runConfig: cfg })}
-              testId="test-generate-copy-llm"
-            />
+            {!hooksReady ? (
+              <>
+                <button
+                  type="button"
+                  className="studio-btn studio-btn-primary studio-btn-continue"
+                  onClick={() => void generateHooksFromSelectedTopics()}
+                  disabled={
+                    hooksLoading || extractLoading || !selectedTopics.length
+                  }
+                  aria-busy={hooksLoading}
+                  data-testid="test-generate-hooks"
+                >
+                  {hooksLoading ? "Generating hooks…" : "Generate hooks (2–4)"}
+                  <ArrowRight size={14} className="studio-btn-continue-arrow" />
+                </button>
+                <StageLlmGenerate
+                  label="Generate hooks"
+                  busy={hooksLoading}
+                  disabled={!selectedTopics.length || extractLoading}
+                  runConfig={runConfig}
+                  onRunConfigChange={applyRunConfig}
+                  onGenerate={(cfg) =>
+                    generateHooksFromSelectedTopics({ force: true, runConfig: cfg })
+                  }
+                  testId="test-generate-hooks-llm"
+                />
+              </>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  className="studio-btn studio-btn-primary studio-btn-continue"
+                  onClick={() => void generateCopy({ force: false })}
+                  disabled={copyLoading || !selectedHooks.length}
+                  aria-busy={copyLoading}
+                  data-testid="test-generate-copy"
+                >
+                  Generate copy
+                  <ArrowRight size={14} className="studio-btn-continue-arrow" />
+                </button>
+                <StageLlmGenerate
+                  label="Generate copy"
+                  busy={copyLoading}
+                  disabled={!selectedHooks.length}
+                  runConfig={runConfig}
+                  onRunConfigChange={applyRunConfig}
+                  onGenerate={(cfg) => generateCopy({ force: true, runConfig: cfg })}
+                  testId="test-generate-copy-llm"
+                />
+                <button
+                  type="button"
+                  className="studio-btn studio-btn-secondary"
+                  onClick={() => void generateHooksFromSelectedTopics({ force: true })}
+                  disabled={hooksLoading || extractLoading || !selectedTopics.length}
+                >
+                  Regenerate hooks
+                </button>
+              </>
+            )}
             <span className="text-xs text-muted-foreground">
-              {selectedHooks.length + selectedTopics.length === 0
-                ? "Select a topic or hook"
-                : `${selectedTopics.length} topic${selectedTopics.length === 1 ? "" : "s"} · ${selectedHooks.length} hook${selectedHooks.length === 1 ? "" : "s"}`}
+              {!hooksReady
+                ? selectedTopics.length === 0
+                  ? "Select topics to unlock hook generation"
+                  : `${selectedTopics.length} topic${selectedTopics.length === 1 ? "" : "s"} selected`
+                : selectedHooks.length === 0
+                  ? "Select at least one hook to generate copy"
+                  : `${selectedHooks.length} hook${selectedHooks.length === 1 ? "" : "s"} selected`}
             </span>
           </div>
         </section>
@@ -1571,7 +1683,7 @@ function TestStudioInner() {
             <StageLlmGenerate
               label="Generate copy"
               busy={copyLoading}
-              disabled={!selectedHooks.length && !selectedTopics.length}
+              disabled={!selectedHooks.length}
               runConfig={runConfig}
               onRunConfigChange={applyRunConfig}
               onGenerate={(cfg) => generateCopy({ force: true, runConfig: cfg })}

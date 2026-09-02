@@ -429,6 +429,9 @@ export type CarouselPipelineThemesResponse = {
   cache_hit?: boolean;
   generated?: boolean;
   save_id?: number | null;
+  job_id?: number | null;
+  status?: "ready" | "running" | "error" | "cache_miss" | string;
+  phase?: string | null;
   transcript_hash?: string | null;
   model?: string | null;
   error?: string;
@@ -707,6 +710,88 @@ export const apiClient = {
       signal: opts?.signal,
       timeoutMs: opts?.force || opts?.generate ? 600_000 : 90_000,
     }),
+  carouselPipelineThemesJobStart: (
+    driveFileId: string,
+    opts?: {
+      searchEntity?: string;
+      personName?: string;
+      force?: boolean;
+      generate?: boolean;
+      signal?: AbortSignal;
+    }
+  ) =>
+    api<CarouselPipelineThemesResponse>("/search/carousel/pipeline/themes/jobs", {
+      method: "POST",
+      body: JSON.stringify({
+        drive_file_id: driveFileId,
+        search_entity: opts?.searchEntity ?? "",
+        person_name: opts?.personName ?? "",
+        force: Boolean(opts?.force),
+        generate: Boolean(opts?.generate),
+      }),
+      signal: opts?.signal,
+      timeoutMs: 60_000,
+    }),
+  carouselPipelineThemesJobStatus: (jobId: number, opts?: { signal?: AbortSignal }) =>
+    api<CarouselPipelineThemesResponse>(
+      `/search/carousel/pipeline/themes/jobs/${encodeURIComponent(String(jobId))}`,
+      {
+        method: "GET",
+        signal: opts?.signal,
+        timeoutMs: 30_000,
+      }
+    ),
+  carouselPipelineThemesGenerate: async (
+    driveFileId: string,
+    opts?: {
+      searchEntity?: string;
+      personName?: string;
+      force?: boolean;
+      generate?: boolean;
+      signal?: AbortSignal;
+      onStatus?: (status: CarouselPipelineThemesResponse) => void;
+    }
+  ): Promise<CarouselPipelineThemesResponse> => {
+    const start = await apiClient.carouselPipelineThemesJobStart(driveFileId, {
+      searchEntity: opts?.searchEntity,
+      personName: opts?.personName,
+      force: opts?.force,
+      generate: opts?.generate ?? true,
+      signal: opts?.signal,
+    });
+    opts?.onStatus?.(start);
+    if (start.status === "ready" || (start.themes?.length ?? 0) > 0) {
+      return start;
+    }
+    if (start.status === "cache_miss" || start.status === "error" || start.error) {
+      return start;
+    }
+    const jobId = start.job_id ?? start.save_id;
+    if (!jobId) {
+      return start;
+    }
+    const startedAt = Date.now();
+    const maxMs = 10 * 60_000;
+    while (Date.now() - startedAt < maxMs) {
+      if (opts?.signal?.aborted) {
+        const err = new Error("Aborted");
+        err.name = "AbortError";
+        throw err;
+      }
+      await new Promise((r) => setTimeout(r, 1500));
+      const status = await apiClient.carouselPipelineThemesJobStatus(jobId, {
+        signal: opts?.signal,
+      });
+      opts?.onStatus?.(status);
+      if (status.status === "ready" || (status.themes?.length ?? 0) > 0) {
+        return status;
+      }
+      if (status.status === "error" || status.error) {
+        return status;
+      }
+    }
+    throw new Error("Theme generation is taking longer than expected. Please try again.");
+  },
   carouselPipelineExtract: (body: {
     drive_file_id: string;
     theme_id?: string;
@@ -724,11 +809,51 @@ export const apiClient = {
     }[];
     force?: boolean;
     generate?: boolean;
+    include_hooks?: boolean;
   }) =>
     api<CarouselPipelineExtractResponse>("/search/carousel/pipeline/extract", {
       method: "POST",
-      body: JSON.stringify(body),
+      body: JSON.stringify({
+        ...body,
+        // Studio extracts topics first; hooks come after topic selection.
+        include_hooks: body.include_hooks ?? false,
+      }),
       timeoutMs: body.force || body.generate ? 900_000 : 90_000,
+    }),
+  carouselPipelineExtractHooks: (body: {
+    drive_file_id: string;
+    themes?: {
+      theme_id?: string;
+      title?: string;
+      start_sec: number;
+      end_sec?: number | null;
+      summary?: string;
+    }[];
+    topics: {
+      id?: string;
+      text: string;
+      start_sec?: number;
+      end_sec?: number | null;
+      summary?: string;
+      explanation?: string;
+      theme_id?: string | null;
+      time_ranges?: { start_sec: number; end_sec?: number | null }[];
+    }[];
+    search_entity?: string;
+    min_hooks?: number;
+    max_hooks?: number;
+    force?: boolean;
+    generate?: boolean;
+  }) =>
+    api<CarouselPipelineExtractResponse>("/search/carousel/pipeline/extract/hooks", {
+      method: "POST",
+      body: JSON.stringify({
+        ...body,
+        min_hooks: body.min_hooks ?? 2,
+        max_hooks: body.max_hooks ?? 4,
+        generate: body.generate ?? true,
+      }),
+      timeoutMs: 180_000,
     }),
   carouselPipelineIntent: (body: {
     theme_title?: string;

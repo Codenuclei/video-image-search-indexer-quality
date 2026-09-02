@@ -174,21 +174,36 @@ export const MOCK_TOPIC_TREE = MOCK_TOPICS.map((t) => ({
   hooks: MOCK_HOOKS.filter((h) => h.topic_id === t.id),
 }));
 
-export function mockExtract(driveFileId: string) {
+export function mockExtract(driveFileId: string, opts?: { include_hooks?: boolean }) {
+  const includeHooks = opts?.include_hooks === true;
+  const hooks = includeHooks ? MOCK_HOOKS : [];
+  const topic_tree = MOCK_TOPICS.map((t) => ({
+    id: t.id,
+    text: t.text,
+    start_sec: t.start_sec,
+    end_sec: t.end_sec,
+    explanation: t.explanation,
+    theme_id: t.theme_id,
+    subtopics: [] as [],
+    hooks: includeHooks ? MOCK_HOOKS.filter((h) => h.topic_id === t.id) : [],
+  }));
   return {
     drive_file_id: driveFileId,
     theme_ids: MOCK_THEMES.map((t) => t.theme_id),
-    hooks: MOCK_HOOKS,
+    hooks,
     topics: MOCK_TOPICS,
-    topic_tree: MOCK_TOPIC_TREE,
+    topic_tree,
     save_id: 9001,
-    previews: MOCK_HOOKS.slice(0, 3).map((h) => ({
+    previews: (includeHooks ? MOCK_HOOKS : MOCK_TOPICS).slice(0, 3).map((h) => ({
       start_sec: h.start_sec,
       end_sec: h.end_sec,
       text: h.text,
-      label: "Hook",
-      theme_id: h.theme_id,
-      theme_title: MOCK_THEMES.find((t) => t.theme_id === h.theme_id)?.title,
+      label: includeHooks ? "Hook" : "Topic",
+      theme_id: "theme_id" in h ? h.theme_id : undefined,
+      theme_title:
+        "theme_id" in h
+          ? MOCK_THEMES.find((t) => t.theme_id === h.theme_id)?.title
+          : undefined,
     })),
     intent: "Reassure families that admissions is transparent and community-led.",
     intent_score: 0.86,
@@ -199,6 +214,42 @@ export function mockExtract(driveFileId: string) {
     any_translated: false,
     cache_hit: true,
     generated: false,
+  };
+}
+
+export function mockExtractHooks(driveFileId: string, topicTexts?: string[]) {
+  const wanted = new Set((topicTexts || []).map((t) => t.trim().toLowerCase()).filter(Boolean));
+  let hooks = wanted.size
+    ? MOCK_HOOKS.filter((h) => wanted.has(String(h.topic_text || "").toLowerCase()))
+    : MOCK_HOOKS.slice(0, 4);
+  if (hooks.length < 2) hooks = MOCK_HOOKS.slice(0, 4);
+  hooks = hooks.slice(0, 4);
+  const topics = MOCK_TOPICS.filter((t) =>
+    wanted.size ? wanted.has(t.text.toLowerCase()) : true
+  );
+  const useTopics = topics.length ? topics : MOCK_TOPICS.slice(0, 1);
+  return {
+    drive_file_id: driveFileId,
+    hooks,
+    topics: useTopics,
+    topic_tree: useTopics.map((t) => ({
+      id: t.id,
+      text: t.text,
+      start_sec: t.start_sec,
+      end_sec: t.end_sec,
+      explanation: t.explanation,
+      theme_id: t.theme_id,
+      subtopics: [] as [],
+      hooks: hooks.filter((h) => h.topic_id === t.id),
+    })),
+    previews: [],
+    verbatim: false,
+    cache_hit: false,
+    generated: true,
+    min_hooks: 2,
+    max_hooks: 4,
+    message: `${hooks.length} hooks ready — pick the ones you want on slides.`,
+    save_id: 9002,
   };
 }
 

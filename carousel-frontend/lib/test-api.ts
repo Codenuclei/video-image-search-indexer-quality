@@ -127,6 +127,8 @@ export type TestExtract = {
   intent?: string | null;
   intent_score?: number | null;
   cache_hit?: boolean;
+  message?: string;
+  warning?: string;
 };
 
 export type TestSlidePanel = {
@@ -338,6 +340,7 @@ export const testApi = {
     opts?: {
       force?: boolean;
       generate?: boolean;
+      include_hooks?: boolean;
       runConfig?: CarouselRunConfig;
       timeoutMs?: number;
       silent?: boolean;
@@ -353,6 +356,8 @@ export const testApi = {
         // Different provider/model cache keys force a fresh run.
         generate: opts?.generate !== false,
         force: Boolean(opts?.force),
+        // Test studio matches production: topics first, hooks after selection.
+        include_hooks: opts?.include_hooks ?? false,
         llm_provider: opts?.runConfig?.provider,
         llm_model: opts?.runConfig?.model,
         themes: themes.map((t) => ({
@@ -362,6 +367,45 @@ export const testApi = {
           end_sec: t.end_sec,
           summary: t.summary,
         })),
+      }),
+    }),
+  extractHooks: (
+    driveFileId: string,
+    body: {
+      themes: TestTheme[];
+      topics: {
+        id?: string;
+        text: string;
+        start_sec?: number;
+        end_sec?: number | null;
+        explanation?: string;
+        theme_id?: string | null;
+      }[];
+      min_hooks?: number;
+      max_hooks?: number;
+      force?: boolean;
+      runConfig?: CarouselRunConfig;
+    }
+  ) =>
+    api<TestExtract>("/search/carousel/pipeline/extract/hooks", {
+      method: "POST",
+      timeoutMs: 180_000,
+      body: JSON.stringify({
+        drive_file_id: driveFileId,
+        generate: true,
+        force: Boolean(body.force),
+        min_hooks: body.min_hooks ?? 2,
+        max_hooks: body.max_hooks ?? 4,
+        llm_provider: body.runConfig?.provider,
+        llm_model: body.runConfig?.model,
+        themes: body.themes.map((t) => ({
+          theme_id: t.theme_id,
+          title: t.title,
+          start_sec: t.start_sec,
+          end_sec: t.end_sec,
+          summary: t.summary,
+        })),
+        topics: body.topics,
       }),
     }),
   intent: (hooks: string[], topics: string[], runConfig?: CarouselRunConfig) =>

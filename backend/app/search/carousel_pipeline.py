@@ -35,7 +35,7 @@ from app.search.transcript_topics import (
     format_cue_line,
 )  # noqa: F401 — format_cue_line used by chunk helpers
 
-THEMES_RUNTIME_VERSION = "themes-v5-single-pass-strict-provider"
+THEMES_RUNTIME_VERSION = "themes-v6-fast-async-precompute"
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +47,7 @@ _MAX_MERGED_TOPICS = 24
 # Per-chunk transcript budget for Gemini (full timed cues; chunk+merge for long talks).
 _TOPIC_CHUNK_CHARS = 12_000
 _TOPIC_CHUNK_OVERLAP_CUES = 6
-THEME_PROMPT_VERSION = "themes-v4-openrouter-structured-output"
+THEME_PROMPT_VERSION = "themes-v5-dense-outline-selfcheck"
 EXTRACT_PROMPT_VERSION = "extract-v7-crafted-hooks-kept"
 
 # Shared editorial brief for every hook-writing prompt. A hook has four jobs:
@@ -137,6 +137,18 @@ _OPENROUTER_ATTEMPT_TIMEOUT_SEC = 60.0
 # A correction is optional polish. Never discard a valid first draft or push
 # the request past the browser/proxy budget because the polish call is slow.
 _THEME_CORRECTION_TIMEOUT_SEC = 30.0
+# Dense full-talk outline budget: enough global coverage without paying for
+# filler/music cues that do not change theme boundaries.
+_THEME_OUTLINE_MAX_CHARS = 18_000
+# 3–8 short theme objects rarely need more than ~1k tokens of JSON.
+_THEME_MAX_OUTPUT_TOKENS = 1_100
+_THEME_FILLER_CUE_RE = re.compile(
+    r"^(?:"
+    r"\[?(?:music|applause|laughter|silence|inaudible|blank(?:\s+audio)?)\]?"
+    r"|\([^)]*(?:music|applause|laughter)[^)]*\)"
+    r")$",
+    re.IGNORECASE,
+)
 
 
 def _loads_json_array(text: str) -> list[Any]:
@@ -533,6 +545,13 @@ def _theme_generation_prompt(
         "- Summaries must be polished editorial prose stating the distinct argument, issue, "
         "or perspective—not copied transcript text, speaker markers, or keyword lists.\n"
         f"- {count_rule}\n"
+        "Self-check before returning (fix every defect in-place; do not emit a weak draft):\n"
+        "- Titles are Title Case or sentence case with a capital first letter; none begin with "
+        "now/so/I think/it was/go/and/but.\n"
+        "- No title or summary contains '>>' or raw caption glue.\n"
+        "- Each summary is at least one clear editorial sentence (8+ words).\n"
+        "- start_sec < end_sec, chronological, non-overlapping theme windows.\n"
+        "- Near-duplicate titles are merged before return.\n"
         "Return ONLY a top-level JSON array. Each object must contain "
         "theme_id, title, start_sec, end_sec, summary.\n\n"
         f"Transcript:\n{transcript}"
@@ -582,6 +601,17 @@ def _theme_quality_issues(
                 issues.append(f"Themes {i + 1} and {j + 1} have near-duplicate titles.")
     return issues
 
+
+def _theme_needs_llm_correction(issues: list[str]) -> bool:
+    """Only pay for a second LLM hop when the draft is clearly unusable."""
+    severe = (
+        "raw speech",
+        "fragmentary",
+        "copied, fragmentary",
+        "poorly sized",
+        "invalid timestamp",
+    )
+    return any(any(marker in issue for marker in severe) for issue in issues)
 
 def _theme_synthesis_prompt(
     *,
@@ -660,11 +690,9 @@ async def build_harmonized_themes(
         openrouter_model=openrouter_model,
     ):
         try:
-            # One evenly sampled, timestamped full-talk pass is both faster and
-            # more coherent than 5+ sequential chunk calls followed by a
-            # synthesis call. The old path routinely exceeded the proxy/client
-            # lifetime even when every provider eventually returned 200.
-            outline = _condense_transcript_outline(usable_cues, max_chars=30_000)
+            outline = _condense_transcript_outline(
+                usable_cues, max_chars=_THEME_OUTLINE_MAX_CHARS
+            )
             carousel_log(
                 "themes_llm_start",
                 provider=provider,
@@ -685,13 +713,14 @@ async def build_harmonized_themes(
                         transcript=outline,
                         video_name=video_name,
                         scope_note=(
-                            "This is an evenly sampled, timestamped outline spanning the entire "
-                            "talk. Build the final theme map directly from it.\n"
+                            "This is a substance-filtered, timestamped outline spanning the entire "
+                            "talk (filler/music cues removed). Build the final theme map directly "
+                            "from it.\n"
                         ),
                     ),
                     system=_THEME_SYSTEM,
                     temperature=0.3,
-                    max_tokens=2200,
+                    max_tokens=_THEME_MAX_OUTPUT_TOKENS,
                     api_key=api_key,
                     model=model,
                     claude_api_key=claude_api_key,
@@ -718,7 +747,7 @@ async def build_harmonized_themes(
             if themes:
                 themes = snap_themes_to_cues(themes, cues)
             issues = _theme_quality_issues(themes)
-            if issues:
+            if issues and _theme_needs_llm_correction(issues):
                 carousel_log(
                     "themes_quality_issues",
                     level=logging.WARNING,
@@ -737,7 +766,7 @@ async def build_harmonized_themes(
                                 ),
                                 system=_THEME_SYSTEM,
                                 temperature=0.2,
-                                max_tokens=2200,
+                                max_tokens=_THEME_MAX_OUTPUT_TOKENS,
                                 api_key=api_key,
                                 model=model,
                                 claude_api_key=claude_api_key,
@@ -765,7 +794,12 @@ async def build_harmonized_themes(
                     )
                 if issues:
                     warning = "Theme quality remained below target after the bounded corrective pass."
-
+            elif issues:
+                carousel_log(
+                    "themes_quality_soft_issues_kept",
+                    issue_count=len(issues),
+                    issues="; ".join(str(i)[:80] for i in issues[:4]),
+                )
             if themes:
                 for t in themes:
                     t["harmonized"] = False
@@ -1027,10 +1061,13 @@ async def extract_hooks_and_topics_async(
     openrouter_model: str = "",
     openrouter_base_url: str = "",
     english_cues: list[tuple[float, float | None, str]] | None = None,
+    include_hooks: bool = True,
 ) -> dict[str, Any]:
-    """Topics → subtopics → hooks (one topic at a time), with English preference.
+    """Topics → subtopics → (optional) hooks, with English preference.
 
         Honors studio LLM selectability (Claude / OpenRouter / Gemini / auto).
+        When ``include_hooks`` is False, stop after the topic tree so the studio
+        can let the user pick topics before spending another LLM pass on hooks.
     """
     has_llm = _llm_has_any_key(
         api_key=api_key,
@@ -1264,6 +1301,62 @@ async def extract_hooks_and_topics_async(
         span_end=end_sec,
     )
 
+    if not include_hooks:
+        for topic in topic_tree:
+            topic["hooks"] = []
+            for sub in list(topic.get("subtopics") or []):
+                sub["hooks"] = []
+        base["hooks"] = []
+        # Clear heuristic base hooks so English polish does not revive them.
+        base["topics"] = _flatten_topic_tree(topic_tree)[:_MAX_TOPICS]
+        base["topic_tree"] = _reindex_topic_tree(topic_tree)[:_MAX_TOPICS]
+        multi_range = sum(
+            1 for t in base["topic_tree"] if len(t.get("time_ranges") or []) >= 2
+        )
+        base["transcript_meta"] = {
+            "cue_count": cue_count,
+            "transcript_chars": cue_chars,
+            "chunks_used": chunks_used,
+            "topic_source": topic_source,
+            "llm_provider": (
+                llm_provider_used
+                if llm_provider_used != "none"
+                else (
+                    "claude"
+                    if llm_prefers_claude and has_llm
+                    else ("gemini" if has_llm else "none")
+                )
+            ),
+            "claude_preferred": llm_prefers_claude,
+            "topic_tree_count": len(base["topic_tree"]),
+            "flat_topic_count": len(base["topics"]),
+            "hook_count": 0,
+            "topics_with_multi_ranges": multi_range,
+            "include_hooks": False,
+            "verbatim_guard": {
+                "checked": 0,
+                "rejected_verbatim": 0,
+                "rewritten": 0,
+                "dropped": 0,
+                "verbatim_kept": 0,
+            },
+            "empty_hook_sections": 0,
+        }
+        logger.info("carousel topic extract done (topics-only): %s", base["transcript_meta"])
+        base = await ensure_english_display_texts(
+            base,
+            english_cues=english_cues,
+            api_key=api_key,
+            model=model,
+            claude_api_key=claude_api_key,
+            claude_model=claude_model,
+            provider=provider,
+            openrouter_api_key=openrouter_api_key,
+            openrouter_model=openrouter_model,
+            openrouter_base_url=openrouter_base_url,
+        )
+        return base
+
     # Select exact transcript windows first, then turn them into grounded display hooks.
     cue_corpus = [str(t or "") for _s, _e, t in window if (t or "").strip()]
     all_hooks: list[dict[str, Any]] = []
@@ -1328,6 +1421,7 @@ async def extract_hooks_and_topics_async(
                     openrouter_api_key=openrouter_api_key,
                     openrouter_model=openrouter_model,
                     openrouter_base_url=openrouter_base_url,
+                    max_hooks=2,
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("topic hook crafting failed for %r: %s", topic_title, exc)
@@ -2772,15 +2866,32 @@ def _normalize_topic_chronology(
     return ordered
 
 
+def _cue_is_theme_filler(text: str) -> bool:
+    cleaned = " ".join((text or "").split())
+    if not cleaned:
+        return True
+    if _THEME_FILLER_CUE_RE.match(cleaned):
+        return True
+    letters = sum(1 for ch in cleaned if ch.isalpha())
+    return letters < 10
+
+
 def _condense_transcript_outline(
     cues: list[tuple[float, float | None, str]],
     *,
     max_chars: int = 9_000,
 ) -> str:
-    """Evenly sample timed cues into a condensed full-talk outline for global synthesis."""
-    usable = [(s, e, t) for s, e, t in cues if (t or "").strip()]
-    if not usable:
+    """Sample a substance-dense timed outline for global theme synthesis.
+
+    Drops music/applause/near-empty cues, then evenly samples the remaining
+    talk so long videos keep start → middle → end coverage inside ``max_chars``.
+    """
+    raw = [(s, e, t) for s, e, t in cues if (t or "").strip()]
+    if not raw:
         return ""
+    usable = [(s, e, t) for s, e, t in raw if not _cue_is_theme_filler(t)]
+    if len(usable) < 2:
+        usable = raw
     full_chars = sum(
         len(format_cue_line(start, end, text)) + 1
         for start, end, text in usable
@@ -3615,6 +3726,7 @@ async def _llm_hooks_for_singular_topic(
     openrouter_api_key: str | None = None,
     openrouter_model: str = "",
     openrouter_base_url: str = "",
+    max_hooks: int = 2,
 ) -> list[dict[str, Any]]:
     """Craft Instagram hooks for ONE topic only — never reuse prior topics' angles."""
     payload = []
@@ -3628,6 +3740,7 @@ async def _llm_hooks_for_singular_topic(
             }
         )
     used = [u for u in used_angles if (u or "").strip()][:24]
+    want = max(1, min(4, int(max_hooks or 2)))
     prompt = (
         "You are an expert Instagram copywriter writing reel/carousel hooks.\n"
         "Generate punchy HOOK lines for ONE singular topic only.\n"
@@ -3642,7 +3755,7 @@ async def _llm_hooks_for_singular_topic(
         "that only drops filler words. You MUST rewrite into a fresh Instagram hook.\n"
         "- 6–14 words; one idea; natural English; keep the true claim of what was said, "
         "but change the wording.\n"
-        "- Prefer returning 1–2 strongest hooks (you may skip weak indices).\n"
+        f"- Prefer returning up to {want} strongest hooks (you may skip weak indices).\n"
         f"Parent theme: {theme_title}\n"
         f"Theme summary: {theme_summary}\n"
         f"Already-used hook angles (FORBIDDEN to overlap): {json.dumps(used, ensure_ascii=False)}\n"
@@ -3707,9 +3820,187 @@ async def _llm_hooks_for_singular_topic(
         row["topic_text"] = topic_title
         out.append(row)
         used_norm.add(norm)
-        if len(out) >= 2:
+        if len(out) >= want:
             break
     return out
+
+
+async def craft_hooks_for_selected_topics_async(
+    cues: list[tuple[float, float | None, str]],
+    *,
+    selected_topics: list[dict[str, Any]],
+    theme_title: str = "",
+    theme_summary: str = "",
+    min_hooks: int = 2,
+    max_hooks: int = 4,
+    api_key: str | None = None,
+    model: str = "",
+    claude_api_key: str | None = None,
+    claude_model: str = "",
+    provider: str = "auto",
+    openrouter_api_key: str | None = None,
+    openrouter_model: str = "",
+    openrouter_base_url: str = "",
+    english_cues: list[tuple[float, float | None, str]] | None = None,
+) -> dict[str, Any]:
+    """Craft 2–4 hooks for user-selected topics (studio step after topic pick)."""
+    topics = [t for t in selected_topics if isinstance(t, dict) and str(t.get("text") or "").strip()]
+    if not topics:
+        return {"hooks": [], "topics": [], "topic_tree": [], "source": "empty"}
+
+    min_n = max(2, int(min_hooks or 2))
+    max_n = max(min_n, min(4, int(max_hooks or 4)))
+    primary = prefer_english_cues(english_cues or cues)
+    pool = primary if primary else cues
+    cue_corpus = [str(t or "") for _s, _e, t in pool if (t or "").strip()]
+
+    # Distribute budget across selected topics, then fill to max.
+    per_topic = max(1, (max_n + len(topics) - 1) // len(topics))
+    all_hooks: list[dict[str, Any]] = []
+    used_angles: list[str] = []
+    enriched_topics: list[dict[str, Any]] = []
+
+    for topic in topics:
+        if len(all_hooks) >= max_n:
+            break
+        remaining = max_n - len(all_hooks)
+        want = min(per_topic, remaining)
+        # If we still need to hit min_hooks and this is the last topic, ask for more.
+        if topic is topics[-1] and len(all_hooks) + want < min_n:
+            want = min(max_n - len(all_hooks), max(want, min_n - len(all_hooks)))
+
+        topic_window = _cues_for_topic_ranges(
+            pool,
+            topic,
+            fallback_start=float(topic.get("start_sec") or 0),
+            fallback_end=topic.get("end_sec"),
+        )
+        if not topic_window:
+            topic_window = _cues_in_range(
+                pool,
+                float(topic.get("start_sec") or 0),
+                topic.get("end_sec"),
+            )
+        stitched = _stitch_complete_utterances(topic_window)
+        title = str(topic.get("text") or "").strip()
+        candidates = _pick_contextual_hooks(stitched)
+        if candidates and title:
+            candidates = sorted(
+                candidates,
+                key=lambda h: -(
+                    _topic_text_overlap(title, str(h.get("text") or ""))
+                    + 0.35 * _business_hook_score(str(h.get("text") or ""))
+                ),
+            )
+        candidates = candidates[:6]
+        if not candidates:
+            candidates = _emergency_hook_candidates(stitched or topic_window, limit=4)
+        for h in candidates:
+            h["topic_id"] = topic.get("id")
+            h["topic_text"] = title
+
+        topic_hooks: list[dict[str, Any]] = []
+        if candidates and _llm_has_any_key(
+            api_key=api_key,
+            claude_api_key=claude_api_key,
+            openrouter_api_key=openrouter_api_key,
+            openrouter_model=openrouter_model,
+        ):
+            try:
+                topic_hooks = await _llm_hooks_for_singular_topic(
+                    hooks=candidates,
+                    topic_title=title,
+                    topic_explanation=str(topic.get("explanation") or ""),
+                    theme_title=theme_title,
+                    theme_summary=theme_summary,
+                    used_angles=used_angles,
+                    api_key=api_key,
+                    model=model,
+                    claude_api_key=claude_api_key,
+                    claude_model=claude_model,
+                    provider=provider,
+                    openrouter_api_key=openrouter_api_key,
+                    openrouter_model=openrouter_model,
+                    openrouter_base_url=openrouter_base_url,
+                    max_hooks=want,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("selected-topic hook craft failed for %r: %s", title, exc)
+        if not topic_hooks and candidates:
+            topic_hooks = heuristic_craft_hooks(
+                candidates,
+                theme_title=f"{theme_title}: {title}".strip(": "),
+            )[:want]
+
+        topic_hooks = topic_hooks[:want]
+        for h in topic_hooks:
+            used_angles.append(str(h.get("text") or ""))
+            all_hooks.append(h)
+        node = dict(topic)
+        node["hooks"] = list(topic_hooks)
+        enriched_topics.append(node)
+
+    all_hooks = _dedupe_hook_list(all_hooks)
+    all_hooks, _guard = enforce_non_verbatim_hooks(
+        all_hooks,
+        cue_corpus,
+        theme_title=theme_title,
+    )
+    all_hooks = all_hooks[:max_n]
+    # If still under minimum, pad with heuristic leftovers from the first topic window.
+    if len(all_hooks) < min_n and topics:
+        topic = topics[0]
+        topic_window = _cues_for_topic_ranges(
+            pool,
+            topic,
+            fallback_start=float(topic.get("start_sec") or 0),
+            fallback_end=topic.get("end_sec"),
+        ) or _cues_in_range(pool, float(topic.get("start_sec") or 0), topic.get("end_sec"))
+        extras = heuristic_craft_hooks(
+            _pick_contextual_hooks(_stitch_complete_utterances(topic_window))
+            or _emergency_hook_candidates(topic_window, limit=4),
+            theme_title=theme_title,
+        )
+        have = {" ".join(str(h.get("text") or "").lower().split()) for h in all_hooks}
+        for h in extras:
+            key = " ".join(str(h.get("text") or "").lower().split())
+            if not key or key in have:
+                continue
+            h = dict(h)
+            h["topic_id"] = topic.get("id")
+            h["topic_text"] = topic.get("text")
+            all_hooks.append(h)
+            have.add(key)
+            if len(all_hooks) >= min_n:
+                break
+        all_hooks = all_hooks[:max_n]
+
+    all_hooks.sort(key=lambda r: float(r.get("start_sec") or 0))
+    for i, h in enumerate(all_hooks):
+        h["id"] = f"hook_{i + 1}"
+
+    # Attach hooks onto a shallow topic tree for the studio UI.
+    by_topic: dict[str, list[dict[str, Any]]] = {}
+    for h in all_hooks:
+        key = str(h.get("topic_id") or h.get("topic_text") or "")
+        by_topic.setdefault(key, []).append(h)
+    topic_tree: list[dict[str, Any]] = []
+    for topic in enriched_topics or topics:
+        node = dict(topic)
+        key = str(node.get("id") or node.get("text") or "")
+        node["hooks"] = list(by_topic.get(key) or by_topic.get(str(node.get("text") or "")) or [])
+        node.setdefault("subtopics", [])
+        topic_tree.append(node)
+
+    return {
+        "hooks": all_hooks,
+        "topics": _flatten_topic_tree(topic_tree)[:_MAX_TOPICS],
+        "topic_tree": _reindex_topic_tree(topic_tree)[:_MAX_TOPICS],
+        "source": "selected_topics",
+        "hook_count": len(all_hooks),
+        "min_hooks": min_n,
+        "max_hooks": max_n,
+    }
 
 
 async def _llm_topics_from_theme(

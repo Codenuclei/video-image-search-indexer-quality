@@ -1436,6 +1436,9 @@ class IndexingWorker:
                 TimedPick,
                 _carousel_pipeline_generate_impl,
                 _load_video_cues,
+                _themes_transcript_hash,
+                persist_themes_save,
+                themes_cache_model_name,
             )
             from app.llm.carousel_llm import resolve_carousel_llm
             from app.search.carousel_pipeline import (
@@ -1447,7 +1450,7 @@ class IndexingWorker:
             if row.status != DriveFileStatus.PROCESSED or len(cues) < 2:
                 raise RuntimeError("processed video has no usable transcript cues")
             llm = resolve_carousel_llm()
-            themes, _source, _warning = await build_harmonized_themes(
+            themes, themes_source, themes_warning = await build_harmonized_themes(
                 cues=cues,
                 video_name=row.name,
                 search_entity=None,
@@ -1462,6 +1465,21 @@ class IndexingWorker:
             )
             if not themes:
                 raise RuntimeError("could not derive default carousel themes")
+            # Persist themes into the studio cache as soon as the LLM returns so
+            # Generate themes is an instant hit even if the rest of the background
+            # carousel pipeline is still running or later fails.
+            try:
+                await persist_themes_save(
+                    drive_file_id=file_id,
+                    themes=themes,
+                    source=themes_source or "background",
+                    cue_count=len(cues),
+                    transcript_hash=_themes_transcript_hash(cues),
+                    model_name=themes_cache_model_name(llm),
+                    warning=themes_warning,
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("index-time themes cache save failed for %s", file_id)
             theme_slices = [
                 PipelineThemeSlice(
                     theme_id=str(t.get("theme_id") or f"theme_{i}"),

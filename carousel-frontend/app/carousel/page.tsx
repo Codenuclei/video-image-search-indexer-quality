@@ -330,8 +330,10 @@ export default function CarouselSearchPage() {
 
   const [extract, setExtract] = useState<CarouselPipelineExtractResponse | null>(null);
   const [loadingExtract, setLoadingExtract] = useState(false);
+  const [loadingHooks, setLoadingHooks] = useState(false);
   const [selectedHooks, setSelectedHooks] = useState<string[]>([]);
   const [selectedTopics, setSelectedTopics] = useState<string[]>([]);
+  const hooksReady = (extract?.hooks?.length ?? 0) > 0;
   const [phaseIntent, setPhaseIntent] = useState<string | null>(null);
   const [phaseIntentScore, setPhaseIntentScore] = useState<number | null>(null);
   const [loadingIntent, setLoadingIntent] = useState(false);
@@ -660,13 +662,28 @@ export default function CarouselSearchPage() {
       setPersonNotFound(null);
       setThemesMissing(false);
       try {
-        const res = await apiClient.carouselPipelineThemes(video.id, {
-          personName: personName || undefined,
-          searchEntity: entity || undefined,
-          force: Boolean(force),
-          generate: Boolean(generate),
-          signal,
-        });
+        const useAsyncJob = Boolean(force || generate);
+        const res = useAsyncJob
+          ? await apiClient.carouselPipelineThemesGenerate(video.id, {
+              personName: personName || undefined,
+              searchEntity: entity || undefined,
+              force: Boolean(force),
+              generate: Boolean(generate),
+              signal,
+              onStatus: (status) => {
+                if (signal?.aborted || themesRequestKeyRef.current !== requestKey) return;
+                if (status.message && status.status === "running") {
+                  setUploadNote(status.message);
+                }
+              },
+            })
+          : await apiClient.carouselPipelineThemes(video.id, {
+              personName: personName || undefined,
+              searchEntity: entity || undefined,
+              force: Boolean(force),
+              generate: Boolean(generate),
+              signal,
+            });
         if (signal?.aborted || themesRequestKeyRef.current !== requestKey) return;
 
         if (res.error === "person_not_found" || res.person_found === false) {
@@ -681,6 +698,20 @@ export default function CarouselSearchPage() {
           setThemesMissing(false);
           setThemesLoadedKey(null);
           setPhase(1);
+          return;
+        }
+        if (res.status === "error" || (res.error && !(res.themes ?? []).length)) {
+          const msg = formatApiError(
+            res.message || res.error || res.warning || "Theme generation failed",
+            "We couldn’t generate themes for this video. Please try again."
+          );
+          setError(msg);
+          toastApiError(msg);
+          setThemes([]);
+          setThemeSaveId(null);
+          setThemesFromCache(false);
+          setThemesMissing(false);
+          setThemesLoadedKey(null);
           return;
         }
         const nextThemes = res.themes ?? [];
@@ -1120,7 +1151,7 @@ export default function CarouselSearchPage() {
   const continueDisabledReason = !selectedVideo
     ? "Select a captioned video first"
     : loadingThemes
-      ? "Loading themes…"
+      ? "Generating themes…"
       : null;
 
   function onToggleTheme(theme: CarouselPipelineTheme) {
@@ -1161,6 +1192,7 @@ export default function CarouselSearchPage() {
         search_entity: searchEntity || undefined,
         force,
         generate,
+        include_hooks: false,
         themes: ordered.map((t) => ({
           theme_id: t.theme_id,
           title: t.title,
@@ -1170,7 +1202,6 @@ export default function CarouselSearchPage() {
         })),
       });
       const hasTree =
-        (res.hooks?.length ?? 0) > 0 ||
         (res.topics?.length ?? 0) > 0 ||
         (res.topic_tree?.length ?? 0) > 0;
       if (!hasTree && !res.cache_hit) {
@@ -1179,24 +1210,24 @@ export default function CarouselSearchPage() {
         const msg =
           res.message ||
           res.warning ||
-          "No cached hooks/topics for these themes. Click Extract to generate.";
+          "No cached topics for these themes. Click Extract to generate.";
         setError(msg);
         toastApiError(msg);
         return;
       }
-      setExtract(res);
+      setExtract({ ...res, hooks: [] });
       setExtractFromCache(Boolean(res.cache_hit));
       setSelectedHooks([]);
       setSelectedTopics([]);
       setPhaseIntent(res.intent ?? null);
       setPhaseIntentScore(res.intent_score ?? null);
       setPhase(3);
-      // Reveal the current-generation tree (topics/hooks) under the themes step.
+      // Reveal the topics step under the themes step.
       requestAnimationFrame(() => {
         phase3Ref.current?.scrollIntoView({ behavior: "smooth", block: "start" });
       });
     } catch (e) {
-      setError(formatApiError(e, "We couldn’t extract topics and hooks. Please try again."));
+      setError(formatApiError(e, "We couldn’t extract topics. Please try again."));
       setExtract(null);
       setExtractFromCache(false);
     } finally {
@@ -1204,10 +1235,84 @@ export default function CarouselSearchPage() {
     }
   }
 
+  async function generateHooksFromSelectedTopics(opts?: { force?: boolean }) {
+    if (!selectedVideo || !extract || loadingHooks || loadingExtract) return;
+    if (!selectedTopics.length) {
+      setError("Select at least one topic before generating hooks.");
+      toastApiError("Select at least one topic before generating hooks.");
+      return;
+    }
+    setLoadingHooks(true);
+    setError(null);
+    setSelectedHooks([]);
+    try {
+      const topicItems = selectedTopics
+        .map((text) => toTopicTimedPick(text, extract))
+        .filter((t) => (t.text || "").trim());
+      const orderedThemes = [...selectedThemes].sort((a, b) => a.start_sec - b.start_sec);
+      const res = await apiClient.carouselPipelineExtractHooks({
+        drive_file_id: selectedVideo.id,
+        search_entity: searchEntity || undefined,
+        force: Boolean(opts?.force),
+        generate: true,
+        min_hooks: 2,
+        max_hooks: 4,
+        themes: orderedThemes.map((t) => ({
+          theme_id: t.theme_id,
+          title: t.title,
+          start_sec: t.start_sec,
+          end_sec: t.end_sec,
+          summary: t.summary,
+        })),
+        topics: topicItems.map((t) => ({
+          id: t.id,
+          text: t.text,
+          start_sec: t.start_sec,
+          end_sec: t.end_sec ?? null,
+          explanation: undefined,
+          theme_id: t.theme_id,
+          time_ranges: t.time_ranges,
+        })),
+      });
+      const nextHooks = res.hooks ?? [];
+      if (nextHooks.length < 2) {
+        const msg =
+          res.message ||
+          "Could not craft at least 2 hooks for those topics. Try different topics.";
+        setError(msg);
+        toastApiError(msg);
+        return;
+      }
+      setExtract((prev) =>
+        prev
+          ? {
+              ...prev,
+              hooks: nextHooks,
+              topic_tree: res.topic_tree?.length ? res.topic_tree : prev.topic_tree,
+              topics: res.topics?.length ? res.topics : prev.topics,
+            }
+          : res
+      );
+      setSelectedHooks([]);
+    } catch (e) {
+      setError(formatApiError(e, "We couldn’t generate hooks for the selected topics. Please try again."));
+    } finally {
+      setLoadingHooks(false);
+    }
+  }
+
   async function goToPreviewIntent() {
-    if (!selectedHooks.length && !selectedTopics.length) {
-      setError("Select at least one hook or topic.");
-      toastApiError("Select at least one hook or topic.");
+    if (!selectedHooks.length) {
+      setError(
+        hooksReady
+          ? "Select at least one hook to continue."
+          : "Generate hooks from your selected topics first, then pick at least one."
+      );
+      toastApiError(
+        hooksReady
+          ? "Select at least one hook to continue."
+          : "Generate hooks from your selected topics first, then pick at least one."
+      );
       return;
     }
     setError(null);
@@ -2078,12 +2183,12 @@ export default function CarouselSearchPage() {
           <p className="studio-section-label">Step 3</p>
           <h2 className="studio-section-heading">
             <Sparkles size={20} />
-            Hooks & topics
+            Topics, then hooks
           </h2>
           <p className="mt-2 text-sm text-slate-500">
-            Browse topics and subtopics, then select the hooks you want on slides. Nothing is
-            pre-selected — pick intentionally. Images stay deferred until you generate and run
-            frame selection.
+            Select one or more topics first. Then generate 2–4 hooks for those topics and pick the
+            ones you want on slides. Images stay deferred until you generate and run frame
+            selection.
             {extract.any_translated ? " Some lines were translated for display." : ""}
           </p>
           {selectedVideo && (
@@ -2093,7 +2198,11 @@ export default function CarouselSearchPage() {
               selectedHooks={selectedHooks}
               selectedTopics={selectedTopics}
               onToggleHook={(text) => setSelectedHooks((prev) => toggleText(prev, text))}
-              onToggleTopic={(text) => setSelectedTopics((prev) => toggleText(prev, text))}
+              onToggleTopic={(text) => {
+                setSelectedTopics((prev) => toggleText(prev, text));
+                setSelectedHooks([]);
+                setExtract((prev) => (prev ? { ...prev, hooks: [] } : prev));
+              }}
               onPreview={(item) => setPreviewCue(item)}
               onRestoreExtract={(next, hooks, topics) => {
                 setExtract(next);
@@ -2138,51 +2247,95 @@ export default function CarouselSearchPage() {
           )}
           {phase < 4 && (
             <div className="mt-4 flex flex-wrap items-center gap-3">
-              <button
-                type="button"
-                className="studio-btn studio-btn-primary studio-btn-continue"
-                onClick={(e) => {
-                  e.preventDefault();
-                  void goToPreviewIntent();
-                }}
-                disabled={
-                  loadingIntent ||
-                  loadingExtract ||
-                  building ||
-                  pipelineLocked ||
-                  (!selectedHooks.length && !selectedTopics.length)
-                }
-                title={
-                  !selectedHooks.length && !selectedTopics.length
-                    ? "Select at least one hook or topic"
-                    : loadingIntent
-                      ? "Updating intent…"
-                      : undefined
-                }
-                data-testid="carousel-continue-preview"
-              >
-                {loadingIntent ? (
-                  <LoadingLabel>Updating intent…</LoadingLabel>
-                ) : (
-                  "Continue to preview & intent"
-                )}
-              </button>
+              {!hooksReady ? (
+                <button
+                  type="button"
+                  className="studio-btn studio-btn-primary studio-btn-continue"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    void generateHooksFromSelectedTopics();
+                  }}
+                  disabled={
+                    loadingHooks ||
+                    loadingExtract ||
+                    building ||
+                    pipelineLocked ||
+                    !selectedTopics.length
+                  }
+                  title={
+                    !selectedTopics.length
+                      ? "Select at least one topic first"
+                      : loadingHooks
+                        ? "Generating hooks…"
+                        : "Generate 2–4 hooks for the selected topics"
+                  }
+                  data-testid="carousel-generate-hooks"
+                >
+                  {loadingHooks ? (
+                    <LoadingLabel>Generating hooks…</LoadingLabel>
+                  ) : (
+                    "Generate hooks (2–4)"
+                  )}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="studio-btn studio-btn-primary studio-btn-continue"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    void goToPreviewIntent();
+                  }}
+                  disabled={
+                    loadingIntent ||
+                    loadingExtract ||
+                    loadingHooks ||
+                    building ||
+                    pipelineLocked ||
+                    !selectedHooks.length
+                  }
+                  title={
+                    !selectedHooks.length
+                      ? "Select at least one hook"
+                      : loadingIntent
+                        ? "Updating intent…"
+                        : undefined
+                  }
+                  data-testid="carousel-continue-preview"
+                >
+                  {loadingIntent ? (
+                    <LoadingLabel>Updating intent…</LoadingLabel>
+                  ) : (
+                    "Continue to preview & intent"
+                  )}
+                </button>
+              )}
+              {hooksReady ? (
+                <button
+                  type="button"
+                  className="studio-btn studio-btn-secondary"
+                  onClick={() => void generateHooksFromSelectedTopics({ force: true })}
+                  disabled={
+                    loadingHooks ||
+                    loadingExtract ||
+                    !selectedTopics.length ||
+                    pipelineLocked
+                  }
+                >
+                  <RefreshCw size={14} className={cn(loadingHooks && "animate-spin")} />
+                  Regenerate hooks
+                </button>
+              ) : null}
               <span
                 className="text-xs text-muted-foreground"
                 data-testid="topics-hooks-selection-count"
               >
-                {selectedHooks.length + selectedTopics.length === 0
-                  ? "Select a hook or topic to continue"
-                  : [
-                      selectedHooks.length
-                        ? `${selectedHooks.length} hook${selectedHooks.length === 1 ? "" : "s"}`
-                        : null,
-                      selectedTopics.length
-                        ? `${selectedTopics.length} topic${selectedTopics.length === 1 ? "" : "s"}`
-                        : null,
-                    ]
-                      .filter(Boolean)
-                      .join(" · ") + " selected"}
+                {!hooksReady
+                  ? selectedTopics.length === 0
+                    ? "Select topics to unlock hook generation"
+                    : `${selectedTopics.length} topic${selectedTopics.length === 1 ? "" : "s"} selected`
+                  : selectedHooks.length === 0
+                    ? "Select at least one hook to continue"
+                    : `${selectedHooks.length} hook${selectedHooks.length === 1 ? "" : "s"} selected`}
               </span>
             </div>
           )}

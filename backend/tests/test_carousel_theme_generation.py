@@ -82,6 +82,30 @@ def test_condensed_outline_samples_the_end_of_long_transcript() -> None:
     assert len(outline) <= 2_000
 
 
+def test_condensed_outline_drops_music_filler_cues() -> None:
+    cues = [
+        (0.0, 1.0, "[music]"),
+        (1.0, 2.0, "The founder explains customer acquisition in detail today."),
+        (2.0, 3.0, "(applause)"),
+        (3.0, 4.0, "Distribution across Asia becomes the next growth lever."),
+        (4.0, 5.0, "FINAL_MARKER trust turns into a durable growth moat."),
+    ]
+    outline = _condense_transcript_outline(cues, max_chars=2_000)
+    assert "[music]" not in outline.lower()
+    assert "applause" not in outline.lower()
+    assert "FINAL_MARKER" in outline
+    assert "customer acquisition" in outline.lower()
+
+
+def test_theme_correction_only_for_severe_defects() -> None:
+    from app.search.carousel_pipeline import _theme_needs_llm_correction
+
+    soft = ["Only 2 themes were returned; expected at least 3."]
+    severe = ["Theme 1 title begins like raw speech: 'now as you reposition'."]
+    assert _theme_needs_llm_correction(soft) is False
+    assert _theme_needs_llm_correction(severe) is True
+
+
 def test_theme_parser_accepts_wrapped_array() -> None:
     parsed = _parse_themes_json(json.dumps({"themes": json.loads(_themes_json())}))
 
@@ -132,7 +156,7 @@ async def test_theme_generation_uses_one_full_talk_pass(monkeypatch) -> None:
     generation_prompts = [prompt for prompt in calls if "Transcript:" in prompt]
     assert len(generation_prompts) == 1
     assert "FINAL_MARKER" in generation_prompts[0]
-    assert "spanning the entire talk" in generation_prompts[0]
+    assert "spanning the entire talk" in generation_prompts[0] or "substance-filtered" in generation_prompts[0]
     assert len(themes) == 3
     assert source == "openrouter"
     assert warning is None

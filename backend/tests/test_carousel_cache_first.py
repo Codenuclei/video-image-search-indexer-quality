@@ -77,6 +77,7 @@ async def test_themes_cache_hit_returns_saved_without_llm():
         id=99,
         model=f"gemini-test:{THEME_PROMPT_VERSION}",
         source="saved",
+        status="ready",
         payload={"themes": saved_themes, "cue_count": 1, "source": "saved"},
     )
     session = AsyncMock()
@@ -122,6 +123,7 @@ async def test_themes_never_return_old_fallback_as_cache_hit():
         id=100,
         model=f"gemini-test:{THEME_PROMPT_VERSION}",
         source="fallback",
+        status="ready",
         payload={
             "themes": [{"theme_id": "t1", "title": "Raw transcript bucket"}],
             "source": "fallback",

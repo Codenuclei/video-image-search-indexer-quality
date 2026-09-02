@@ -52,6 +52,7 @@ from app.search.carousel_pipeline import (
     _hook_numbers_are_grounded,
     apply_carousel_quality_pass,
     build_harmonized_themes,
+    craft_hooks_for_selected_topics_async,
     cue_preview_lines,
     deduce_directional_intent,
     extract_hooks_and_topics_async,
@@ -367,6 +368,166 @@ def _themes_transcript_hash(cues: list[Any]) -> str:
     return digest.hexdigest()
 
 
+def themes_cache_model_name(llm_pack: dict[str, Any] | None = None) -> str:
+    """Cache identity for themes (provider/model + prompt version)."""
+    pack = llm_pack or resolve_carousel_llm()
+    return f"{carousel_llm_cache_id(pack)}:{THEME_PROMPT_VERSION}"[:128]
+
+
+def _themes_save_is_usable(row: CarouselGenerationSave) -> bool:
+    if (getattr(row, "status", None) or "ready").strip() != "ready":
+        return False
+    if (row.source or "").strip() == "fallback":
+        return False
+    payload = row.payload or {}
+    if (payload.get("source") or "").strip() == "fallback":
+        return False
+    themes = list(payload.get("themes") or [])
+    return bool(themes)
+
+
+async def find_ready_themes_save(
+    session: AsyncSession,
+    *,
+    drive_file_id: str,
+    transcript_hash: str,
+    model_name: str,
+    limit: int = 8,
+) -> CarouselGenerationSave | None:
+    cached_q = (
+        select(CarouselGenerationSave)
+        .where(
+            CarouselGenerationSave.drive_file_id == drive_file_id,
+            CarouselGenerationSave.kind == SAVE_KIND_THEMES,
+            CarouselGenerationSave.transcript_hash == transcript_hash,
+            CarouselGenerationSave.status == "ready",
+        )
+        .order_by(CarouselGenerationSave.created_at.desc())
+        .limit(limit)
+    )
+    for row in list((await session.execute(cached_q)).scalars().all()):
+        row_model = (row.model or "").strip()
+        if not row_model or row_model != model_name:
+            continue
+        if _themes_save_is_usable(row):
+            return row
+    return None
+
+
+async def find_inflight_themes_job(
+    session: AsyncSession,
+    *,
+    drive_file_id: str,
+    transcript_hash: str,
+    model_name: str,
+) -> CarouselGenerationSave | None:
+    row = (
+        await session.execute(
+            select(CarouselGenerationSave)
+            .where(
+                CarouselGenerationSave.drive_file_id == drive_file_id,
+                CarouselGenerationSave.kind == SAVE_KIND_THEMES,
+                CarouselGenerationSave.transcript_hash == transcript_hash,
+                CarouselGenerationSave.model == model_name,
+                CarouselGenerationSave.status == "processing",
+            )
+            .order_by(CarouselGenerationSave.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    return row
+
+
+async def persist_themes_save(
+    *,
+    drive_file_id: str,
+    themes: list[dict[str, Any]],
+    source: str,
+    cue_count: int,
+    transcript_hash: str,
+    model_name: str,
+    person_name: str | None = None,
+    warning: str | None = None,
+    existing_save_id: int | None = None,
+) -> CarouselGenerationSave | None:
+    """Persist a ready themes artifact (studio cache + index-time precompute)."""
+    if not themes or (source or "").strip() == "fallback":
+        return None
+    label = f"{len(themes)} themes · {source}"
+    payload = _jsonb_safe(
+        {
+            "drive_file_id": drive_file_id,
+            "themes": themes,
+            "source": source,
+            "cue_count": cue_count,
+            "transcript_hash": transcript_hash,
+            "model": model_name,
+            "person_name": person_name,
+            **({"warning": warning} if warning else {}),
+        }
+    )
+    try:
+        async with get_session_factory()() as save_session:
+            save: CarouselGenerationSave | None = None
+            if existing_save_id is not None:
+                save = await save_session.get(CarouselGenerationSave, existing_save_id)
+            if save is None:
+                save = CarouselGenerationSave(
+                    drive_file_id=drive_file_id,
+                    kind=SAVE_KIND_THEMES,
+                    theme_key="all",
+                )
+                save_session.add(save)
+            save.label = _jsonb_safe(label)[:240]
+            save.model = model_name
+            save.transcript_hash = transcript_hash
+            save.source = (source or "")[:32] or None
+            save.status = "ready"
+            save.payload = payload
+            await save_session.commit()
+            await save_session.refresh(save)
+            return save
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("carousel themes autosave failed: %s", exc, exc_info=True)
+        return None
+
+
+def _themes_response_from_save(
+    *,
+    row: CarouselGenerationSave,
+    drive_file_id: str,
+    drive_name: str,
+    check_name: str | None,
+    cues_len: int,
+    transcript_hash: str,
+    model_name: str,
+    generated: bool = False,
+) -> dict[str, Any]:
+    payload = row.payload or {}
+    themes = list(payload.get("themes") or [])
+    out: dict[str, Any] = {
+        "source": row.source or payload.get("source") or "saved",
+        "drive_file_id": drive_file_id,
+        "name": drive_name,
+        "search_entity": check_name or None,
+        "person_name": check_name or None,
+        "person_found": True if check_name else None,
+        "harmonized": False,
+        "cue_count": payload.get("cue_count") or cues_len,
+        "themes": themes,
+        "cache_hit": not generated,
+        "generated": generated,
+        "save_id": row.id,
+        "transcript_hash": transcript_hash,
+        "model": row.model or model_name,
+        "status": "ready",
+        "job_id": row.id,
+    }
+    if payload.get("warning"):
+        out["warning"] = payload.get("warning")
+    return out
+
+
 def _extract_theme_key(slices: list[PipelineThemeSlice]) -> str:
     """Stable cache key for extract across selected theme windows."""
     import json
@@ -462,6 +623,8 @@ class PipelineExtractRequest(CarouselRunLlmFields):
     # Cache-first: force regenerates; generate creates on miss; default is cache-only.
     force: bool = False
     generate: bool = False
+    # Studio default: topics only. Hooks are generated after the user picks topics.
+    include_hooks: bool = False
 
 
 class PipelineIntentRequest(CarouselRunLlmFields):
@@ -478,6 +641,32 @@ class PipelineIntentRequest(CarouselRunLlmFields):
 class TimedRange(BaseModel):
     start_sec: float = 0
     end_sec: float | None = None
+
+
+class PipelineTopicPick(BaseModel):
+    """A topic the user selected before hook generation."""
+
+    id: str = Field(default="", max_length=64)
+    text: str = Field(..., min_length=1, max_length=400)
+    start_sec: float = 0
+    end_sec: float | None = None
+    summary: str = Field(default="", max_length=800)
+    explanation: str = Field(default="", max_length=800)
+    theme_id: str | None = Field(default=None, max_length=64)
+    time_ranges: list[TimedRange] = Field(default_factory=list, max_length=12)
+
+
+class PipelineExtractHooksRequest(CarouselRunLlmFields):
+    """Generate 2–4 hooks for user-selected topics."""
+
+    drive_file_id: str = Field(..., min_length=1, max_length=128)
+    themes: list[PipelineThemeSlice] = Field(default_factory=list, max_length=12)
+    topics: list[PipelineTopicPick] = Field(..., min_length=1, max_length=12)
+    search_entity: str = Field(default="", max_length=200)
+    min_hooks: int = Field(default=2, ge=2, le=4)
+    max_hooks: int = Field(default=4, ge=2, le=4)
+    force: bool = False
+    generate: bool = True
 
 
 class TimedPick(BaseModel):
@@ -1396,7 +1585,6 @@ async def carousel_pipeline_themes(
         llm_model=(body.llm_model or "-"),
         person=(body.person_name or body.search_entity or "-"),
     )
-    settings = get_settings()
     # Prefer explicit person_name; search_entity alone is treated as person only when it
     # matches a known Person row used for presence check below.
     explicit_person = (body.person_name or "").strip()
@@ -1463,65 +1651,39 @@ async def carousel_pipeline_themes(
     llm_pack = resolve_carousel_llm(body.llm_provider, body.llm_model)
     # Cache identity must track Claude/OpenRouter config — never gemini_model alone,
     # or Gemini-era theme saves would incorrectly satisfy Claude requests.
-    model_name = (
-        f"{carousel_llm_cache_id(llm_pack)}:{THEME_PROMPT_VERSION}"
-    )[:128]
+    model_name = themes_cache_model_name(llm_pack)
 
     if not body.force:
-        cached_q = (
-            select(CarouselGenerationSave)
-            .where(
-                CarouselGenerationSave.drive_file_id == drive_file.id,
-                CarouselGenerationSave.kind == SAVE_KIND_THEMES,
-                CarouselGenerationSave.transcript_hash == transcript_hash,
-            )
-            .order_by(CarouselGenerationSave.created_at.desc())
-            .limit(8)
+        cached = await find_ready_themes_save(
+            session,
+            drive_file_id=drive_file.id,
+            transcript_hash=transcript_hash,
+            model_name=model_name,
         )
-        cached_rows = list((await session.execute(cached_q)).scalars().all())
-        for row in cached_rows:
-            # Exact config match only — null/other models are a different generation path.
-            row_model = (row.model or "").strip()
-            if not row_model or row_model != model_name:
-                continue
-            payload = row.payload or {}
-            # Old provider failures were incorrectly persisted as successful
-            # transcript-bucket themes. Never serve those as a cache hit.
-            if (row.source or payload.get("source") or "").strip() == "fallback":
-                continue
-            themes = list(payload.get("themes") or [])
-            if not themes:
-                continue
+        if cached is not None:
             logger.info(
                 "carousel themes cache hit drive=%s save_id=%s hash=%s model=%s",
                 drive_file.id,
-                row.id,
+                cached.id,
                 transcript_hash[:12],
                 model_name,
             )
             carousel_log(
                 "themes_cache_hit",
-                save_id=row.id,
-                theme_count=len(themes),
+                save_id=cached.id,
+                theme_count=len((cached.payload or {}).get("themes") or []),
                 model=model_name,
                 elapsed_ms=(time.perf_counter() - started) * 1000.0,
             )
-            return {
-                "source": row.source or payload.get("source") or "saved",
-                "drive_file_id": drive_file.id,
-                "name": drive_file.name,
-                "search_entity": check_name or None,
-                "person_name": check_name or None,
-                "person_found": True if check_name else None,
-                "harmonized": False,
-                "cue_count": payload.get("cue_count") or len(cues),
-                "themes": themes,
-                "cache_hit": True,
-                "generated": False,
-                "save_id": row.id,
-                "transcript_hash": transcript_hash,
-                "model": row.model or model_name,
-            }
+            return _themes_response_from_save(
+                row=cached,
+                drive_file_id=drive_file.id,
+                drive_name=drive_file.name,
+                check_name=check_name or None,
+                cues_len=len(cues),
+                transcript_hash=transcript_hash,
+                model_name=model_name,
+            )
 
     # Strict cache-first: Continue/Load never auto-calls Gemini on miss.
     if not body.force and not body.generate:
@@ -1549,6 +1711,7 @@ async def carousel_pipeline_themes(
             "generated": False,
             "transcript_hash": transcript_hash,
             "model": model_name,
+            "status": "cache_miss",
             "message": "No cached themes for this transcript. Click Generate themes to create them.",
             "warning": "No cached themes for this transcript. Click Generate themes to create them.",
         }
@@ -1580,54 +1743,35 @@ async def carousel_pipeline_themes(
             # Re-check cache under the lock — a sibling request may have just saved.
             # Skip when force=True (explicit regenerate).
             if not body.force:
-                cached_q = (
-                    select(CarouselGenerationSave)
-                    .where(
-                        CarouselGenerationSave.drive_file_id == drive_file.id,
-                        CarouselGenerationSave.kind == SAVE_KIND_THEMES,
-                        CarouselGenerationSave.transcript_hash == transcript_hash,
-                    )
-                    .order_by(CarouselGenerationSave.created_at.desc())
-                    .limit(4)
+                cached = await find_ready_themes_save(
+                    session,
+                    drive_file_id=drive_file.id,
+                    transcript_hash=transcript_hash,
+                    model_name=model_name,
+                    limit=4,
                 )
-                for row in list((await session.execute(cached_q)).scalars().all()):
-                    row_model = (row.model or "").strip()
-                    if not row_model or row_model != model_name:
-                        continue
-                    payload = row.payload or {}
-                    if (row.source or payload.get("source") or "").strip() == "fallback":
-                        continue
-                    themes = list(payload.get("themes") or [])
-                    if not themes:
-                        continue
+                if cached is not None:
                     logger.info(
                         "carousel themes cache hit (post-lock) drive=%s save_id=%s model=%s",
                         drive_file.id,
-                        row.id,
+                        cached.id,
                         model_name,
                     )
                     carousel_log(
                         "themes_cache_hit_post_lock",
-                        save_id=row.id,
-                        theme_count=len(themes),
+                        save_id=cached.id,
+                        theme_count=len((cached.payload or {}).get("themes") or []),
                         elapsed_ms=(time.perf_counter() - started) * 1000.0,
                     )
-                    return {
-                        "source": row.source or payload.get("source") or "saved",
-                        "drive_file_id": drive_file.id,
-                        "name": drive_file.name,
-                        "search_entity": check_name or None,
-                        "person_name": check_name or None,
-                        "person_found": True if check_name else None,
-                        "harmonized": False,
-                        "cue_count": payload.get("cue_count") or len(cues),
-                        "themes": themes,
-                        "cache_hit": True,
-                        "generated": False,
-                        "save_id": row.id,
-                        "transcript_hash": transcript_hash,
-                        "model": row.model or model_name,
-                    }
+                    return _themes_response_from_save(
+                        row=cached,
+                        drive_file_id=drive_file.id,
+                        drive_name=drive_file.name,
+                        check_name=check_name or None,
+                        cues_len=len(cues),
+                        transcript_hash=transcript_hash,
+                        model_name=model_name,
+                    )
 
             # Do not hold the request's read transaction/connection while an
             # external LLM runs. Long calls previously returned to a closed
@@ -1694,50 +1838,441 @@ async def carousel_pipeline_themes(
                 "generated": True,
                 "transcript_hash": transcript_hash,
                 "model": model_name,
+                "status": "ready",
                 **({"warning": warning} if warning else {}),
             }
 
             if themes:
-                try:
-                    label = f"{len(themes)} themes · {source}"
-                    save = CarouselGenerationSave(
-                        drive_file_id=generated_drive_id,
-                        kind=SAVE_KIND_THEMES,
-                        theme_key="all",
-                        label=_jsonb_safe(label)[:240],
-                        model=model_name,
-                        transcript_hash=transcript_hash,
-                        source=(source or "")[:32] or None,
-                        payload=_jsonb_safe(
-                            {
-                                "drive_file_id": generated_drive_id,
-                                "themes": themes,
-                                "source": source,
-                                "cue_count": len(cues),
-                                "transcript_hash": transcript_hash,
-                                "model": model_name,
-                                "person_name": check_name or None,
-                            }
-                        ),
-                    )
-                    # Use a fresh short-lived session after the external LLM
-                    # wait. Reusing the request's earlier ORM transaction
-                    # caused asyncpg/greenlet failures during autosave.
-                    async with get_session_factory()() as save_session:
-                        save_session.add(save)
-                        await save_session.commit()
-                        await save_session.refresh(save)
+                save = await persist_themes_save(
+                    drive_file_id=generated_drive_id,
+                    themes=themes,
+                    source=source,
+                    cue_count=len(cues),
+                    transcript_hash=transcript_hash,
+                    model_name=model_name,
+                    person_name=check_name or None,
+                    warning=warning,
+                )
+                if save is not None:
                     result["save_id"] = save.id
+                    result["job_id"] = save.id
                     logger.info(
                         "carousel themes saved drive=%s save_id=%s generated=1 hash=%s",
                         generated_drive_id,
                         save.id,
                         transcript_hash[:12],
                     )
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("carousel themes autosave failed: %s", exc, exc_info=True)
 
             return result
+
+
+async def _run_themes_job(
+    save_id: int,
+    *,
+    drive_file_id: str,
+    drive_name: str,
+    cues: list[Any],
+    transcript_hash: str,
+    model_name: str,
+    llm_pack: dict[str, Any],
+    check_name: str | None,
+    force: bool,
+) -> None:
+    """Background worker for async theme generation."""
+    from app.search.carousel_trace import carousel_log, set_drive_file_id
+
+    set_drive_file_id(drive_file_id)
+    themes_lock_key = carousel_themes_lock_key(drive_file_id, model_name)
+    try:
+        async with advisory_lock(
+            themes_lock_key,
+            name=f"carousel_themes:{drive_file_id}:{model_name}",
+            blocking=True,
+        ) as got:
+            if not got:
+                async with get_session_factory()() as session:
+                    row = await session.get(CarouselGenerationSave, save_id)
+                    if row is not None:
+                        row.status = "error"
+                        row.payload = _jsonb_safe(
+                            {
+                                **(row.payload or {}),
+                                "error": "Theme generation lock unavailable; retry shortly.",
+                                "phase": "failed",
+                            }
+                        )
+                        await session.commit()
+                return
+
+            if not force:
+                async with get_session_factory()() as session:
+                    cached = await find_ready_themes_save(
+                        session,
+                        drive_file_id=drive_file_id,
+                        transcript_hash=transcript_hash,
+                        model_name=model_name,
+                        limit=4,
+                    )
+                    if cached is not None:
+                        # Collapse the placeholder job onto the ready cache row.
+                        placeholder = await session.get(CarouselGenerationSave, save_id)
+                        if placeholder is not None and placeholder.id != cached.id:
+                            placeholder.status = "ready"
+                            placeholder.source = cached.source
+                            placeholder.payload = cached.payload
+                            placeholder.label = cached.label
+                            await session.commit()
+                        return
+
+            async with get_session_factory()() as session:
+                row = await session.get(CarouselGenerationSave, save_id)
+                if row is not None:
+                    payload = dict(row.payload or {})
+                    payload["phase"] = "generating"
+                    row.payload = _jsonb_safe(payload)
+                    await session.commit()
+
+            carousel_log(
+                "themes_job_generate_start",
+                job_id=save_id,
+                provider=llm_pack.get("provider") or "-",
+                cue_count=len(cues),
+            )
+            themes, source, warning = await build_harmonized_themes(
+                cues=cues,
+                video_name=drive_name,
+                search_entity=None,
+                api_key=llm_pack["api_key"],
+                model=llm_pack["model"],
+                claude_api_key=llm_pack["claude_api_key"],
+                claude_model=llm_pack["claude_model"],
+                provider=llm_pack["provider"],
+                openrouter_api_key=llm_pack["openrouter_api_key"],
+                openrouter_model=llm_pack["openrouter_model"],
+                openrouter_base_url=llm_pack["openrouter_base_url"],
+            )
+            if source == "fallback" or not themes:
+                async with get_session_factory()() as session:
+                    row = await session.get(CarouselGenerationSave, save_id)
+                    if row is not None:
+                        row.status = "error"
+                        row.source = "fallback"
+                        row.payload = _jsonb_safe(
+                            {
+                                "drive_file_id": drive_file_id,
+                                "themes": [],
+                                "source": "fallback",
+                                "error": warning
+                                or "The selected AI model could not generate valid themes.",
+                                "phase": "failed",
+                                "transcript_hash": transcript_hash,
+                                "model": model_name,
+                            }
+                        )
+                        await session.commit()
+                carousel_log(
+                    "themes_job_failed",
+                    level=logging.ERROR,
+                    job_id=save_id,
+                    warning=warning or "fallback",
+                )
+                return
+
+            await persist_themes_save(
+                drive_file_id=drive_file_id,
+                themes=themes,
+                source=source,
+                cue_count=len(cues),
+                transcript_hash=transcript_hash,
+                model_name=model_name,
+                person_name=check_name,
+                warning=warning,
+                existing_save_id=save_id,
+            )
+            carousel_log(
+                "themes_job_ready",
+                job_id=save_id,
+                theme_count=len(themes),
+                source=source,
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("async themes job failed save_id=%s", save_id)
+        try:
+            async with get_session_factory()() as session:
+                row = await session.get(CarouselGenerationSave, save_id)
+                if row is not None:
+                    row.status = "error"
+                    row.payload = _jsonb_safe(
+                        {
+                            **(row.payload or {}),
+                            "error": str(exc)[:500],
+                            "phase": "failed",
+                        }
+                    )
+                    await session.commit()
+        except Exception:  # noqa: BLE001
+            logger.exception("failed to mark themes job error save_id=%s", save_id)
+
+
+@router.post("/pipeline/themes/jobs")
+async def carousel_pipeline_themes_start_job(
+    body: PipelineThemesRequest,
+    background_tasks: BackgroundTasks,
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Start theme generation asynchronously; poll ``GET .../themes/jobs/{id}``.
+
+    Cache hits and cache-only misses return immediately (status ready / cache_miss).
+    Generate/force returns ``status=running`` with ``job_id`` while the LLM works.
+    """
+    from app.search.carousel_trace import carousel_log, set_drive_file_id
+
+    started = time.perf_counter()
+    set_drive_file_id(body.drive_file_id)
+    carousel_log(
+        "themes_job_request_start",
+        force=bool(body.force),
+        generate=bool(body.generate),
+        llm_provider=(body.llm_provider or "-"),
+        llm_model=(body.llm_model or "-"),
+    )
+    drive_file, cues = await _load_video_cues(session, body.drive_file_id.strip())
+    set_drive_file_id(drive_file.id)
+
+    explicit_person = (body.person_name or "").strip()
+    check_name = explicit_person
+    if not check_name and (body.search_entity or "").strip():
+        candidate = (body.search_entity or "").strip()
+        person_row = (
+            await session.execute(select(Person.id).where(Person.name.ilike(candidate)).limit(1))
+        ).first()
+        if person_row:
+            check_name = candidate
+
+    if check_name:
+        found = await _person_appears_in_video(session, drive_file.id, check_name)
+        if not found:
+            return {
+                "source": "person_not_found",
+                "status": "error",
+                "drive_file_id": drive_file.id,
+                "name": drive_file.name,
+                "search_entity": check_name,
+                "person_name": check_name,
+                "person_found": False,
+                "harmonized": False,
+                "themes": [],
+                "cache_hit": False,
+                "generated": False,
+                "error": "person_not_found",
+                "message": (
+                    "Person not found in this video. Try without that person or change video."
+                ),
+            }
+
+    if not cues:
+        return {
+            "source": "empty",
+            "status": "error",
+            "drive_file_id": drive_file.id,
+            "name": drive_file.name,
+            "themes": [],
+            "cache_hit": False,
+            "generated": False,
+            "message": "This video doesn’t have a transcript yet. Wait until indexing finishes, then try again.",
+        }
+
+    transcript_hash = _themes_transcript_hash(cues)
+    llm_pack = resolve_carousel_llm(body.llm_provider, body.llm_model)
+    model_name = themes_cache_model_name(llm_pack)
+
+    if not body.force:
+        cached = await find_ready_themes_save(
+            session,
+            drive_file_id=drive_file.id,
+            transcript_hash=transcript_hash,
+            model_name=model_name,
+        )
+        if cached is not None:
+            carousel_log(
+                "themes_job_cache_hit",
+                save_id=cached.id,
+                elapsed_ms=(time.perf_counter() - started) * 1000.0,
+            )
+            return _themes_response_from_save(
+                row=cached,
+                drive_file_id=drive_file.id,
+                drive_name=drive_file.name,
+                check_name=check_name or None,
+                cues_len=len(cues),
+                transcript_hash=transcript_hash,
+                model_name=model_name,
+            )
+
+    if not body.force and not body.generate:
+        return {
+            "source": "cache_miss",
+            "status": "cache_miss",
+            "drive_file_id": drive_file.id,
+            "name": drive_file.name,
+            "themes": [],
+            "cache_hit": False,
+            "generated": False,
+            "transcript_hash": transcript_hash,
+            "model": model_name,
+            "message": "No cached themes for this transcript. Click Generate themes to create them.",
+        }
+
+    if not body.force:
+        inflight = await find_inflight_themes_job(
+            session,
+            drive_file_id=drive_file.id,
+            transcript_hash=transcript_hash,
+            model_name=model_name,
+        )
+        if inflight is not None:
+            return {
+                "source": "job",
+                "status": "running",
+                "job_id": inflight.id,
+                "save_id": inflight.id,
+                "drive_file_id": drive_file.id,
+                "name": drive_file.name,
+                "themes": [],
+                "cache_hit": False,
+                "generated": False,
+                "transcript_hash": transcript_hash,
+                "model": model_name,
+                "message": "Theme generation already in progress…",
+                "phase": (inflight.payload or {}).get("phase") or "generating",
+            }
+
+    placeholder = CarouselGenerationSave(
+        drive_file_id=drive_file.id,
+        kind=SAVE_KIND_THEMES,
+        theme_key="all",
+        label="Generating themes…",
+        model=model_name,
+        transcript_hash=transcript_hash,
+        source="job",
+        status="processing",
+        payload=_jsonb_safe(
+            {
+                "drive_file_id": drive_file.id,
+                "themes": [],
+                "phase": "queued",
+                "transcript_hash": transcript_hash,
+                "model": model_name,
+                "person_name": check_name or None,
+            }
+        ),
+    )
+    session.add(placeholder)
+    await session.commit()
+    await session.refresh(placeholder)
+
+    # Snapshot values for the background task; do not reuse this request session.
+    drive_id = str(drive_file.id)
+    drive_name = str(drive_file.name)
+    cues_copy = list(cues)
+    job_id = int(placeholder.id)
+    background_tasks.add_task(
+        _run_themes_job,
+        job_id,
+        drive_file_id=drive_id,
+        drive_name=drive_name,
+        cues=cues_copy,
+        transcript_hash=transcript_hash,
+        model_name=model_name,
+        llm_pack=llm_pack,
+        check_name=check_name or None,
+        force=bool(body.force),
+    )
+    carousel_log(
+        "themes_job_queued",
+        job_id=job_id,
+        elapsed_ms=(time.perf_counter() - started) * 1000.0,
+    )
+    return {
+        "source": "job",
+        "status": "running",
+        "job_id": job_id,
+        "save_id": job_id,
+        "drive_file_id": drive_id,
+        "name": drive_name,
+        "themes": [],
+        "cache_hit": False,
+        "generated": False,
+        "transcript_hash": transcript_hash,
+        "model": model_name,
+        "message": "Generating themes…",
+        "phase": "queued",
+    }
+
+
+@router.get("/pipeline/themes/jobs/{job_id}")
+async def carousel_pipeline_themes_job_status(
+    job_id: int,
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Poll an async themes job started by ``POST /pipeline/themes/jobs``."""
+    row = await session.get(CarouselGenerationSave, job_id)
+    if row is None or row.kind != SAVE_KIND_THEMES:
+        raise HTTPException(status_code=404, detail="Themes job not found")
+    payload = row.payload or {}
+    status = (row.status or "").strip() or "ready"
+    if status == "processing":
+        return {
+            "source": "job",
+            "status": "running",
+            "job_id": row.id,
+            "save_id": row.id,
+            "drive_file_id": row.drive_file_id,
+            "themes": [],
+            "cache_hit": False,
+            "generated": False,
+            "transcript_hash": row.transcript_hash,
+            "model": row.model,
+            "phase": payload.get("phase") or "generating",
+            "message": "Generating themes…",
+        }
+    if status == "error":
+        return {
+            "source": row.source or "error",
+            "status": "error",
+            "job_id": row.id,
+            "save_id": row.id,
+            "drive_file_id": row.drive_file_id,
+            "themes": [],
+            "cache_hit": False,
+            "generated": False,
+            "transcript_hash": row.transcript_hash,
+            "model": row.model,
+            "error": payload.get("error") or "Theme generation failed",
+            "message": payload.get("error") or "Theme generation failed",
+            "phase": "failed",
+        }
+    themes = list(payload.get("themes") or [])
+    return {
+        "source": row.source or payload.get("source") or "saved",
+        "status": "ready",
+        "job_id": row.id,
+        "save_id": row.id,
+        "drive_file_id": row.drive_file_id,
+        "themes": themes,
+        "cache_hit": (row.source or "") != "job" and not payload.get("generated"),
+        "generated": True,
+        "cue_count": payload.get("cue_count"),
+        "transcript_hash": row.transcript_hash,
+        "model": row.model,
+        "harmonized": False,
+        **({"warning": payload.get("warning")} if payload.get("warning") else {}),
+        "message": f"{len(themes)} themes ready",
+        "phase": "ready",
+    }
+
+
+# NOTE: sync themes route is defined above; async job routes sit after it.
 
 
 @router.post("/pipeline/extract")
@@ -1791,6 +2326,133 @@ async def carousel_pipeline_extract(
             if await request.is_disconnected():
                 raise HTTPException(status_code=400, detail="Client disconnected before extract started")
             return await _carousel_pipeline_extract_impl(body, session, request)
+
+
+@router.post("/pipeline/extract/hooks")
+async def carousel_pipeline_extract_hooks(
+    body: PipelineExtractHooksRequest,
+    request: Request,
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Phase 3b: craft 2–4 hooks after the user selected one or more topics."""
+    from app.search.carousel_trace import carousel_log, set_drive_file_id
+
+    set_drive_file_id(body.drive_file_id)
+    carousel_log(
+        "extract_hooks_request_start",
+        topic_count=len(body.topics or []),
+        min_hooks=body.min_hooks,
+        max_hooks=body.max_hooks,
+        llm_provider=(body.llm_provider or "-"),
+        llm_model=(body.llm_model or "-"),
+    )
+    if not body.topics:
+        raise HTTPException(status_code=400, detail="Select at least one topic before generating hooks.")
+
+    if _EXTRACT_LOCK.locked():
+        raise HTTPException(
+            status_code=409,
+            detail="Hook/topic extract already running; wait for it to finish.",
+            headers={"Retry-After": "5"},
+        )
+
+    async with _EXTRACT_LOCK:
+        async with advisory_lock(
+            LOCK_CAROUSEL_EXTRACT, name="carousel_extract", blocking=False
+        ) as got:
+            if not got:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Hook/topic extract already running on another worker; wait for it to finish.",
+                    headers={"Retry-After": "5"},
+                )
+            if await request.is_disconnected():
+                raise HTTPException(status_code=400, detail="Client disconnected before hook craft started")
+
+            drive_file, cues = await _load_video_cues(session, body.drive_file_id.strip())
+            english_cues = await _maybe_load_english_cues(drive_file, cues)
+            slices = list(body.themes or [])
+            theme_titles = [s.title for s in slices if (s.title or "").strip()]
+            combined_title = (
+                " → ".join(theme_titles[:4]) if theme_titles else "Selected topics"
+            )
+            combined_summary = " ".join(
+                (s.summary or "").strip() for s in slices if (s.summary or "").strip()
+            )[:800]
+            llm = resolve_carousel_llm(body.llm_provider, body.llm_model)
+            selected = [
+                {
+                    "id": t.id or f"topic_{i + 1}",
+                    "text": t.text,
+                    "start_sec": float(t.start_sec or 0),
+                    "end_sec": t.end_sec,
+                    "explanation": t.explanation or t.summary or "",
+                    "theme_id": t.theme_id,
+                    "time_ranges": [
+                        {"start_sec": r.start_sec, "end_sec": r.end_sec}
+                        for r in (t.time_ranges or [])
+                    ],
+                }
+                for i, t in enumerate(body.topics)
+            ]
+            try:
+                crafted = await asyncio.wait_for(
+                    craft_hooks_for_selected_topics_async(
+                        cues,
+                        selected_topics=selected,
+                        theme_title=combined_title,
+                        theme_summary=combined_summary,
+                        min_hooks=int(body.min_hooks or 2),
+                        max_hooks=int(body.max_hooks or 4),
+                        api_key=llm["api_key"],
+                        model=llm["model"],
+                        claude_api_key=llm["claude_api_key"],
+                        claude_model=llm["claude_model"],
+                        provider=llm["provider"],
+                        openrouter_api_key=llm["openrouter_api_key"],
+                        openrouter_model=llm["openrouter_model"],
+                        openrouter_base_url=llm["openrouter_base_url"],
+                        english_cues=english_cues,
+                    ),
+                    timeout=min(_EXTRACT_TIMEOUT_SEC, 180.0),
+                )
+            except asyncio.TimeoutError as exc:
+                raise HTTPException(
+                    status_code=504,
+                    detail="Hook generation timed out. Please retry.",
+                ) from exc
+
+            hooks = list(crafted.get("hooks") or [])
+            if len(hooks) < 2:
+                raise HTTPException(
+                    status_code=502,
+                    detail="Could not craft at least 2 hooks for the selected topics. Try different topics.",
+                )
+            topic_tree = list(crafted.get("topic_tree") or [])
+            topics = list(crafted.get("topics") or selected)
+            carousel_log(
+                "extract_hooks_done",
+                hook_count=len(hooks),
+                topic_count=len(selected),
+            )
+            return {
+                "drive_file_id": drive_file.id,
+                "hooks": hooks,
+                "topics": topics,
+                "topic_tree": topic_tree,
+                "previews": [],
+                "verbatim": False,
+                "hooks_contextual": True,
+                "topics_generated": False,
+                "hooks_english": True,
+                "topics_english": True,
+                "any_translated": False,
+                "cache_hit": False,
+                "generated": True,
+                "min_hooks": int(body.min_hooks or 2),
+                "max_hooks": int(body.max_hooks or 4),
+                "message": f"{len(hooks)} hooks ready — pick the ones you want on slides.",
+            }
 
 
 def _sanitize_extract_hook_payload(
@@ -1872,8 +2534,10 @@ async def _carousel_pipeline_extract_impl(
     )[:800]
     theme_key = _extract_theme_key(slices_sorted)
     llm_pack = resolve_carousel_llm(body.llm_provider, body.llm_model)
+    include_hooks = bool(body.include_hooks)
+    stage_tag = "full" if include_hooks else "topics-only"
     llm_cache_id = (
-        f"{carousel_llm_cache_id(llm_pack)}:{EXTRACT_PROMPT_VERSION}"
+        f"{carousel_llm_cache_id(llm_pack)}:{EXTRACT_PROMPT_VERSION}:{stage_tag}"
     )[:128]
 
     # Cache lookup before any LLM work — only hit when theme windows AND LLM
@@ -1897,7 +2561,16 @@ async def _carousel_pipeline_extract_impl(
             hooks = list(payload.get("hooks") or [])
             topics = list(payload.get("topics") or [])
             topic_tree = list(payload.get("topic_tree") or [])
-            if not hooks and not topics and not topic_tree:
+            if not include_hooks:
+                # Topics-only stage: require topics; drop any cached hooks.
+                if not topics and not topic_tree:
+                    continue
+                hooks = []
+                for node in topic_tree:
+                    node["hooks"] = []
+                    for sub in list(node.get("subtopics") or []):
+                        sub["hooks"] = []
+            elif not hooks and not topics and not topic_tree:
                 continue
             logger.info(
                 "carousel extract cache hit drive=%s save_id=%s theme_key=%s model=%s",
@@ -1964,8 +2637,8 @@ async def _carousel_pipeline_extract_impl(
             "transcript_meta": None,
             "cache_hit": False,
             "generated": False,
-            "message": "No cached hooks/topics for these themes. Click Generate to extract.",
-            "warning": "No cached hooks/topics for these themes. Click Generate to extract.",
+            "message": "No cached topics for these themes. Click Generate to extract.",
+            "warning": "No cached topics for these themes. Click Generate to extract.",
         }
 
     if await request.is_disconnected():
@@ -1990,6 +2663,7 @@ async def _carousel_pipeline_extract_impl(
                 openrouter_model=llm["openrouter_model"],
                 openrouter_base_url=llm["openrouter_base_url"],
                 english_cues=english_cues,
+                include_hooks=include_hooks,
             ),
             timeout=_EXTRACT_TIMEOUT_SEC,
         )
@@ -2030,6 +2704,12 @@ async def _carousel_pipeline_extract_impl(
     topic_tree = list(extracted.get("topic_tree") or [])[:24]
     for i, node in enumerate(topic_tree):
         node["id"] = node.get("id") or f"topic_{i + 1}"
+    if not include_hooks:
+        hooks = []
+        for node in topic_tree:
+            node["hooks"] = []
+            for sub in list(node.get("subtopics") or []):
+                sub["hooks"] = []
 
     all_previews: list[dict[str, Any]] = []
     preview_source = english_cues if english_cues else cues
@@ -2268,6 +2948,7 @@ async def list_carousel_saves(
         .where(
             CarouselGenerationSave.drive_file_id == drive_file_id.strip(),
             CarouselGenerationSave.kind == kind,
+            CarouselGenerationSave.status == "ready",
         )
         .order_by(CarouselGenerationSave.created_at.desc())
         .limit(max(1, min(limit, 50)))

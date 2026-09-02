@@ -12,6 +12,7 @@ import {
   MOCK_VIDEO,
   MOCK_VIDEO_2,
   mockExtract,
+  mockExtractHooks,
   mockGenerate,
 } from "@/lib/test-mock-data";
 
@@ -194,10 +195,19 @@ async function handle(req: NextRequest, ctx: Ctx) {
     // Mirror real backend: force bypasses cache; generate alone still cache-hits.
     const live = Boolean(body.force);
     return json({
-      ...mockExtract(driveFileId),
+      ...mockExtract(driveFileId, { include_hooks: Boolean(body.include_hooks) }),
       cache_hit: !live,
       generated: live,
     });
+  }
+
+  if (path === "search/carousel/pipeline/extract/hooks" && method === "POST") {
+    const body = await readBody(req);
+    const driveFileId = String(body.drive_file_id || MOCK_VIDEO.id);
+    const topicTexts = Array.isArray(body.topics)
+      ? (body.topics as { text?: string }[]).map((t) => String(t.text || "")).filter(Boolean)
+      : [];
+    return json(mockExtractHooks(driveFileId, topicTexts));
   }
 
   if (path === "search/carousel/pipeline/intent" && method === "POST") {
