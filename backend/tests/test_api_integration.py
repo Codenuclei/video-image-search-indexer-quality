@@ -70,7 +70,10 @@ async def _seed_unknown_cluster(session) -> tuple[Media, Face, FaceCluster]:
 async def test_health_endpoint(client):
     response = await client.get("/health")
     assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+    assert response.json() == {
+        "status": "ok",
+        "themes_runtime": "themes-v5-single-pass-strict-provider",
+    }
 
 
 @requires_postgres

@@ -37,6 +37,15 @@ def video_index_lock_key(file_id: str) -> int:
     return int.from_bytes(digest, "big") & 0x7FFF_FFFF_FFFF_FFFF
 
 
+def carousel_themes_lock_key(file_id: str, model_id: str) -> int:
+    """Stable per-video/model lock so unrelated theme requests never block."""
+    identity = f"{file_id}\0{model_id}".encode("utf-8")
+    digest = hashlib.blake2b(
+        identity, digest_size=8, person=b"cartheme"
+    ).digest()
+    return int.from_bytes(digest, "big") & 0x7FFF_FFFF_FFFF_FFFF
+
+
 class AdvisoryLockHandle:
     """Holds an open connection that owns a session-level advisory lock."""
 

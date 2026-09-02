@@ -328,7 +328,7 @@ async def test_polish_returns_structured_candidate_items(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(
         "app.search.carousel_frame_select.score_frame_quality",
-        lambda _img: {"score": 50.0, "phash": "0" * 64},
+        lambda _img, **_kwargs: {"score": 50.0, "phash": "0" * 64},
     )
     monkeypatch.setattr(
         "app.llm.carousel_llm.vision_ready",
@@ -453,3 +453,52 @@ def test_filter_rejects_pixelated_keeps_clean():
     assert 1 not in kept
     assert stats.get("rejected", {}).get("pixelated", 0) >= 1
     assert any(i in kept for i in (0, 2))
+
+
+def test_fast_quality_path_skips_expensive_pixelation(monkeypatch):
+    import numpy as np
+
+    from app.search.carousel_frame_select import score_frame_quality
+
+    monkeypatch.setattr(
+        "app.video.pixelation.evaluate_pixelation",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("pixelation analysis must be skipped")
+        ),
+    )
+    image = np.tile(np.arange(0, 256, dtype=np.uint8), (160, 1))
+
+    result = score_frame_quality(
+        _jpeg_from_gray(image),
+        check_pixelation=False,
+    )
+
+    assert not str(result.get("reject") or "").startswith("error:")
+
+
+def test_quality_filter_scores_each_image_once_and_exposes_scores(monkeypatch):
+    from app.search import carousel_frame_select as frame_select
+
+    calls = 0
+
+    def fake_score(_image):
+        nonlocal calls
+        calls += 1
+        return {
+            "reject": None,
+            "score": float(calls),
+            "phash": f"{calls:064b}",
+        }
+
+    monkeypatch.setattr(frame_select, "score_frame_quality", fake_score)
+    scores: list[dict] = []
+    kept, _stats = frame_select.filter_frame_candidates_by_quality(
+        [b"a", b"b", b"c"],
+        max_keep=3,
+        min_keep=1,
+        quality_scores_out=scores,
+    )
+
+    assert calls == 3
+    assert len(scores) == 3
+    assert kept

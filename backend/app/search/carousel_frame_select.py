@@ -246,7 +246,11 @@ def sample_candidate_timestamps_multi(
     return final[:cap]
 
 
-def score_frame_quality(jpeg_bytes: bytes | None) -> dict[str, Any]:
+def score_frame_quality(
+    jpeg_bytes: bytes | None,
+    *,
+    check_pixelation: bool = True,
+) -> dict[str, Any]:
     """Cheap quality signals: sharpness, exposure, contrast, pixelation. No model calls."""
     stats: dict[str, Any] = {
         "ok": False,
@@ -267,6 +271,10 @@ def score_frame_quality(jpeg_bytes: bytes | None) -> dict[str, Any]:
 
         from app.video.pixelation import PIXELATION_SCORE_THRESHOLD, evaluate_pixelation
 
+        # OpenCV otherwise creates its own worker pool inside every asyncio
+        # executor task. Twelve slides can oversubscribe the container badly
+        # enough that even the event-loop timeout cannot run on schedule.
+        cv2.setNumThreads(1)
         arr = np.frombuffer(jpeg_bytes, dtype=np.uint8)
         bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
         if bgr is None or bgr.size == 0:
@@ -300,9 +308,12 @@ def score_frame_quality(jpeg_bytes: bytes | None) -> dict[str, Any]:
         if sharp < 25:
             stats.update(sharpness=sharp, brightness=brightness, contrast=contrast, reject="blurry")
             return stats
-        pix_flag, pix_details = evaluate_pixelation(
-            bgr_full, threshold=PIXELATION_SCORE_THRESHOLD
-        )
+        pix_flag = False
+        pix_details: dict[str, Any] = {}
+        if check_pixelation:
+            pix_flag, pix_details = evaluate_pixelation(
+                bgr_full, threshold=PIXELATION_SCORE_THRESHOLD
+            )
         pix_score = float(pix_details.get("score") or 0.0)
         if pix_flag:
             stats.update(
@@ -390,6 +401,8 @@ def filter_frame_candidates_by_quality(
     timestamps: list[float] | None = None,
     max_keep: int = DEFAULT_MAX_CANDIDATES,
     min_keep: int = 2,
+    quality_scores_out: list[dict[str, Any]] | None = None,
+    check_pixelation: bool = True,
 ) -> tuple[list[int], dict[str, Any]]:
     """Filter/rank candidate indices by cheap image quality + phash dedupe.
 
@@ -398,8 +411,17 @@ def filter_frame_candidates_by_quality(
     n = len(images)
     reject_counts: dict[str, int] = {}
     scored: list[tuple[float, int, str | None]] = []  # score, idx, phash
-    for i, img in enumerate(images):
-        q = score_frame_quality(img)
+    quality_scores = [
+        (
+            score_frame_quality(img)
+            if check_pixelation
+            else score_frame_quality(img, check_pixelation=False)
+        )
+        for img in images
+    ]
+    if quality_scores_out is not None:
+        quality_scores_out.extend(quality_scores)
+    for i, q in enumerate(quality_scores):
         reason = q.get("reject")
         if reason:
             reject_counts[str(reason)] = reject_counts.get(str(reason), 0) + 1
@@ -420,8 +442,7 @@ def filter_frame_candidates_by_quality(
     }
     if not scored:
         fallback: list[tuple[float, int, str | None]] = []
-        for i, img in enumerate(images):
-            q = score_frame_quality(img)
+        for i, q in enumerate(quality_scores):
             reason = str(q.get("reject") or "")
             if reason in _HARD_REJECT or reason.startswith("error:"):
                 continue
@@ -1841,18 +1862,37 @@ async def polish_slides_instagram_frames(
                 if data is not None:
                     extracts_used += 1
 
+        quality_scores: list[dict[str, Any]] = []
         kept, qstats = await asyncio.to_thread(
             filter_frame_candidates_by_quality,
             images,
             timestamps=[c.timestamp_sec for c in raw],
             max_keep=candidate_cap,
             min_keep=min(2, candidate_cap),
+            quality_scores_out=quality_scores,
+            # Cached frames were already produced by the indexing pipeline.
+            # Interactive select-images must stay responsive; the full
+            # multi-signal mosaic detector is reserved for non-local passes.
+            check_pixelation=not prefer_local,
         )
+        # Tests and third-party callers may replace the filter without filling
+        # the optional score output. Keep that compatibility path off-loop too.
+        if len(quality_scores) != len(images):
+            quality_scores = await asyncio.to_thread(
+                lambda: [
+                    (
+                        score_frame_quality(image)
+                        if not prefer_local
+                        else score_frame_quality(image, check_pixelation=False)
+                    )
+                    for image in images
+                ]
+            )
         candidates: list[FrameCandidate] = []
         kept_images: list[bytes | None] = []
         for old_i in kept:
             c = raw[old_i]
-            candidate_quality = score_frame_quality(images[old_i])
+            candidate_quality = quality_scores[old_i]
             candidates.append(
                 FrameCandidate(
                     index=len(candidates),

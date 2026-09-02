@@ -322,7 +322,7 @@ async def test_llm_complete_json_gemini_missing_key_uses_openrouter(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_llm_complete_json_openrouter_falls_back_to_claude(monkeypatch):
+async def test_llm_complete_json_openrouter_choice_is_strict(monkeypatch):
     async def fail_or(*_a, **_k):
         raise RuntimeError("openrouter down")
 
@@ -345,18 +345,17 @@ async def test_llm_complete_json_openrouter_falls_back_to_claude(monkeypatch):
 
     monkeypatch.setattr("anthropic.Anthropic", _Client)
 
-    text, provider = await _llm_complete_json(
-        prompt="{}",
-        provider="openrouter",
-        openrouter_api_key="or-key",
-        openrouter_model="anthropic/claude-sonnet-4",
-        claude_api_key="claude-key",
-        claude_model="claude-x",
-        api_key="",
-        model="",
-    )
-    assert provider == "claude"
-    assert "hooks" in text
+    with pytest.raises(RuntimeError, match="openrouter down"):
+        await _llm_complete_json(
+            prompt="{}",
+            provider="openrouter",
+            openrouter_api_key="or-key",
+            openrouter_model="anthropic/claude-sonnet-4",
+            claude_api_key="claude-key",
+            claude_model="claude-x",
+            api_key="",
+            model="",
+        )
 
 
 @pytest.mark.asyncio

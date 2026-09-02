@@ -21,8 +21,8 @@ from app.config import get_settings
 from app.llm.carousel_llm import carousel_llm_cache_id, resolve_carousel_llm
 from app.db.advisory_locks import (
     LOCK_CAROUSEL_EXTRACT,
-    LOCK_CAROUSEL_THEMES,
     advisory_lock,
+    carousel_themes_lock_key,
 )
 from app.db.models import (
     CarouselGenerationSave,
@@ -35,7 +35,7 @@ from app.db.models import (
     Person,
     VideoSegment,
 )
-from app.db.session import get_db
+from app.db.session import get_db, get_session_factory
 from app.search.transcript_topics import (
     analyze_transcript_topics,
     compact_transcript,
@@ -80,12 +80,10 @@ _EXTRACT_TIMEOUT_SEC = 900.0
 # cancels the socket. Gemini ranking + ffmpeg prewarm used to overrun that and
 # surface as an unhandled TimeoutError 500. Local cache ranking is enough here;
 # generate still uses Gemini when the caller asks.
-_SELECT_IMAGES_TIMEOUT_SEC = 30.0
-_SELECT_IMAGES_REQUEST_TIMEOUT_SEC = 45.0
+_SELECT_IMAGES_TIMEOUT_SEC = 60.0
+_SELECT_IMAGES_REQUEST_TIMEOUT_SEC = 75.0
 _SELECT_IMAGES_RANK_BATCHES = 3
 _SELECT_IMAGES_FACE_WINDOW_SEC = 8.0
-# Same for cold theme LLM generation (cache hits bypass this lock).
-_THEMES_GEN_LOCK = asyncio.Lock()
 router = APIRouter(prefix="/search/carousel", tags=["carousel-script"])
 
 # 7 hooks + 7 topics — cohesive for short-form video scripts from indexed moments.
@@ -1487,6 +1485,10 @@ async def carousel_pipeline_themes(
             if not row_model or row_model != model_name:
                 continue
             payload = row.payload or {}
+            # Old provider failures were incorrectly persisted as successful
+            # transcript-bucket themes. Never serve those as a cache hit.
+            if (row.source or payload.get("source") or "").strip() == "fallback":
+                continue
             themes = list(payload.get("themes") or [])
             if not themes:
                 continue
@@ -1551,14 +1553,15 @@ async def carousel_pipeline_themes(
             "warning": "No cached themes for this transcript. Click Generate themes to create them.",
         }
 
-    # Serialize cold LLM theme generation so remount storms cannot pile up Gemini
-    # calls (process-local + cross-worker). Cache hits above return before this
-    # lock; waiters re-check cache after acquire.
+    # Serialize only the same video/model generation. A single global lock made
+    # an unrelated long transcript hold every studio request behind it.
+    themes_lock_key = carousel_themes_lock_key(drive_file.id, model_name)
     carousel_log("themes_lock_wait")
-    async with _THEMES_GEN_LOCK:
-        async with advisory_lock(
-            LOCK_CAROUSEL_THEMES, name="carousel_themes", blocking=True
-        ) as got:
+    async with advisory_lock(
+        themes_lock_key,
+        name=f"carousel_themes:{drive_file.id}:{model_name}",
+        blocking=True,
+    ) as got:
             if not got:
                 carousel_log(
                     "themes_lock_unavailable",
@@ -1592,6 +1595,8 @@ async def carousel_pipeline_themes(
                     if not row_model or row_model != model_name:
                         continue
                     payload = row.payload or {}
+                    if (row.source or payload.get("source") or "").strip() == "fallback":
+                        continue
                     themes = list(payload.get("themes") or [])
                     if not themes:
                         continue
@@ -1624,6 +1629,14 @@ async def carousel_pipeline_themes(
                         "model": row.model or model_name,
                     }
 
+            # Do not hold the request's read transaction/connection while an
+            # external LLM runs. Long calls previously returned to a closed
+            # asyncpg connection and lost the generated themes during autosave.
+            # Snapshot ORM values first: rollback expires model attributes.
+            generated_drive_id = str(drive_file.id)
+            generated_drive_name = str(drive_file.name)
+            del drive_file
+            await session.rollback()
             llm = llm_pack
             carousel_log(
                 "themes_generate_start",
@@ -1635,7 +1648,7 @@ async def carousel_pipeline_themes(
             )
             themes, source, warning = await build_harmonized_themes(
                 cues=cues,
-                video_name=drive_file.name,
+                video_name=generated_drive_name,
                 search_entity=None,
                 api_key=llm["api_key"],
                 model=llm["model"],
@@ -1653,10 +1666,24 @@ async def carousel_pipeline_themes(
                 warning=warning or "-",
                 elapsed_ms=(time.perf_counter() - started) * 1000.0,
             )
+            if source == "fallback":
+                carousel_log(
+                    "themes_generate_rejected_fallback",
+                    level=logging.ERROR,
+                    warning=warning or "all configured LLM providers failed",
+                    elapsed_ms=(time.perf_counter() - started) * 1000.0,
+                )
+                raise HTTPException(
+                    status_code=502,
+                    detail=(
+                        "The selected AI model could not generate valid themes. "
+                        f"{warning or 'Please retry or choose another model.'}"
+                    )[:500],
+                )
             result: dict[str, Any] = {
                 "source": source,
-                "drive_file_id": drive_file.id,
-                "name": drive_file.name,
+                "drive_file_id": generated_drive_id,
+                "name": generated_drive_name,
                 "search_entity": check_name or None,
                 "person_name": check_name or None,
                 "person_found": True if check_name else None,
@@ -1674,7 +1701,7 @@ async def carousel_pipeline_themes(
                 try:
                     label = f"{len(themes)} themes · {source}"
                     save = CarouselGenerationSave(
-                        drive_file_id=drive_file.id,
+                        drive_file_id=generated_drive_id,
                         kind=SAVE_KIND_THEMES,
                         theme_key="all",
                         label=_jsonb_safe(label)[:240],
@@ -1683,7 +1710,7 @@ async def carousel_pipeline_themes(
                         source=(source or "")[:32] or None,
                         payload=_jsonb_safe(
                             {
-                                "drive_file_id": drive_file.id,
+                                "drive_file_id": generated_drive_id,
                                 "themes": themes,
                                 "source": source,
                                 "cue_count": len(cues),
@@ -1693,19 +1720,22 @@ async def carousel_pipeline_themes(
                             }
                         ),
                     )
-                    session.add(save)
-                    await session.commit()
-                    await session.refresh(save)
+                    # Use a fresh short-lived session after the external LLM
+                    # wait. Reusing the request's earlier ORM transaction
+                    # caused asyncpg/greenlet failures during autosave.
+                    async with get_session_factory()() as save_session:
+                        save_session.add(save)
+                        await save_session.commit()
+                        await save_session.refresh(save)
                     result["save_id"] = save.id
                     logger.info(
                         "carousel themes saved drive=%s save_id=%s generated=1 hash=%s",
-                        drive_file.id,
+                        generated_drive_id,
                         save.id,
                         transcript_hash[:12],
                     )
                 except Exception as exc:  # noqa: BLE001
-                    logger.warning("carousel themes autosave failed: %s", exc)
-                    await session.rollback()
+                    logger.warning("carousel themes autosave failed: %s", exc, exc_info=True)
 
             return result
 
@@ -3919,6 +3949,7 @@ async def _carousel_pipeline_select_images_impl(
         all_slides,
         session,
         prefer_local=True,
+        max_candidates=3,
         max_rank_batches=2,
         timeout_sec=_SELECT_IMAGES_TIMEOUT_SEC,
         style_copy_refs=copy_refs,
