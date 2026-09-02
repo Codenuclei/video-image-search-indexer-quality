@@ -101,7 +101,7 @@ def test_theme_transcript_hash_includes_long_transcript_tail() -> None:
 
 
 @pytest.mark.asyncio
-async def test_theme_generation_reads_every_chunk_and_synthesizes(monkeypatch) -> None:
+async def test_theme_generation_uses_one_full_talk_pass(monkeypatch) -> None:
     calls: list[str] = []
 
     async def fake_complete(**kwargs):
@@ -129,10 +129,10 @@ async def test_theme_generation_reads_every_chunk_and_synthesizes(monkeypatch) -
         provider="openrouter",
     )
 
-    chunk_prompts = [prompt for prompt in calls if "transcript chunk" in prompt]
-    assert len(chunk_prompts) > 1
-    assert any("FINAL_MARKER" in prompt for prompt in chunk_prompts)
-    assert any("FINAL theme map" in prompt for prompt in calls)
+    generation_prompts = [prompt for prompt in calls if "Transcript:" in prompt]
+    assert len(generation_prompts) == 1
+    assert "FINAL_MARKER" in generation_prompts[0]
+    assert "spanning the entire talk" in generation_prompts[0]
     assert len(themes) == 3
     assert source == "openrouter"
     assert warning is None

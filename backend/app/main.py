@@ -548,7 +548,9 @@ async def health():
             status_code=503,
             content={"status": "boot_failed", "error": _boot_error},
         )
-    return {"status": "ok"}
+    from app.search.carousel_pipeline import THEMES_RUNTIME_VERSION
+
+    return {"status": "ok", "themes_runtime": THEMES_RUNTIME_VERSION}
 
 
 @app.get("/health/detail")

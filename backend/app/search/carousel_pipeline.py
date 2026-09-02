@@ -15,6 +15,7 @@ Rules enforced here:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -33,6 +34,8 @@ from app.search.transcript_topics import (
     fallback_topics_from_cues,
     format_cue_line,
 )  # noqa: F401 — format_cue_line used by chunk helpers
+
+THEMES_RUNTIME_VERSION = "themes-v5-single-pass-strict-provider"
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +134,9 @@ _LLM_ATTEMPT_TIMEOUT_SEC = 25.0
 # Give that async, cancellable HTTP hop enough time without relaxing the bound
 # on direct SDK calls, whose worker threads cannot be cancelled by asyncio.
 _OPENROUTER_ATTEMPT_TIMEOUT_SEC = 60.0
+# A correction is optional polish. Never discard a valid first draft or push
+# the request past the browser/proxy budget because the polish call is slow.
+_THEME_CORRECTION_TIMEOUT_SEC = 30.0
 
 
 def _loads_json_array(text: str) -> list[Any]:
@@ -272,11 +278,10 @@ async def _llm_complete_json(
         if gemini_key:
             order.append("gemini")
     elif pref == "openrouter":
+        # An explicit picker choice is a contract, not a suggestion. Cascading
+        # through broken direct-provider credentials turned one clear failure
+        # into a multi-minute request that outlived the browser.
         order.append("openrouter")
-        if claude_key:
-            order.append("claude")
-        if gemini_key:
-            order.append("gemini")
     elif pref == "claude":
         # Prefer Anthropic, then the OpenRouter twin. Arena picker ids such as
         # claude-fable-5 are not valid Messages API models; without this hop
@@ -655,112 +660,60 @@ async def build_harmonized_themes(
         openrouter_model=openrouter_model,
     ):
         try:
-            chunks = _chunk_cues_for_topics(
-                usable_cues,
-                max_chars=_THEME_CHUNK_CHARS,
-                overlap_cues=_THEME_CHUNK_OVERLAP_CUES,
-            )
+            # One evenly sampled, timestamped full-talk pass is both faster and
+            # more coherent than 5+ sequential chunk calls followed by a
+            # synthesis call. The old path routinely exceeded the proxy/client
+            # lifetime even when every provider eventually returned 200.
+            outline = _condense_transcript_outline(usable_cues, max_chars=30_000)
             carousel_log(
                 "themes_llm_start",
                 provider=provider,
                 cue_count=len(usable_cues),
-                chunk_count=len(chunks),
+                prompt_chars=len(outline),
+                strategy="single_full_talk",
                 openrouter_model=(openrouter_model or "").strip() or "-",
                 claude_model=(claude_model or "").strip() or "-",
                 gemini_model=(model or "").strip() or "-",
             )
-            candidates: list[dict[str, Any]] = []
-            llm_source = "unknown"
-            for index, chunk in enumerate(chunks):
-                transcript = compact_transcript(chunk, max_chars=_THEME_CHUNK_CHARS + 1_000)
-                scope_note = (
-                    f"This is transcript chunk {index + 1} of {len(chunks)}. Timestamps are "
-                    "absolute positions in the full video. Identify candidate themes only from "
-                    "this chunk; a later pass will synthesize the whole talk.\n"
-                    if len(chunks) > 1
-                    else ""
+            with carousel_step(
+                "themes_full_talk",
+                cue_count=len(usable_cues),
+                prompt_chars=len(outline),
+            ):
+                text, llm_source = await _llm_complete_json(
+                    prompt=_theme_generation_prompt(
+                        transcript=outline,
+                        video_name=video_name,
+                        scope_note=(
+                            "This is an evenly sampled, timestamped outline spanning the entire "
+                            "talk. Build the final theme map directly from it.\n"
+                        ),
+                    ),
+                    system=_THEME_SYSTEM,
+                    temperature=0.3,
+                    max_tokens=2200,
+                    api_key=api_key,
+                    model=model,
+                    claude_api_key=claude_api_key,
+                    claude_model=claude_model or "claude-sonnet-4-20250514",
+                    provider=provider,
+                    openrouter_api_key=openrouter_api_key,
+                    openrouter_model=openrouter_model,
+                    openrouter_base_url=openrouter_base_url,
+                    json_root="array",
                 )
-                with carousel_step(
-                    "themes_chunk",
-                    chunk=index + 1,
-                    chunks=len(chunks),
-                    cue_count=len(chunk),
-                    prompt_chars=len(transcript),
-                ):
-                    text, llm_source = await _llm_complete_json(
-                        prompt=_theme_generation_prompt(
-                            transcript=transcript,
-                            video_name=video_name,
-                            scope_note=scope_note,
-                            candidate_pass=len(chunks) > 1,
-                        ),
-                        system=_THEME_SYSTEM,
-                        temperature=0.3,
-                        max_tokens=1800,
-                        api_key=api_key,
-                        model=model,
-                        claude_api_key=claude_api_key,
-                        claude_model=claude_model or "claude-sonnet-4-20250514",
-                        provider=provider,
-                        openrouter_api_key=openrouter_api_key,
-                        openrouter_model=openrouter_model,
-                        openrouter_base_url=openrouter_base_url,
-                        json_root="array",
+                themes = _parse_themes_json(text)
+                if not themes:
+                    _raise_theme_parse_error(
+                        text,
+                        source=llm_source,
+                        stage="full-talk generation",
                     )
-                    parsed = _parse_themes_json(text)
-                    if not parsed:
-                        _raise_theme_parse_error(
-                            text,
-                            source=llm_source,
-                            stage=f"chunk {index + 1}",
-                        )
-                    candidates.extend(parsed)
-                    carousel_log(
-                        "themes_chunk_parsed",
-                        chunk=index + 1,
-                        themes=len(parsed),
-                        provider=llm_source,
-                    )
-
-            outline = _condense_transcript_outline(usable_cues, max_chars=10_000)
-            themes = candidates
-            if len(chunks) > 1:
-                with carousel_step(
-                    "themes_synthesis",
-                    candidates=len(candidates),
-                    outline_chars=len(outline),
-                ):
-                    text, llm_source = await _llm_complete_json(
-                        prompt=_theme_synthesis_prompt(
-                            video_name=video_name,
-                            candidates=candidates,
-                            outline=outline,
-                        ),
-                        system=_THEME_SYSTEM,
-                        temperature=0.25,
-                        max_tokens=2200,
-                        api_key=api_key,
-                        model=model,
-                        claude_api_key=claude_api_key,
-                        claude_model=claude_model or "claude-sonnet-4-20250514",
-                        provider=provider,
-                        openrouter_api_key=openrouter_api_key,
-                        openrouter_model=openrouter_model,
-                        openrouter_base_url=openrouter_base_url,
-                        json_root="array",
-                    )
-                    themes = _parse_themes_json(text)
-                    if not themes:
-                        _raise_theme_parse_error(
-                            text,
-                            source=llm_source,
-                            stage="full-talk synthesis",
-                        )
-                    carousel_log(
-                        "themes_synthesis_parsed",
-                        themes=len(themes),
-                        provider=llm_source,
-                    )
+                carousel_log(
+                    "themes_full_talk_parsed",
+                    themes=len(themes),
+                    provider=llm_source,
+                )
 
             if themes:
                 themes = snap_themes_to_cues(themes, cues)
@@ -772,35 +725,46 @@ async def build_harmonized_themes(
                     issue_count=len(issues),
                     issues="; ".join(str(i)[:80] for i in issues[:4]),
                 )
-                with carousel_step("themes_correction", issue_count=len(issues)):
-                    text, corrected_source = await _llm_complete_json(
-                        prompt=_theme_correction_prompt(
-                            video_name=video_name,
-                            themes=themes,
-                            issues=issues,
-                            outline=outline,
-                        ),
-                        system=_THEME_SYSTEM,
-                        temperature=0.2,
-                        max_tokens=2200,
-                        api_key=api_key,
-                        model=model,
-                        claude_api_key=claude_api_key,
-                        claude_model=claude_model or "claude-sonnet-4-20250514",
-                        provider=provider,
-                        openrouter_api_key=openrouter_api_key,
-                        openrouter_model=openrouter_model,
-                        openrouter_base_url=openrouter_base_url,
-                        json_root="array",
+                try:
+                    with carousel_step("themes_correction", issue_count=len(issues)):
+                        text, corrected_source = await asyncio.wait_for(
+                            _llm_complete_json(
+                                prompt=_theme_correction_prompt(
+                                    video_name=video_name,
+                                    themes=themes,
+                                    issues=issues,
+                                    outline=outline,
+                                ),
+                                system=_THEME_SYSTEM,
+                                temperature=0.2,
+                                max_tokens=2200,
+                                api_key=api_key,
+                                model=model,
+                                claude_api_key=claude_api_key,
+                                claude_model=claude_model or "claude-sonnet-4-20250514",
+                                provider=provider,
+                                openrouter_api_key=openrouter_api_key,
+                                openrouter_model=openrouter_model,
+                                openrouter_base_url=openrouter_base_url,
+                                json_root="array",
+                            ),
+                            timeout=_THEME_CORRECTION_TIMEOUT_SEC,
+                        )
+                        corrected = snap_themes_to_cues(_parse_themes_json(text), cues)
+                        corrected_issues = _theme_quality_issues(corrected)
+                        if corrected and len(corrected_issues) < len(issues):
+                            themes = corrected
+                            issues = corrected_issues
+                            llm_source = corrected_source
+                except Exception as exc:  # noqa: BLE001
+                    carousel_log(
+                        "themes_correction_skipped",
+                        level=logging.WARNING,
+                        error_type=type(exc).__name__,
+                        error=str(exc)[:160] or type(exc).__name__,
                     )
-                    corrected = snap_themes_to_cues(_parse_themes_json(text), cues)
-                    corrected_issues = _theme_quality_issues(corrected)
-                    if corrected and len(corrected_issues) < len(issues):
-                        themes = corrected
-                        issues = corrected_issues
-                        llm_source = corrected_source
-                    if issues:
-                        warning = "Theme quality remained below target after one corrective pass."
+                if issues:
+                    warning = "Theme quality remained below target after the bounded corrective pass."
 
             if themes:
                 for t in themes:
