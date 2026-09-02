@@ -2749,52 +2749,56 @@ async def _carousel_pipeline_extract_impl(
         openrouter_base_url=llm["openrouter_base_url"],
     )
     # Aggregate per-theme transcript diagnostics (from extract helpers).
-    # Structural proof: never ship topic_tree sections with empty hooks arrays.
+    # Structural proof: never ship topic_tree sections with empty hooks arrays
+    # after the full extract (topics+hooks). In topics-only mode hooks are
+    # intentionally cleared until /extract/hooks — pruning here wiped every
+    # topic (topic_tree_count stayed in per_theme meta while the payload was []).
     empty_hook_sections = 0
-    for node in topic_tree:
-        if not (node.get("hooks") or []):
-            empty_hook_sections += 1
-        for sub in node.get("subtopics") or []:
-            if not (sub.get("hooks") or []):
-                empty_hook_sections += 1
-    if empty_hook_sections:
-        logger.warning(
-            "extract response still has %d empty-hook sections; pruning before return",
-            empty_hook_sections,
-        )
-        from app.search.carousel_pipeline import _drop_empty_hook_sections
-
-        topic_tree = _drop_empty_hook_sections(topic_tree)[:24]
-        topics = []
-        hooks_from_tree: list[dict[str, Any]] = []
-        for t in topic_tree:
-            topics.append({k: v for k, v in t.items() if k != "subtopics" and k != "hooks"})
-            hooks_from_tree.extend(list(t.get("hooks") or []))
-            for sub in t.get("subtopics") or []:
-                topics.append(
-                    {
-                        **{k: v for k, v in sub.items() if k != "hooks"},
-                        "is_subtopic": True,
-                        # `_reindex_topic_tree`'s nested subtopic dicts don't carry
-                        # this pointer themselves — without it the flat topic list
-                        # loses the subtopic → parent link the UI tree relies on.
-                        "parent_topic_id": t.get("id"),
-                    }
-                )
-                hooks_from_tree.extend(list(sub.get("hooks") or []))
-        if hooks_from_tree:
-            hooks = hooks_from_tree[:24]
-            for i, h in enumerate(hooks):
-                h["id"] = h.get("id") or f"hook_{i + 1}"
-        for i, t in enumerate(topics):
-            t["id"] = t.get("id") or f"topic_{i + 1}"
-        empty_hook_sections = 0
+    if include_hooks:
         for node in topic_tree:
             if not (node.get("hooks") or []):
                 empty_hook_sections += 1
             for sub in node.get("subtopics") or []:
                 if not (sub.get("hooks") or []):
                     empty_hook_sections += 1
+        if empty_hook_sections:
+            logger.warning(
+                "extract response still has %d empty-hook sections; pruning before return",
+                empty_hook_sections,
+            )
+            from app.search.carousel_pipeline import _drop_empty_hook_sections
+
+            topic_tree = _drop_empty_hook_sections(topic_tree)[:24]
+            topics = []
+            hooks_from_tree: list[dict[str, Any]] = []
+            for t in topic_tree:
+                topics.append({k: v for k, v in t.items() if k != "subtopics" and k != "hooks"})
+                hooks_from_tree.extend(list(t.get("hooks") or []))
+                for sub in t.get("subtopics") or []:
+                    topics.append(
+                        {
+                            **{k: v for k, v in sub.items() if k != "hooks"},
+                            "is_subtopic": True,
+                            # `_reindex_topic_tree`'s nested subtopic dicts don't carry
+                            # this pointer themselves — without it the flat topic list
+                            # loses the subtopic → parent link the UI tree relies on.
+                            "parent_topic_id": t.get("id"),
+                        }
+                    )
+                    hooks_from_tree.extend(list(sub.get("hooks") or []))
+            if hooks_from_tree:
+                hooks = hooks_from_tree[:24]
+                for i, h in enumerate(hooks):
+                    h["id"] = h.get("id") or f"hook_{i + 1}"
+            for i, t in enumerate(topics):
+                t["id"] = t.get("id") or f"topic_{i + 1}"
+            empty_hook_sections = 0
+            for node in topic_tree:
+                if not (node.get("hooks") or []):
+                    empty_hook_sections += 1
+                for sub in node.get("subtopics") or []:
+                    if not (sub.get("hooks") or []):
+                        empty_hook_sections += 1
 
     transcript_meta: dict[str, Any] = {
         "cue_count_total": len(cues),

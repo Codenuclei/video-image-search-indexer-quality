@@ -48,7 +48,7 @@ _MAX_MERGED_TOPICS = 24
 _TOPIC_CHUNK_CHARS = 12_000
 _TOPIC_CHUNK_OVERLAP_CUES = 6
 THEME_PROMPT_VERSION = "themes-v5-dense-outline-selfcheck"
-EXTRACT_PROMPT_VERSION = "extract-v7-crafted-hooks-kept"
+EXTRACT_PROMPT_VERSION = "extract-v8-topics-only-keep"
 
 # Shared editorial brief for every hook-writing prompt. A hook has four jobs:
 # stop the scroll, open a curiosity loop, earn the share, and build the page's
