@@ -113,6 +113,38 @@ def test_theme_parser_accepts_wrapped_array() -> None:
     assert parsed[0]["title"] == "Reframing Customer Acquisition"
 
 
+def test_theme_parser_accepts_markdown_fence_and_items_wrapper() -> None:
+    body = json.dumps({"items": json.loads(_themes_json())})
+    fenced = f"```json\n{body}\n```"
+    parsed = _parse_themes_json(fenced)
+    assert len(parsed) == 3
+    assert parsed[1]["title"] == "Distribution Across Asian Markets"
+
+
+def test_theme_parser_salvages_truncated_items_object() -> None:
+    # Mimic OpenRouter Opus truncating mid-summary under a low max_tokens.
+    truncated = (
+        '```json\n{"items":['
+        '{"theme_id":1,"title":"Find Where Your Buyer Actually Spends Time",'
+        '"start_sec":54,"end_sec":237,'
+        '"summary":"Most founders default to cold email before closing more deals'
+    )
+    parsed = _parse_themes_json(truncated)
+    assert parsed == []  # first object incomplete → nothing salvageable
+
+    partial = (
+        '{"items":['
+        '{"theme_id":"theme_1","title":"Find Where Your Buyer Spends Time",'
+        '"start_sec":54,"end_sec":237,'
+        '"summary":"Go where buyers already gather."},'
+        '{"theme_id":"theme_2","title":"Half Done Theme","start_sec":237,'
+        '"end_sec":400,"summary":"This one is cut off mid'
+    )
+    parsed = _parse_themes_json(partial)
+    assert len(parsed) == 1
+    assert parsed[0]["title"] == "Find Where Your Buyer Spends Time"
+
+
 def test_theme_transcript_hash_includes_long_transcript_tail() -> None:
     cues = [
         (float(i), float(i + 1), f"Discussion point {i} " + ("detail " * 30))

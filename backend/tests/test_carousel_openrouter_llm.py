@@ -197,6 +197,10 @@ def test_openrouter_slug_for_direct_arena_ids():
         openrouter_slug_for_direct("claude", "anthropic/claude-sonnet-4.5")
         == "anthropic/claude-sonnet-4.5"
     )
+    assert (
+        openrouter_slug_for_direct("claude", "claude-sonnet-4-5-20250929")
+        == "anthropic/claude-sonnet-4.5"
+    )
     assert prefer_openrouter_first("gemini", "gemini-3.7-flash") is True
     assert prefer_openrouter_first("claude", "claude-fable-5") is True
     assert prefer_openrouter_first("claude", "claude-sonnet-4-5-20250929") is False

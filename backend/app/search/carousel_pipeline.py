@@ -35,7 +35,7 @@ from app.search.transcript_topics import (
     format_cue_line,
 )  # noqa: F401 — format_cue_line used by chunk helpers
 
-THEMES_RUNTIME_VERSION = "themes-v6-fast-async-precompute"
+THEMES_RUNTIME_VERSION = "themes-v7-fence-tokens"
 
 logger = logging.getLogger(__name__)
 
@@ -140,8 +140,9 @@ _THEME_CORRECTION_TIMEOUT_SEC = 30.0
 # Dense full-talk outline budget: enough global coverage without paying for
 # filler/music cues that do not change theme boundaries.
 _THEME_OUTLINE_MAX_CHARS = 18_000
-# 3–8 short theme objects rarely need more than ~1k tokens of JSON.
-_THEME_MAX_OUTPUT_TOKENS = 1_100
+# Opus/Sonnet via OpenRouter often wrap themes in {"items":[...]} with long
+# insight-led titles/summaries. 1100 tokens truncated mid-JSON → empty parse.
+_THEME_MAX_OUTPUT_TOKENS = 4_096
 _THEME_FILLER_CUE_RE = re.compile(
     r"^(?:"
     r"\[?(?:music|applause|laughter|silence|inaudible|blank(?:\s+audio)?)\]?"
@@ -935,9 +936,19 @@ async def _claude_themes(
     return _parse_themes_json(await asyncio.to_thread(generate))
 
 
+def _strip_markdown_json_fence(text: str) -> str:
+    """Remove ``` / ```json wrappers OpenRouter Claude often adds around JSON."""
+    cleaned = (text or "").strip()
+    if not cleaned.startswith("```"):
+        return cleaned
+    cleaned = re.sub(r"^```(?:json|JSON)?\s*", "", cleaned)
+    cleaned = re.sub(r"\s*```\s*$", "", cleaned)
+    return cleaned.strip()
+
+
 def _parse_themes_json(text: str) -> list[dict[str, Any]]:
     raw: Any = None
-    cleaned = (text or "").strip()
+    cleaned = _strip_markdown_json_fence(text)
     try:
         raw = json.loads(cleaned)
     except json.JSONDecodeError:
@@ -947,6 +958,51 @@ def _parse_themes_json(text: str) -> list[dict[str, Any]]:
                 raw = json.loads(m.group())
             except json.JSONDecodeError:
                 raw = None
+        if raw is None:
+            # Truncated {"items":[...]} — salvage complete objects if any closed.
+            obj_m = re.search(r"\{[\s\S]*", cleaned)
+            if obj_m:
+                blob = obj_m.group()
+                for key in ("themes", "items", "results"):
+                    key_m = re.search(rf'"{key}"\s*:\s*\[', blob)
+                    if not key_m:
+                        continue
+                    arr_start = key_m.end() - 1
+                    # Walk objects until the last complete `{...}` before truncation.
+                    objs: list[Any] = []
+                    depth = 0
+                    start = -1
+                    in_str = False
+                    esc = False
+                    for i, ch in enumerate(blob[arr_start + 1 :], start=arr_start + 1):
+                        if in_str:
+                            if esc:
+                                esc = False
+                            elif ch == "\\":
+                                esc = True
+                            elif ch == '"':
+                                in_str = False
+                            continue
+                        if ch == '"':
+                            in_str = True
+                            continue
+                        if ch == "{":
+                            if depth == 0:
+                                start = i
+                            depth += 1
+                        elif ch == "}":
+                            depth -= 1
+                            if depth == 0 and start >= 0:
+                                try:
+                                    objs.append(json.loads(blob[start : i + 1]))
+                                except json.JSONDecodeError:
+                                    pass
+                                start = -1
+                        elif ch == "]" and depth == 0:
+                            break
+                    if objs:
+                        raw = objs
+                        break
     if isinstance(raw, dict):
         for key in ("themes", "items", "results"):
             candidate = raw.get(key)

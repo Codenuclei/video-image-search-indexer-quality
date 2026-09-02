@@ -70,6 +70,15 @@ def _assistant_text(payload: dict[str, Any]) -> str:
     return "\n".join(chunks).strip()
 
 
+def _strip_markdown_json_fence(text: str) -> str:
+    cleaned = (text or "").strip()
+    if not cleaned.startswith("```"):
+        return cleaned
+    cleaned = re.sub(r"^```(?:json|JSON)?\s*", "", cleaned)
+    cleaned = re.sub(r"\s*```\s*$", "", cleaned)
+    return cleaned.strip()
+
+
 def _request_bodies(
     *,
     model_id: str,
@@ -209,6 +218,7 @@ async def complete_json(
             allow_format_retry=True,
             retry_body=retry_body,
         )
+    text = _strip_markdown_json_fence(text)
     if root == "array":
         try:
             wrapped = json.loads(text)
@@ -384,7 +394,7 @@ async def _post_once(
             elapsed_ms=(time.perf_counter() - started) * 1000.0,
             response_chars=len(text or ""),
         )
-    return text
+    return _strip_markdown_json_fence(text)
 
 
 def _read_openrouter_response(

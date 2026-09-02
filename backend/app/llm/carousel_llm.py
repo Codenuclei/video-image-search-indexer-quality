@@ -6,6 +6,7 @@ User picks in ``/test`` (Claude / OpenRouter / Gemini) are honored as-is.
 
 from __future__ import annotations
 
+import re
 from typing import Any, TypedDict
 
 from app.config import get_settings
@@ -174,6 +175,7 @@ def carousel_llm_cache_id(pack: CarouselLlmKwargs | None = None) -> str:
 
 # Arena / picker ids that Anthropic and Google do not accept on the direct
 # Messages / generateContent APIs. OpenRouter does accept the slashed twins.
+# Presence here also opts the call into OpenRouter-first (proxy budget).
 _DIRECT_TO_OPENROUTER: dict[str, str] = {
     "claude-fable-5": "anthropic/claude-fable-5",
     "claude-opus-4-6": "anthropic/claude-opus-4.6",
@@ -188,6 +190,17 @@ _DIRECT_TO_OPENROUTER: dict[str, str] = {
     "gemini-3-pro-preview": "google/gemini-3-pro-preview",
     "gemini-3-pro": "google/gemini-3-pro-preview",
 }
+
+# Snapshot / Messages API ids → OpenRouter catalog ids (slug only; do not
+# force OpenRouter-first — direct Anthropic remains preferred when healthy).
+_DIRECT_SNAPSHOT_TO_OPENROUTER: dict[str, str] = {
+    "claude-sonnet-4-5-20250929": "anthropic/claude-sonnet-4.5",
+    "claude-sonnet-4-5": "anthropic/claude-sonnet-4.5",
+    "claude-sonnet-4-20250514": "anthropic/claude-sonnet-4",
+}
+
+# Strip Anthropic dated snapshot suffixes (…-20250929) before OpenRouter mapping.
+_ANTHROPIC_DATED_RE = re.compile(r"-\d{8}$")
 
 
 def prefer_openrouter_first(provider: str, model_id: str) -> bool:
@@ -214,11 +227,32 @@ def openrouter_slug_for_direct(provider: str, model_id: str) -> str:
         return ""
     if "/" in mid:
         return mid
-    mapped = _DIRECT_TO_OPENROUTER.get(mid) or _DIRECT_TO_OPENROUTER.get(mid.lower())
+    mapped = (
+        _DIRECT_TO_OPENROUTER.get(mid)
+        or _DIRECT_TO_OPENROUTER.get(mid.lower())
+        or _DIRECT_SNAPSHOT_TO_OPENROUTER.get(mid)
+        or _DIRECT_SNAPSHOT_TO_OPENROUTER.get(mid.lower())
+    )
+    if mapped:
+        return mapped
+    # Claude Messages API snapshot ids are not OpenRouter ids
+    # (claude-sonnet-4-5-20250929 → anthropic/claude-sonnet-4.5).
+    undated = _ANTHROPIC_DATED_RE.sub("", mid)
+    mapped = (
+        _DIRECT_TO_OPENROUTER.get(undated)
+        or _DIRECT_TO_OPENROUTER.get(undated.lower())
+        or _DIRECT_SNAPSHOT_TO_OPENROUTER.get(undated)
+        or _DIRECT_SNAPSHOT_TO_OPENROUTER.get(undated.lower())
+    )
     if mapped:
         return mapped
     pref = normalize_carousel_llm_provider(provider)
-    dotted = mid.replace("-4-6", "-4.6").replace("-4-7", "-4.7")
+    dotted = (
+        undated.replace("-4-5", "-4.5")
+        .replace("-4-6", "-4.6")
+        .replace("-4-7", "-4.7")
+        .replace("-4-8", "-4.8")
+    )
     if pref == "claude" or dotted.startswith("claude"):
         return f"anthropic/{dotted}"
     if pref == "gemini" or dotted.startswith("gemini"):
