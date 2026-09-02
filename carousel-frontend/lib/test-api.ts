@@ -158,6 +158,7 @@ export type TestSlide = {
   hook_line: string;
   caption?: string | null;
   transcript_text?: string | null;
+  original_text?: string | null;
   timestamp_sec: number;
   end_timestamp_sec?: number | null;
   preview_url?: string | null;

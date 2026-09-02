@@ -137,6 +137,35 @@ function applyTestHookFrames(
   });
 }
 
+function preserveTestCarouselCopy(
+  previous: TestCarousel[],
+  incoming: TestCarousel[]
+): TestCarousel[] {
+  if (!previous.length) return incoming;
+  return incoming.map((carousel, index) => {
+    const prev =
+      previous.find((item) => item.id && carousel.id && item.id === carousel.id) ??
+      previous[index];
+    if (!prev?.slides?.length || !carousel.slides?.length) return carousel;
+    return {
+      ...carousel,
+      slides: carousel.slides.map((slide, slideIndex) => {
+        const prior = prev.slides?.[slideIndex];
+        if (!prior) return slide;
+        return {
+          ...slide,
+          hook_line: prior.hook_line ?? slide.hook_line,
+          transcript_text: prior.transcript_text ?? slide.transcript_text,
+          caption: prior.caption ?? slide.caption,
+          original_text: prior.original_text ?? slide.original_text,
+          highlight: prior.highlight ?? slide.highlight,
+          highlight_words: prior.highlight_words ?? slide.highlight_words,
+        };
+      }),
+    };
+  });
+}
+
 function PhaseRail({
   phase,
   canVisit,
@@ -1016,21 +1045,22 @@ function TestStudioInner() {
         force: Boolean(opts?.force),
         run_config: cfg,
       });
-      const withImages = (selectedImgs.carousels ?? carousels)
-        .slice(0, 1)
-        .map((c, idx) => ({
+      const withImages = preserveTestCarouselCopy(
+        carousels,
+        (selectedImgs.carousels ?? carousels).slice(0, 1).map((c, idx) => ({
           ...c,
           id: c.id || `hook_${idx + 1}`,
           images_ready: true,
-        }));
+        }))
+      );
       applyGenerateResult(
         withImages,
         selectedImgs.layouts
           ? {
               single_1: {
-                carousels: (selectedImgs.layouts.single_1?.carousels ?? withImages).slice(
-                  0,
-                  1
+                carousels: preserveTestCarouselCopy(
+                  carousels,
+                  (selectedImgs.layouts.single_1?.carousels ?? withImages).slice(0, 1)
                 ),
               },
               split_2: undefined,

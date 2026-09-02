@@ -417,15 +417,15 @@ async def test_select_images_uses_studio_llm_pack(monkeypatch) -> None:
 
     seen: dict[str, object] = {}
 
-    async def fake_cues(*_a, **_k):
-        return SimpleNamespace(id="vid"), [(1.0, 3.0, "Hi there.")]
-
     async def fake_refs(*_a, **_k):
         return []
 
     async def fake_polish(slides, session, **kwargs):
         seen.update(kwargs)
         for slide in slides:
+            # Simulate a rewrite that must not survive select-images.
+            slide["hook_line"] = "RAW SNAPPED TRANSCRIPT DUMP"
+            slide["transcript_text"] = "RAW SNAPPED TRANSCRIPT DUMP"
             slide["frame_ts"] = 1.5
             slide["preview_url"] = "/media/video/vid/frame?ts=1.500&cache_only=1"
         return slides
@@ -448,7 +448,6 @@ async def test_select_images_uses_studio_llm_pack(monkeypatch) -> None:
     async def fake_persist(*_a, **_k):
         return SimpleNamespace(id=9)
 
-    monkeypatch.setattr(carousel_script, "_load_video_cues", fake_cues)
     monkeypatch.setattr(carousel_script, "_load_attached_references", fake_refs)
     monkeypatch.setattr(carousel_script, "_polish_outline_frames", fake_polish)
     monkeypatch.setattr(carousel_script, "_persist_carousel_artifact", fake_persist)
@@ -460,9 +459,20 @@ async def test_select_images_uses_studio_llm_pack(monkeypatch) -> None:
     )
     monkeypatch.setattr(carousel_script, "carousel_llm_cache_id", lambda *_a, **_k: "local")
 
+    crafted = "Your first customers come from warm network intros."
     body = CarouselSelectImagesBody(
         drive_file_id="vid",
-        carousels=[{"slides": [_slide("Hi there.", 1.0)]}],
+        carousels=[
+            {
+                "slides": [
+                    {
+                        **_slide(crafted, 1.0),
+                        "original_text": "your first customers come from your warm network",
+                        "copy_crafted": True,
+                    }
+                ]
+            }
+        ],
     )
     out = await carousel_script._carousel_pipeline_select_images_impl(
         body, session=object(), trace_id="test-trace"
@@ -475,3 +485,7 @@ async def test_select_images_uses_studio_llm_pack(monkeypatch) -> None:
     assert seen.get("llm_pack", {}).get("provider") == "openrouter"
     assert out["images_ready"] is True
     assert out["slides"][0]["preview_url"]
+    assert out["slides"][0]["transcript_text"] == crafted
+    assert out["slides"][0]["hook_line"] == crafted
+    assert out["transcript_guard"]["preserved_copy"] is True
+    assert out["transcript_guard"]["snapped"] == 0

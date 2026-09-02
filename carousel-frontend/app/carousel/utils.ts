@@ -133,6 +133,46 @@ export function applyHookFrameOverrides<
   });
 }
 
+const SLIDE_COPY_KEYS = [
+  "hook_line",
+  "transcript_text",
+  "caption",
+  "snippet",
+  "original_text",
+  "highlight",
+  "highlight_words",
+  "copy_source",
+  "copy_crafted",
+] as const;
+
+/** Keep reviewed/generated slide copy when applying a select-images response. */
+export function preserveCarouselCopy<
+  T extends { id?: string | null; slides?: CarouselOutlineSlide[] | null },
+>(previous: T[], incoming: T[]): T[] {
+  if (!previous.length) return incoming;
+  return incoming.map((carousel, index) => {
+    const prev =
+      previous.find((item) => item.id && carousel.id && item.id === carousel.id) ??
+      previous[index];
+    if (!prev?.slides?.length || !carousel.slides?.length) return carousel;
+    return {
+      ...carousel,
+      slides: carousel.slides.map((slide, slideIndex) => {
+        const prior = prev.slides?.[slideIndex];
+        if (!prior) return slide;
+        const kept = { ...slide };
+        for (const key of SLIDE_COPY_KEYS) {
+          const value = prior[key as keyof CarouselOutlineSlide];
+          if (value !== undefined && value !== null) {
+            (kept as Record<string, unknown>)[key] = value;
+          }
+        }
+        return kept;
+      }),
+    };
+  });
+}
+
 export function momentKey(m: { drive_file_id: string; timestamp_sec: number }): string {
   return `${m.drive_file_id}:${m.timestamp_sec}`;
 }

@@ -67,6 +67,7 @@ import { useDismissible } from "@/lib/use-dismissible";
 import { cn } from "@/lib/utils";
 import {
   applyHookFrameOverrides,
+  preserveCarouselCopy,
   focalPointStyle,
   formatTimestampRange,
   slideFrameUrl,
@@ -1507,15 +1508,40 @@ export default function CarouselSearchPage() {
         carousels: generatedCarousels,
         ...studioLlmFields(),
       });
-      const list = (res.carousels ?? []).map((c) => ({
-        ...c,
-        references: c.references ?? res.references ?? c.references,
-      }));
-      setCarouselLayouts(res.layouts ?? null);
+      const list = preserveCarouselCopy(
+        generatedCarousels,
+        (res.carousels ?? []).map((c) => ({
+          ...c,
+          references: c.references ?? res.references ?? c.references,
+        }))
+      );
+      const layoutsPreserved = res.layouts
+        ? {
+            single_1: res.layouts.single_1
+              ? {
+                  ...res.layouts.single_1,
+                  carousels: preserveCarouselCopy(
+                    generatedCarousels,
+                    res.layouts.single_1.carousels ?? []
+                  ),
+                }
+              : res.layouts.single_1,
+            split_2: res.layouts.split_2
+              ? {
+                  ...res.layouts.split_2,
+                  carousels: preserveCarouselCopy(
+                    generatedCarousels,
+                    res.layouts.split_2.carousels ?? []
+                  ),
+                }
+              : res.layouts.split_2,
+          }
+        : null;
+      setCarouselLayouts(layoutsPreserved ?? null);
       // Image selection returns pipeline frames, so re-apply the user's picks.
       setGeneratedCarousels(
         applyHookFrameOverrides(
-          carouselsForLayout(res.layouts, carouselLayout, list),
+          carouselsForLayout(layoutsPreserved, carouselLayout, list),
           hookFrames
         )
       );
@@ -1528,11 +1554,11 @@ export default function CarouselSearchPage() {
           ? {
               ...prev,
               carousels: list,
-              slides: res.slides ?? prev.slides,
+              slides: list[0]?.slides ?? res.slides ?? prev.slides,
               images_ready: true,
               references: res.references ?? prev.references,
               quality: res.quality,
-              layouts: res.layouts ?? prev.layouts,
+              layouts: layoutsPreserved ?? prev.layouts,
             }
           : prev
       );

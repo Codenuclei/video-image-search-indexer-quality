@@ -4514,6 +4514,33 @@ async def carousel_pipeline_select_images(
                 )
 
 
+def _slide_display_copy_snapshot(slide: dict[str, Any]) -> dict[str, Any]:
+    """Capture studio-facing copy fields so frame selection cannot rewrite them."""
+    return {
+        key: slide.get(key)
+        for key in (
+            "hook_line",
+            "transcript_text",
+            "caption",
+            "snippet",
+            "original_text",
+            "highlight",
+            "highlight_words",
+            "copy_source",
+            "copy_crafted",
+            "invented_text",
+            "transcript_verified",
+            "transcript_snapped",
+        )
+    }
+
+
+def _restore_slide_display_copy(slide: dict[str, Any], snapshot: dict[str, Any]) -> None:
+    for key, value in snapshot.items():
+        if value is not None:
+            slide[key] = value
+
+
 async def _carousel_pipeline_select_images_impl(
     body: CarouselSelectImagesBody,
     session: AsyncSession = Depends(get_db),
@@ -4528,31 +4555,33 @@ async def _carousel_pipeline_select_images_impl(
     if not raw:
         raise HTTPException(status_code=400, detail="No carousels to polish")
 
-    polished: list[dict[str, Any]] = [dict(car) for car in raw]
-    # Snap any user-edited invented lines back to transcript before frame select.
-    stage_started = time.monotonic()
-    try:
-        _df, cues = await _load_video_cues(session, drive_file_id)
-        transcript_guard = _enforce_slides_match_transcript(polished, cues)
-        logger.info(
-            "select-images trace=%s event=transcript_guard_done drive=%s stage_ms=%d cues=%d checked=%d snapped=%d",
-            trace_id,
-            drive_file_id,
-            round((time.monotonic() - stage_started) * 1000),
-            len(cues),
-            int(transcript_guard.get("checked") or 0),
-            int(transcript_guard.get("snapped") or 0),
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "select-images trace=%s event=transcript_guard_failed drive=%s stage_ms=%d error=%s",
-            trace_id,
-            drive_file_id,
-            round((time.monotonic() - stage_started) * 1000),
-            str(exc)[:240],
-        )
-        transcript_guard = {"checked": 0, "ok": 0, "snapped": 0, "empty": 0}
-    polished, quality_summary = apply_carousel_quality_pass(polished)
+    polished: list[dict[str, Any]] = []
+    copy_snapshots: list[list[dict[str, Any]]] = []
+    for car in raw:
+        item = dict(car)
+        slides = [dict(s) for s in (item.get("slides") or []) if isinstance(s, dict)]
+        item["slides"] = slides
+        copy_snapshots.append([_slide_display_copy_snapshot(s) for s in slides])
+        polished.append(item)
+
+    # Select-images must only attach frames. Re-running the transcript snap /
+    # quality pass here replaced Instagram-polished (or user-edited) copy with
+    # raw VTT lines — the studio then showed different text, and Back kept it.
+    transcript_guard: dict[str, Any] = {
+        "checked": sum(len(s) for s in copy_snapshots),
+        "ok": sum(len(s) for s in copy_snapshots),
+        "snapped": 0,
+        "empty": 0,
+        "preserved_copy": True,
+    }
+    quality_summary: dict[str, Any] = {
+        "carousel_count": len(polished),
+        "average_score": 0,
+        "needs_attention": 0,
+        "issue_count": 0,
+        "repair_count": 0,
+        "algorithm": "select_images_preserves_copy",
+    }
     quality_rollup: list[dict[str, Any]] = []
     all_slides: list[dict[str, Any]] = []
     slide_locations: list[tuple[int, int]] = []
@@ -4663,14 +4692,22 @@ async def _carousel_pipeline_select_images_impl(
         local_index = sum(1 for c, _ in slide_locations[:flat_index] if c == car_index)
         if local_index < len(car_slides):
             car_slides[local_index] = slide
-    for item in polished:
+    for car_index, item in enumerate(polished):
         slides = list(item.get("slides") or [])
+        snaps = copy_snapshots[car_index] if car_index < len(copy_snapshots) else []
+        for slide_index, slide in enumerate(slides):
+            if slide_index < len(snaps):
+                _restore_slide_display_copy(slide, snaps[slide_index])
         _attach_layout_panels(
             [{"slides": slides}], cached_frame_index=cached_frame_index
         )
         _snap_slides_to_cached_preview(
             slides, settings, cached_frame_index=cached_frame_index
         )
+        # Frame helpers can mutate slide dicts; restore display copy once more.
+        for slide_index, slide in enumerate(slides):
+            if slide_index < len(snaps):
+                _restore_slide_display_copy(slide, snaps[slide_index])
         item["slides"] = slides
         item["slide_count"] = len(slides)
         item["images_ready"] = True
