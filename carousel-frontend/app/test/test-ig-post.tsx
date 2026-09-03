@@ -120,6 +120,14 @@ export function TestIgPost({
 
   function goTo(i: number) {
     const next = Math.max(0, Math.min(n - 1, i));
+    if (next === active) return;
+    // Picker state belongs to one slide. Closing it here prevents a portal
+    // opened for the previous slide from looking like shared/static content.
+    setPickingCandidates(false);
+    setPickingFrame(false);
+    setChangingImage(false);
+    setImageNote(null);
+    setImageUrlDraft("");
     setActive(next);
     const el = trackRef.current;
     if (el) {
@@ -742,7 +750,12 @@ export function TestIgPost({
       )}
 
       {simpleMode ? (
-        <div className="test-choose-image mt-4" data-testid="test-choose-image">
+        <div
+          key={`choose-image-${carousel.id}-${active}`}
+          className="test-choose-image mt-4"
+          data-testid="test-choose-image"
+          data-slide-index={active}
+        >
           <button
             type="button"
             className="test-choose-image-btn"
@@ -782,10 +795,16 @@ export function TestIgPost({
       ) : null}
 
       {simpleMode && pickingCandidates ? (
-        <ModalOverlay open={pickingCandidates} onClose={() => setPickingCandidates(false)}>
+        <ModalOverlay
+          key={`candidate-modal-${carousel.id}-${active}`}
+          open={pickingCandidates}
+          onClose={() => setPickingCandidates(false)}
+          contentClassName="test-frame-picker-shell"
+        >
           <div
-            className="test-frame-picker-modal studio-panel p-4 sm:p-5"
+            className="test-frame-picker-modal rounded-2xl bg-white p-4 shadow-2xl sm:p-5"
             data-testid="test-frame-candidates-modal"
+            data-slide-index={active}
           >
             <div className="mb-3 flex items-start justify-between gap-3">
               <div>
