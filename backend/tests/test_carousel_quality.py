@@ -524,3 +524,65 @@ async def test_select_images_uses_studio_llm_pack(tmp_path, monkeypatch) -> None
     assert out["slides"][0]["hook_line"] == crafted
     assert out["transcript_guard"]["preserved_copy"] is True
     assert out["transcript_guard"]["snapped"] == 0
+
+
+@pytest.mark.asyncio
+async def test_select_images_allows_extracts_when_cache_cold(tmp_path, monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from app.routers.carousel_script import CarouselSelectImagesBody
+
+    seen: dict[str, object] = {}
+
+    async def fake_refs(*_a, **_k):
+        return []
+
+    async def fake_polish(slides, session, **kwargs):
+        seen["allow_extracts"] = kwargs.get("allow_extracts")
+        seen["prefer_local"] = kwargs.get("prefer_local")
+        for slide in slides:
+            slide["frame_ts"] = None
+            slide["preview_url"] = None
+            slide["frame_candidate_items"] = []
+        return slides
+
+    async def fake_persist(*_a, **_k):
+        return SimpleNamespace(id=11)
+
+    monkeypatch.setattr(
+        carousel_script,
+        "resolve_carousel_llm",
+        lambda *_a, **_k: {
+            "provider": "openrouter",
+            "openrouter_api_key": "or",
+            "openrouter_model": "anthropic/claude-sonnet-4",
+            "openrouter_base_url": "https://openrouter.ai/api/v1",
+            "api_key": "",
+            "model": "",
+            "claude_api_key": "",
+            "claude_model": "",
+        },
+    )
+    monkeypatch.setattr(carousel_script, "_load_attached_references", fake_refs)
+    monkeypatch.setattr(carousel_script, "_polish_outline_frames", fake_polish)
+    monkeypatch.setattr(carousel_script, "_persist_carousel_artifact", fake_persist)
+    monkeypatch.setattr(carousel_script, "_attach_layout_panels", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        carousel_script,
+        "get_settings",
+        lambda: SimpleNamespace(thumbnail_dir=str(tmp_path)),
+    )
+    monkeypatch.setattr(carousel_script, "carousel_llm_cache_id", lambda *_a, **_k: "local")
+
+    body = CarouselSelectImagesBody(
+        drive_file_id="cold-vid",
+        carousels=[{"slides": [_slide("Cold cache needs extracts", 10.0)]}],
+    )
+    out = await carousel_script._carousel_pipeline_select_images_impl(
+        body, session=object(), trace_id="cold-trace"
+    )
+    assert seen.get("prefer_local") is True
+    assert seen.get("allow_extracts") is True
+    assert out["images_ready"] is True
+    assert out["slides"][0]["preview_url"] is None
+    assert out["slides"][0]["frame_candidate_items"] == []

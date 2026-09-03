@@ -4697,11 +4697,19 @@ async def _carousel_pipeline_select_images_impl(
         if (r.get("ref_kind") or "").strip().lower() == "copy" and (r.get("copy_text") or "").strip()
     ]
     stage_started = time.monotonic()
+    total_cached_frames = sum(
+        len(index.timestamps) for index in cached_frame_index.values()
+    )
+    # Interactive select prefers cache-only speed, but a cold thumbnail volume
+    # (frames=0) must still extract a few stills or Step 5 has nothing to pick.
+    allow_extracts = total_cached_frames == 0
     logger.info(
-        "select-images trace=%s event=frame_polish_start drive=%s slides=%d prefer_local=true allow_extracts=false llm=%s",
+        "select-images trace=%s event=frame_polish_start drive=%s slides=%d prefer_local=true allow_extracts=%s cached_frames=%d llm=%s",
         trace_id,
         drive_file_id,
         len(all_slides),
+        allow_extracts,
+        total_cached_frames,
         carousel_llm_cache_id(llm_pack),
     )
     selected_slides = await _polish_outline_frames(
@@ -4713,21 +4721,61 @@ async def _carousel_pipeline_select_images_impl(
         timeout_sec=_SELECT_IMAGES_TIMEOUT_SEC,
         style_copy_refs=copy_refs,
         llm_pack=llm_pack,
-        allow_extracts=False,
+        allow_extracts=allow_extracts,
         trace_id=trace_id,
         cached_frame_index=cached_frame_index,
     )
+    empty_after = sum(
+        1
+        for slide in selected_slides
+        if not (isinstance(slide.get("frame_candidate_items"), list) and slide["frame_candidate_items"])
+    )
+    if empty_after and not allow_extracts:
+        logger.info(
+            "select-images trace=%s event=frame_polish_retry_extracts drive=%s empty_slides=%d cached_frames=%d",
+            trace_id,
+            drive_file_id,
+            empty_after,
+            total_cached_frames,
+        )
+        selected_slides = await _polish_outline_frames(
+            all_slides,
+            session,
+            prefer_local=True,
+            max_candidates=3,
+            max_rank_batches=2,
+            timeout_sec=_SELECT_IMAGES_TIMEOUT_SEC,
+            style_copy_refs=copy_refs,
+            llm_pack=llm_pack,
+            allow_extracts=True,
+            trace_id=trace_id,
+            cached_frame_index=cached_frame_index,
+        )
+        allow_extracts = True
+    if allow_extracts:
+        # Extracts wrote new JPEGs; refresh the index so snap/canonical URLs hit.
+        cached_frame_index = await asyncio.to_thread(
+            index_cached_video_frames,
+            str(settings.thumbnail_dir),
+            {
+                str(slide.get("drive_file_id") or "").strip()
+                for slide in selected_slides
+                if str(slide.get("drive_file_id") or "").strip()
+            },
+        )
     frame_sources: dict[str, int] = {}
     for slide in selected_slides:
         source = str(slide.get("frame_source") or "unknown")
         frame_sources[source] = frame_sources.get(source, 0) + 1
     logger.info(
-        "select-images trace=%s event=frame_polish_done drive=%s stage_ms=%d slides=%d sources=%s",
+        "select-images trace=%s event=frame_polish_done drive=%s stage_ms=%d slides=%d sources=%s allow_extracts=%s cached_frames=%d",
         trace_id,
         drive_file_id,
         round((time.monotonic() - stage_started) * 1000),
         len(selected_slides),
         ",".join(f"{key}:{value}" for key, value in sorted(frame_sources.items())),
+        allow_extracts,
+        sum(len(index.timestamps) for index in cached_frame_index.values()),
     )
     for s in selected_slides:
         if isinstance(s.get("frame_quality"), dict):

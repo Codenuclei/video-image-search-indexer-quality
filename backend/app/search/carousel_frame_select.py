@@ -2434,6 +2434,12 @@ async def polish_slides_instagram_frames(
     for slide, key in zip(out_slides, cache_keys):
         if slide.get("frame_source") == "manual":
             continue
+        items = slide.get("frame_candidate_items")
+        # Never persist empty harvests — cold cache + extract retries must not
+        # keep serving a cached "no frames" miss.
+        if not isinstance(items, list) or not items:
+            _CANDIDATE_RESULT_CACHE.pop(key, None)
+            continue
         _candidate_cache_put(key, _frame_fields_for_cache(slide))
 
     logger.info(
