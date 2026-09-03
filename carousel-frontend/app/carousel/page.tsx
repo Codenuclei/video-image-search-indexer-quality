@@ -1370,6 +1370,15 @@ export default function CarouselSearchPage() {
       for (let i = 0; i < goals.length; i++) {
         const goal = goals[i];
         const isHook = hookPicks.some((h) => h.text === goal.text);
+        const parentTopic = isHook
+          ? topicPicks.find(
+              (topic) =>
+                (goal.topic_id && topic.id === goal.topic_id) ||
+                (goal.topic_text &&
+                  topic.text.trim().toLowerCase() ===
+                    goal.topic_text.trim().toLowerCase())
+            )
+          : undefined;
         setImageQualityNote(
           `Building hook ${i + 1}/${goals.length}…`
         );
@@ -1386,7 +1395,9 @@ export default function CarouselSearchPage() {
           })),
           hooks: isHook ? [goal] : [],
           topics: isHook
-            ? []
+            ? parentTopic
+              ? [parentTopic]
+              : []
             : [
                 {
                   id: goal.id,

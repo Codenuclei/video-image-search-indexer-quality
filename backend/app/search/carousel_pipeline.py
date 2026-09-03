@@ -87,7 +87,7 @@ _HOOK_CRAFT_BRIEF = (
     "startling numbers, withholds what they sold and how).\n"
 )
 
-SLIDE_COPY_PROMPT_VERSION = "slides-v2-crafted-complete-arc"
+SLIDE_COPY_PROMPT_VERSION = "slides-v3-topic-coherent-hook-placement"
 
 # Same jobs as hooks, applied across a swipeable slide sequence.
 _SLIDE_CRAFT_BRIEF = (
@@ -114,8 +114,13 @@ _SLIDE_CRAFT_BRIEF = (
     "- Each slide is one complete sentence or a tight clause that can stand alone.\n"
     "- A single spoken sentence may occupy TWO consecutive slides only — never 3+.\n"
     "- Never leave a mid-clause scrap, [music] tag, or unfinished thought.\n"
-    "- Keep the given chronological order. Setup → tension → hook/reveal in the "
-    "MIDDLE (for 6 slides, slide 3 or 4) → payoff.\n"
+    "- The whole deck must advance ONE argument from its chosen topic. Never turn "
+    "nearby transcript mentions into a roundup of different tactics.\n"
+    "- Place the selected hook for performance: on the cover when it opens a strong "
+    "curiosity loop, in the middle when it is a reveal, or at the end when it is "
+    "the payoff. Use it once, then make every other slide support its promise.\n"
+    "- Build a causal swipe flow: hook/setup → problem/tension → explanation/proof "
+    "→ payoff/action. Every slide must make the next slide feel necessary.\n"
     "SHAPE EXAMPLE (do not copy): spoken \"ghee business… market value of 42 "
     "billion… A2 growth rate is three times\" → slides like \"India's ghee "
     "market is $42 billion.\" / \"Most brands still sell at ₹600–800 a litre.\" / "
@@ -4731,6 +4736,8 @@ async def polish_slides_instagram_copy(
     *,
     hook_goal: str = "",
     intent: str = "",
+    topic_context: str = "",
+    theme_context: str = "",
     api_key: str | None = None,
     model: str = "",
     claude_api_key: str | None = None,
@@ -4779,9 +4786,16 @@ async def polish_slides_instagram_copy(
             "- Rewrite EACH input into a complete, self-contained caption (roughly 6–16 words).\n"
             "- Do NOT paste the transcript. Drop filler, [music], and mid-clause scraps.\n"
             "- Keep the same slide count and order as the input (same i).\n"
-            f"- Selected hook / reveal (place this beat on a MIDDLE slide): "
+            f"- Chosen theme (hard boundary): "
+            f"{(theme_context or '').strip()[:240] or '(none)'}\n"
+            f"- Chosen topic (the ONE argument for this deck): "
+            f"{(topic_context or '').strip()[:240] or '(none)'}\n"
+            f"- Selected performance hook (place once where it performs best): "
             f"{(hook_goal or '').strip()[:240] or '(none)'}\n"
             f"- Directional intent: {(intent or '').strip()[:240] or '(none)'}\n"
+            "- Before writing, silently reject any seed that introduces another tactic "
+            "or subject. If a weak seed cannot advance the chosen topic, bridge it back "
+            "to the topic without inventing facts.\n"
             "- Pick 1–3 words per slide to highlight in yellow "
             "(key nouns/verbs/names/numbers).\n"
             "- highlight = 0-based word indices into the returned crafted text "
@@ -4923,10 +4937,16 @@ async def finalize_carousels_instagram_copy(
         item = dict(car)
         slides = list(item.get("slides") or [])
         hook_goal = str(item.get("hook_goal") or (item.get("hooks") or [""])[0] or "")
+        topic_context = str(
+            item.get("topic_context") or (item.get("topics") or [""])[0] or ""
+        )
+        theme_context = str(item.get("theme_context") or "")
         polished, used = await polish_slides_instagram_copy(
             slides,
             hook_goal=hook_goal,
             intent=intent,
+            topic_context=topic_context,
+            theme_context=theme_context,
             api_key=api_key,
             model=model,
             claude_api_key=claude_api_key,

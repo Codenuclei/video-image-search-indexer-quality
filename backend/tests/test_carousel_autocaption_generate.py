@@ -4,6 +4,7 @@ import pytest
 
 from app.routers.carousel_script import (
     _RELAXED_CUE_LINES,
+    PipelineThemeSlice,
     TimedPick,
     _build_hook_carousels,
     _cue_corpus_needs_relaxed_lines,
@@ -85,6 +86,9 @@ async def test_autocaption_transcript_builds_carousel():
     ]
     kwargs = dict(
         unique_hooks=hooks,
+        topics=[],
+        themes=[],
+        intent="",
         cue_corpus=AUTOCAPTION_CUES,
         drive_file_id="yt:test",
         video_name="Life At Masters Union.mp4",
@@ -170,4 +174,84 @@ async def test_oneline_span_plan_honors_selected_llm(monkeypatch):
     assert captured.get("claude_api_key") == "sk-ant-test"
     assert str(plan.get("source") or "").startswith("claude")
     assert len(plan.get("spans") or []) >= 2
+
+
+@pytest.mark.asyncio
+async def test_cut_plan_scopes_story_to_chosen_topic(monkeypatch):
+    """Adjacent tactics in one theme must not leak into the selected topic deck."""
+    import json
+
+    from app.routers.carousel_script import _plan_hook_oneline_spans
+
+    captured: dict[str, str] = {}
+
+    async def fake_complete_json(**kwargs):
+        captured["prompt"] = str(kwargs.get("prompt") or "")
+        return json.dumps(
+            {
+                "spans": [
+                    {"start_sec": 100.0, "end_sec": 104.0},
+                    {"start_sec": 104.0, "end_sec": 108.0},
+                    {"start_sec": 108.0, "end_sec": 112.0},
+                ]
+            }
+        ), "openrouter"
+
+    monkeypatch.setattr(
+        "app.search.carousel_pipeline._llm_complete_json",
+        fake_complete_json,
+    )
+    cues = [
+        (100.0, 104.0, "Find public Reddit threads where customers describe the pain."),
+        (104.0, 108.0, "A useful answer can keep attracting search traffic for years."),
+        (108.0, 112.0, "That makes one helpful thread a durable acquisition channel."),
+        (125.0, 129.0, "Then scrape company contacts and launch an outbound sequence."),
+        (129.0, 133.0, "Use Apollo and Clay to automate the lead list."),
+    ]
+    topic = TimedPick(
+        id="topic_reddit",
+        text="Reddit threads as durable inbound acquisition",
+        start_sec=100.0,
+        end_sec=112.0,
+        theme_id="theme_acquisition",
+    )
+    plan = await _plan_hook_oneline_spans(
+        cues=cues,
+        hook=TimedPick(
+            id="hook_1",
+            text="One Reddit thread can send leads for years.",
+            start_sec=104.0,
+            end_sec=108.0,
+            topic_id=topic.id,
+            topic_text=topic.text,
+            theme_id=topic.theme_id,
+        ),
+        narrative_topic=topic,
+        narrative_theme=PipelineThemeSlice(
+            theme_id="theme_acquisition",
+            title="Scrappy Customer Acquisition",
+            start_sec=90.0,
+            end_sec=150.0,
+            summary="Early-stage channels that founders can execute manually.",
+        ),
+        narrative_intent="Explain why useful public answers compound into inbound leads.",
+        min_slides=3,
+        max_slides=6,
+        llm={
+            "provider": "openrouter",
+            "api_key": "",
+            "model": "",
+            "claude_api_key": "",
+            "claude_model": "",
+            "openrouter_api_key": "or-test",
+            "openrouter_model": "anthropic/claude-opus-4.6",
+            "openrouter_base_url": "",
+        },
+    )
+
+    prompt = captured["prompt"]
+    assert "Reddit threads as durable inbound acquisition" in prompt
+    assert "Scrappy Customer Acquisition" in prompt
+    assert "scrape company contacts" not in prompt
+    assert all(float(cue[0]) < 120.0 for cue in plan["scoped_cues"])
 

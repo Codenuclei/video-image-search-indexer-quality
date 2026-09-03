@@ -113,6 +113,7 @@ export type TestItem = {
   has_subtopics?: boolean;
   /** Exact spoken transcript line (same as text when verbatim). */
   original_text?: string | null;
+  time_ranges?: { start_sec: number; end_sec?: number | null }[];
   verbatim?: boolean;
   english_source?: string | null;
 };
@@ -424,8 +425,24 @@ export const testApi = {
     ),
   generate: (body: {
     drive_file_id: string;
-    hooks: { text: string; start_sec: number; end_sec?: number | null }[];
-    topics: { text: string; start_sec: number; end_sec?: number | null }[];
+    hooks: {
+      id?: string;
+      text: string;
+      start_sec: number;
+      end_sec?: number | null;
+      theme_id?: string | null;
+      topic_id?: string | null;
+      topic_text?: string | null;
+      original_text?: string | null;
+    }[];
+    topics: {
+      id?: string;
+      text: string;
+      start_sec: number;
+      end_sec?: number | null;
+      theme_id?: string | null;
+      time_ranges?: { start_sec: number; end_sec?: number | null }[];
+    }[];
     themes: TestTheme[];
     intent?: string | null;
     /** Text = text-first (edit copy before frames). Default false. */

@@ -70,7 +70,7 @@ from app.pipelines.common import is_video_mime
 
 logger = logging.getLogger(__name__)
 
-CAROUSEL_CUT_PROMPT_VERSION = "cuts-v3-crafted-complete-arc"
+CAROUSEL_CUT_PROMPT_VERSION = "cuts-v4-theme-topic-story"
 
 # Process-local fast path + Postgres advisory lock for Gunicorn multi-worker.
 # Studio remounts / e2e retries used to pile up overlapping extracts and starve
@@ -3878,6 +3878,9 @@ def _carousel_llm_pack(
 async def _build_hook_carousels(
     *,
     unique_hooks: list["TimedPick"],
+    topics: list["TimedPick"],
+    themes: list["PipelineThemeSlice"],
+    intent: str,
     cue_corpus: list[tuple[float, float | None, str]],
     drive_file_id: str,
     video_name: str,
@@ -3905,11 +3908,39 @@ async def _build_hook_carousels(
     references = list(references or [])
 
     for idx, hook in enumerate(unique_hooks):
+        parent_topic = next(
+            (
+                topic
+                for topic in topics
+                if (
+                    (hook.topic_id and topic.id == hook.topic_id)
+                    or (
+                        (hook.topic_text or "").strip()
+                        and (topic.text or "").strip().casefold()
+                        == (hook.topic_text or "").strip().casefold()
+                    )
+                )
+            ),
+            topics[0] if len(topics) == 1 else None,
+        )
+        matching_theme = next(
+            (
+                theme
+                for theme in themes
+                if (hook.theme_id or (parent_topic.theme_id if parent_topic else None))
+                and theme.theme_id
+                == (hook.theme_id or (parent_topic.theme_id if parent_topic else None))
+            ),
+            themes[0] if len(themes) == 1 else None,
+        )
         hs, he = _anchor_hook_span(hook, cue_corpus)
         anchored = hook.model_copy(update={"start_sec": hs, "end_sec": he})
         plan = await _plan_hook_oneline_spans(
             cues=cue_corpus,
             hook=anchored,
+            narrative_topic=parent_topic,
+            narrative_theme=matching_theme,
+            narrative_intent=intent,
             min_slides=min_slides,
             max_slides=max_slides,
             llm=_carousel_llm_pack(llm, api_key=api_key, model=model),
@@ -3919,12 +3950,13 @@ async def _build_hook_carousels(
             image_ref_bytes=image_ref_bytes,
         )
         spans = list(plan.get("spans") or [])
+        story_cues = list(plan.get("scoped_cues") or cue_corpus)
         if len(spans) < 2:
             logger.warning("hook carousel skipped (thin plan) id=%s", hook.id or idx)
             continue
         slides = _slides_from_exact_spans(
             spans,
-            cues=cue_corpus,
+            cues=story_cues,
             drive_file_id=drive_file_id,
             video_name=video_name,
             crafted_hook=hook.text,
@@ -3934,7 +3966,7 @@ async def _build_hook_carousels(
         )
         slides = _top_up_oneline_slides(
             slides,
-            cues=cue_corpus,
+            cues=story_cues,
             hook=anchored,
             min_slides=min_slides,
             max_slides=max_slides,
@@ -3955,7 +3987,7 @@ async def _build_hook_carousels(
             continue
         slides, duplicate_repairs = repair_duplicate_slides(
             slides,
-            cues=cue_corpus,
+            cues=story_cues,
             hook=anchored,
             min_slides=min_slides,
             drive_file_id=drive_file_id,
@@ -3987,6 +4019,13 @@ async def _build_hook_carousels(
                 "hooks": [hook.text],
                 "hook_goal": hook.text,
                 "topics": [hook.topic_text] if (hook.topic_text or "").strip() else [],
+                "theme_context": matching_theme.title if matching_theme else None,
+                "topic_context": (
+                    parent_topic.text
+                    if parent_topic is not None
+                    else (hook.topic_text or None)
+                ),
+                "intent": intent or None,
                 "plan_source": plan.get("source"),
                 "images_ready": select_images,
                 "hook_start_sec": hs,
@@ -4063,7 +4102,7 @@ async def _carousel_pipeline_generate_impl(
     selection_hash = _carousel_selection_hash(
         drive_file_id=drive_file_id,
         hooks=unique_hooks if hooks else [],
-        topics=[] if hooks else unique_hooks,
+        topics=topics,
         themes=list(body.themes or []),
         intent=body.intent or "",
         min_slides=min_slides,
@@ -4193,6 +4232,9 @@ async def _carousel_pipeline_generate_impl(
         )
     carousels = await _build_hook_carousels(
         unique_hooks=unique_hooks,
+        topics=topics,
+        themes=list(body.themes or []),
+        intent=(body.intent or "").strip(),
         cue_corpus=cue_corpus,
         drive_file_id=drive_file_id,
         video_name=video_name,
@@ -4213,6 +4255,9 @@ async def _carousel_pipeline_generate_impl(
         _RELAXED_CUE_LINES.set(True)
         carousels = await _build_hook_carousels(
             unique_hooks=unique_hooks,
+            topics=topics,
+            themes=list(body.themes or []),
+            intent=(body.intent or "").strip(),
             cue_corpus=cue_corpus,
             drive_file_id=drive_file_id,
             video_name=video_name,
@@ -6713,6 +6758,9 @@ async def _plan_hook_oneline_spans_llm(
     cues: list[tuple[float, float | None, str]],
     *,
     hook: "TimedPick",
+    narrative_topic: "TimedPick | None" = None,
+    narrative_theme: "PipelineThemeSlice | None" = None,
+    narrative_intent: str = "",
     min_slides: int,
     max_slides: int,
     llm: dict[str, Any],
@@ -6781,27 +6829,41 @@ async def _plan_hook_oneline_spans_llm(
             "(still: never invent spoken words).\n"
         )
 
+    topic_label = (
+        (narrative_topic.text if narrative_topic else None)
+        or getattr(hook, "topic_text", None)
+        or ""
+    ).strip()
+    theme_label = (narrative_theme.title if narrative_theme else "").strip()
+    theme_summary = (narrative_theme.summary if narrative_theme else "").strip()
     prompt = (
         "You pick Instagram carousel CUTS from a video transcript catalog.\n"
         "These cuts are spoken-evidence windows. Display copy is crafted later — "
         "do not write slide captions here, but pick complete chronological beats "
         "a copywriter can turn into finished sentences.\n"
-        "Carousel: 6–10 slides. Build ONE clear chronological story, not a collection "
-        "of disconnected quotes.\n"
+        "Build ONE coherent carousel argument, not a roundup of nearby tactics or "
+        "a collection of disconnected quotes.\n"
         "Return ONLY JSON: {\"spans\":[{\"start_sec\":number,\"end_sec\":number,\"cue_i\":number}]}\n"
-        f"Selected hook / topic (the central beat of the story): {hook.text}\n"
-        f"Topic context: {getattr(hook, 'topic_text', None) or ''}\n"
+        f"Chosen theme (hard story boundary): {theme_label or '(not supplied)'}\n"
+        f"Theme meaning: {theme_summary or '(not supplied)'}\n"
+        f"Chosen topic (the ONE argument every slide must advance): "
+        f"{topic_label or '(use the hook as the topic)'}\n"
+        f"Directional intent: {narrative_intent or '(not supplied)'}\n"
+        f"Selected performance hook: {hook.text}\n"
         f"Hook transcript anchor: {float(hook.start_sec or 0):.2f}s"
         f"–{float(hook.end_sec or (float(hook.start_sec or 0) + 8.0)):.2f}s\n"
         f"{copy_note}"
         f"{image_note}"
         f"Produce between {min_slides} and {max_slides} spans.\n"
         "Rules:\n"
-        "- Story order is strict: setup/context → rising tension or evidence → selected "
-        "hook/reveal → consequence/payoff. Every slide must make sense after the previous one.\n"
-        "- Put the selected hook/reveal in the MIDDLE of the carousel (for 6 slides, slide "
-        "3 or 4), never on slide 1 and never only at the end. Select a catalog row at or "
-        "overlapping the hook transcript anchor for that middle position.\n"
+        "- First decide the single claim the chosen topic makes. Reject every catalog row "
+        "that introduces a different tactic, framework, or subject—even when nearby in time.\n"
+        "- Build: hook/setup → problem or tension → explanation/evidence → payoff/action. "
+        "Each slide must answer or deepen the previous slide; the final slide must resolve "
+        "the opening promise.\n"
+        "- Include the hook anchor once. The copywriter will place the crafted hook where it "
+        "performs best: cover when it opens curiosity, middle when it is a reveal, or ending "
+        "when it is the payoff. Do not pad around it with unrelated transcript cuts.\n"
         "- A spoken sentence must be completed on ONE slide whenever possible. If the exact "
         "sentence is split across catalog rows, it may occupy TWO consecutive slides only. "
         "Never stretch one sentence across 3+ slides.\n"
@@ -6906,6 +6968,9 @@ async def _plan_hook_oneline_spans(
     *,
     cues: list[tuple[float, float | None, str]],
     hook: "TimedPick",
+    narrative_topic: "TimedPick | None" = None,
+    narrative_theme: "PipelineThemeSlice | None" = None,
+    narrative_intent: str = "",
     min_slides: int,
     max_slides: int,
     llm: dict[str, Any] | None = None,
@@ -6926,21 +6991,72 @@ async def _plan_hook_oneline_spans(
     pack = _carousel_llm_pack(llm, api_key=api_key, model=model)
     llm_used = "none"
 
+    # Scope evidence to the chosen topic first, then its theme. Nearby transcript
+    # is not necessarily the same story (the customer-acquisition talk switches
+    # from Reddit to warm networks to lead scraping within seconds).
+    scope_ranges: list[tuple[float, float]] = []
+    if narrative_topic is not None:
+        for item in narrative_topic.time_ranges or []:
+            start = float(item.start_sec or 0)
+            end = float(item.end_sec) if item.end_sec is not None else start + 45.0
+            if end > start:
+                scope_ranges.append((start, end))
+        if not scope_ranges and (
+            narrative_topic.start_sec or narrative_topic.end_sec is not None
+        ):
+            start = float(narrative_topic.start_sec or 0)
+            end = (
+                float(narrative_topic.end_sec)
+                if narrative_topic.end_sec is not None
+                else start + 45.0
+            )
+            if end > start:
+                scope_ranges.append((start, end))
+    if not scope_ranges and narrative_theme is not None:
+        start = float(narrative_theme.start_sec or 0)
+        end = (
+            float(narrative_theme.end_sec)
+            if narrative_theme.end_sec is not None
+            else max(start + 90.0, he + 45.0)
+        )
+        if end > start:
+            scope_ranges.append((start, end))
+
+    scoped_cues = cues
+    if scope_ranges:
+        pad = 3.0
+        scoped_cues = [
+            cue
+            for cue in cues
+            if any(
+                float(cue[0]) <= end + pad
+                and float(cue[1] if cue[1] is not None else cue[0] + 3.0)
+                >= start - pad
+                for start, end in scope_ranges
+            )
+        ]
+        # A malformed/narrow topic range should not make generation impossible.
+        if len(scoped_cues) < 3:
+            scoped_cues = cues
+
     def _localize(cands: list[dict[str, float]], forward: float) -> list[dict[str, float]]:
         local_lo = max(0.0, hs - 12.0)
         local_hi = he + forward
         local = [sp for sp in cands if local_lo <= float(sp["start_sec"]) <= local_hi]
         return local
 
-    if cues and _llm_has_any_key(
+    if scoped_cues and _llm_has_any_key(
         api_key=pack.get("api_key"),
         claude_api_key=pack.get("claude_api_key"),
         openrouter_api_key=pack.get("openrouter_api_key"),
         openrouter_model=str(pack.get("openrouter_model") or ""),
     ):
         planned, llm_used = await _plan_hook_oneline_spans_llm(
-            cues,
+            scoped_cues,
             hook=hook,
+            narrative_topic=narrative_topic,
+            narrative_theme=narrative_theme,
+            narrative_intent=narrative_intent,
             min_slides=min_slides,
             max_slides=max_slides,
             llm=pack,
@@ -6961,7 +7077,7 @@ async def _plan_hook_oneline_spans(
 
     # Always run heuristic — either as primary or to top up the LLM's short lists.
     heur = _plan_hook_oneline_spans_heuristic(
-        cues,
+        scoped_cues,
         hook_start=hs,
         hook_end=he,
         min_slides=max(min_slides, 8),
@@ -6981,7 +7097,7 @@ async def _plan_hook_oneline_spans(
     # Wider window top-up if still thin (still respect reserved pool).
     if len(spans) < min_slides:
         wider = _plan_hook_oneline_spans_heuristic(
-            cues,
+            scoped_cues,
             hook_start=max(0.0, hs - 12.0),
             hook_end=he + 55.0,
             min_slides=min_slides,
@@ -6994,7 +7110,11 @@ async def _plan_hook_oneline_spans(
         if source.endswith("_cuts"):
             tag = llm_used if llm_used not in ("none", "failed") else "llm"
             source = f"{tag}+heuristic"
-    return {"spans": spans[:max_slides], "source": source}
+    return {
+        "spans": spans[:max_slides],
+        "source": source,
+        "scoped_cues": scoped_cues,
+    }
 
 
 def _slide_idea_collides(text: str, others: list[str], *, threshold: float = 0.8) -> bool:

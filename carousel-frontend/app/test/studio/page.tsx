@@ -970,7 +970,14 @@ function TestStudioInner() {
       const jobs: { hooks: TestItem[]; topics: TestItem[] }[] = [];
       if (hookPicks.length) {
         for (const h of hookPicks) {
-          jobs.push({ hooks: [h], topics: [] });
+          const parent = topicPicks.find(
+            (topic) =>
+              (h.topic_id && topic.id === h.topic_id) ||
+              (h.topic_text &&
+                topic.text.trim().toLowerCase() ===
+                  h.topic_text.trim().toLowerCase())
+          );
+          jobs.push({ hooks: [h], topics: parent ? [parent] : [] });
         }
       } else {
         for (const t of topicPicks.slice(0, 1)) {
@@ -987,14 +994,22 @@ function TestStudioInner() {
         const gen = await testApi.generate({
           drive_file_id: selected.id,
           hooks: job.hooks.map((h) => ({
+            id: h.id,
             text: h.text,
             start_sec: h.start_sec,
             end_sec: h.end_sec,
+            theme_id: h.theme_id,
+            topic_id: h.topic_id,
+            topic_text: h.topic_text,
+            original_text: h.original_text,
           })),
           topics: job.topics.map((t) => ({
+            id: t.id,
             text: t.text,
             start_sec: t.start_sec,
             end_sec: t.end_sec,
+            theme_id: t.theme_id,
+            time_ranges: t.time_ranges,
           })),
           themes: themePayload,
           intent: resolvedIntent,
