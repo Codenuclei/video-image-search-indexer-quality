@@ -199,6 +199,10 @@ export type CarouselOutlineSlide = {
     selected?: boolean | null;
     recommended?: boolean | null;
     recommendation_source?: string | null;
+    category?: string | null;
+    identity_id?: string | null;
+    identity_label?: string | null;
+    hdr?: boolean | null;
   }> | null;
   frame_quality?: Record<string, unknown> | null;
   frame_diversity?: {

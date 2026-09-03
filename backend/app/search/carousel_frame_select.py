@@ -677,6 +677,21 @@ def front_face_score(face: Any) -> float:
     y = value("bbox_y", value("y", 0.0))
     w = value("bbox_width", value("width", 0.0))
     h = value("bbox_height", value("height", 0.0))
+    # InsightFace stores pixel boxes; older carousel payloads sometimes already
+    # use 0–1. Normalize pixel boxes when dimensions are provided or when the
+    # box clearly exceeds unit range.
+    img_w = value("image_width", value("frame_width", 0.0))
+    img_h = value("image_height", value("frame_height", 0.0))
+    if w > 1.5 or h > 1.5 or x > 1.5 or y > 1.5:
+        if img_w > 1 and img_h > 1:
+            x, y, w, h = x / img_w, y / img_h, w / img_w, h / img_h
+        else:
+            # Best-effort: assume a common HD frame when metadata is missing.
+            x, y, w, h = x / 1280.0, y / 720.0, w / 1280.0, h / 720.0
+        x = max(0.0, min(1.0, x))
+        y = max(0.0, min(1.0, y))
+        w = max(0.0, min(1.0, w))
+        h = max(0.0, min(1.0, h))
     # Normalized boxes are what the index stores. A border-touching face is
     # unusable for a portrait crop even when its detector confidence is high.
     edge_penalty = 1.0

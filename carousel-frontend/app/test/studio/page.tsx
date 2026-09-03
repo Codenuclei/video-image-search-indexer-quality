@@ -1786,8 +1786,9 @@ function TestStudioInner() {
             <StageBadge state={imageStage} />
           </h2>
           <p className="mt-2 text-sm text-slate-500">
-            Slides start text-only. Open Choose image to pick from verified cache-backed
-            frames — the AI badge is guidance only.
+            Slides start text-only. Open Choose image to pick from the identity directory
+            (recommended speaker, same person, other people, group panels). The Best match
+            badge is guidance only — selection stays yours.
           </p>
 
           <div className="test-ig-stack mt-6" data-testid="carousel-image-preview">

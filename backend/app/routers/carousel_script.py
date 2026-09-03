@@ -4704,7 +4704,7 @@ async def _carousel_pipeline_select_images_impl(
     # (frames=0) must still extract a few stills or Step 5 has nothing to pick.
     allow_extracts = total_cached_frames == 0
     logger.info(
-        "select-images trace=%s event=frame_polish_start drive=%s slides=%d prefer_local=true allow_extracts=%s cached_frames=%d llm=%s",
+        "select-images trace=%s event=frame_polish_start drive=%s slides=%d prefer_local=true allow_extracts=%s cached_frames=%d llm=%s mode=identity",
         trace_id,
         drive_file_id,
         len(all_slides),
@@ -4712,31 +4712,70 @@ async def _carousel_pipeline_select_images_impl(
         total_cached_frames,
         carousel_llm_cache_id(llm_pack),
     )
-    selected_slides = await _polish_outline_frames(
+    # Seed a sparse cache when the volume is empty so the identity catalog
+    # has frames to scan (quote midpoints + heuristic samples).
+    if allow_extracts:
+        seed_ts: list[float] = []
+        for slide in all_slides:
+            try:
+                start = float(slide.get("timestamp_sec") or 0)
+                end = float(slide.get("end_timestamp_sec") or start)
+            except (TypeError, ValueError):
+                continue
+            mid = round(start + max(0.0, end - start) * 0.5, 3)
+            seed_ts.extend([round(start, 3), mid, round(end, 3)])
+        unique_seeds: list[float] = []
+        seen_seed: set[float] = set()
+        for ts in seed_ts:
+            if ts in seen_seed:
+                continue
+            seen_seed.add(ts)
+            unique_seeds.append(ts)
+        for ts in unique_seeds[:24]:
+            try:
+                await _ensure_outline_frame_bytes(
+                    drive_file_id, ts, session, settings, exact_only=True
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "select-images seed extract failed %s@%.3f: %s",
+                    drive_file_id,
+                    ts,
+                    exc,
+                )
+        cached_frame_index = await asyncio.to_thread(
+            index_cached_video_frames,
+            str(settings.thumbnail_dir),
+            {
+                str(slide.get("drive_file_id") or "").strip()
+                for slide in all_slides
+                if str(slide.get("drive_file_id") or "").strip()
+            },
+        )
+
+    from app.search.carousel_identity_catalog import apply_identity_selection_to_slides
+
+    selected_slides, identity_summary = await asyncio.to_thread(
+        apply_identity_selection_to_slides,
         all_slides,
-        session,
-        prefer_local=True,
-        max_candidates=3,
-        max_rank_batches=2,
-        timeout_sec=_SELECT_IMAGES_TIMEOUT_SEC,
-        style_copy_refs=copy_refs,
-        llm_pack=llm_pack,
-        allow_extracts=allow_extracts,
-        trace_id=trace_id,
-        cached_frame_index=cached_frame_index,
+        thumbnail_dir=str(settings.thumbnail_dir),
+        drive_file_id=drive_file_id,
+        force_catalog=bool(getattr(body, "force", False)),
+        prefer_hdr=True,
     )
+    # Fallback: if identity catalog found nothing usable, keep the previous
+    # span-local polish path so Step 5 still has options on sparse videos.
     empty_after = sum(
         1
         for slide in selected_slides
         if not (isinstance(slide.get("frame_candidate_items"), list) and slide["frame_candidate_items"])
     )
-    if empty_after and not allow_extracts:
+    if empty_after == len(selected_slides) and selected_slides:
         logger.info(
-            "select-images trace=%s event=frame_polish_retry_extracts drive=%s empty_slides=%d cached_frames=%d",
+            "select-images trace=%s event=identity_empty_fallback drive=%s empty_slides=%d",
             trace_id,
             drive_file_id,
             empty_after,
-            total_cached_frames,
         )
         selected_slides = await _polish_outline_frames(
             all_slides,
@@ -4752,6 +4791,30 @@ async def _carousel_pipeline_select_images_impl(
             cached_frame_index=cached_frame_index,
         )
         allow_extracts = True
+        # Clear auto-applied previews so studio stays text-first.
+        for slide in selected_slides:
+            items = slide.get("frame_candidate_items")
+            frame_ts = slide.get("frame_ts")
+            if isinstance(items, list):
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    item["selected"] = False
+                    item.setdefault("category", "same_person")
+                    if frame_ts is not None and abs(
+                        float(item.get("frame_ts") or -1) - float(frame_ts)
+                    ) < 0.011:
+                        item["recommended"] = True
+                        item["recommendation_source"] = (
+                            item.get("recommendation_source") or "local"
+                        )
+            slide["preview_url"] = None
+            slide["frame_ts"] = None
+            identity_summary = {
+                "algorithm": "identity-fallback-local",
+                "modes": {"fallback": len(selected_slides)},
+                "slides": len(selected_slides),
+            }
     if allow_extracts:
         # Extracts wrote new JPEGs; refresh the index so snap/canonical URLs hit.
         cached_frame_index = await asyncio.to_thread(
@@ -4768,7 +4831,7 @@ async def _carousel_pipeline_select_images_impl(
         source = str(slide.get("frame_source") or "unknown")
         frame_sources[source] = frame_sources.get(source, 0) + 1
     logger.info(
-        "select-images trace=%s event=frame_polish_done drive=%s stage_ms=%d slides=%d sources=%s allow_extracts=%s cached_frames=%d",
+        "select-images trace=%s event=frame_polish_done drive=%s stage_ms=%d slides=%d sources=%s allow_extracts=%s cached_frames=%d identity=%s",
         trace_id,
         drive_file_id,
         round((time.monotonic() - stage_started) * 1000),
@@ -4776,6 +4839,7 @@ async def _carousel_pipeline_select_images_impl(
         ",".join(f"{key}:{value}" for key, value in sorted(frame_sources.items())),
         allow_extracts,
         sum(len(index.timestamps) for index in cached_frame_index.values()),
+        identity_summary,
     )
     for s in selected_slides:
         if isinstance(s.get("frame_quality"), dict):
@@ -4849,6 +4913,7 @@ async def _carousel_pipeline_select_images_impl(
             "slides_polished": sum(len(c.get("slides") or []) for c in polished),
         },
         "quality_summary": quality_summary,
+        "identity": identity_summary,
         "transcript_guard": transcript_guard,
     }
     try:

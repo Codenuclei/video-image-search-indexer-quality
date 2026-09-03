@@ -190,7 +190,23 @@ export function TestIgPost({
     if (!item.recommended) return null;
     const source = String(item.recommendation_source || "").toLowerCase();
     if (source === "ai" || source === "gemini") return "AI recommended";
+    if (source === "identity") return "Best match";
     return "Recommended";
+  }
+
+  function categoryLabel(category: string | null | undefined): string {
+    switch (String(category || "").toLowerCase()) {
+      case "recommended":
+        return "Recommended";
+      case "same_person":
+        return "Same person";
+      case "other_person":
+        return "Other people";
+      case "group_panel":
+        return "Group / panel";
+      default:
+        return "More frames";
+    }
   }
 
   async function uploadSlideImage(file: File | null | undefined) {
@@ -299,8 +315,33 @@ export function TestIgPost({
       selected: Math.abs(Number(ts) - Number(current?.frame_ts ?? -1)) < 0.011,
       recommended: false,
       recommendation_source: null,
+      category: "same_person",
     }));
   }, [current, driveFileId]);
+
+  const candidateSections = useMemo(() => {
+    const order = ["recommended", "same_person", "other_person", "group_panel"] as const;
+    const buckets = new Map<string, TestFrameCandidateItem[]>();
+    for (const item of candidateItems) {
+      let key = String(item.category || "").toLowerCase();
+      if (item.recommended && (!key || key === "same_person")) key = "recommended";
+      if (!key) key = "same_person";
+      const list = buckets.get(key) || [];
+      list.push(item);
+      buckets.set(key, list);
+    }
+    const sections: Array<{ key: string; title: string; items: TestFrameCandidateItem[] }> = [];
+    for (const key of order) {
+      const items = buckets.get(key) || [];
+      if (!items.length) continue;
+      sections.push({ key, title: categoryLabel(key), items });
+    }
+    for (const [key, items] of buckets) {
+      if ((order as readonly string[]).includes(key)) continue;
+      sections.push({ key, title: categoryLabel(key), items });
+    }
+    return sections;
+  }, [candidateItems]);
 
   if (!n || !current) {
     return <p className="text-sm text-muted-foreground">No slides yet.</p>;
@@ -762,40 +803,55 @@ export function TestIgPost({
               </button>
             </div>
             {candidateItems.length ? (
-              <ul className="test-frame-candidate-grid" data-testid="test-frame-candidates">
-                {candidateItems.map((item, i) => {
-                  const selected =
-                    item.selected ||
-                    (current.preview_url != null &&
-                      Math.abs(Number(item.frame_ts) - Number(current.frame_ts ?? -1)) <
-                        0.011);
-                  const badge = recommendationBadge(item);
-                  const src = testAssetUrl(item.preview_url || "");
-                  return (
-                    <li key={`cand-${item.frame_ts}-${i}`}>
-                      <button
-                        type="button"
-                        className={cn(
-                          "test-frame-candidate",
-                          selected && "is-selected",
-                          item.recommended && "is-recommended"
-                        )}
-                        aria-pressed={selected}
-                        onClick={() => pickCandidate(item)}
-                      >
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img src={src} alt="" loading="lazy" />
-                        {badge ? (
-                          <span className="test-frame-candidate-badge">{badge}</span>
-                        ) : null}
-                        <span className="test-frame-candidate-meta">
-                          {item.label || `Option ${i + 1}`}
-                        </span>
-                      </button>
-                    </li>
-                  );
-                })}
-              </ul>
+              <div className="test-frame-candidate-sections" data-testid="test-frame-candidates">
+                {candidateSections.map((section) => (
+                  <section
+                    key={section.key}
+                    className="test-frame-candidate-section"
+                    data-category={section.key}
+                  >
+                    <h4 className="test-frame-candidate-section-title">{section.title}</h4>
+                    <ul className="test-frame-candidate-grid">
+                      {section.items.map((item, i) => {
+                        const selected =
+                          item.selected ||
+                          (current.preview_url != null &&
+                            Math.abs(Number(item.frame_ts) - Number(current.frame_ts ?? -1)) <
+                              0.011);
+                        const badge = recommendationBadge(item);
+                        const src = testAssetUrl(item.preview_url || "");
+                        const meta =
+                          item.identity_label ||
+                          item.label ||
+                          (item.hdr ? "HDR" : `Option ${i + 1}`);
+                        return (
+                          <li key={`cand-${section.key}-${item.frame_ts}-${i}`}>
+                            <button
+                              type="button"
+                              className={cn(
+                                "test-frame-candidate",
+                                selected && "is-selected",
+                                item.recommended && "is-recommended"
+                              )}
+                              aria-pressed={selected}
+                              onClick={() => pickCandidate(item)}
+                            >
+                              {/* eslint-disable-next-line @next/next/no-img-element */}
+                              <img src={src} alt="" loading="lazy" />
+                              {badge ? (
+                                <span className="test-frame-candidate-badge">{badge}</span>
+                              ) : item.hdr ? (
+                                <span className="test-frame-candidate-badge is-hdr">HDR</span>
+                              ) : null}
+                              <span className="test-frame-candidate-meta">{meta}</span>
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </section>
+                ))}
+              </div>
             ) : (
               <p className="text-sm text-muted-foreground">
                 No verified cache-backed frames for this slide. Keep it text-only or refresh

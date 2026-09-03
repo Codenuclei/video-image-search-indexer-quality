@@ -1,4 +1,5 @@
 import pytest
+from pathlib import Path
 
 from app.routers import media
 from app.routers.carousel_script import (
@@ -10,12 +11,16 @@ from app.routers.carousel_script import (
 
 
 @pytest.mark.asyncio
-async def test_cache_only_frame_miss_never_extracts(tmp_path, monkeypatch):
+async def test_cache_only_hdr_miss_does_not_invent(tmp_path, monkeypatch):
     class Settings:
         thumbnail_dir = str(tmp_path)
 
+    frames = tmp_path / "video" / "drive-id"
+    frames.mkdir(parents=True)
+    (frames / "12.500.jpg").write_bytes(b"source-only")
+
     async def fail_extract(*args, **kwargs):
-        raise AssertionError("cache-only frame path must not extract")
+        raise AssertionError("cache-only HDR must not extract")
 
     monkeypatch.setattr(media, "get_settings", lambda: Settings())
     monkeypatch.setattr(media, "_extract_frame_on_demand", fail_extract)
@@ -25,10 +30,37 @@ async def test_cache_only_frame_miss_never_extracts(tmp_path, monkeypatch):
             "drive-id",
             ts=12.5,
             cache_only=True,
+            variant="hdr",
             session=None,
         )
 
     assert exc.value.status_code == 404
+    assert "HDR" in str(exc.value.detail)
+
+
+@pytest.mark.asyncio
+async def test_cache_only_hdr_serves_prebuilt(tmp_path, monkeypatch):
+    class Settings:
+        thumbnail_dir = str(tmp_path)
+
+    frames = tmp_path / "video" / "drive-id"
+    hdr = frames / "hdr"
+    frames.mkdir(parents=True)
+    hdr.mkdir(parents=True)
+    (frames / "12.500.jpg").write_bytes(b"source")
+    (hdr / "12.500.jpg").write_bytes(b"hdr-bytes")
+
+    monkeypatch.setattr(media, "get_settings", lambda: Settings())
+
+    response = await media.get_video_frame(
+        "drive-id",
+        ts=12.5,
+        cache_only=True,
+        variant="hdr",
+        session=None,
+    )
+    assert Path(response.path).name == "12.500.jpg"
+    assert "hdr" in str(response.path)
 
 
 @pytest.mark.asyncio

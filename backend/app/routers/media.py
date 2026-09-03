@@ -139,6 +139,7 @@ async def get_video_frame(
     cache_only: bool = Query(False),
     filename: str | None = Query(None),
     ar: str | None = Query(None),
+    variant: str | None = Query(None),
     session: AsyncSession = Depends(get_db),
 ) -> FileResponse:
     """
@@ -151,21 +152,47 @@ async def get_video_frame(
     4. 404/401 if unreachable
 
     ``ar=4x5`` serves an Instagram-carousel 4:5 crop of the frame (cached).
+    ``variant=hdr`` serves a prebuilt natural-HDR derivative when present
+    (cache_only misses do not invent HDR on the fly).
     """
     settings = get_settings()
     frames_dir = Path(settings.thumbnail_dir) / "video" / drive_file_id
     out_path = frames_dir / f"{ts:.3f}.jpg"
+    # FastAPI injects Query defaults; unit tests may call this function directly.
+    variant_raw = variant if isinstance(variant, str) else None
+    want_hdr = (variant_raw or "").strip().lower() == "hdr"
+    filename_raw = filename if isinstance(filename, str) else None
+    ar_raw = ar if isinstance(ar, str) else None
 
     def _respond(path: Path) -> FileResponse:
-        if ar == "4x5":
-            path = _ensure_portrait_crop(path, frames_dir / "4x5" / path.name)
-        safe = (filename or f"{drive_file_id}_{ts:.3f}.jpg").replace('"', "").replace("\n", "")
+        serve = path
+        if want_hdr:
+            from app.video.frame_enhance import ensure_hdr_variant, hdr_variant_path
+
+            hdr_path = hdr_variant_path(str(settings.thumbnail_dir), drive_file_id, ts)
+            # Prefer an already-built derivative. In interactive (non-cache_only)
+            # mode we may materialize once; cache_only never invents bytes.
+            if hdr_path.is_file():
+                serve = hdr_path
+            elif not cache_only:
+                built = ensure_hdr_variant(path, hdr_path)
+                if built is not None:
+                    serve = built
+            elif cache_only and not hdr_path.is_file():
+                raise HTTPException(status_code=404, detail="HDR frame not available")
+        if ar_raw == "4x5":
+            if want_hdr:
+                crop_root = frames_dir / "hdr" / "4x5"
+            else:
+                crop_root = frames_dir / "4x5"
+            serve = _ensure_portrait_crop(serve, crop_root / Path(serve).name)
+        safe = (filename_raw or f"{drive_file_id}_{ts:.3f}.jpg").replace('"', "").replace("\n", "")
         if not safe.lower().endswith((".jpg", ".jpeg", ".png", ".webp")):
             safe = f"{safe}.jpg"
         headers = {}
         if download:
             headers["Content-Disposition"] = f'attachment; filename="{safe}"'
-        return FileResponse(path, media_type="image/jpeg", headers=headers or None)
+        return FileResponse(serve, media_type="image/jpeg", headers=headers or None)
 
     # 1. Exact pre-extracted frame
     if out_path.is_file():

@@ -144,6 +144,13 @@ export type TestSlidePanel = {
   front_face_score?: number | null;
 };
 
+export type TestFrameCandidateCategory =
+  | "recommended"
+  | "same_person"
+  | "other_person"
+  | "group_panel"
+  | string;
+
 export type TestFrameCandidateItem = {
   frame_ts: number;
   preview_url?: string | null;
@@ -154,6 +161,10 @@ export type TestFrameCandidateItem = {
   selected?: boolean | null;
   recommended?: boolean | null;
   recommendation_source?: string | null;
+  category?: TestFrameCandidateCategory | null;
+  identity_id?: string | null;
+  identity_label?: string | null;
+  hdr?: boolean | null;
 };
 
 export type TestSlide = {
