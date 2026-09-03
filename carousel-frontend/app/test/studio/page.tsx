@@ -935,18 +935,30 @@ function TestStudioInner() {
         toastApiError(msg);
         return;
       }
-      setExtract((prev) =>
-        prev
-          ? {
-              ...prev,
-              hooks: res.hooks ?? [],
-              topic_tree: Array.isArray(res.topic_tree) && res.topic_tree.length
-                ? res.topic_tree
-                : prev.topic_tree,
-              topics: res.topics?.length ? res.topics : prev.topics,
-            }
-          : res
-      );
+      setExtract((prev) => {
+        if (!prev) return res;
+        const crafted = res.hooks ?? [];
+        // Keep the full topic list visible for reselection, but clear nested
+        // per-topic hooks so the picker is one combined 2–4 list.
+        const prevTree = Array.isArray(prev.topic_tree)
+          ? (prev.topic_tree as Array<{
+              hooks?: unknown[];
+              subtopics?: Array<{ hooks?: unknown[] }>;
+              [key: string]: unknown;
+            }>)
+          : [];
+        const stripped = prevTree.map((t) => ({
+          ...t,
+          hooks: [],
+          subtopics: (t.subtopics || []).map((s) => ({ ...s, hooks: [] })),
+        }));
+        return {
+          ...prev,
+          hooks: crafted,
+          topic_tree: stripped.length ? stripped : prev.topic_tree,
+          topics: prev.topics,
+        };
+      });
       setSelectedHooks([]);
     } catch (e) {
       setError(
@@ -1601,8 +1613,9 @@ function TestStudioInner() {
             <StageBadge state={extractStage} />
           </h2>
           <p className="mt-2 max-w-[65ch] text-sm leading-relaxed text-slate-500">
-            Select one or more topics first. Then generate 2–4 hooks for those topics and pick the
-            ones you want before generating copy.
+            Select one or more topics first. Then generate 2–4 hooks for those topics
+            combined (not one set per topic). Pick one or more hooks before generating
+            copy.
             {selectedThemes.length
               ? ` Using ${selectedThemes.length} theme${selectedThemes.length === 1 ? "" : "s"}.`
               : ""}

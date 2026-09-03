@@ -1289,8 +1289,13 @@ export default function CarouselSearchPage() {
           ? {
               ...prev,
               hooks: nextHooks,
-              topic_tree: res.topic_tree?.length ? res.topic_tree : prev.topic_tree,
-              topics: res.topics?.length ? res.topics : prev.topics,
+              // Preserve full topic list; clear nested hooks so picker is combined.
+              topic_tree: (prev.topic_tree ?? []).map((t) => ({
+                ...t,
+                hooks: [],
+                subtopics: (t.subtopics || []).map((s) => ({ ...s, hooks: [] })),
+              })),
+              topics: prev.topics,
             }
           : res
       );
@@ -2223,9 +2228,9 @@ export default function CarouselSearchPage() {
             Topics, then hooks
           </h2>
           <p className="mt-2 text-sm text-slate-500">
-            Select one or more topics first. Then generate 2–4 hooks for those topics and pick the
-            ones you want on slides. Images stay deferred until you generate and run frame
-            selection.
+            Select one or more topics first. Then generate 2–4 hooks for those topics
+            combined (not one set per topic). Pick one or more hooks for slides. Images
+            stay deferred until you generate and run frame selection.
             {extract.any_translated ? " Some lines were translated for display." : ""}
           </p>
           {selectedVideo && (

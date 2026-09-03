@@ -3886,6 +3886,129 @@ async def _llm_hooks_for_singular_topic(
     return out
 
 
+async def _llm_hooks_for_combined_topics(
+    *,
+    hooks: list[dict[str, Any]],
+    topics: list[dict[str, Any]],
+    theme_title: str,
+    theme_summary: str,
+    api_key: str | None = None,
+    model: str = "",
+    claude_api_key: str | None = None,
+    claude_model: str = "",
+    provider: str = "auto",
+    openrouter_api_key: str | None = None,
+    openrouter_model: str = "",
+    openrouter_base_url: str = "",
+    max_hooks: int = 4,
+) -> list[dict[str, Any]]:
+    """Craft Instagram hooks that synthesize ALL selected topics together."""
+    payload = []
+    for i, h in enumerate(hooks):
+        payload.append(
+            {
+                "i": i,
+                "spoken": str(h.get("text") or "").strip()[:400],
+                "start_sec": h.get("start_sec"),
+                "end_sec": h.get("end_sec"),
+                "topic": str(h.get("topic_text") or "")[:160],
+            }
+        )
+    topic_rows = [
+        {
+            "title": str(t.get("text") or "").strip()[:200],
+            "explanation": str(t.get("explanation") or "")[:280],
+        }
+        for t in topics
+        if str(t.get("text") or "").strip()
+    ]
+    want = max(2, min(4, int(max_hooks or 4)))
+    titles = [r["title"] for r in topic_rows]
+    prompt = (
+        "You are an expert Instagram copywriter writing reel/carousel hooks.\n"
+        "Generate punchy HOOK lines for a COMBINED set of selected topics — "
+        "NOT one hook per topic, and NOT separate batches.\n"
+        f"{_HOOK_CRAFT_BRIEF}"
+        "CRAFT RULES:\n"
+        f"- Treat these topics as ONE story angle together: {json.dumps(titles, ensure_ascii=False)}\n"
+        f"- Topic context: {json.dumps(topic_rows, ensure_ascii=False)}\n"
+        "- Return 2–4 TOTAL hooks for the whole selection (hard cap).\n"
+        "- Prefer hooks that bridge or synthesize multiple selected topics when possible; "
+        "a single-topic hook is OK only if it still serves the combined story.\n"
+        "- Do NOT invent a separate hook for every topic. Do NOT pad with weak near-duplicates.\n"
+        "- Derive each hook FROM the spoken windows — NEVER paste or lightly trim the transcript.\n"
+        "- FORBIDDEN: returning the spoken line unchanged, a substring of it, or a near-copy "
+        "that only drops filler words. You MUST rewrite into a fresh Instagram hook.\n"
+        "- 6–14 words; one idea; natural English; keep the true claim of what was said, "
+        "but change the wording.\n"
+        f"- Prefer returning up to {want} strongest hooks (you may skip weak indices).\n"
+        f"Parent theme: {theme_title}\n"
+        f"Theme summary: {theme_summary}\n"
+        'Return ONLY JSON array: {"i": number, "hook": "crafted English hook"}.\n\n'
+        f"Spoken windows:\n{json.dumps(payload, ensure_ascii=False)}"
+    )
+    text, _provider = await _llm_complete_json(
+        prompt=prompt,
+        temperature=0.45,
+        max_tokens=1800,
+        api_key=api_key,
+        model=model,
+        claude_api_key=claude_api_key,
+        claude_model=claude_model,
+        provider=provider,
+        openrouter_api_key=openrouter_api_key,
+        openrouter_model=openrouter_model,
+        openrouter_base_url=openrouter_base_url,
+        json_root="array",
+    )
+    raw = _loads_json_array(text)
+    if not raw:
+        return []
+    by_i: dict[int, str] = {}
+    for row in raw:
+        if not isinstance(row, dict):
+            continue
+        try:
+            i = int(row.get("i"))
+        except (TypeError, ValueError):
+            continue
+        hook = str(row.get("hook") or "").strip()
+        if hook:
+            by_i[i] = hook[:200]
+
+    out: list[dict[str, Any]] = []
+    used_norm: set[str] = set()
+    for i, h in enumerate(hooks):
+        crafted = by_i.get(i)
+        if not crafted:
+            continue
+        norm = " ".join(crafted.lower().split())
+        if norm in used_norm:
+            continue
+        if any(_jaccard(_token_set(crafted), _token_set(u)) >= 0.55 for u in used_norm):
+            continue
+        spoken = str(h.get("text") or "")
+        if _nearly_verbatim(crafted, spoken):
+            continue
+        if not 5 <= len(crafted.split()) <= 18:
+            continue
+        if not _hook_numbers_are_grounded(crafted, spoken):
+            continue
+        if not _hook_is_readable(crafted):
+            continue
+        row = dict(h)
+        row["original_text"] = spoken
+        row["text"] = crafted
+        row["verbatim"] = False
+        row["analysed"] = True
+        row["combined_topics"] = True
+        out.append(row)
+        used_norm.add(norm)
+        if len(out) >= want:
+            break
+    return out
+
+
 async def craft_hooks_for_selected_topics_async(
     cues: list[tuple[float, float | None, str]],
     *,
@@ -3904,7 +4027,7 @@ async def craft_hooks_for_selected_topics_async(
     openrouter_base_url: str = "",
     english_cues: list[tuple[float, float | None, str]] | None = None,
 ) -> dict[str, Any]:
-    """Craft 2–4 hooks for user-selected topics (studio step after topic pick)."""
+    """Craft 2–4 total hooks for the COMBINED selected topics (not per-topic)."""
     topics = [t for t in selected_topics if isinstance(t, dict) and str(t.get("text") or "").strip()]
     if not topics:
         return {"hooks": [], "topics": [], "topic_tree": [], "source": "empty"}
@@ -3915,21 +4038,12 @@ async def craft_hooks_for_selected_topics_async(
     pool = primary if primary else cues
     cue_corpus = [str(t or "") for _s, _e, t in pool if (t or "").strip()]
 
-    # Distribute budget across selected topics, then fill to max.
-    per_topic = max(1, (max_n + len(topics) - 1) // len(topics))
-    all_hooks: list[dict[str, Any]] = []
-    used_angles: list[str] = []
-    enriched_topics: list[dict[str, Any]] = []
-
+    # One shared candidate pool across every selected topic window.
+    combined_window: list[tuple[float, float | None, str]] = []
+    seen_cue: set[tuple[float, str]] = set()
+    candidates: list[dict[str, Any]] = []
     for topic in topics:
-        if len(all_hooks) >= max_n:
-            break
-        remaining = max_n - len(all_hooks)
-        want = min(per_topic, remaining)
-        # If we still need to hit min_hooks and this is the last topic, ask for more.
-        if topic is topics[-1] and len(all_hooks) + want < min_n:
-            want = min(max_n - len(all_hooks), max(want, min_n - len(all_hooks)))
-
+        title = str(topic.get("text") or "").strip()
         topic_window = _cues_for_topic_ranges(
             pool,
             topic,
@@ -3942,64 +4056,78 @@ async def craft_hooks_for_selected_topics_async(
                 float(topic.get("start_sec") or 0),
                 topic.get("end_sec"),
             )
+        for cue in topic_window:
+            key = (round(float(cue[0] or 0), 3), str(cue[2] or "").strip()[:80])
+            if key in seen_cue:
+                continue
+            seen_cue.add(key)
+            combined_window.append(cue)
         stitched = _stitch_complete_utterances(topic_window)
-        title = str(topic.get("text") or "").strip()
-        candidates = _pick_contextual_hooks(stitched)
-        if candidates and title:
-            candidates = sorted(
-                candidates,
-                key=lambda h: -(
-                    _topic_text_overlap(title, str(h.get("text") or ""))
-                    + 0.35 * _business_hook_score(str(h.get("text") or ""))
-                ),
-            )
-        candidates = candidates[:6]
-        if not candidates:
-            candidates = _emergency_hook_candidates(stitched or topic_window, limit=4)
+        topic_cands = _pick_contextual_hooks(stitched)
+        if not topic_cands:
+            topic_cands = _emergency_hook_candidates(stitched or topic_window, limit=4)
+        for h in topic_cands:
+            row = dict(h)
+            row["topic_id"] = topic.get("id")
+            row["topic_text"] = title
+            candidates.append(row)
+
+    # Prefer candidates that touch more of the combined selection / business punch.
+    topic_titles = [str(t.get("text") or "") for t in topics]
+    candidates = sorted(
+        candidates,
+        key=lambda h: -(
+            max((_topic_text_overlap(title, str(h.get("text") or "")) for title in topic_titles), default=0.0)
+            + 0.35 * _business_hook_score(str(h.get("text") or ""))
+        ),
+    )
+    # Cap pool so the LLM sees a tight combined window.
+    candidates = _dedupe_hook_list(candidates)[:12]
+    if not candidates and combined_window:
+        candidates = _emergency_hook_candidates(
+            _stitch_complete_utterances(combined_window) or combined_window,
+            limit=8,
+        )
         for h in candidates:
-            h["topic_id"] = topic.get("id")
-            h["topic_text"] = title
+            h.setdefault("topic_id", topics[0].get("id"))
+            h.setdefault("topic_text", topics[0].get("text"))
 
-        topic_hooks: list[dict[str, Any]] = []
-        if candidates and _llm_has_any_key(
-            api_key=api_key,
-            claude_api_key=claude_api_key,
-            openrouter_api_key=openrouter_api_key,
-            openrouter_model=openrouter_model,
-        ):
-            try:
-                topic_hooks = await _llm_hooks_for_singular_topic(
-                    hooks=candidates,
-                    topic_title=title,
-                    topic_explanation=str(topic.get("explanation") or ""),
-                    theme_title=theme_title,
-                    theme_summary=theme_summary,
-                    used_angles=used_angles,
-                    api_key=api_key,
-                    model=model,
-                    claude_api_key=claude_api_key,
-                    claude_model=claude_model,
-                    provider=provider,
-                    openrouter_api_key=openrouter_api_key,
-                    openrouter_model=openrouter_model,
-                    openrouter_base_url=openrouter_base_url,
-                    max_hooks=want,
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("selected-topic hook craft failed for %r: %s", title, exc)
-        if not topic_hooks and candidates:
-            topic_hooks = heuristic_craft_hooks(
-                candidates,
-                theme_title=f"{theme_title}: {title}".strip(": "),
-            )[:want]
+    all_hooks: list[dict[str, Any]] = []
+    if candidates and _llm_has_any_key(
+        api_key=api_key,
+        claude_api_key=claude_api_key,
+        openrouter_api_key=openrouter_api_key,
+        openrouter_model=openrouter_model,
+    ):
+        try:
+            all_hooks = await _llm_hooks_for_combined_topics(
+                hooks=candidates,
+                topics=topics,
+                theme_title=theme_title,
+                theme_summary=theme_summary,
+                api_key=api_key,
+                model=model,
+                claude_api_key=claude_api_key,
+                claude_model=claude_model,
+                provider=provider,
+                openrouter_api_key=openrouter_api_key,
+                openrouter_model=openrouter_model,
+                openrouter_base_url=openrouter_base_url,
+                max_hooks=max_n,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("combined-topic hook craft failed: %s", exc)
 
-        topic_hooks = topic_hooks[:want]
-        for h in topic_hooks:
-            used_angles.append(str(h.get("text") or ""))
-            all_hooks.append(h)
-        node = dict(topic)
-        node["hooks"] = list(topic_hooks)
-        enriched_topics.append(node)
+    if not all_hooks and candidates:
+        combined_label = " + ".join(
+            str(t.get("text") or "").strip() for t in topics if str(t.get("text") or "").strip()
+        )[:180]
+        all_hooks = heuristic_craft_hooks(
+            candidates,
+            theme_title=f"{theme_title}: {combined_label}".strip(": "),
+        )[:max_n]
+        for h in all_hooks:
+            h["combined_topics"] = True
 
     all_hooks = _dedupe_hook_list(all_hooks)
     all_hooks, _guard = enforce_non_verbatim_hooks(
@@ -4008,29 +4136,17 @@ async def craft_hooks_for_selected_topics_async(
         theme_title=theme_title,
     )
     all_hooks = all_hooks[:max_n]
-    # If still under minimum, pad with heuristic leftovers from the first topic window.
-    if len(all_hooks) < min_n and topics:
-        topic = topics[0]
-        topic_window = _cues_for_topic_ranges(
-            pool,
-            topic,
-            fallback_start=float(topic.get("start_sec") or 0),
-            fallback_end=topic.get("end_sec"),
-        ) or _cues_in_range(pool, float(topic.get("start_sec") or 0), topic.get("end_sec"))
-        extras = heuristic_craft_hooks(
-            _pick_contextual_hooks(_stitch_complete_utterances(topic_window))
-            or _emergency_hook_candidates(topic_window, limit=4),
-            theme_title=theme_title,
-        )
+
+    if len(all_hooks) < min_n and candidates:
+        extras = heuristic_craft_hooks(candidates, theme_title=theme_title)
         have = {" ".join(str(h.get("text") or "").lower().split()) for h in all_hooks}
         for h in extras:
             key = " ".join(str(h.get("text") or "").lower().split())
             if not key or key in have:
                 continue
-            h = dict(h)
-            h["topic_id"] = topic.get("id")
-            h["topic_text"] = topic.get("text")
-            all_hooks.append(h)
+            row = dict(h)
+            row["combined_topics"] = True
+            all_hooks.append(row)
             have.add(key)
             if len(all_hooks) >= min_n:
                 break
@@ -4039,17 +4155,18 @@ async def craft_hooks_for_selected_topics_async(
     all_hooks.sort(key=lambda r: float(r.get("start_sec") or 0))
     for i, h in enumerate(all_hooks):
         h["id"] = f"hook_{i + 1}"
+        h["combined_topics"] = True
+        # Clear per-topic nesting so the UI shows one shared list.
+        h.pop("topic_id", None)
+        h["topic_text"] = " + ".join(
+            str(t.get("text") or "").strip() for t in topics if str(t.get("text") or "").strip()
+        )[:240]
 
-    # Attach hooks onto a shallow topic tree for the studio UI.
-    by_topic: dict[str, list[dict[str, Any]]] = {}
-    for h in all_hooks:
-        key = str(h.get("topic_id") or h.get("topic_text") or "")
-        by_topic.setdefault(key, []).append(h)
+    # Keep selected topics in the tree WITHOUT nested hooks — hooks live flat.
     topic_tree: list[dict[str, Any]] = []
-    for topic in enriched_topics or topics:
+    for topic in topics:
         node = dict(topic)
-        key = str(node.get("id") or node.get("text") or "")
-        node["hooks"] = list(by_topic.get(key) or by_topic.get(str(node.get("text") or "")) or [])
+        node["hooks"] = []
         node.setdefault("subtopics", [])
         topic_tree.append(node)
 
@@ -4057,10 +4174,11 @@ async def craft_hooks_for_selected_topics_async(
         "hooks": all_hooks,
         "topics": _flatten_topic_tree(topic_tree)[:_MAX_TOPICS],
         "topic_tree": _reindex_topic_tree(topic_tree)[:_MAX_TOPICS],
-        "source": "selected_topics",
+        "source": "selected_topics_combined",
         "hook_count": len(all_hooks),
         "min_hooks": min_n,
         "max_hooks": max_n,
+        "combined_topic_count": len(topics),
     }
 
 

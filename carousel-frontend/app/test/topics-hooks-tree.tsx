@@ -32,21 +32,16 @@ function fmtTs(sec: number): string {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
-/** Topics → hooks only. Subtopic hooks fold onto the parent; no subtopic rows. */
+/** Topics only in the tree — crafted hooks live in a flat combined list. */
 export function flattenTopicsForTest(
   extract: Pick<CarouselPipelineExtractResponse, "topic_tree" | "topics" | "hooks">
 ): CarouselTopicTreeNode[] {
-  return topicTreeFromExtract(extract).map((topic) => {
-    const subHooks = (topic.subtopics ?? []).flatMap((s) => s.hooks ?? []);
-    const seen = new Set<string>();
-    const hooks = [...(topic.hooks ?? []), ...subHooks].filter((h) => {
-      const key = (h.text || "").trim().toLowerCase();
-      if (!key || seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-    return { ...topic, hooks, subtopics: [] };
-  });
+  return topicTreeFromExtract(extract).map((topic) => ({
+    ...topic,
+    // Nested per-topic hooks are retired: studio crafts 2–4 combined hooks.
+    hooks: [],
+    subtopics: [],
+  }));
 }
 
 export function TopicsHooksTree({
@@ -86,7 +81,6 @@ export function TopicsHooksTree({
 }) {
   const tree = useMemo(() => flattenTopicsForTest(extract), [extract]);
 
-  const [openTopics, setOpenTopics] = useState<Record<string, boolean>>({});
   const [saves, setSaves] = useState<CarouselGenerationSaveListItem[]>([]);
   const [loadingSaves, setLoadingSaves] = useState(false);
   const [loadingShuffle, setLoadingShuffle] = useState(false);
@@ -99,15 +93,6 @@ export function TopicsHooksTree({
     start_sec: number;
     end_sec?: number | null;
   } | null>(null);
-
-  useEffect(() => {
-    const init: Record<string, boolean> = {};
-    tree.forEach((t, i) => {
-      init[t.id] = i < 3;
-    });
-    const task = window.setTimeout(() => setOpenTopics(init), 0);
-    return () => window.clearTimeout(task);
-  }, [tree]);
 
   useEffect(() => {
     let cancelled = false;
@@ -247,7 +232,6 @@ export function TopicsHooksTree({
         )}
         {tree.map((topic, ti) => {
           const topicOn = selectedTopics.includes(topic.text);
-          const open = openTopics[topic.id] ?? false;
           const topicKey = topic.id || topic.text;
           const topicFbKey = `hook:${topicKey}`;
           return (
@@ -257,14 +241,6 @@ export function TopicsHooksTree({
               style={{ animationDelay: `${ti * 40}ms` }}
             >
               <div className="topics-hooks-topic-row">
-                <button
-                  type="button"
-                  className="topics-hooks-chevron"
-                  aria-label={open ? "Collapse" : "Expand"}
-                  onClick={() => setOpenTopics((m) => ({ ...m, [topic.id]: !open }))}
-                >
-                  <ChevronDown size={16} className={cn("transition", open ? "" : "-rotate-90")} />
-                </button>
                 <button
                   type="button"
                   role="checkbox"
@@ -316,50 +292,29 @@ export function TopicsHooksTree({
                 onAdded={onReferenceAdded}
                 onRemoved={onReferenceRemoved}
               />
-
-              {open && (
-                <div className="topics-hooks-children">
-                  <HookLeaves
-                    driveFileId={driveFileId}
-                    hooks={topic.hooks ?? []}
-                    selectedHooks={selectedHooks}
-                    onToggleHook={onToggleHook}
-                    onPreview={onPreview}
-                    onPickFrame={(h) =>
-                      setFramePick({
-                        hookText: h.text,
-                        start_sec: h.start_sec,
-                        end_sec: h.end_sec,
-                      })
-                    }
-                    feedbackByKey={feedbackByKey}
-                    onFeedbackSaved={onFeedbackSaved}
-                    referencesByKey={referencesByKey}
-                    onReferenceAdded={onReferenceAdded}
-                    onReferenceRemoved={onReferenceRemoved}
-                  />
-                </div>
-              )}
             </li>
           );
         })}
       </ul>
 
-      {(() => {
-        const attached = new Set<string>();
-        tree.forEach((t) => {
-          (t.hooks ?? []).forEach((h) => attached.add(h.id));
-        });
-        const orphans = (extract.hooks ?? []).filter((h) => !attached.has(h.id));
-        if (!orphans.length) return null;
-        return (
-          <div className="mt-4">
-            <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
-              Other hooks
-            </p>
+      {(extract.hooks ?? []).length > 0 ? (
+        <div className="mt-5" data-testid="topics-hooks-combined">
+          <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+            Hooks for your selection
+          </p>
+          <p className="mt-1 text-xs text-slate-500">
+            {selectedTopics.length
+              ? `${(extract.hooks ?? []).length} hook${
+                  (extract.hooks ?? []).length === 1 ? "" : "s"
+                } from ${selectedTopics.length} topic${
+                  selectedTopics.length === 1 ? "" : "s"
+                } combined — select one or more`
+              : "Select one or more hooks"}
+          </p>
+          <div className="mt-2">
             <HookLeaves
               driveFileId={driveFileId}
-              hooks={orphans}
+              hooks={extract.hooks ?? []}
               selectedHooks={selectedHooks}
               onToggleHook={onToggleHook}
               onPreview={onPreview}
@@ -377,8 +332,8 @@ export function TopicsHooksTree({
               onReferenceRemoved={onReferenceRemoved}
             />
           </div>
-        );
-      })()}
+        </div>
+      ) : null}
 
       {framePick && (
         <TranscriptFramePicker

@@ -491,9 +491,12 @@ export function TopicsHooksTree({
         const orphans = (extract.hooks ?? []).filter((h) => !attached.has(h.id));
         if (!orphans.length) return null;
         return (
-          <div className="mt-4">
+          <div className="mt-4" data-testid="topics-hooks-combined">
             <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
-              Other hooks
+              Hooks for your selection
+            </p>
+            <p className="mt-1 text-xs text-slate-500">
+              Select one or more hooks from this combined set
             </p>
             <HookLeaves
               driveFileId={driveFileId}
