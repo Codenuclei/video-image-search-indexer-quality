@@ -170,18 +170,64 @@ function preserveTestCarouselCopy(
 function deferStudioImageSelection(carousels: TestCarousel[]): TestCarousel[] {
   return carousels.map((carousel) => ({
     ...carousel,
-    slides: (carousel.slides || []).map((slide) => ({
-      ...slide,
-      preview_url: null,
-      frame_ts: null,
-      frame_source: slide.frame_candidate_items?.length ? "candidates" : slide.frame_source,
-      panels: null,
-      frame_candidate_items: (slide.frame_candidate_items || []).map((item) => ({
+    slides: (carousel.slides || []).map((slide) => {
+      const existing = Array.isArray(slide.frame_candidate_items)
+        ? slide.frame_candidate_items
+        : [];
+      // Identity catalog can return text_only with empty candidates while layout
+      // panels still carry quote-window frames — seed the picker from those.
+      const panelSeed = existing.length
+        ? []
+        : uniquePanelCandidateSeed(slide);
+      const candidates = (existing.length ? existing : panelSeed).map((item, order) => ({
         ...item,
+        order: item.order ?? order,
         selected: false,
-      })),
-    })),
+        recommended: Boolean(item.recommended),
+      }));
+      return {
+        ...slide,
+        preview_url: null,
+        frame_ts: null,
+        frame_source: candidates.length ? "candidates" : slide.frame_source,
+        panels: null,
+        frame_candidates: candidates.map((item) => Number(item.frame_ts)),
+        frame_candidate_items: candidates,
+      };
+    }),
   }));
+}
+
+function uniquePanelCandidateSeed(slide: TestSlide): NonNullable<TestSlide["frame_candidate_items"]> {
+  const rawPanels = [
+    ...((slide.panels as Array<Record<string, unknown>> | null | undefined) || []),
+    ...(((slide as { _split_panels?: Array<Record<string, unknown>> | null })._split_panels) ||
+      []),
+  ];
+  const seen = new Set<string>();
+  const out: NonNullable<TestSlide["frame_candidate_items"]> = [];
+  for (const panel of rawPanels) {
+    const ts = Number(panel?.frame_ts);
+    const preview =
+      typeof panel?.preview_url === "string" ? panel.preview_url.trim() : "";
+    if (!Number.isFinite(ts) || !preview) continue;
+    const key = ts.toFixed(3);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      frame_ts: ts,
+      preview_url: preview,
+      label: "quote window",
+      order: out.length,
+      selected: false,
+      recommended: out.length === 0,
+      recommendation_source: out.length === 0 ? "quote_window" : null,
+      category: "same_person",
+      front_face_score:
+        typeof panel.front_face_score === "number" ? panel.front_face_score : 0,
+    });
+  }
+  return out;
 }
 
 function PhaseRail({

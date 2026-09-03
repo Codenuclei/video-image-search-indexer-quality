@@ -5493,6 +5493,98 @@ def _snap_slides_to_cached_preview(
                 slide["frame_candidates"] = []
                 slide["frame_ts"] = None
 
+        # Identity text_only + snap wipe can leave the picker empty while layout
+        # panels still reference quote-window timestamps. Seed candidates from
+        # those panels so Step 5 still offers Choose image options.
+        _seed_candidates_from_layout_panels(
+            slide,
+            fid=fid,
+            settings=settings,
+            cached_frame_index=cached_frame_index,
+            tolerance=tolerance,
+        )
+
+
+def _seed_candidates_from_layout_panels(
+    slide: dict[str, Any],
+    *,
+    fid: str,
+    settings: Any,
+    cached_frame_index: dict[str, Any] | None,
+    tolerance: float,
+) -> None:
+    """Backfill frame_candidate_items from panels when identity list is empty."""
+    from app.search.carousel_frame_select import (
+        carousel_frame_preview_url,
+        nearest_cached_frame,
+    )
+
+    existing = slide.get("frame_candidate_items")
+    if isinstance(existing, list) and existing:
+        return
+    panels = list(slide.get("panels") or []) + list(slide.get("_split_panels") or [])
+    if not panels:
+        return
+    seen: set[float] = set()
+    seeded: list[dict[str, Any]] = []
+    for panel in panels:
+        if not isinstance(panel, dict) or panel.get("frame_ts") is None:
+            continue
+        try:
+            target = float(panel["frame_ts"])
+        except (TypeError, ValueError):
+            continue
+        snapped = nearest_cached_frame(
+            str(settings.thumbnail_dir),
+            fid,
+            target,
+            nearest_tolerance_sec=tolerance,
+            cached_frames=(cached_frame_index or {}).get(fid),
+        )
+        preview = None
+        frame_ts = target
+        if snapped is not None:
+            frame_ts, _path = snapped
+            preview = carousel_frame_preview_url(fid, frame_ts)
+        else:
+            raw_preview = panel.get("preview_url")
+            if isinstance(raw_preview, str) and raw_preview.strip():
+                # Keep panel URL as a last-resort picker option (may 404 until extract).
+                preview = raw_preview.strip()
+        if not preview:
+            continue
+        key = round(frame_ts, 3)
+        if key in seen:
+            continue
+        seen.add(key)
+        seeded.append(
+            {
+                "frame_ts": frame_ts,
+                "preview_url": preview,
+                "label": "quote window",
+                "order": len(seeded),
+                "quality_score": 0.0,
+                "front_face_score": float(panel.get("front_face_score") or 0.0),
+                "selected": False,
+                "recommended": len(seeded) == 0,
+                "recommendation_source": "quote_window" if len(seeded) == 0 else None,
+                "category": "same_person",
+                "identity_id": None,
+                "identity_label": None,
+                "hdr": False,
+            }
+        )
+        if len(seeded) >= 3:
+            break
+    if not seeded:
+        return
+    slide["frame_candidate_items"] = seeded
+    slide["frame_candidates"] = [float(item["frame_ts"]) for item in seeded]
+    slide["frame_source"] = "quote_window"
+    # Studio stays text-first: do not auto-select.
+    slide["preview_url"] = None
+    slide["frame_ts"] = None
+    slide.pop("frame_warning", None)
 
 async def _polish_outline_frames(
     slides: list[dict[str, Any]],
