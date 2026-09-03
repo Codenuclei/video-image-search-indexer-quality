@@ -38,6 +38,7 @@ import {
   type CarouselRunConfig,
   type TestSlide,
   type TestSlidePanel,
+  type TestFrameCandidateItem,
 } from "@/lib/test-api";
 import { cn } from "@/lib/utils";
 import { LoadingLabel } from "@/components/spinner";
@@ -96,6 +97,8 @@ export function TestIgPost({
   const n = slides.length;
   const [active, setActive] = useState(0);
   const [pickingFrame, setPickingFrame] = useState(false);
+  const [pickingCandidates, setPickingCandidates] = useState(false);
+  const [brokenPreviewKeys, setBrokenPreviewKeys] = useState<Record<string, true>>({});
   const [changingImage, setChangingImage] = useState(false);
   const [editingCopy, setEditingCopy] = useState(false);
   const [copyDraft, setCopyDraft] = useState("");
@@ -158,8 +161,16 @@ export function TestIgPost({
       frame_source: "manual",
       frame_candidate_items: items.length ? items : current.frame_candidate_items,
     };
+    const key = `${carousel.id}:${active}:${previewUrl}`;
+    setBrokenPreviewKeys((prev) => {
+      if (!prev[key]) return prev;
+      const nextMap = { ...prev };
+      delete nextMap[key];
+      return nextMap;
+    });
     onSlideUpdated?.(active, next);
     setChangingImage(false);
+    setPickingCandidates(false);
     setImageUrlDraft("");
     setImageNote("Image updated");
     setTimeout(() => setImageNote(null), 1200);
@@ -173,6 +184,13 @@ export function TestIgPost({
       item.preview_url ||
       `/media/video/${encodeURIComponent(driveFileId)}/frame?ts=${Number(item.frame_ts).toFixed(3)}&cache_only=1&ar=4x5`;
     applySlideImage(url, item.frame_ts);
+  }
+
+  function recommendationBadge(item: TestFrameCandidateItem): string | null {
+    if (!item.recommended) return null;
+    const source = String(item.recommendation_source || "").toLowerCase();
+    if (source === "ai" || source === "gemini") return "AI recommended";
+    return "Recommended";
   }
 
   async function uploadSlideImage(file: File | null | undefined) {
@@ -268,7 +286,7 @@ export function TestIgPost({
   }
 
   const effectiveLayout = simpleMode ? "single_1" : layoutMode;
-  const candidateItems = useMemo(() => {
+  const candidateItems = useMemo((): TestFrameCandidateItem[] => {
     const items = current?.frame_candidate_items;
     if (Array.isArray(items) && items.length) return items;
     const stamps = current?.frame_candidates;
@@ -279,6 +297,8 @@ export function TestIgPost({
       label: "candidate",
       order,
       selected: Math.abs(Number(ts) - Number(current?.frame_ts ?? -1)) < 0.011,
+      recommended: false,
+      recommendation_source: null,
     }));
   }, [current, driveFileId]);
 
@@ -541,7 +561,9 @@ export function TestIgPost({
           aria-label="Carousel slides"
         >
           {slides.map((slide, i) => {
-            const showReal = Boolean(slide.preview_url);
+            const previewKey = `${carousel.id}:${i}:${slide.preview_url || ""}`;
+            const showReal =
+              Boolean(slide.preview_url) && !brokenPreviewKeys[previewKey];
             const rawPanels =
               effectiveLayout === "split_2" && (slide.panels?.length ?? 0) >= 2
                 ? slide.panels!.slice(0, 2)
@@ -602,11 +624,21 @@ export function TestIgPost({
                         alt=""
                         draggable={false}
                         style={focalPointStyle(slide)}
+                        onError={() =>
+                          setBrokenPreviewKeys((prev) => ({
+                            ...prev,
+                            [previewKey]: true,
+                          }))
+                        }
                       />
                     ) : (
                       <div className="ig-slide-placeholder" aria-hidden>
                         <span className="ig-slide-placeholder-label">
-                          {imagesReady ? "No frame" : "Background pending"}
+                          {simpleMode
+                            ? "Text only"
+                            : imagesReady
+                              ? "No frame"
+                              : "Background pending"}
                         </span>
                       </div>
                     )}
@@ -668,42 +700,110 @@ export function TestIgPost({
         </div>
       )}
 
-      {simpleMode && candidateItems.length > 0 ? (
-        <div className="test-frame-candidates mt-4" data-testid="test-frame-candidates">
-          <p className="mb-2 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
-            Choose a frame for this slide
-          </p>
-          <ul className="test-frame-candidate-grid">
-            {candidateItems.map((item, i) => {
-              const selected =
-                item.selected ||
-                Math.abs(Number(item.frame_ts) - Number(current.frame_ts ?? -1)) < 0.011;
-              const src = testAssetUrl(item.preview_url || "");
-              return (
-                <li key={`cand-${item.frame_ts}-${i}`}>
-                  <button
-                    type="button"
-                    className={cn(
-                      "test-frame-candidate",
-                      selected && "is-selected"
-                    )}
-                    aria-pressed={selected}
-                    onClick={() => pickCandidate(item)}
-                  >
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={src} alt="" />
-                    <span className="test-frame-candidate-meta">
-                      {item.label || `Option ${i + 1}`}
-                    </span>
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
+      {simpleMode ? (
+        <div className="test-choose-image mt-4" data-testid="test-choose-image">
+          <button
+            type="button"
+            className="test-choose-image-btn"
+            disabled={!candidateItems.length}
+            onClick={() => setPickingCandidates(true)}
+            data-testid="test-choose-image-open"
+          >
+            {current.preview_url &&
+            !brokenPreviewKeys[`${carousel.id}:${active}:${current.preview_url}`] ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                className="test-choose-image-thumb"
+                src={slideUrl(current.preview_url)}
+                alt=""
+                loading="lazy"
+              />
+            ) : (
+              <span className="test-choose-image-icon" aria-hidden>
+                <ImageIcon size={16} />
+              </span>
+            )}
+            <span className="test-choose-image-copy">
+              <span className="test-choose-image-title">
+                {current.preview_url ? "Replace image" : "Choose image"}
+              </span>
+              <span className="test-choose-image-sub">
+                {candidateItems.length
+                  ? `${candidateItems.length} verified frame${candidateItems.length === 1 ? "" : "s"}`
+                  : "No verified frames for this slide"}
+              </span>
+            </span>
+          </button>
           {imageNote ? (
             <p className="mt-2 text-center text-[11px] text-muted-foreground">{imageNote}</p>
           ) : null}
         </div>
+      ) : null}
+
+      {simpleMode && pickingCandidates ? (
+        <ModalOverlay open={pickingCandidates} onClose={() => setPickingCandidates(false)}>
+          <div
+            className="test-frame-picker-modal studio-panel p-4 sm:p-5"
+            data-testid="test-frame-candidates-modal"
+          >
+            <div className="mb-3 flex items-start justify-between gap-3">
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                  Slide {active + 1}
+                </p>
+                <h3 className="text-sm font-semibold text-slate-900">Choose a frame</h3>
+              </div>
+              <button
+                type="button"
+                className="studio-btn studio-btn-ghost studio-btn-sm"
+                onClick={() => setPickingCandidates(false)}
+              >
+                Close
+              </button>
+            </div>
+            {candidateItems.length ? (
+              <ul className="test-frame-candidate-grid" data-testid="test-frame-candidates">
+                {candidateItems.map((item, i) => {
+                  const selected =
+                    item.selected ||
+                    (current.preview_url != null &&
+                      Math.abs(Number(item.frame_ts) - Number(current.frame_ts ?? -1)) <
+                        0.011);
+                  const badge = recommendationBadge(item);
+                  const src = testAssetUrl(item.preview_url || "");
+                  return (
+                    <li key={`cand-${item.frame_ts}-${i}`}>
+                      <button
+                        type="button"
+                        className={cn(
+                          "test-frame-candidate",
+                          selected && "is-selected",
+                          item.recommended && "is-recommended"
+                        )}
+                        aria-pressed={selected}
+                        onClick={() => pickCandidate(item)}
+                      >
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={src} alt="" loading="lazy" />
+                        {badge ? (
+                          <span className="test-frame-candidate-badge">{badge}</span>
+                        ) : null}
+                        <span className="test-frame-candidate-meta">
+                          {item.label || `Option ${i + 1}`}
+                        </span>
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                No verified cache-backed frames for this slide. Keep it text-only or refresh
+                candidates.
+              </p>
+            )}
+          </div>
+        </ModalOverlay>
       ) : null}
 
       {!simpleMode && current && driveFileId ? (

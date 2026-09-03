@@ -152,6 +152,8 @@ export type TestFrameCandidateItem = {
   quality_score?: number | null;
   front_face_score?: number | null;
   selected?: boolean | null;
+  recommended?: boolean | null;
+  recommendation_source?: string | null;
 };
 
 export type TestSlide = {

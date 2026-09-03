@@ -197,6 +197,8 @@ export type CarouselOutlineSlide = {
     quality_score?: number | null;
     front_face_score?: number | null;
     selected?: boolean | null;
+    recommended?: boolean | null;
+    recommendation_source?: string | null;
   }> | null;
   frame_quality?: Record<string, unknown> | null;
   frame_diversity?: {

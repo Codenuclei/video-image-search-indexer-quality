@@ -367,19 +367,41 @@ def test_select_images_keeps_only_nearby_faces_and_strips_them() -> None:
     assert cleaned["transcript_text"] == "Build the system"
 
 
-def test_snap_slides_keeps_existing_preview_url() -> None:
+def test_snap_slides_retargets_to_cached_stem(tmp_path) -> None:
+    fid = "vid"
+    frames = tmp_path / "video" / fid
+    frames.mkdir(parents=True)
+    (frames / "2.000.jpg").write_bytes(b"jpeg")
     slides = [
         {
-            "drive_file_id": "vid",
+            "drive_file_id": fid,
             "timestamp_sec": 2.0,
             "frame_ts": 2.1,
             "preview_url": "/media/video/vid/frame?ts=2.100&cache_only=1",
         }
     ]
-    carousel_script._snap_slides_to_cached_preview(slides, type("S", (), {"thumbnail_dir": "/tmp"})())
-    assert "cache_only=1" in slides[0]["preview_url"]
-    assert "ar=4x5" in slides[0]["preview_url"]
-    assert slides[0]["frame_ts"] == 2.1
+    carousel_script._snap_slides_to_cached_preview(
+        slides, type("S", (), {"thumbnail_dir": str(tmp_path)})()
+    )
+    assert slides[0]["frame_ts"] == 2.0
+    assert slides[0]["preview_url"] == "/media/video/vid/frame?ts=2.000&cache_only=1&ar=4x5"
+
+
+def test_snap_slides_clears_preview_when_cache_missing(tmp_path) -> None:
+    slides = [
+        {
+            "drive_file_id": "missing-vid",
+            "timestamp_sec": 2.0,
+            "frame_ts": 2.1,
+            "preview_url": "/media/video/missing-vid/frame?ts=2.100&cache_only=1",
+        }
+    ]
+    carousel_script._snap_slides_to_cached_preview(
+        slides, type("S", (), {"thumbnail_dir": str(tmp_path)})()
+    )
+    assert slides[0]["preview_url"] is None
+    assert slides[0]["frame_ts"] is None
+    assert slides[0]["frame_candidate_items"] == []
 
 
 @pytest.mark.asyncio
@@ -410,12 +432,15 @@ async def test_select_images_timeout_is_504_not_500(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_select_images_uses_studio_llm_pack(monkeypatch) -> None:
+async def test_select_images_uses_studio_llm_pack(tmp_path, monkeypatch) -> None:
     from types import SimpleNamespace
 
     from app.routers.carousel_script import CarouselSelectImagesBody
 
     seen: dict[str, object] = {}
+    frames = tmp_path / "video" / "video-1"
+    frames.mkdir(parents=True)
+    (frames / "1.500.jpg").write_bytes(b"jpeg")
 
     async def fake_refs(*_a, **_k):
         return []
@@ -427,7 +452,16 @@ async def test_select_images_uses_studio_llm_pack(monkeypatch) -> None:
             slide["hook_line"] = "RAW SNAPPED TRANSCRIPT DUMP"
             slide["transcript_text"] = "RAW SNAPPED TRANSCRIPT DUMP"
             slide["frame_ts"] = 1.5
-            slide["preview_url"] = "/media/video/vid/frame?ts=1.500&cache_only=1"
+            slide["preview_url"] = "/media/video/video-1/frame?ts=1.500&cache_only=1"
+            slide["frame_candidate_items"] = [
+                {
+                    "frame_ts": 1.5,
+                    "preview_url": "/media/video/video-1/frame?ts=1.500&cache_only=1&ar=4x5",
+                    "recommended": True,
+                    "selected": False,
+                    "recommendation_source": "local",
+                }
+            ]
         return slides
 
     monkeypatch.setattr(
@@ -455,7 +489,7 @@ async def test_select_images_uses_studio_llm_pack(monkeypatch) -> None:
     monkeypatch.setattr(
         carousel_script,
         "get_settings",
-        lambda: SimpleNamespace(thumbnail_dir="/tmp"),
+        lambda: SimpleNamespace(thumbnail_dir=str(tmp_path)),
     )
     monkeypatch.setattr(carousel_script, "carousel_llm_cache_id", lambda *_a, **_k: "local")
 
@@ -485,6 +519,7 @@ async def test_select_images_uses_studio_llm_pack(monkeypatch) -> None:
     assert seen.get("llm_pack", {}).get("provider") == "openrouter"
     assert out["images_ready"] is True
     assert out["slides"][0]["preview_url"]
+    assert "ts=1.500" in out["slides"][0]["preview_url"]
     assert out["slides"][0]["transcript_text"] == crafted
     assert out["slides"][0]["hook_line"] == crafted
     assert out["transcript_guard"]["preserved_copy"] is True

@@ -166,6 +166,24 @@ function preserveTestCarouselCopy(
   });
 }
 
+/** Step 5 starts text-only; keep verified candidates but clear auto-applied frames. */
+function deferStudioImageSelection(carousels: TestCarousel[]): TestCarousel[] {
+  return carousels.map((carousel) => ({
+    ...carousel,
+    slides: (carousel.slides || []).map((slide) => ({
+      ...slide,
+      preview_url: null,
+      frame_ts: null,
+      frame_source: slide.frame_candidate_items?.length ? "candidates" : slide.frame_source,
+      panels: null,
+      frame_candidate_items: (slide.frame_candidate_items || []).map((item) => ({
+        ...item,
+        selected: false,
+      })),
+    })),
+  }));
+}
+
 function PhaseRail({
   phase,
   canVisit,
@@ -1060,22 +1078,26 @@ function TestStudioInner() {
         force: Boolean(opts?.force),
         run_config: cfg,
       });
-      const withImages = preserveTestCarouselCopy(
-        carousels,
-        (selectedImgs.carousels ?? carousels).slice(0, 1).map((c, idx) => ({
-          ...c,
-          id: c.id || `hook_${idx + 1}`,
-          images_ready: true,
-        }))
+      const withImages = deferStudioImageSelection(
+        preserveTestCarouselCopy(
+          carousels,
+          (selectedImgs.carousels ?? carousels).slice(0, 1).map((c, idx) => ({
+            ...c,
+            id: c.id || `hook_${idx + 1}`,
+            images_ready: true,
+          }))
+        )
       );
       applyGenerateResult(
         withImages,
         selectedImgs.layouts
           ? {
               single_1: {
-                carousels: preserveTestCarouselCopy(
-                  carousels,
-                  (selectedImgs.layouts.single_1?.carousels ?? withImages).slice(0, 1)
+                carousels: deferStudioImageSelection(
+                  preserveTestCarouselCopy(
+                    carousels,
+                    (selectedImgs.layouts.single_1?.carousels ?? withImages).slice(0, 1)
+                  )
                 ),
               },
               split_2: undefined,
@@ -1764,7 +1786,8 @@ function TestStudioInner() {
             <StageBadge state={imageStage} />
           </h2>
           <p className="mt-2 text-sm text-slate-500">
-            One carousel at a time. Pick the best 4:5 frame for each slide, then save.
+            Slides start text-only. Open Choose image to pick from verified cache-backed
+            frames — the AI badge is guidance only.
           </p>
 
           <div className="test-ig-stack mt-6" data-testid="carousel-image-preview">

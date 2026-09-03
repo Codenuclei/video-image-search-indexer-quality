@@ -5318,10 +5318,7 @@ def _snap_slides_to_cached_preview(
             ts = _frame_ts(float(slide.get("timestamp_sec") or 0), slide.get("end_timestamp_sec"))
             slide["frame_ts"] = ts
         target = float(ts)
-        if slide.get("preview_url") and slide.get("frame_ts") is not None:
-            slide["preview_url"] = carousel_frame_preview_url(fid, float(slide["frame_ts"]))
-            used.add(round(float(slide["frame_ts"]), 3))
-            continue
+        # Always retarget to a real cached stem before emitting cache_only URLs.
         snapped = nearest_cached_frame(
             str(settings.thumbnail_dir),
             fid,
@@ -5344,11 +5341,44 @@ def _snap_slides_to_cached_preview(
             slide["frame_ts"] = snap_ts
             slide["preview_url"] = carousel_frame_preview_url(fid, snap_ts)
             used.add(snap_ts)
+            # Keep candidate items aligned with on-disk stems when present.
+            items = slide.get("frame_candidate_items")
+            if isinstance(items, list):
+                verified_items: list[dict[str, Any]] = []
+                for item in items:
+                    if not isinstance(item, dict) or item.get("frame_ts") is None:
+                        continue
+                    item_snap = nearest_cached_frame(
+                        str(settings.thumbnail_dir),
+                        fid,
+                        float(item["frame_ts"]),
+                        nearest_tolerance_sec=tolerance,
+                        cached_frames=(cached_frame_index or {}).get(fid),
+                    )
+                    if item_snap is None:
+                        continue
+                    item_ts = item_snap[0]
+                    next_item = dict(item)
+                    next_item["frame_ts"] = item_ts
+                    next_item["preview_url"] = carousel_frame_preview_url(fid, item_ts)
+                    verified_items.append(next_item)
+                slide["frame_candidate_items"] = verified_items[:3]
+                slide["frame_candidates"] = [
+                    float(item["frame_ts"]) for item in verified_items[:3]
+                ]
         else:
-            slide.setdefault(
-                "preview_url",
-                carousel_frame_preview_url(fid, target),
-            )
+            # Never invent a cache_only URL for a timestamp with no JPEG.
+            slide["preview_url"] = None
+            items = slide.get("frame_candidate_items")
+            if not isinstance(items, list) or not items:
+                slide["frame_ts"] = None
+                slide["frame_candidates"] = []
+                slide["frame_candidate_items"] = []
+            else:
+                # Drop unverifiable candidates; leave slide without a selection.
+                slide["frame_candidate_items"] = []
+                slide["frame_candidates"] = []
+                slide["frame_ts"] = None
 
 
 async def _polish_outline_frames(

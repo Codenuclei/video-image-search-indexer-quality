@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import bisect
+import hashlib
 import json
 import logging
 import re
@@ -31,12 +32,18 @@ _NEAREST_TOLERANCE_SEC = 1.25
 HARVEST_NEAREST_TOLERANCE_SEC = 2.5
 _HARVEST_NEAREST_TOLERANCE_SEC = HARVEST_NEAREST_TOLERANCE_SEC
 _HARD_CAP_CANDIDATES = 16
+# Studio picker shows a small verified set; never emit more than this.
+_MAX_EMITTED_CANDIDATES = 3
 # Cold-path budget: never ffmpeg more than this many misses per slide.
 _MAX_EXTRACTS_PER_SLIDE = 2
 # Skip Gemini when local face+quality already has a clear winner.
 _LOCAL_RANK_FACE_THRESHOLD = 0.35
 # Ambiguous slides are ranked in batches of 4–6; cap grows with deck size.
 _DEFAULT_MAX_GEMINI_RANK_BATCHES = 8
+# Persist ranked candidates so re-opening the picker for identical inputs is free.
+_CANDIDATE_RESULT_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_CANDIDATE_RESULT_CACHE_TTL_SEC = 900.0
+_CANDIDATE_RESULT_CACHE_MAX = 256
 
 
 def gemini_rank_batch_limit(
@@ -1227,17 +1234,140 @@ def frame_candidate_item(
     candidate: FrameCandidate,
     order: int,
     selected: bool = False,
+    recommended: bool = False,
+    recommendation_source: str | None = None,
 ) -> dict[str, Any]:
-    """JSON-safe candidate a human can pick without re-harvesting."""
-    return {
+    """JSON-safe candidate a human can pick without re-harvesting.
+
+    ``preview_url`` is only emitted when the timestamp is known; callers must
+    canonicalize to an on-disk JPEG before building items so ``cache_only``
+    GETs do not 404.
+    """
+    preview = carousel_frame_preview_url(drive_file_id, candidate.timestamp_sec)
+    item: dict[str, Any] = {
         "frame_ts": round(float(candidate.timestamp_sec), 3),
-        "preview_url": carousel_frame_preview_url(drive_file_id, candidate.timestamp_sec),
+        "preview_url": preview,
         "label": candidate.label,
         "order": int(order),
         "quality_score": round(float(candidate.quality_score or 0.0), 4),
         "front_face_score": round(float(candidate.front_face or 0.0), 6),
         "selected": bool(selected),
+        "recommended": bool(recommended),
     }
+    if recommendation_source:
+        item["recommendation_source"] = str(recommendation_source)
+    elif recommended:
+        item["recommendation_source"] = "local"
+    return item
+
+
+def resolve_cached_frame(
+    thumbnail_dir: str,
+    drive_file_id: str,
+    ts: float,
+    *,
+    nearest_tolerance_sec: float = _NEAREST_TOLERANCE_SEC,
+    cached_frames: CachedVideoFrameIndex | None = None,
+) -> tuple[float, bytes] | None:
+    """Return ``(canonical_ts, jpeg_bytes)`` for the on-disk frame that would load.
+
+    Always retargets to the actual cached stem so ``cache_only`` preview URLs
+    resolve. Returns ``None`` when no usable JPEG exists within tolerance.
+    """
+    nearest = nearest_cached_frame(
+        thumbnail_dir,
+        drive_file_id,
+        ts,
+        nearest_tolerance_sec=nearest_tolerance_sec,
+        cached_frames=cached_frames,
+    )
+    if nearest is None:
+        return None
+    canon_ts, path = nearest
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    if not data or len(data) > _MAX_JPEG_BYTES:
+        return None
+    return round(float(canon_ts), 3), data
+
+
+def _frame_pick_cache_key(
+    slide: dict[str, Any],
+    *,
+    model: str,
+    prefer_local: bool,
+    max_candidates: int,
+) -> str:
+    payload = {
+        "drive_file_id": str(slide.get("drive_file_id") or "").strip(),
+        "timestamp_sec": round(float(slide.get("timestamp_sec") or 0), 3),
+        "end_timestamp_sec": (
+            round(float(slide["end_timestamp_sec"]), 3)
+            if slide.get("end_timestamp_sec") is not None
+            else None
+        ),
+        "transcript": str(
+            slide.get("transcript_text")
+            or slide.get("hook_line")
+            or slide.get("snippet")
+            or ""
+        ).strip()[:240],
+        "model": str(model or ""),
+        "prefer_local": bool(prefer_local),
+        "max_candidates": int(max_candidates),
+        "frame_locked": bool(slide.get("frame_locked"))
+        or str(slide.get("frame_source") or "").strip().lower() == "manual",
+        "frame_ts": (
+            round(float(slide["frame_ts"]), 3) if slide.get("frame_ts") is not None else None
+        ),
+    }
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+
+def _candidate_cache_get(key: str) -> dict[str, Any] | None:
+    hit = _CANDIDATE_RESULT_CACHE.get(key)
+    if not hit:
+        return None
+    expires_at, payload = hit
+    if expires_at < time.monotonic():
+        _CANDIDATE_RESULT_CACHE.pop(key, None)
+        return None
+    return dict(payload)
+
+
+def _candidate_cache_put(key: str, payload: dict[str, Any]) -> None:
+    if len(_CANDIDATE_RESULT_CACHE) >= _CANDIDATE_RESULT_CACHE_MAX:
+        # Drop the oldest ~25% by expiry timestamp.
+        doomed = sorted(_CANDIDATE_RESULT_CACHE.items(), key=lambda kv: kv[1][0])[
+            : max(1, _CANDIDATE_RESULT_CACHE_MAX // 4)
+        ]
+        for doomed_key, _ in doomed:
+            _CANDIDATE_RESULT_CACHE.pop(doomed_key, None)
+    _CANDIDATE_RESULT_CACHE[key] = (
+        time.monotonic() + _CANDIDATE_RESULT_CACHE_TTL_SEC,
+        dict(payload),
+    )
+
+
+def _frame_fields_for_cache(slide: dict[str, Any]) -> dict[str, Any]:
+    keys = (
+        "frame_ts",
+        "preview_url",
+        "frame_source",
+        "instagram_ready",
+        "frame_warning",
+        "frame_candidates",
+        "frame_candidate_items",
+        "frame_quality",
+        "frame_diversity",
+        "focal_x",
+        "focal_y",
+        "front_face_score",
+    )
+    return {k: slide.get(k) for k in keys}
 
 
 def nearest_cached_frame(
@@ -1358,42 +1488,14 @@ def load_cached_frame_bytes(
     cached_frames: CachedVideoFrameIndex | None = None,
 ) -> bytes | None:
     """Load exact or nearest cached JPEG under the video frames dir."""
-    if cached_frames is not None:
-        nearest = nearest_cached_frame(
-            thumbnail_dir,
-            drive_file_id,
-            ts,
-            nearest_tolerance_sec=nearest_tolerance_sec,
-            cached_frames=cached_frames,
-        )
-        if nearest is None:
-            return None
-        data = nearest[1].read_bytes()
-        return data if data and len(data) <= _MAX_JPEG_BYTES else None
-
-    exact = cached_frame_path(thumbnail_dir, drive_file_id, ts)
-    if exact.is_file():
-        data = exact.read_bytes()
-        if data and len(data) <= _MAX_JPEG_BYTES:
-            return data
-    frames_dir = exact.parent
-    if not frames_dir.is_dir():
-        return None
-    best: Path | None = None
-    best_dist = float("inf")
-    for p in frames_dir.glob("*.jpg"):
-        try:
-            dist = abs(float(p.stem) - ts)
-        except ValueError:
-            continue
-        if dist < best_dist:
-            best_dist = dist
-            best = p
-    if best is not None and best_dist <= nearest_tolerance_sec:
-        data = best.read_bytes()
-        if data and len(data) <= _MAX_JPEG_BYTES:
-            return data
-    return None
+    resolved = resolve_cached_frame(
+        thumbnail_dir,
+        drive_file_id,
+        ts,
+        nearest_tolerance_sec=nearest_tolerance_sec,
+        cached_frames=cached_frames,
+    )
+    return None if resolved is None else resolved[1]
 
 
 def build_cache_first_candidates(
@@ -1715,6 +1817,29 @@ async def polish_slides_instagram_frames(
 
     # Keep harvest small: indexer frames + a few samples beat 10 ffmpeg extracts.
     candidate_cap = max(3, min(int(max_candidates), 4))
+    cache_keys = [
+        _frame_pick_cache_key(
+            slide,
+            model=model,
+            prefer_local=prefer_local,
+            max_candidates=candidate_cap,
+        )
+        for slide in slides
+    ]
+    cached_payloads = [_candidate_cache_get(key) for key in cache_keys]
+    if cached_payloads and all(payload is not None for payload in cached_payloads):
+        logger.info(
+            "frame-select trace=%s event=candidate_cache_hit slides=%d",
+            trace_id,
+            len(slides),
+        )
+        merged: list[dict[str, Any]] = []
+        for slide, payload in zip(slides, cached_payloads):
+            out = dict(slide)
+            out.update(payload or {})
+            merged.append(out)
+        return merged
+
     pipeline_started = time.monotonic()
     logger.info(
         "frame-select trace=%s event=start slides=%d candidate_cap=%d prefer_local=%s allow_extracts=%s timeout_sec=%.0f",
@@ -1823,18 +1948,40 @@ async def polish_slides_instagram_frames(
                 ]
 
         # Cache-first pass (wide nearest so 1s indexer samples hit).
-        images: list[bytes | None] = await asyncio.to_thread(
-            lambda: [
-                load_cached_frame_bytes(
-                    thumbnail_dir,
-                    fid,
-                    c.timestamp_sec,
-                    nearest_tolerance_sec=_HARVEST_NEAREST_TOLERANCE_SEC,
-                    cached_frames=video_frames,
+        # Canonicalize each hit to the actual on-disk timestamp — cache_only
+        # GETs refuse nearest-neighbour substitution at serve time.
+        resolved_rows: list[tuple[FrameCandidate, bytes] | None] = []
+        for c in raw:
+            resolved = resolve_cached_frame(
+                thumbnail_dir,
+                fid,
+                c.timestamp_sec,
+                nearest_tolerance_sec=_HARVEST_NEAREST_TOLERANCE_SEC,
+                cached_frames=video_frames,
+            )
+            if resolved is None:
+                resolved_rows.append(None)
+                continue
+            canon_ts, data = resolved
+            resolved_rows.append(
+                (
+                    FrameCandidate(
+                        index=c.index,
+                        timestamp_sec=canon_ts,
+                        label=c.label,
+                        preview_url=carousel_frame_preview_url(fid, canon_ts),
+                    ),
+                    data,
                 )
-                for c in raw
-            ]
-        )
+            )
+        images: list[bytes | None] = [
+            None if row is None else row[1] for row in resolved_rows
+        ]
+        # Retarget raw stamps to canonical cache paths before quality/ranking.
+        for i, row in enumerate(resolved_rows):
+            if row is None:
+                continue
+            raw[i] = row[0]
         cache_hits = sum(1 for data in images if data is not None)
         miss_order = sorted(
             (i for i, data in enumerate(images) if data is None),
@@ -1858,9 +2005,69 @@ async def polish_slides_instagram_frames(
                             exc,
                         )
                         data = None
-                images[i] = data
                 if data is not None:
+                    # Prefer the exact extracted stem when it landed on disk.
+                    extracted = resolve_cached_frame(
+                        thumbnail_dir,
+                        fid,
+                        raw[i].timestamp_sec,
+                        nearest_tolerance_sec=0.051,
+                        cached_frames=None,
+                    )
+                    canon_ts = (
+                        extracted[0]
+                        if extracted is not None
+                        else round(float(raw[i].timestamp_sec), 3)
+                    )
+                    raw[i] = FrameCandidate(
+                        index=raw[i].index,
+                        timestamp_sec=canon_ts,
+                        label=raw[i].label,
+                        preview_url=carousel_frame_preview_url(fid, canon_ts),
+                    )
+                    images[i] = extracted[1] if extracted is not None else data
                     extracts_used += 1
+
+        # Drop unverified rows and collapse duplicates that snapped to one JPEG.
+        verified_raw: list[FrameCandidate] = []
+        verified_images: list[bytes] = []
+        seen_ts: set[float] = set()
+        for c, data in zip(raw, images):
+            if data is None:
+                continue
+            key = round(float(c.timestamp_sec), 3)
+            if key in seen_ts:
+                continue
+            seen_ts.add(key)
+            verified_raw.append(
+                FrameCandidate(
+                    index=len(verified_raw),
+                    timestamp_sec=key,
+                    label=c.label,
+                    preview_url=carousel_frame_preview_url(fid, key),
+                )
+            )
+            verified_images.append(data)
+        raw = verified_raw
+        images = verified_images  # type: ignore[assignment]
+        cache_hits = len(verified_images)
+
+        if not raw:
+            return {
+                "slide": out,
+                "candidates": [],
+                "images": [],
+                "heuristic": heuristic,
+                "local_ok": False,
+                "locked": False,
+                "quality": {
+                    "candidates": 0,
+                    "kept": 0,
+                    "cache_hits": 0,
+                    "extracts": extracts_used,
+                    "rejected": {"no_cached_frame": 1},
+                },
+            }
 
         quality_scores: list[dict[str, Any]] = []
         kept, qstats = await asyncio.to_thread(
@@ -2160,11 +2367,17 @@ async def polish_slides_instagram_frames(
             for i in range(len(candidates)):
                 if i not in ordered:
                     ordered.append(i)
-            out["preview_url"] = (
-                carousel_frame_preview_url(fid, chosen.timestamp_sec)
-                or chosen.preview_url
-            )
-            out["frame_ts"] = chosen.timestamp_sec
+            ordered = ordered[:_MAX_EMITTED_CANDIDATES]
+            # Recommendation only — never auto-mark selected so studio can
+            # open text-only and let the user pick explicitly.
+            if prefer_local or item.get("local_ok"):
+                recommendation_source = "local" if source != "ai" else "ai"
+            elif source == "ai":
+                recommendation_source = "ai"
+            else:
+                recommendation_source = "local"
+            out["preview_url"] = carousel_frame_preview_url(fid, chosen.timestamp_sec)
+            out["frame_ts"] = round(float(chosen.timestamp_sec), 3)
             out["frame_source"] = source
             out["instagram_ready"] = ready_flag
             out["frame_diversity"] = {
@@ -2172,40 +2385,41 @@ async def polish_slides_instagram_frames(
                 "phash_available": bool(chosen.perceptual_hash),
             }
             out["frame_candidates"] = [
-                candidates[i].timestamp_sec for i in ordered
-            ][:16]
+                round(float(candidates[i].timestamp_sec), 3) for i in ordered
+            ]
             out["frame_candidate_items"] = [
                 frame_candidate_item(
                     drive_file_id=fid,
                     candidate=candidates[i],
                     order=order_i,
-                    selected=(i == choice),
+                    selected=False,
+                    recommended=(i == choice),
+                    recommendation_source=(
+                        recommendation_source if i == choice else None
+                    ),
                 )
                 for order_i, i in enumerate(ordered)
-            ][:16]
+            ]
         else:
-            ts = item["heuristic"]
-            out["frame_ts"] = ts
-            out["preview_url"] = carousel_frame_preview_url(fid, ts)
+            # No verified cache-backed JPEG — do not invent a cache_only URL.
+            out["frame_ts"] = None
+            out["preview_url"] = None
             out["frame_source"] = "heuristic"
             out["instagram_ready"] = False
             out["frame_warning"] = "no frame images available"
-            out["frame_candidates"] = [ts]
-            out["frame_candidate_items"] = [
-                {
-                    "frame_ts": round(float(ts), 3),
-                    "preview_url": out["preview_url"],
-                    "label": "heuristic",
-                    "order": 0,
-                    "quality_score": 0.0,
-                    "front_face_score": 0.0,
-                    "selected": True,
-                }
-            ]
-        focal_x, focal_y, face_score = focal_point_for_slide(out, float(out["frame_ts"]))
-        out["focal_x"] = focal_x
-        out["focal_y"] = focal_y
-        out["front_face_score"] = face_score
+            out["frame_candidates"] = []
+            out["frame_candidate_items"] = []
+        if out.get("frame_ts") is not None:
+            focal_x, focal_y, face_score = focal_point_for_slide(
+                out, float(out["frame_ts"])
+            )
+            out["focal_x"] = focal_x
+            out["focal_y"] = focal_y
+            out["front_face_score"] = face_score
+        else:
+            out["focal_x"] = out.get("focal_x")
+            out["focal_y"] = out.get("focal_y")
+            out["front_face_score"] = out.get("front_face_score") or 0.0
         quality = dict(item["quality"] or {})
         quality["rank_coverage"] = rank_coverage
         if prefer_local or item.get("local_ok"):
@@ -2216,6 +2430,12 @@ async def polish_slides_instagram_frames(
             quality["rank_source"] = "fallback"
         out["frame_quality"] = quality
         out_slides.append(out)
+
+    for slide, key in zip(out_slides, cache_keys):
+        if slide.get("frame_source") == "manual":
+            continue
+        _candidate_cache_put(key, _frame_fields_for_cache(slide))
+
     logger.info(
         "frame-select trace=%s event=done elapsed_ms=%d slides=%d llm_attempted=%d diversity_swaps=%d",
         trace_id,

@@ -503,6 +503,74 @@
   width: 100%;
 }
 
+.carousel-studio .test-choose-image {
+  width: 100%;
+}
+
+.carousel-studio .test-choose-image-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  width: 100%;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid #e2e8f0;
+  border-radius: 0.85rem;
+  background: #fff;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.carousel-studio .test-choose-image-btn:hover:not(:disabled) {
+  border-color: #94a3b8;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.08);
+}
+
+.carousel-studio .test-choose-image-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.carousel-studio .test-choose-image-thumb,
+.carousel-studio .test-choose-image-icon {
+  flex: 0 0 auto;
+  width: 2.75rem;
+  height: 3.45rem;
+  border-radius: 0.45rem;
+  object-fit: cover;
+  background: #0f172a;
+}
+
+.carousel-studio .test-choose-image-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #cbd5e1;
+}
+
+.carousel-studio .test-choose-image-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.carousel-studio .test-choose-image-title {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.carousel-studio .test-choose-image-sub {
+  font-size: 0.6875rem;
+  color: #64748b;
+}
+
+.carousel-studio .test-frame-picker-modal {
+  max-width: min(92vw, 28rem);
+  margin-inline: auto;
+}
+
 .carousel-studio .test-frame-candidate-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(5.5rem, 1fr));
@@ -514,6 +582,7 @@
 
 .carousel-studio .test-frame-candidate {
   appearance: none;
+  position: relative;
   width: 100%;
   padding: 0;
   border: 2px solid #e2e8f0;
@@ -524,8 +593,12 @@
   text-align: left;
 }
 
-.carousel-studio .test-frame-candidate.is-selected {
+.carousel-studio .test-frame-candidate.is-selected,
+.carousel-studio .test-frame-candidate.is-recommended {
   border-color: #0f172a;
+}
+
+.carousel-studio .test-frame-candidate.is-selected {
   box-shadow: 0 0 0 1px #0f172a;
 }
 
@@ -535,6 +608,22 @@
   aspect-ratio: 4 / 5;
   object-fit: cover;
   background: #0f172a;
+}
+
+.carousel-studio .test-frame-candidate-badge {
+  position: absolute;
+  top: 0.35rem;
+  left: 0.35rem;
+  right: 0.35rem;
+  padding: 0.15rem 0.35rem;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.88);
+  color: #fff;
+  font-size: 0.5625rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-align: center;
+  line-height: 1.2;
 }
 
 .carousel-studio .test-frame-candidate-meta {
