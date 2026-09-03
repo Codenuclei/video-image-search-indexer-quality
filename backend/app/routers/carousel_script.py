@@ -195,7 +195,7 @@ class PipelineThemesRequest(CarouselRunLlmFields):
 SAVE_KIND_TOPICS = "topics_hooks"
 SAVE_KIND_THEMES = "themes"
 SAVE_KIND_CAROUSEL = "carousel"
-CAROUSEL_ALGORITHM_VERSION = "p0-fast-grouped-v3-quality-diversity-p1-crafted-copy"
+CAROUSEL_ALGORITHM_VERSION = "p0-fast-grouped-v3-quality-diversity-p1-crafted-copy-mu-verbs"
 CAROUSEL_STATUS_PROCESSING = "processing"
 CAROUSEL_STATUS_IDLE = "idle"
 

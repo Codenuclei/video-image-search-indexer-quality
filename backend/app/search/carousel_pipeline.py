@@ -53,6 +53,11 @@ EXTRACT_PROMPT_VERSION = "extract-v8-topics-only-keep"
 # Shared editorial brief for every hook-writing prompt. A hook has four jobs:
 # stop the scroll, open a curiosity loop, earn the share, and build the page's
 # voice — while staying honest, non-explicit, and never cliched.
+_MU_SACRED_ACTION_VERBS = (
+    "Built, Shipped, Created, Explored, Experimented, Failed, Raised, Invested, "
+    "Launched, Scaled, Closed, Hired, Sold, Funded, Grew, Learned, Pitched, "
+    "Deployed, Prototyped, Iterated"
+)
 _HOOK_CRAFT_BRIEF = (
     "WHAT A HOOK MUST DO (all four jobs):\n"
     "1. STOP THE SCROLL — lead with the most startling concrete detail in the spoken "
@@ -65,6 +70,11 @@ _HOOK_CRAFT_BRIEF = (
     "colleague: bold enough to repeat out loud, true enough to defend when questioned.\n"
     "4. BUILD THE PAGE — write with a confident editorial voice that makes the viewer "
     "want more from this creator, not a one-off clickbait tone.\n"
+    "MU-SACRED ACTION VERB (hard style rule for copy):\n"
+    f"- Prefer a past-tense MU action verb when the spoken window supports it: {_MU_SACRED_ACTION_VERBS}.\n"
+    "- Lead with or center that verb when honest (e.g. \"Built X before Y\", \"Failed twice, then shipped\").\n"
+    "- Do NOT invent an action the speaker did not describe. If no sacred verb fits, keep a "
+    "grammatical headline without forcing one.\n"
     "HONESTY AND TONE RULES:\n"
     "- Never mislead: the video must fully deliver what the hook promises.\n"
     "- You may dramatize and sharpen the truth (framing, stakes, emphasis) but never "
@@ -83,11 +93,11 @@ _HOOK_CRAFT_BRIEF = (
     "\"Where X actually wins\". X must be a real noun phrase (a number, a named "
     "thing, or a concrete stake).\n"
     "SHAPE EXAMPLE (do not copy): spoken \"two students sold 33 lakh worth of watches "
-    "in eight minutes\" → hook \"₹33 Lakh in 8 Minutes — by Two Students\" (keeps the "
-    "startling numbers, withholds what they sold and how).\n"
+    "in eight minutes\" → hook \"Sold ₹33 Lakh in 8 Minutes — by Two Students\" (keeps the "
+    "startling numbers + MU action verb, withholds what they sold and how).\n"
 )
 
-SLIDE_COPY_PROMPT_VERSION = "slides-v3-topic-coherent-hook-placement"
+SLIDE_COPY_PROMPT_VERSION = "slides-v4-mu-sacred-verbs-scrim"
 
 # Same jobs as hooks, applied across a swipeable slide sequence.
 _SLIDE_CRAFT_BRIEF = (
@@ -101,6 +111,12 @@ _SLIDE_CRAFT_BRIEF = (
     "3. EARN THE SHARE — lines a viewer would send a colleague: bold enough to "
     "repeat, true enough to defend.\n"
     "4. BUILD THE PAGE — confident editorial voice, not one-off clickbait.\n"
+    "MU-SACRED ACTION VERB (hard style rule for slide copy):\n"
+    f"- Across the deck, prefer MU past-tense action verbs when the spoken seeds support them: {_MU_SACRED_ACTION_VERBS}.\n"
+    "- At least the cover or the payoff slide should use one when honest "
+    "(e.g. Built / Shipped / Created / Failed / Raised / Invested).\n"
+    "- Highlight the action verb in yellow when present.\n"
+    "- Never invent an action absent from the spoken seeds; skip the verb rather than fabricate.\n"
     "HONESTY AND TONE RULES:\n"
     "- Never mislead: the spoken seeds must fully support every claim.\n"
     "- You may dramatize and sharpen the truth, but never fabricate a fact, "
@@ -122,8 +138,8 @@ _SLIDE_CRAFT_BRIEF = (
     "- Build a causal swipe flow: hook/setup → problem/tension → explanation/proof "
     "→ payoff/action. Every slide must make the next slide feel necessary.\n"
     "SHAPE EXAMPLE (do not copy): spoken \"ghee business… market value of 42 "
-    "billion… A2 growth rate is three times\" → slides like \"India's ghee "
-    "market is $42 billion.\" / \"Most brands still sell at ₹600–800 a litre.\" / "
+    "billion… A2 growth rate is three times\" → slides like \"Built for a $42B ghee "
+    "market.\" / \"Most brands still sell at ₹600–800 a litre.\" / "
     "\"A2 is growing 3x faster than the rest.\"\n"
 )
 _THEME_CHUNK_CHARS = 14_000

@@ -1166,7 +1166,8 @@ def _rank_prompt(hook_line: str, candidates: list[FrameCandidate]) -> str:
         "- REJECT torso-only / neck-down crops with no usable face\n"
         "- good composition, not awkward crop or cut-off heads\n"
         "- not transitional blur, mid-blink, or UI chrome junk\n"
-        "- readable when short text overlays the bottom third\n\n"
+        "- readable when short text overlays the frame — assume gray/black "
+        "gradient shadows at the top and bottom of the image for copy legibility\n\n"
         "Also flag each candidate as Instagram-ready (true/false) by the same bar.\n\n"
         "Return ONLY JSON:\n"
         '{"order":[best_index,...],"ready":[true/false per candidate in index order 0..n-1]}\n'

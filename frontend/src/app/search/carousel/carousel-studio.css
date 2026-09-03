@@ -436,13 +436,21 @@
 .carousel-studio .ig-panel-scrim {
   position: absolute;
   inset: 0;
-  background: linear-gradient(
-    to top,
-    rgba(0, 0, 0, 0.86) 0%,
-    rgba(0, 0, 0, 0.42) 30%,
-    rgba(0, 0, 0, 0.05) 58%,
-    transparent 72%
-  );
+  /* Top + bottom gray/black shadows so overlay copy stays legible. */
+  background:
+    linear-gradient(
+      to bottom,
+      rgba(0, 0, 0, 0.7) 0%,
+      rgba(20, 20, 20, 0.36) 22%,
+      transparent 46%
+    ),
+    linear-gradient(
+      to top,
+      rgba(0, 0, 0, 0.86) 0%,
+      rgba(0, 0, 0, 0.42) 30%,
+      rgba(0, 0, 0, 0.05) 58%,
+      transparent 72%
+    );
   pointer-events: none;
 }
 
@@ -544,7 +552,14 @@
 .carousel-studio .ig-slide-scrim {
   position: absolute;
   inset: 0;
+  /* Top + bottom gray/black shadows so overlay copy stays legible. */
   background:
+    linear-gradient(
+      to bottom,
+      rgba(0, 0, 0, 0.74) 0%,
+      rgba(18, 18, 18, 0.4) 24%,
+      transparent 48%
+    ),
     linear-gradient(
       to top,
       rgba(0, 0, 0, 0.82) 0%,
