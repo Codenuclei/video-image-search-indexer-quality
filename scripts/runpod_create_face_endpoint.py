@@ -83,8 +83,9 @@ def main() -> None:
                     "name": TEMPLATE_NAME,
                     "imageName": IMAGE,
                     "isServerless": True,
-                    "containerDiskInGb": 20,
+                    "containerDiskInGb": 40,
                     "volumeInGb": 0,
+                    "dockerStartCmd": START_CMD,
                     "env": {"PYTHONUNBUFFERED": "1"},
                 },
             )
