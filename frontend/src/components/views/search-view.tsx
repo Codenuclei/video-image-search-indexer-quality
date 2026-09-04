@@ -11,9 +11,10 @@ import {
   type ObjectEvidence,
   type SearchMoment,
 } from "@/lib/api";
-import { Button, Card, DownloadButton, FilePreview, IconButton, IconLink, Input, LoadingLabel, PersonTags } from "@/components/ui";
+import { Button, DownloadButton, FilePreview, IconButton, IconLink, Input, LoadingLabel, PersonTags } from "@/components/ui";
 import { FilterDropdown } from "@/components/filter-dropdown";
 import { ModalOverlay } from "@/components/modal";
+import { clearReverseFaceSearch } from "@/lib/reverse-face-session";
 import {
   cancelSearch,
   hydrateSearchCatalogs,
@@ -108,7 +109,6 @@ export function SearchPage({
     folderContexts,
     libraryFolders,
     results,
-    lastSearchMode,
     loading,
     previewFile,
     previewMoment,
@@ -123,12 +123,14 @@ export function SearchPage({
   }, []);
 
   function search() {
+    clearReverseFaceSearch();
     void runSearch();
   }
 
   const files = (results?.files ?? []).filter(
     (f) => f.score != null || !f.mime_type.startsWith("image/")
   );
+  const moments = results?.moments ?? [];
   const visibleFiles = files.slice(0, visibleFileCount);
 
   useEffect(() => {
@@ -269,7 +271,7 @@ export function SearchPage({
         </p>
       )}
 
-      {loading && (
+      {loading && !hideSearchBar && (
         <p className="text-sm text-muted-foreground">
           <LoadingLabel size={16}>Searching…</LoadingLabel>
           {" "}
@@ -306,6 +308,7 @@ export function SearchPage({
                 const driveUrl = `https://drive.google.com/file/d/${file.drive_file_id}/view`;
                 const downloadUrl = driveFileDownloadUrl(file.drive_file_id);
                 const isImage = file.mime_type.startsWith("image/");
+                const isVideo = file.mime_type.startsWith("video/");
                 const pathParts = file.path.split("/").filter(Boolean);
                 const topLevelFolder = pathParts.length > 1 ? pathParts[0] : null;
                 return (
@@ -318,7 +321,11 @@ export function SearchPage({
                         driveFileId={file.drive_file_id}
                         name={file.name}
                         mimeType={file.mime_type}
-                        onClick={isImage ? () => patchSearchSession({ previewFile: file }) : undefined}
+                        onClick={
+                          isImage || isVideo
+                            ? () => patchSearchSession({ previewFile: file })
+                            : undefined
+                        }
                       />
                     </div>
                     <div className="flex flex-col gap-2 px-3 py-3 text-sm">
@@ -388,6 +395,21 @@ export function SearchPage({
         </section>
       )}
 
+      {results && moments.length > 0 && (
+        <section>
+          <h3 className="mb-4 font-medium">Matching video moments ({moments.length})</h3>
+          <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {moments.map((moment) => (
+              <MomentCard
+                key={`${moment.drive_file_id}-${moment.timestamp_sec}-${moment.match_type}`}
+                moment={moment}
+                onPreview={() => patchSearchSession({ previewMoment: moment })}
+              />
+            ))}
+          </ul>
+        </section>
+      )}
+
       <ModalOverlay open={!!previewFile} onClose={() => patchSearchSession({ previewFile: null })}>
         {previewFile && (
           <div className="relative flex max-h-[min(88dvh,720px)] flex-col overflow-hidden rounded-lg bg-card shadow-2xl">
@@ -398,12 +420,22 @@ export function SearchPage({
                 onClick={() => patchSearchSession({ previewFile: null })}
                 className="absolute right-3 top-3 z-10 bg-black/60 text-white hover:bg-black/80 hover:text-white"
               />
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src={driveFileThumbnailUrl(previewFile.drive_file_id)}
-                alt={previewFile.name}
-                className="block max-h-[min(48dvh,420px)] w-full object-contain"
-              />
+              {previewFile.mime_type.startsWith("video/") ? (
+                <video
+                  src={driveVideoStreamUrl(previewFile.drive_file_id)}
+                  controls
+                  playsInline
+                  preload="metadata"
+                  className="max-h-[min(48dvh,420px)] w-full object-contain"
+                />
+              ) : (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={driveFileThumbnailUrl(previewFile.drive_file_id)}
+                  alt={previewFile.name}
+                  className="block max-h-[min(48dvh,420px)] w-full object-contain"
+                />
+              )}
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto border-t border-border px-4 py-3">
               <p className="break-all text-sm font-medium text-foreground">{previewFile.name}</p>

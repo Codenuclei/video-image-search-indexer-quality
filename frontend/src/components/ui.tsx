@@ -2,9 +2,17 @@
 
 import { useEffect, useState } from "react";
 import type { LucideIcon } from "lucide-react";
-import { Download, ExternalLink } from "lucide-react";
+import { Download, ExternalLink, FileVideo, Image as ImageIcon, Play, User } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { API_BASE, driveFilePreviewUrl, driveFileThumbnailUrl, driveGoogleViewUrl, formatApiError, isServiceUnavailableMessage } from "@/lib/api";
+import {
+  API_BASE,
+  driveFilePreviewUrl,
+  driveFileThumbnailUrl,
+  driveGoogleViewUrl,
+  driveVideoFrameUrl,
+  formatApiError,
+  isServiceUnavailableMessage,
+} from "@/lib/api";
 import { downloadFromUrl } from "@/lib/download";
 import { BackendDisconnectedOverlay } from "@/components/backend-disconnected-overlay";
 import { LoadingLabel, Spinner } from "@/components/spinner";
@@ -362,8 +370,14 @@ export function FaceThumb({ faceId, className }: { faceId: number | null; classN
   }, [faceId]);
   if (!faceId || broken) {
     return (
-      <div className={cn("flex items-center justify-center rounded-md bg-muted text-xs text-muted-foreground", className)}>
-        ?
+      <div
+        className={cn(
+          "flex items-center justify-center rounded-md bg-muted text-muted-foreground",
+          className
+        )}
+        aria-hidden
+      >
+        <User size={18} />
       </div>
     );
   }
@@ -374,6 +388,55 @@ export function FaceThumb({ faceId, className }: { faceId: number | null; classN
       alt="face"
       className={cn("rounded-md object-cover", className)}
       onError={() => setBroken(true)}
+    />
+  );
+}
+
+export function DriveMediaThumb({
+  driveFileId,
+  name,
+  isVideo,
+  frameTimestamp,
+  className,
+}: {
+  driveFileId: string;
+  name: string;
+  isVideo?: boolean;
+  frameTimestamp?: number | null;
+  className?: string;
+}) {
+  const [failed, setFailed] = useState(false);
+  const src = isVideo
+    ? driveVideoFrameUrl(driveFileId, frameTimestamp)
+    : driveFileThumbnailUrl(driveFileId);
+
+  useEffect(() => {
+    setFailed(false);
+  }, [src]);
+
+  if (failed) {
+    return (
+      <span
+        className={cn(
+          "flex h-full w-full items-center justify-center bg-muted text-muted-foreground",
+          className
+        )}
+        aria-hidden
+      >
+        {isVideo ? <FileVideo size={18} /> : <ImageIcon size={18} />}
+      </span>
+    );
+  }
+
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={src}
+      alt={name}
+      loading="lazy"
+      decoding="async"
+      onError={() => setFailed(true)}
+      className={cn("h-full w-full object-cover", className)}
     />
   );
 }
@@ -396,6 +459,7 @@ export function FilePreview({
   const previewUrl = driveFilePreviewUrl(driveFileId, mimeType);
   const driveViewUrl = driveGoogleViewUrl(driveFileId);
   const isImage = mimeType.startsWith("image/");
+  const isVideo = mimeType.startsWith("video/");
   const isPdf = mimeType === "application/pdf";
   const [loaded, setLoaded] = useState(false);
   const [failed, setFailed] = useState(false);
@@ -439,6 +503,35 @@ export function FilePreview({
             />
           </>
         )}
+      </div>
+    );
+  }
+
+  if (isVideo) {
+    const inner = (
+      <>
+        <DriveMediaThumb driveFileId={driveFileId} name={name} isVideo />
+        <span className="absolute inset-0 flex items-center justify-center bg-black/15">
+          <span className="rounded-full bg-black/70 p-2 text-white">
+            <Play size={22} fill="currentColor" aria-hidden />
+          </span>
+        </span>
+      </>
+    );
+    if (onClick) {
+      return (
+        <button
+          type="button"
+          onClick={onClick}
+          className={cn("relative h-full w-full overflow-hidden bg-black/40", className)}
+        >
+          {inner}
+        </button>
+      );
+    }
+    return (
+      <div className={cn("relative h-full w-full overflow-hidden bg-black/40", className)}>
+        {inner}
       </div>
     );
   }

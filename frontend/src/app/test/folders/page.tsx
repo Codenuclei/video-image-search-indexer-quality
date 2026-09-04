@@ -12,14 +12,13 @@ import {
 } from "lucide-react";
 import {
   apiClient,
-  driveFileThumbnailUrl,
   driveGoogleViewUrl,
   type LibraryFile,
   type LibraryFolder,
   type LibraryFolderPage,
   type LibraryResponse,
 } from "@/lib/api";
-import { LoadingLabel } from "@/components/ui";
+import { LoadingLabel, DriveMediaThumb } from "@/components/ui";
 import { DriveSessionBar } from "@/components/drive-session-bar";
 import { cn } from "@/lib/utils";
 import { formatCount, skipReasonMeta } from "@/lib/index-errors";
@@ -238,8 +237,8 @@ function FolderTile({
 }
 
 function FileTile({ file }: { file: LibraryFile }) {
-  const [imgFailed, setImgFailed] = useState(false);
   const Icon = file.is_video ? FileVideo : FileImage;
+  const showThumb = file.is_image || file.is_video;
   return (
     <a
       href={driveGoogleViewUrl(file.id)}
@@ -248,15 +247,15 @@ function FileTile({ file }: { file: LibraryFile }) {
       title={file.name}
       className="group relative flex flex-col items-center gap-1.5 rounded-xl border border-transparent p-3 text-center transition-colors hover:border-border hover:bg-accent/60"
     >
-      {file.is_image && !imgFailed ? (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
-          src={driveFileThumbnailUrl(file.id)}
-          alt={file.name}
-          loading="lazy"
-          onError={() => setImgFailed(true)}
-          className="h-14 w-14 rounded-md object-cover"
-        />
+      {showThumb ? (
+        <span className="h-14 w-14 overflow-hidden rounded-md">
+          <DriveMediaThumb
+            driveFileId={file.id}
+            name={file.name}
+            isVideo={file.is_video}
+            className="h-14 w-14"
+          />
+        </span>
       ) : (
         <Icon size={48} strokeWidth={1.2} className="text-sky-500" />
       )}
