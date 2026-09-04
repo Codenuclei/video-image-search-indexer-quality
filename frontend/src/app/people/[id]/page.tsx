@@ -2,7 +2,8 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, usePathname, useRouter } from "next/navigation";
-import { ArrowLeft, Check, Pencil, X } from "lucide-react";
+import { ArrowLeft, Check, ChevronDown, Pencil, X } from "lucide-react";
+import { cn } from "@/lib/utils";
 import {
   apiClient,
   driveGoogleViewUrl,
@@ -33,6 +34,114 @@ function formatTimestamp(sec: number): string {
 
 const REC_THRESHOLD_OPTIONS = [0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8];
 
+function SuggestionDropdown({
+  suggestion,
+  personName,
+  busy,
+  actionsDisabled,
+  open,
+  onToggle,
+  onAccept,
+  onReject,
+}: {
+  suggestion: PersonClusterSuggestion;
+  personName: string;
+  busy: boolean;
+  actionsDisabled: boolean;
+  open: boolean;
+  onToggle: () => void;
+  onAccept: () => void;
+  onReject: () => void;
+}) {
+  const percent = Math.round(suggestion.similarity * 100);
+  const summaryId = `match-${suggestion.cluster_id}-summary`;
+  const panelId = `match-${suggestion.cluster_id}-panel`;
+
+  return (
+    <li className="border-b border-border last:border-b-0">
+      <button
+        type="button"
+        id={summaryId}
+        aria-expanded={open}
+        aria-controls={panelId}
+        onClick={onToggle}
+        className="flex w-full min-w-0 items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-muted/40"
+      >
+        <FaceThumb
+          faceId={suggestion.representative_face_id}
+          className="h-10 w-10 shrink-0"
+        />
+        <span className="min-w-0 flex-1">
+          <span className="flex flex-wrap items-center gap-2">
+            <span
+              className={cn(
+                "rounded-full px-2 py-0.5 text-xs font-semibold tabular-nums",
+                percent >= 60
+                  ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
+                  : "bg-amber-500/15 text-amber-700 dark:text-amber-300"
+              )}
+            >
+              {percent}% match
+            </span>
+            <span className="text-xs text-muted-foreground">
+              {suggestion.member_count} face{suggestion.member_count === 1 ? "" : "s"} ·{" "}
+              {suggestion.file_count} file{suggestion.file_count === 1 ? "" : "s"}
+            </span>
+          </span>
+        </span>
+        <ChevronDown
+          size={16}
+          aria-hidden
+          className={cn(
+            "shrink-0 text-muted-foreground transition-transform duration-150",
+            open && "rotate-180"
+          )}
+        />
+      </button>
+      {open && (
+        <div id={panelId} role="region" aria-labelledby={summaryId} className="space-y-3 px-4 pb-3">
+          {suggestion.sample_files.length > 0 && (
+            <div className="flex flex-wrap items-center gap-1.5 pl-[3.25rem]">
+              {suggestion.sample_files.slice(0, 4).map((file) => (
+                <a
+                  key={file.media_id}
+                  href={driveGoogleViewUrl(file.drive_file_id)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title={file.name}
+                  className="h-12 w-12 overflow-hidden rounded-md border border-border bg-muted/40"
+                >
+                  <DriveMediaThumb
+                    driveFileId={file.drive_file_id}
+                    name={file.name}
+                    isVideo={(file.media_type || "").toLowerCase() === "video"}
+                    frameTimestamp={file.frame_timestamp}
+                  />
+                </a>
+              ))}
+            </div>
+          )}
+          <div className="flex flex-wrap gap-2 pl-[3.25rem]">
+            <Button onClick={onAccept} disabled={actionsDisabled} className="min-w-0">
+              <Check size={15} aria-hidden />
+              {busy ? "Saving…" : `Add to ${personName}`}
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={onReject}
+              disabled={actionsDisabled}
+              title={`This cluster is not ${personName}`}
+            >
+              <X size={15} aria-hidden />
+              Not {personName}
+            </Button>
+          </div>
+        </div>
+      )}
+    </li>
+  );
+}
+
 export default function PersonDetailPage() {
   const params = useParams();
   const router = useRouter();
@@ -56,6 +165,8 @@ export default function PersonDetailPage() {
   const [suggestionActionId, setSuggestionActionId] = useState<number | null>(null);
   const [suggestionError, setSuggestionError] = useState<string | null>(null);
   const [recThreshold, setRecThreshold] = useState(0.5);
+  const [matchesOpen, setMatchesOpen] = useState(true);
+  const [openClusterId, setOpenClusterId] = useState<number | null>(null);
   const savingRef = useRef(false);
 
   useEffect(() => {
@@ -78,6 +189,7 @@ export default function PersonDetailPage() {
         setSuggestions(result.items);
         setSuggestionTotal(result.total);
         setSuggestionError(null);
+        setOpenClusterId(null);
       })
       .catch((e) => {
         if (cancelled) return;
@@ -351,12 +463,28 @@ export default function PersonDetailPage() {
 
       <Card className="min-w-0 overflow-hidden p-0">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
-          <div className="min-w-0">
-            <h3 className="font-medium">Potential matches</h3>
-            <p className="text-xs text-muted-foreground">
-              Unknown face clusters similar to {person.name}
-            </p>
-          </div>
+          <button
+            type="button"
+            onClick={() => setMatchesOpen((open) => !open)}
+            aria-expanded={matchesOpen}
+            aria-controls="potential-matches-panel"
+            className="flex min-w-0 flex-1 items-center gap-2 text-left"
+          >
+            <ChevronDown
+              size={16}
+              aria-hidden
+              className={cn(
+                "shrink-0 text-muted-foreground transition-transform duration-150",
+                matchesOpen && "rotate-180"
+              )}
+            />
+            <span className="min-w-0">
+              <span className="block font-medium">Potential matches</span>
+              <span className="block text-xs text-muted-foreground">
+                Unknown face clusters similar to {person.name}
+              </span>
+            </span>
+          </button>
           <div className="flex shrink-0 items-center gap-2">
             <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
               At least
@@ -380,105 +508,55 @@ export default function PersonDetailPage() {
             )}
           </div>
         </div>
-        {suggestionsLoading ? (
-          <p className="px-4 py-6 text-sm text-muted-foreground">
-            <LoadingLabel>Finding matches…</LoadingLabel>
-          </p>
-        ) : suggestions.length === 0 ? (
-          <p className="px-4 py-6 text-sm text-muted-foreground">
-            No unreviewed clusters currently match this person at {Math.round(recThreshold * 100)}% or
-            higher.
-          </p>
-        ) : (
-          <ul className="divide-y divide-border">
-            {suggestions.map((suggestion) => {
-              const percent = Math.round(suggestion.similarity * 100);
-              const busy = suggestionActionId === suggestion.cluster_id;
-              return (
-                <li
-                  key={suggestion.cluster_id}
-                  className="flex min-w-0 flex-col gap-3 px-4 py-3 lg:flex-row lg:items-center"
-                >
-                  <div className="flex min-w-0 flex-1 items-center gap-3">
-                    <FaceThumb
-                      faceId={suggestion.representative_face_id}
-                      className="h-14 w-14 shrink-0"
-                    />
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span
-                          className={`rounded-full px-2 py-0.5 text-xs font-semibold tabular-nums ${
-                            percent >= 60
-                              ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
-                              : "bg-amber-500/15 text-amber-700 dark:text-amber-300"
-                          }`}
-                        >
-                          {percent}% match
-                        </span>
-                        <span className="text-xs text-muted-foreground">
-                          {suggestion.member_count} face{suggestion.member_count === 1 ? "" : "s"} ·{" "}
-                          {suggestion.file_count} file{suggestion.file_count === 1 ? "" : "s"}
-                        </span>
-                      </div>
-                      {suggestion.sample_files.length > 0 && (
-                        <div className="mt-1.5 flex items-center gap-1">
-                          {suggestion.sample_files.slice(0, 4).map((file) => (
-                            <span
-                              key={file.media_id}
-                              className="h-8 w-8 overflow-hidden rounded border border-border bg-muted/40"
-                              title={file.name}
-                            >
-                              <DriveMediaThumb
-                                driveFileId={file.drive_file_id}
-                                name={file.name}
-                                isVideo={(file.media_type || "").toLowerCase() === "video"}
-                                frameTimestamp={file.frame_timestamp}
-                              />
-                            </span>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                  <div className="flex shrink-0 gap-2">
-                    <Button
-                      onClick={() => decideSuggestion(suggestion.cluster_id, "accept")}
-                      disabled={suggestionActionId != null}
-                      className="min-w-0"
-                    >
-                      <Check size={15} aria-hidden />
-                      {busy ? "Saving…" : `Add to ${person.name}`}
-                    </Button>
-                    <Button
-                      variant="secondary"
-                      onClick={() => decideSuggestion(suggestion.cluster_id, "reject")}
-                      disabled={suggestionActionId != null}
-                      title={`This cluster is not ${person.name}`}
-                    >
-                      <X size={15} aria-hidden />
-                      Not {person.name}
-                    </Button>
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
-        )}
-        {(suggestionError || suggestions.length < suggestionTotal) && (
-          <div className="flex items-center justify-between gap-3 border-t border-border px-4 py-3">
-            {suggestionError ? (
-              <p className="text-sm text-destructive">{suggestionError}</p>
+        {matchesOpen && (
+          <div id="potential-matches-panel">
+            {suggestionsLoading ? (
+              <p className="px-4 py-6 text-sm text-muted-foreground">
+                <LoadingLabel>Finding matches…</LoadingLabel>
+              </p>
+            ) : suggestions.length === 0 ? (
+              <p className="px-4 py-6 text-sm text-muted-foreground">
+                No unreviewed clusters currently match this person at {Math.round(recThreshold * 100)}% or
+                higher.
+              </p>
             ) : (
-              <span />
+              <ul>
+                {suggestions.map((suggestion) => (
+                  <SuggestionDropdown
+                    key={suggestion.cluster_id}
+                    suggestion={suggestion}
+                    personName={person.name}
+                    busy={suggestionActionId === suggestion.cluster_id}
+                    actionsDisabled={suggestionActionId != null}
+                    open={openClusterId === suggestion.cluster_id}
+                    onToggle={() =>
+                      setOpenClusterId((current) =>
+                        current === suggestion.cluster_id ? null : suggestion.cluster_id
+                      )
+                    }
+                    onAccept={() => decideSuggestion(suggestion.cluster_id, "accept")}
+                    onReject={() => decideSuggestion(suggestion.cluster_id, "reject")}
+                  />
+                ))}
+              </ul>
             )}
-            {suggestions.length < suggestionTotal && (
-              <Button
-                variant="secondary"
-                onClick={loadMoreSuggestions}
-                disabled={suggestionsLoadingMore}
-              >
-                {suggestionsLoadingMore ? <LoadingLabel>Loading…</LoadingLabel> : "Load more"}
-              </Button>
+            {(suggestionError || suggestions.length < suggestionTotal) && (
+              <div className="flex items-center justify-between gap-3 border-t border-border px-4 py-3">
+                {suggestionError ? (
+                  <p className="text-sm text-destructive">{suggestionError}</p>
+                ) : (
+                  <span />
+                )}
+                {suggestions.length < suggestionTotal && (
+                  <Button
+                    variant="secondary"
+                    onClick={loadMoreSuggestions}
+                    disabled={suggestionsLoadingMore}
+                  >
+                    {suggestionsLoadingMore ? <LoadingLabel>Loading…</LoadingLabel> : "Load more"}
+                  </Button>
+                )}
+              </div>
             )}
           </div>
         )}
