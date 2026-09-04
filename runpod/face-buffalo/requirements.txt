@@ -1,0 +1,6 @@
+runpod>=1.7.0
+numpy>=1.26.0
+opencv-python-headless>=4.10.0
+insightface>=0.7.3
+onnx>=1.16.0
+onnxruntime-gpu>=1.20.0
