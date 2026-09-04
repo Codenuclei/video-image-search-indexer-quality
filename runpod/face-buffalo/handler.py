@@ -15,6 +15,16 @@ logger = logging.getLogger("dfi-face-buffalo")
 MODEL_NAME = "buffalo_l"
 DET_SIZE = (640, 640)
 MIN_CONFIDENCE = 0.5
+CUDA_PROVIDER = (
+    "CUDAExecutionProvider",
+    {
+        "device_id": 0,
+        "arena_extend_strategy": "kNextPowerOfTwo",
+        "gpu_mem_limit": 12 * 1024 * 1024 * 1024,
+        "cudnn_conv_algo_search": "EXHAUSTIVE",
+        "do_copy_in_default_stream": True,
+    },
+)
 
 _app = None
 _providers: list[str] = []
@@ -28,8 +38,8 @@ def _load_app():
     import onnxruntime as ort
 
     logger.info("ORT %s available=%s", ort.__version__, ort.get_available_providers())
-    providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
-    logger.info("Loading InsightFace %s providers=%s", MODEL_NAME, providers)
+    providers = [CUDA_PROVIDER, "CPUExecutionProvider"]
+    logger.info("Loading InsightFace %s", MODEL_NAME)
     app = FaceAnalysis(name=MODEL_NAME, providers=providers)
     app.prepare(ctx_id=0, det_size=DET_SIZE)
     session = app.models.get("detection")
@@ -37,7 +47,7 @@ def _load_app():
     try:
         used = list(session.session.get_providers())  # type: ignore[union-attr]
     except Exception:  # noqa: BLE001
-        used = providers
+        used = [p[0] if isinstance(p, tuple) else p for p in providers]
     if "CUDAExecutionProvider" not in used:
         raise RuntimeError(f"buffalo_l did not bind CUDA; providers={used}")
     _providers = used
@@ -81,33 +91,53 @@ def _detect(image_bgr: np.ndarray, min_confidence: float) -> tuple[list[dict], f
     return out, detect_ms
 
 
-def handler(job: dict) -> dict:
-    inp = job.get("input") or {}
-    if inp.get("healthcheck"):
-        _load_app()
-        return {"ok": True, "model": MODEL_NAME, "providers": _providers}
-
-    image_b64 = inp.get("image_b64")
+def _run_one(item: dict, min_confidence: float) -> dict:
+    drive_file_id = str(item.get("drive_file_id") or "")
+    image_b64 = item.get("image_b64")
     if not image_b64:
-        return {"error": "image_b64 is required"}
-
-    min_confidence = float(inp.get("min_detection_confidence") or MIN_CONFIDENCE)
-    drive_file_id = str(inp.get("drive_file_id") or "")
+        return {"drive_file_id": drive_file_id, "error": "image_b64 is required"}
     t0 = time.perf_counter()
-    image = _decode_jpeg_png(image_b64)
+    try:
+        image = _decode_jpeg_png(image_b64)
+    except Exception as exc:  # noqa: BLE001
+        return {"drive_file_id": drive_file_id, "error": str(exc)}
     decode_ms = (time.perf_counter() - t0) * 1000.0
     faces, detect_ms = _detect(image, min_confidence)
     h, w = image.shape[:2]
     return {
         "drive_file_id": drive_file_id,
-        "model": MODEL_NAME,
-        "providers": _providers,
         "width": int(w),
         "height": int(h),
         "face_count": len(faces),
         "faces": faces,
         "decode_ms": round(decode_ms, 2),
         "detect_ms": round(detect_ms, 2),
+    }
+
+
+def handler(job: dict) -> dict:
+    inp = job.get("input") or {}
+    if inp.get("healthcheck"):
+        _load_app()
+        return {"ok": True, "model": MODEL_NAME, "providers": _providers}
+
+    min_confidence = float(inp.get("min_detection_confidence") or MIN_CONFIDENCE)
+    items = inp.get("images")
+    if not items and inp.get("image_b64"):
+        items = [{"drive_file_id": inp.get("drive_file_id") or "", "image_b64": inp["image_b64"]}]
+    if not items:
+        return {"error": "images[] or image_b64 is required"}
+
+    _load_app()
+    t0 = time.perf_counter()
+    results = [_run_one(item, min_confidence) for item in items]
+    batch_ms = (time.perf_counter() - t0) * 1000.0
+    return {
+        "model": MODEL_NAME,
+        "providers": _providers,
+        "batch_size": len(results),
+        "batch_ms": round(batch_ms, 2),
+        "images": results,
     }
 
 
