@@ -32,8 +32,11 @@ from app.pipelines.common import decode_image_bgr, download_to_temp_file  # noqa
 RESULTS_DIR = REPO / "runpod" / "face-buffalo" / "results"
 ENDPOINT_FILE = REPO / "runpod" / "face-buffalo" / ".endpoint_id"
 LIMIT = 100
-MAX_EDGE = 2048
-MAX_JPEG_BYTES = 6 * 1024 * 1024
+MAX_EDGE = 1600
+MAX_JPEG_BYTES = 900 * 1024
+BATCH_SIZE = 16
+MAX_BATCH_BYTES = 7 * 1024 * 1024
+FETCH_CONCURRENCY = 8
 
 
 def _load_repo_env() -> None:
@@ -136,7 +139,7 @@ async def _run_job(client: httpx.AsyncClient, endpoint_id: str, payload: dict) -
             return data.get("output") or {}
         if status in {"FAILED", "failed", "CANCELLED", "cancelled", "TIMED_OUT", "timed_out"}:
             raise RuntimeError(f"job {job_id} {status}: {data.get('error') or data}")
-        await asyncio.sleep(3.0)
+        await asyncio.sleep(0.5)
     raise RuntimeError(f"job {job_id} still {status} after 15m")
 
 
@@ -154,39 +157,92 @@ async def main() -> None:
 
     results: list[dict] = []
     timeout = httpx.Timeout(600.0, connect=30.0)
+    sem = asyncio.Semaphore(FETCH_CONCURRENCY)
+
+    async def _prefetch(index: int, drive_file_id: str, name: str, mime: str) -> dict:
+        row: dict = {
+            "index": index,
+            "drive_file_id": drive_file_id,
+            "name": name,
+            "mime_type": mime,
+        }
+        async with sem:
+            try:
+                jpeg = await _fetch_jpeg(drive_file_id, name)
+                row["jpeg"] = jpeg
+                row["jpeg_bytes"] = len(jpeg)
+            except Exception as exc:  # noqa: BLE001
+                row["error"] = str(exc)
+        return row
+
     async with httpx.AsyncClient(timeout=timeout) as http:
         health = await _run_job(http, endpoint_id, {"healthcheck": True})
         print(f"Health: model={health.get('model')} providers={health.get('providers')}")
-        for i, (drive_file_id, name, mime) in enumerate(rows, start=1):
-            row: dict = {
-                "index": i,
-                "drive_file_id": drive_file_id,
-                "name": name,
-                "mime_type": mime,
-            }
+        print(f"Prefetching {len(rows)} images (concurrency={FETCH_CONCURRENCY})...")
+        fetched = await asyncio.gather(
+            *[_prefetch(i, did, name, mime) for i, (did, name, mime) in enumerate(rows, start=1)]
+        )
+        ready = [r for r in fetched if "jpeg" in r]
+        results.extend([r for r in fetched if "error" in r and "jpeg" not in r])
+        for err in results:
+            print(f"[{err['index']}/{len(rows)}] {err['name']}: ERROR {err['error']}")
+
+        batches: list[list[dict]] = []
+        current: list[dict] = []
+        current_bytes = 0
+        for row in ready:
+            jpeg_len = int(row["jpeg_bytes"])
+            if current and (
+                len(current) >= BATCH_SIZE or current_bytes + jpeg_len > MAX_BATCH_BYTES
+            ):
+                batches.append(current)
+                current = []
+                current_bytes = 0
+            current.append(row)
+            current_bytes += jpeg_len
+        if current:
+            batches.append(current)
+        print(f"Sending {len(ready)} images in {len(batches)} GPU batches (max {BATCH_SIZE})")
+
+        for b_i, batch in enumerate(batches, start=1):
             t0 = time.perf_counter()
-            try:
-                jpeg = await _fetch_jpeg(drive_file_id, name)
-                output = await _run_job(
-                    http,
-                    endpoint_id,
+            payload = {
+                "images": [
                     {
-                        "drive_file_id": drive_file_id,
-                        "image_b64": base64.b64encode(jpeg).decode("ascii"),
-                    },
-                )
-                row.update(output)
-                row["roundtrip_ms"] = round((time.perf_counter() - t0) * 1000.0, 2)
-                row["jpeg_bytes"] = len(jpeg)
+                        "drive_file_id": row["drive_file_id"],
+                        "image_b64": base64.b64encode(row["jpeg"]).decode("ascii"),
+                    }
+                    for row in batch
+                ]
+            }
+            try:
+                output = await _run_job(http, endpoint_id, payload)
+                roundtrip_ms = round((time.perf_counter() - t0) * 1000.0, 2)
+                by_id = {item.get("drive_file_id"): item for item in (output.get("images") or [])}
                 print(
-                    f"[{i}/{len(rows)}] {name}: faces={row.get('face_count')} "
-                    f"detect_ms={row.get('detect_ms')} roundtrip_ms={row.get('roundtrip_ms')}"
+                    f"batch {b_i}/{len(batches)} n={output.get('batch_size')} "
+                    f"gpu_batch_ms={output.get('batch_ms')} roundtrip_ms={roundtrip_ms}"
                 )
+                for row in batch:
+                    item = by_id.get(row["drive_file_id"]) or {}
+                    row.pop("jpeg", None)
+                    row.update(item)
+                    row["roundtrip_ms"] = roundtrip_ms
+                    row["batch"] = b_i
+                    print(
+                        f"[{row['index']}/{len(rows)}] {row['name']}: faces={row.get('face_count')} "
+                        f"detect_ms={row.get('detect_ms')}"
+                    )
+                    results.append(row)
             except Exception as exc:  # noqa: BLE001
-                row["error"] = str(exc)
-                row["roundtrip_ms"] = round((time.perf_counter() - t0) * 1000.0, 2)
-                print(f"[{i}/{len(rows)}] {name}: ERROR {exc}")
-            results.append(row)
+                roundtrip_ms = round((time.perf_counter() - t0) * 1000.0, 2)
+                print(f"batch {b_i}/{len(batches)} ERROR {exc}")
+                for row in batch:
+                    row.pop("jpeg", None)
+                    row["error"] = str(exc)
+                    row["roundtrip_ms"] = roundtrip_ms
+                    row["batch"] = b_i
+                    results.append(row)
 
     ok = [r for r in results if "error" not in r]
     detect_ms = [float(r["detect_ms"]) for r in ok if r.get("detect_ms") is not None]
@@ -204,6 +260,7 @@ async def main() -> None:
         "detect_ms_mean": round(statistics.mean(detect_ms), 2) if detect_ms else None,
         "providers": ok[0].get("providers") if ok else None,
         "model": "buffalo_l",
+        "batch_size": BATCH_SIZE,
         "postgres_writes": False,
     }
     stamp = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
