@@ -190,7 +190,7 @@ export type CarouselOutlineSlide = {
   frames_prewarmed?: boolean | null;
   frame_candidates?: number[] | null;
   frame_candidate_items?: Array<{
-    frame_ts: number;
+    frame_ts?: number | null;
     preview_url?: string | null;
     label?: string | null;
     order?: number | null;
@@ -203,6 +203,11 @@ export type CarouselOutlineSlide = {
     identity_id?: string | null;
     identity_label?: string | null;
     hdr?: boolean | null;
+    source_metadata?: CarouselImageSourceMetadata | null;
+    asset_type?: "event_photo" | "video_frame" | string | null;
+    photo_drive_file_id?: string | null;
+    identity_person_id?: number | string | null;
+    identity_person_name?: string | null;
   }> | null;
   frame_quality?: Record<string, unknown> | null;
   frame_diversity?: {
@@ -213,6 +218,18 @@ export type CarouselOutlineSlide = {
   focal_y?: number | null;
   front_face_score?: number | null;
   panels?: CarouselSlidePanel[] | null;
+  source_metadata?: CarouselImageSourceMetadata | null;
+};
+
+export type CarouselImageSourceMetadata = {
+  source_type: "event_photo" | "video_frame" | string;
+  source_id?: string | null;
+  source_name?: string | null;
+  folder_id?: string | null;
+  folder_url?: string | null;
+  mime_type?: string | null;
+  width?: number | null;
+  height?: number | null;
 };
 
 export type CarouselSlidePanel = {
@@ -225,6 +242,7 @@ export type CarouselSlidePanel = {
   focal_x?: number | null;
   focal_y?: number | null;
   front_face_score?: number | null;
+  source_metadata?: CarouselImageSourceMetadata | null;
 };
 
 export type CarouselLayoutBundle = {

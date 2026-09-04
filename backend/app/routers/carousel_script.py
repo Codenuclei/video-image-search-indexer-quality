@@ -14,7 +14,7 @@ from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Header, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel, Field
-from sqlalchemy import or_, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -25,12 +25,15 @@ from app.db.advisory_locks import (
     carousel_themes_lock_key,
 )
 from app.db.models import (
+    CarouselEventPhotoFolder,
     CarouselGenerationSave,
     CarouselItemFeedback,
     CarouselItemReference,
     DriveFile,
     DriveFileStatus,
     Face,
+    FaceEmbedding,
+    IndexedFolder,
     Media,
     Person,
     VideoSegment,
@@ -1403,6 +1406,234 @@ async def prioritize_drive_videos_for_carousel(
 class EnsureTranscriptRequest(BaseModel):
     drive_file_id: str = Field(min_length=1, max_length=256)
     force: bool = False
+
+
+class CarouselEventPhotoFolderRequest(BaseModel):
+    folder_id: str = Field(min_length=1, max_length=256)
+
+
+async def _event_photo_folder_status(
+    session: AsyncSession,
+    drive_file_id: str,
+) -> dict[str, Any]:
+    link = await session.get(CarouselEventPhotoFolder, drive_file_id)
+    if link is None:
+        return {
+            "drive_file_id": drive_file_id,
+            "linked": False,
+            "folder": None,
+            "indexed_image_count": 0,
+            "face_image_count": 0,
+            "ready": False,
+            "indexing_state": None,
+            "content_fingerprint": None,
+        }
+    folder = await session.get(IndexedFolder, link.folder_id)
+    indexed_images = int(
+        await session.scalar(
+            select(func.count(DriveFile.id)).where(
+                DriveFile.root_folder_id == link.folder_id,
+                DriveFile.mime_type.like("image/%"),
+                DriveFile.archived_at.is_(None),
+            )
+        )
+        or 0
+    )
+    face_images = int(
+        await session.scalar(
+            select(func.count(func.distinct(DriveFile.id)))
+            .select_from(FaceEmbedding)
+            .join(Face, Face.id == FaceEmbedding.face_id)
+            .join(Media, Media.id == Face.media_id)
+            .join(DriveFile, DriveFile.id == Media.drive_file_id)
+            .where(
+                DriveFile.root_folder_id == link.folder_id,
+                DriveFile.mime_type.like("image/%"),
+                DriveFile.archived_at.is_(None),
+            )
+        )
+        or 0
+    )
+    ready = face_images > 0
+    state = str(link.indexing_state or "linked")
+    if ready and state != "error":
+        state = "ready"
+        if link.indexing_state != "ready":
+            link.indexing_state = "ready"
+            link.last_error = None
+    return {
+        "drive_file_id": drive_file_id,
+        "linked": True,
+        "folder": (
+            {
+                "id": folder.id,
+                "name": link.folder_name or folder.name,
+                "drive_url": folder.drive_url,
+                "is_active": folder.is_active,
+            }
+            if folder is not None
+            else {
+                "id": link.folder_id,
+                "name": link.folder_name,
+                "drive_url": f"https://drive.google.com/drive/folders/{link.folder_id}",
+                "is_active": False,
+            }
+        ),
+        "indexed_image_count": indexed_images,
+        "face_image_count": face_images,
+        "ready": ready,
+        "indexing_state": state,
+        "content_fingerprint": link.content_fingerprint,
+        "last_error": link.last_error,
+        "linked_at": link.created_at,
+        "updated_at": link.updated_at,
+    }
+
+
+async def _prepare_event_photo_folder(
+    video_drive_file_id: str,
+    folder_id: str,
+) -> None:
+    """Sync + index a secondary Drive root without changing the primary selection."""
+    from app.dependencies import get_indexing_worker
+    from app.drive.indexed_folders import record_indexed_folder
+
+    worker = get_indexing_worker()
+    session_factory = get_session_factory()
+    try:
+        sync_summary = await worker.sync_requested_root(folder_id)
+        if not sync_summary.get("ok"):
+            raise RuntimeError(str(sync_summary.get("error") or "sync_failed"))
+        # Prefer face-bearing images; process a bounded batch so linking stays responsive.
+        await worker.process_pending(limit=24)
+        async with session_factory() as session:
+            link = await session.get(CarouselEventPhotoFolder, video_drive_file_id)
+            if link is None:
+                return
+            await record_indexed_folder(
+                session,
+                folder_id=folder_id,
+                folder_name=str(
+                    sync_summary.get("folder_name") or link.folder_name or folder_id
+                ),
+                drive_user=None,
+                mark_active=False,
+                file_count=int(sync_summary.get("seen") or 0),
+            )
+            link.folder_name = str(
+                sync_summary.get("folder_name") or link.folder_name or folder_id
+            )
+            link.content_fingerprint = str(sync_summary.get("content_fingerprint") or "") or None
+            face_images = int(
+                await session.scalar(
+                    select(func.count(func.distinct(DriveFile.id)))
+                    .select_from(FaceEmbedding)
+                    .join(Face, Face.id == FaceEmbedding.face_id)
+                    .join(Media, Media.id == Face.media_id)
+                    .join(DriveFile, DriveFile.id == Media.drive_file_id)
+                    .where(
+                        DriveFile.root_folder_id == folder_id,
+                        DriveFile.mime_type.like("image/%"),
+                        DriveFile.archived_at.is_(None),
+                    )
+                )
+                or 0
+            )
+            link.indexing_state = "ready" if face_images > 0 else "preparing"
+            link.last_error = None
+            link.updated_at = datetime.now(timezone.utc)
+            await session.commit()
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(
+            "event-photo prepare failed video=%s folder=%s",
+            video_drive_file_id,
+            folder_id,
+        )
+        async with session_factory() as session:
+            link = await session.get(CarouselEventPhotoFolder, video_drive_file_id)
+            if link is None:
+                return
+            link.indexing_state = "error"
+            link.last_error = str(exc)[:400]
+            link.updated_at = datetime.now(timezone.utc)
+            await session.commit()
+
+
+@router.get("/videos/{drive_file_id}/event-photo-folder")
+async def carousel_event_photo_folder_status(
+    drive_file_id: str,
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    fid = drive_file_id.strip()
+    drive_file = await session.get(DriveFile, fid)
+    if drive_file is None or not is_video_mime(drive_file.mime_type):
+        raise HTTPException(status_code=404, detail="Video not found")
+    return await _event_photo_folder_status(session, fid)
+
+
+@router.put("/videos/{drive_file_id}/event-photo-folder")
+async def carousel_link_event_photo_folder(
+    drive_file_id: str,
+    body: CarouselEventPhotoFolderRequest,
+    background_tasks: BackgroundTasks,
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Link an event-photo Drive root without changing primary Drive sync."""
+    from app.drive.indexed_folders import record_indexed_folder
+
+    fid = drive_file_id.strip()
+    folder_id = body.folder_id.strip()
+    drive_file = await session.get(DriveFile, fid)
+    if drive_file is None or not is_video_mime(drive_file.mime_type):
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    folder = await session.get(IndexedFolder, folder_id)
+    folder_name = folder.name if folder is not None else folder_id
+    if folder is None:
+        # Create a history row so the FK is valid; preparation fills name/count.
+        await record_indexed_folder(
+            session,
+            folder_id=folder_id,
+            folder_name=folder_name,
+            drive_user=None,
+            mark_active=False,
+            file_count=0,
+        )
+
+    link = await session.get(CarouselEventPhotoFolder, fid)
+    if link is None:
+        link = CarouselEventPhotoFolder(
+            video_drive_file_id=fid,
+            folder_id=folder_id,
+            folder_name=folder_name,
+            indexing_state="preparing",
+        )
+        session.add(link)
+    else:
+        link.folder_id = folder_id
+        link.folder_name = folder_name
+        link.indexing_state = "preparing"
+        link.last_error = None
+        link.updated_at = datetime.now(timezone.utc)
+    await session.commit()
+    background_tasks.add_task(_prepare_event_photo_folder, fid, folder_id)
+    return await _event_photo_folder_status(session, fid)
+
+
+@router.delete("/videos/{drive_file_id}/event-photo-folder")
+async def carousel_unlink_event_photo_folder(
+    drive_file_id: str,
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    fid = drive_file_id.strip()
+    drive_file = await session.get(DriveFile, fid)
+    if drive_file is None or not is_video_mime(drive_file.mime_type):
+        raise HTTPException(status_code=404, detail="Video not found")
+    link = await session.get(CarouselEventPhotoFolder, fid)
+    if link is not None:
+        await session.delete(link)
+        await session.commit()
+    return await _event_photo_folder_status(session, fid)
 
 
 @router.get("/videos/{drive_file_id}/transcript-status")
@@ -4763,6 +4994,30 @@ async def _carousel_pipeline_select_images_impl(
         force_catalog=bool(getattr(body, "force", False)),
         prefer_hdr=True,
     )
+    event_photo_summary: dict[str, Any] = {
+        "algorithm": "event-photo-v1",
+        "linked": False,
+        "matched_slides": 0,
+    }
+    event_photo_link = await session.get(CarouselEventPhotoFolder, drive_file_id)
+    if event_photo_link is not None:
+        from app.search.carousel_event_photos import apply_event_photo_matches
+        from app.search.carousel_identity_catalog import load_or_build_identity_catalog
+
+        identity_catalog = await asyncio.to_thread(
+            load_or_build_identity_catalog,
+            thumbnail_dir=str(settings.thumbnail_dir),
+            drive_file_id=drive_file_id,
+            force=False,
+        )
+        selected_slides, event_photo_summary = await apply_event_photo_matches(
+            session,
+            selected_slides,
+            folder_id=event_photo_link.folder_id,
+            catalog=identity_catalog,
+            settings=settings,
+        )
+        event_photo_summary["linked"] = True
     # Fallback: if identity catalog found nothing usable, keep the previous
     # span-local polish path so Step 5 still has options on sparse videos.
     empty_after = sum(
@@ -4914,6 +5169,7 @@ async def _carousel_pipeline_select_images_impl(
         },
         "quality_summary": quality_summary,
         "identity": identity_summary,
+        "event_photos": event_photo_summary,
         "transcript_guard": transcript_guard,
     }
     try:

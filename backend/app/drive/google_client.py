@@ -141,9 +141,21 @@ class DriveDirectClient:
 
     # ── folder listing ────────────────────────────────────────────────────────
 
-    async def list_folder_files(self) -> ConnectorFolderListing:
-        """Recursively list all files inside the connected folder."""
-        access_token, root_folder_id = await self._get_auth()
+    async def list_folder_files(
+        self,
+        *,
+        root_folder_id: str | None = None,
+    ) -> ConnectorFolderListing:
+        """Recursively list all files inside a Drive folder.
+
+        Defaults to the connected primary root. Pass ``root_folder_id`` to list a
+        secondary requested root without changing ``DriveUser.selected_folder_id``.
+        """
+        if root_folder_id:
+            access_token = await self._get_access_token()
+            root_folder_id = root_folder_id.strip()
+        else:
+            access_token, root_folder_id = await self._get_auth()
         follow_shortcuts = get_runtime_settings().follow_shortcut_folders
 
         # Look up the folder name

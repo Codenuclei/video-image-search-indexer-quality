@@ -14,6 +14,7 @@ import {
   ArrowRight,
   Check,
   ImageIcon,
+  Link2,
   Sparkles,
   Target,
   Upload,
@@ -31,6 +32,7 @@ import {
   type TestCarousel,
   type TestExtract,
   type TestGenerate,
+  type TestEventPhotoFolder,
   type TestItem,
   type TestSlide,
   type TestTheme,
@@ -191,7 +193,9 @@ function deferStudioImageSelection(carousels: TestCarousel[]): TestCarousel[] {
         frame_ts: null,
         frame_source: candidates.length ? "candidates" : slide.frame_source,
         panels: null,
-        frame_candidates: candidates.map((item) => Number(item.frame_ts)),
+        frame_candidates: candidates
+          .map((item) => Number(item.frame_ts))
+          .filter(Number.isFinite),
         frame_candidate_items: candidates,
       };
     }),
@@ -383,6 +387,9 @@ function TestStudioInner() {
   const [extractStage, setExtractStage] = useState<StageState>(null);
   const [copyStage, setCopyStage] = useState<StageState>(null);
   const [imageStage, setImageStage] = useState<StageState>(null);
+  const [eventFolder, setEventFolder] = useState<TestEventPhotoFolder | null>(null);
+  const [eventFolderUrl, setEventFolderUrl] = useState("");
+  const [eventFolderBusy, setEventFolderBusy] = useState(false);
   const [transcriptModal, setTranscriptModal] = useState<TranscriptModalState>({
     open: false,
   });
@@ -588,6 +595,51 @@ function TestStudioInner() {
       cancelled = true;
     };
   }, [selected]);
+
+  useEffect(() => {
+    if (!selected) {
+      setEventFolder(null);
+      setEventFolderUrl("");
+      return;
+    }
+    let cancelled = false;
+    void testApi
+      .eventPhotoFolder(selected.id)
+      .then((folder) => {
+        if (cancelled) return;
+        setEventFolder(folder);
+        setEventFolderUrl(folder.folder?.drive_url || folder.folder?.id || "");
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setEventFolder(null);
+          setEventFolderUrl("");
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selected]);
+
+  async function linkEventPhotoFolder() {
+    if (!selected || eventFolderBusy) return;
+    const folderUrl = eventFolderUrl.trim();
+    if (!/^https?:\/\//i.test(folderUrl)) {
+      toastApiError("Paste a complete event-photo folder URL.");
+      return;
+    }
+    setEventFolderBusy(true);
+    try {
+      const folder = await testApi.linkEventPhotoFolder(selected.id, folderUrl);
+      setEventFolder(folder);
+      setEventFolderUrl(folder.folder?.drive_url || folder.folder?.id || folderUrl);
+      toast.success("Event-photo folder linked");
+    } catch (e) {
+      setError(formatApiError(e, "Could not link the event-photo folder."));
+    } finally {
+      setEventFolderBusy(false);
+    }
+  }
 
   useEffect(() => {
     if (!previewItem || !selected) return;
@@ -1208,6 +1260,7 @@ function TestStudioInner() {
           front_face_score: slide.front_face_score,
           highlight: slide.highlight,
           highlight_words: slide.highlight_words,
+          source_metadata: slide.source_metadata,
           moment_index: index,
         })),
       });
@@ -1444,6 +1497,57 @@ function TestStudioInner() {
             }
           }}
         />
+
+        {selected ? (
+          <div className="test-event-folder mt-4" data-testid="test-event-photo-folder">
+            <div className="test-event-folder-copy">
+              <p className="test-event-folder-title">
+                <Link2 size={14} />
+                Event-photo folder
+              </p>
+              <p className="test-event-folder-help">
+                Paste the Drive folder for this video. Its photos will appear beside video
+                frames in each slide&apos;s candidate picker.
+              </p>
+            </div>
+            <div className="test-event-folder-form">
+              <input
+                className="studio-input"
+                type="url"
+                value={eventFolderUrl}
+                onChange={(event) => setEventFolderUrl(event.target.value)}
+                placeholder="https://drive.google.com/drive/folders/…"
+                aria-label="Event-photo folder URL"
+                data-testid="test-event-photo-folder-url"
+              />
+              <button
+                type="button"
+                className="studio-btn studio-btn-ghost"
+                disabled={eventFolderBusy || !eventFolderUrl.trim()}
+                onClick={() => void linkEventPhotoFolder()}
+                data-testid="test-link-event-photo-folder"
+              >
+                {eventFolderBusy ? "Linking…" : eventFolder?.linked ? "Update link" : "Link folder"}
+              </button>
+            </div>
+            {eventFolder?.linked ? (
+              <p className="test-event-folder-status" role="status">
+                {eventFolder.folder?.name || "Folder linked"} ·{" "}
+                {eventFolder.indexing_state === "preparing"
+                  ? "preparing photos…"
+                  : eventFolder.indexing_state === "error"
+                    ? "prepare failed"
+                    : eventFolder.ready
+                      ? "ready"
+                      : "waiting for faces"}{" "}
+                · {eventFolder.indexed_image_count} event photo
+                {eventFolder.indexed_image_count === 1 ? "" : "s"} ·{" "}
+                {eventFolder.face_image_count} face-ready
+                {eventFolder.last_error ? ` · ${eventFolder.last_error}` : ""}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
 
         <div className="mt-5">
           {loadingVideos && videos.length === 0 ? (
@@ -1863,6 +1967,7 @@ function TestStudioInner() {
                   onLayoutModeChange={() => undefined}
                   imagesReady
                   simpleMode
+                  muPreset
                   runConfig={runConfig}
                   onSlideUpdated={(si, slide) => updateSlide(c.id, si, slide)}
                 />

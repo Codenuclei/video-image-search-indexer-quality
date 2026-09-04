@@ -24,7 +24,7 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-IDENTITY_CATALOG_VERSION = "identity-v1"
+IDENTITY_CATALOG_VERSION = "identity-v2-centroids"
 _MAX_SCAN_FRAMES = 48
 _MAX_APPEARANCES_PER_IDENTITY = 24
 _MAX_GROUP_FRAMES = 16
@@ -271,6 +271,12 @@ def build_identity_catalog(
 
     identities: list[dict[str, Any]] = []
     for track in tracks:
+        centroid_norm = float(np.linalg.norm(track.centroid))
+        centroid = (
+            track.centroid / centroid_norm
+            if centroid_norm > 1e-8
+            else track.centroid
+        )
         # Keep strongest appearances only.
         ranked = sorted(
             track.appearances,
@@ -283,6 +289,9 @@ def build_identity_catalog(
                 "label": track.label or track.identity_id,
                 "person_id": track.person_id,
                 "cluster_id": track.cluster_id,
+                # Persist the stable video identity so event-photo retrieval can
+                # query indexed image FaceEmbedding rows without rescanning frames.
+                "centroid": [round(float(value), 7) for value in centroid.tolist()],
                 "appearance_count": len(track.appearances),
                 "appearances": [
                     {
@@ -489,6 +498,18 @@ def _portrait_rank_key(app: dict[str, Any]) -> tuple[float, float, float]:
     )
 
 
+def has_explicit_picker_selection(slide: dict[str, Any]) -> bool:
+    """Recognize an existing human picker choice across frame/photo assets."""
+    if bool(slide.get("frame_locked")):
+        return True
+    if str(slide.get("frame_source") or "").strip().lower() == "manual":
+        return True
+    return any(
+        isinstance(item, dict) and bool(item.get("selected"))
+        for item in (slide.get("frame_candidate_items") or [])
+    )
+
+
 def build_slide_identity_candidates(
     catalog: dict[str, Any],
     *,
@@ -666,6 +687,10 @@ def apply_identity_selection_to_slides(
     modes: dict[str, int] = {}
     for slide in slides:
         item = dict(slide)
+        if has_explicit_picker_selection(item):
+            modes["manual"] = modes.get("manual", 0) + 1
+            out.append(item)
+            continue
         start = float(item.get("timestamp_sec") or 0)
         end = item.get("end_timestamp_sec")
         association = associate_quote_identity(catalog, start_sec=start, end_sec=end)

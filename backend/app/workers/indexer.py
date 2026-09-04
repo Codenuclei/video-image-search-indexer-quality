@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 from sqlalchemy import and_, case, exists, func, or_, select, text, update
 from sqlalchemy.exc import IntegrityError
@@ -1884,6 +1886,87 @@ class IndexingWorker:
         except Exception:  # noqa: BLE001
             pass
         return seen
+
+    async def sync_requested_root(self, root_folder_id: str) -> dict[str, Any]:
+        """Sync one Drive root without changing the primary selected folder.
+
+        Used by carousel event-photo links so a per-video photo folder can be
+        prepared while the main Drive sync root stays untouched.
+        """
+        from app.db.models import IndexedFolder
+        from app.drive.indexed_folders import record_indexed_folder
+        from app.drive.schemas import ConnectorFile
+        from app.drive.traverse import FOLDER_MIME, SHORTCUT_MIME
+
+        folder_id = (root_folder_id or "").strip()
+        if not folder_id:
+            return {"ok": False, "error": "missing_folder_id", "seen": 0, "new_pending": 0}
+
+        listing = await self._client.list_folder_files(root_folder_id=folder_id)
+        seen = 0
+        new_pending = 0
+        entries_by_id: dict[str, ConnectorFile] = {}
+        for entry in listing.files:
+            if entry.id:
+                entries_by_id[entry.id] = entry
+
+        fingerprint_seed = "|".join(
+            sorted(
+                f"{entry.id}:{entry.md5_checksum or entry.sha1_checksum or entry.modified_time or ''}"
+                for entry in entries_by_id.values()
+                if not entry.is_folder
+            )
+        )
+        fingerprint = hashlib.sha256(fingerprint_seed.encode("utf-8")).hexdigest()[:40]
+
+        async with self._session_factory() as session:
+            paused_paths = await load_paused_folder_paths(session)
+            for entry in entries_by_id.values():
+                if entry.mime_type == SHORTCUT_MIME and not entry.is_folder:
+                    continue
+                if entry.is_folder or entry.mime_type == FOLDER_MIME:
+                    await self._upsert_folder_placeholder(session, entry)
+                    continue
+                if is_macos_junk_name(entry.name):
+                    continue
+                if not is_drive_media_candidate(entry.mime_type, entry.name):
+                    continue
+                seen += 1
+                was_new = await self._upsert_drive_file(
+                    session,
+                    entry,
+                    paused_paths=paused_paths,
+                    root_folder_id=folder_id,
+                )
+                if was_new:
+                    new_pending += 1
+
+            await record_indexed_folder(
+                session,
+                folder_id=folder_id,
+                folder_name=(listing.folder.name if listing.folder else folder_id),
+                drive_user=None,
+                mark_active=False,
+                file_count=seen,
+            )
+            await session.commit()
+
+        logger.info(
+            "Requested-root sync: folder=%s files=%d new_pending=%d truncated=%s",
+            listing.folder.name if listing.folder else folder_id,
+            seen,
+            new_pending,
+            listing.truncated,
+        )
+        return {
+            "ok": True,
+            "folder_id": folder_id,
+            "folder_name": listing.folder.name if listing.folder else folder_id,
+            "seen": seen,
+            "new_pending": new_pending,
+            "truncated": listing.truncated,
+            "content_fingerprint": fingerprint,
+        }
 
     async def _upsert_folder_placeholder(self, session: AsyncSession, entry: ConnectorFile) -> None:
         """Persist Drive folders (and folder-shortcut markers) so Library shows empty dirs."""

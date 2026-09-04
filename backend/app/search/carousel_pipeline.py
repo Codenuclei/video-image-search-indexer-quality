@@ -58,6 +58,47 @@ _MU_SACRED_ACTION_VERBS = (
     "Launched, Scaled, Closed, Hired, Sold, Funded, Grew, Learned, Pitched, "
     "Deployed, Prototyped, Iterated"
 )
+_MU_SACRED_VERB_PATTERN = re.compile(
+    r"\b(?:build|built|ship(?:ped)?|creat(?:e|ed)|explor(?:e|ed)|"
+    r"experiment(?:ed)?|fail(?:ed)?|rais(?:e|ed)|invest(?:ed)?|"
+    r"launch(?:ed)?|scal(?:e|ed)|clos(?:e|ed)|hir(?:e|ed)|sold|sell|"
+    r"fund(?:ed)?|gr(?:ew|ow)|learn(?:ed|t)?|pitch(?:ed)?|deploy(?:ed)?|"
+    r"prototyped|iterat(?:e|ed))\b",
+    re.IGNORECASE,
+)
+
+
+def mu_sacred_action_words(text: str) -> list[str]:
+    """Return grounded MU action verbs found in a copy/seed line."""
+    return [match.group(0) for match in _MU_SACRED_VERB_PATTERN.finditer(text or "")]
+
+
+def _grounded_mu_action_clause(text: str, max_words: int = 18) -> str:
+    """Extract a short source-backed clause containing an MU action verb."""
+    clean = " ".join((text or "").split()).strip()
+    if not clean:
+        return ""
+    sentences = [
+        part.strip()
+        for part in re.split(r"(?<=[.!?])\s+|[;\n]+", clean)
+        if part.strip()
+    ]
+    chosen = next((part for part in sentences if mu_sacred_action_words(part)), "")
+    if not chosen:
+        return ""
+    words = chosen.split()
+    if len(words) <= max_words:
+        return chosen
+    verb_index = next(
+        (
+            i
+            for i, word in enumerate(words)
+            if mu_sacred_action_words(word.strip(".,!?;:\"'()[]"))
+        ),
+        0,
+    )
+    start = max(0, min(verb_index - 3, len(words) - max_words))
+    return " ".join(words[start : start + max_words]).strip()
 _HOOK_CRAFT_BRIEF = (
     "WHAT A HOOK MUST DO (all four jobs):\n"
     "1. STOP THE SCROLL — lead with the most startling concrete detail in the spoken "
@@ -4838,9 +4879,9 @@ def _normalize_highlight_indices(text: str, raw_indices: Any, raw_words: Any) ->
                 if w == token and i not in indices:
                     indices.append(i)
                     break
-    # Instagram style: highlight 1–4 punchy words, never the whole line.
-    if len(indices) > 4:
-        indices = indices[:4]
+    # MU style: highlight 1–3 punchy words, never the whole line.
+    if len(indices) > 3:
+        indices = indices[:3]
     if not indices and n >= 2:
         # Heuristic fallback: emphasize a mid content word (skip tiny function words).
         stop = {
@@ -4914,10 +4955,11 @@ async def polish_slides_instagram_copy(
     spoken_corpus = " ".join(str(row.get("text") or "") for row in payload)
     if has_llm:
         prompt = (
-            "You write Instagram carousel SLIDE COPY for a vertical 9:16 post.\n"
+            "You write Instagram carousel SLIDE COPY for a vertical 4:5 post.\n"
             f"{_SLIDE_CRAFT_BRIEF}"
             "CRAFT RULES:\n"
-            "- Rewrite EACH input into a complete, self-contained caption (roughly 6–16 words).\n"
+            "- Rewrite EACH input into a complete, self-contained 1–2 line clause "
+            "(roughly 6–16 words; hard maximum 18).\n"
             "- Do NOT paste the transcript. Drop filler, [music], and mid-clause scraps.\n"
             "- Keep the same slide count and order as the input (same i).\n"
             f"- Chosen theme (hard boundary): "
@@ -5018,7 +5060,7 @@ async def polish_slides_instagram_copy(
         # Allow crafted rewrites; reject invented numbers or empty/endless lines.
         if seed and polished and (
             not _hook_numbers_are_grounded(polished, spoken_corpus or seed)
-            or not 4 <= word_count <= 22
+            or not 4 <= word_count <= 18
         ):
             polished = seed
             slide_provider = (
@@ -5046,6 +5088,54 @@ async def polish_slides_instagram_copy(
         item["highlight_words"] = hl_words
         item["copy_source"] = slide_provider
         out.append(item)
+
+    # Deterministic MU-style guard: if the transcript genuinely contains a
+    # sacred action but the rewrite removed every such verb, restore one
+    # supported seed verb rather than inventing an action. Prefer cover/payoff
+    # positions, then the earliest supporting slide.
+    if out and not any(
+        mu_sacred_action_words(str(slide.get("hook_line") or "")) for slide in out
+    ):
+        supported = [
+            i
+            for i, row in enumerate(payload)
+            if mu_sacred_action_words(str(row.get("text") or ""))
+        ]
+        if supported:
+            preferred = next(
+                (i for i in (0, len(out) - 1) if i in supported),
+                supported[0],
+            )
+            seed = str(payload[preferred].get("text") or "").strip()
+            grounded = _grounded_mu_action_clause(seed)
+            if grounded:
+                out[preferred]["hook_line"] = grounded
+                out[preferred]["transcript_text"] = grounded
+                out[preferred]["caption"] = grounded
+                out[preferred]["snippet"] = grounded
+                _unused, indices, words = _heuristic_highlight_for_line(grounded)
+                sacred_norm = {
+                    word.lower().strip(".,!?;:\"'()[]")
+                    for word in mu_sacred_action_words(grounded)
+                }
+                seed_words = grounded.split()
+                sacred_indices = [
+                    i
+                    for i, word in enumerate(seed_words)
+                    if word.lower().strip(".,!?;:\"'()[]") in sacred_norm
+                ]
+                out[preferred]["highlight"] = (sacred_indices or indices)[:3]
+                out[preferred]["highlight_words"] = [
+                    seed_words[i] for i in out[preferred]["highlight"]
+                ] or words
+                out[preferred]["copy_source"] = (
+                    f"{out[preferred].get('copy_source') or used_provider}"
+                    "+mu_action_grounded"
+                )
+    for slide in out:
+        slide["mu_action_verb_used"] = bool(
+            mu_sacred_action_words(str(slide.get("hook_line") or ""))
+        )
     return out, used_provider
 
 

@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import type { CarouselOutlineSlide } from "@/lib/api";
 import {
   type CarouselExportLayout,
+  type CarouselRenderOptions,
   renderCarouselSlidePreviewUrl,
 } from "@/lib/carousel-export";
 
@@ -13,12 +14,14 @@ export function ExportSlidePreview({
   slideIndex,
   slideCount,
   label,
+  options,
 }: {
   slide: CarouselOutlineSlide;
   layout: CarouselExportLayout;
   slideIndex: number;
   slideCount: number;
   label: string;
+  options?: CarouselRenderOptions;
 }) {
   const [url, setUrl] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
@@ -26,7 +29,7 @@ export function ExportSlidePreview({
   useEffect(() => {
     let cancelled = false;
     let objectUrl: string | null = null;
-    void renderCarouselSlidePreviewUrl(slide, layout, slideIndex, slideCount)
+    void renderCarouselSlidePreviewUrl(slide, layout, slideIndex, slideCount, options)
       .then((next) => {
         if (cancelled) {
           URL.revokeObjectURL(next);
@@ -46,7 +49,7 @@ export function ExportSlidePreview({
       cancelled = true;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [slide, layout, slideIndex, slideCount]);
+  }, [slide, layout, slideIndex, slideCount, options]);
 
   if (failed) {
     return (

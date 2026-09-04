@@ -93,6 +93,34 @@ async def get_carousel_ref_image(file_id: str) -> FileResponse:
     return FileResponse(path, media_type=media_type)
 
 
+@router.get("/event-photo/{drive_file_id}")
+async def get_carousel_event_photo(
+    drive_file_id: str,
+    session: AsyncSession = Depends(get_db),
+) -> FileResponse:
+    """Serve only the cached 4:5 derivative selected by the event-photo matcher."""
+    from app.search.carousel_event_photos import (
+        ensure_event_photo_variant,
+        event_photo_variant_path,
+    )
+
+    drive_file = await session.get(DriveFile, drive_file_id)
+    if drive_file is None or not drive_file.mime_type.startswith("image/"):
+        raise HTTPException(status_code=404, detail="Event photo not found")
+    settings = get_settings()
+    path = event_photo_variant_path(settings, drive_file.id)
+    if not path.is_file():
+        path = ensure_event_photo_variant(drive_file, settings) or path
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Event photo derivative unavailable")
+    return FileResponse(
+        path,
+        media_type="image/jpeg",
+        filename=f"{drive_file.id}.jpg",
+        headers={"Cache-Control": "public, max-age=604800, immutable"},
+    )
+
+
 # Instagram carousel portrait (1080x1350). Indexer frames are cached at the
 # source video's native aspect (9:16 for reels, 16:9 for landscape), so
 # carousel consumers request `ar=4x5` and get a cached serve-time crop.

@@ -10,6 +10,15 @@ export const CAROUSEL_EXPORT_HEIGHT = 1350;
 export const CAROUSEL_JPEG_QUALITY = 0.92;
 
 export type CarouselExportLayout = "single_1" | "split_2";
+export type CarouselExportPreset = "default" | "mu_event_photo";
+
+export type CarouselRenderOptions = {
+  preset?: CarouselExportPreset;
+  title?: string | null;
+  speakerName?: string | null;
+  /** A distinct neighboring selection used as the second body photo. */
+  secondarySlide?: CarouselOutlineSlide | null;
+};
 
 export type CoverCrop = {
   sx: number;
@@ -156,8 +165,11 @@ function usableSplitPanels(slide: CarouselOutlineSlide): CarouselSlidePanel[] | 
 export function validateSlideForExport(
   slide: CarouselOutlineSlide,
   layout: CarouselExportLayout,
-  slideNumber: number
+  slideNumber: number,
+  preset: CarouselExportPreset = "default"
 ): void {
+  // The MU preset deliberately supports an intentional black text-only fallback.
+  if (preset === "mu_event_photo") return;
   if (layout === "split_2") {
     if (!usableSplitPanels(slide)) {
       throw new CarouselExportError(
@@ -529,6 +541,169 @@ async function renderSplit(
   context.fillRect(0, panelHeight - 1, CAROUSEL_EXPORT_WIDTH, 2);
 }
 
+function drawMuFade(
+  context: CanvasRenderingContext2D,
+  y: number,
+  height: number,
+  top = true,
+  bottom = true
+) {
+  if (top) {
+    const fade = context.createLinearGradient(0, y, 0, y + height * 0.28);
+    fade.addColorStop(0, "rgba(0,0,0,0.86)");
+    fade.addColorStop(1, "rgba(0,0,0,0)");
+    context.fillStyle = fade;
+    context.fillRect(0, y, CAROUSEL_EXPORT_WIDTH, height * 0.3);
+  }
+  if (bottom) {
+    const fade = context.createLinearGradient(
+      0,
+      y + height * 0.52,
+      0,
+      y + height
+    );
+    fade.addColorStop(0, "rgba(0,0,0,0)");
+    fade.addColorStop(1, "rgba(0,0,0,0.96)");
+    context.fillStyle = fade;
+    context.fillRect(0, y + height * 0.48, CAROUSEL_EXPORT_WIDTH, height * 0.52);
+  }
+}
+
+function drawCenteredCaption(
+  context: CanvasRenderingContext2D,
+  slide: CarouselOutlineSlide,
+  text: string,
+  centerY: number,
+  maxLines: number,
+  fontSize: number
+) {
+  const words = captionWords(text, slide.highlight, slide.highlight_words);
+  if (!words.length) return;
+  const fitted = fitCaption(context, words, {
+    fontSize,
+    minFontSize: 42,
+    fontWeight: 720,
+    lineHeight: 1.12,
+    maxLines,
+    maxWidth: 900,
+  });
+  const lineHeight = fitted.fontSize * 1.12;
+  const blockHeight = fitted.lines.length * lineHeight;
+  let baseline = centerY - blockHeight / 2 + fitted.fontSize;
+  context.textAlign = "left";
+  context.textBaseline = "alphabetic";
+  context.shadowColor = "rgba(0,0,0,0.82)";
+  context.shadowBlur = 14;
+  setFont(context, fitted.fontSize, 720);
+  for (const line of fitted.lines) {
+    const widths = line.map((word) => context.measureText(word.text).width);
+    const space = context.measureText(" ").width;
+    const width = widths.reduce((sum, value) => sum + value, 0) +
+      Math.max(0, line.length - 1) * space;
+    let x = (CAROUSEL_EXPORT_WIDTH - width) / 2;
+    line.forEach((word, index) => {
+      if (index) x += space;
+      context.fillStyle = word.highlighted ? "#ffe600" : "#ffffff";
+      context.fillText(word.text, x, baseline);
+      x += widths[index];
+    });
+    baseline += lineHeight;
+  }
+  context.shadowColor = "transparent";
+  context.shadowBlur = 0;
+}
+
+async function drawMuPhoto(
+  context: CanvasRenderingContext2D,
+  slide: CarouselOutlineSlide,
+  rawUrl: string,
+  slideNumber: number,
+  y: number,
+  height: number
+) {
+  const loaded = await loadExportImage(slideImageUrl(slide, rawUrl), slideNumber);
+  try {
+    drawCoverImage(
+      context,
+      loaded.image,
+      0,
+      y,
+      CAROUSEL_EXPORT_WIDTH,
+      height,
+      slide.focal_x,
+      slide.focal_y
+    );
+  } finally {
+    loaded.release();
+  }
+}
+
+async function renderMuEventPhoto(
+  context: CanvasRenderingContext2D,
+  slide: CarouselOutlineSlide,
+  slideNumber: number,
+  slideIndex: number,
+  options: CarouselRenderOptions
+) {
+  const text = (slide.transcript_text || slide.hook_line || slide.caption || "").trim();
+  const primaryUrl = slide.preview_url?.trim() || "";
+  if (slideIndex === 0) {
+    if (primaryUrl) {
+      await drawMuPhoto(context, slide, primaryUrl, slideNumber, 0, CAROUSEL_EXPORT_HEIGHT);
+      drawMuFade(context, 0, CAROUSEL_EXPORT_HEIGHT);
+    }
+    drawCenteredCaption(context, slide, text, 1035, 4, 82);
+    const credit =
+      (options.speakerName || slide.source_metadata?.source_name || options.title || "").trim();
+    if (credit) {
+      context.fillStyle = "#ffffff";
+      context.textAlign = "center";
+      context.textBaseline = "alphabetic";
+      setFont(context, 32, 560);
+      context.fillText(credit, CAROUSEL_EXPORT_WIDTH / 2, 1232);
+      context.textAlign = "left";
+    }
+    return;
+  }
+
+  const panelPair = usableSplitPanels(slide);
+  const secondary = options.secondarySlide;
+  const secondaryUrl = panelPair
+    ? panelPair[1].preview_url!.trim()
+    : secondary?.preview_url?.trim() &&
+        imageIdentity(secondary.preview_url) !== imageIdentity(primaryUrl)
+      ? secondary.preview_url.trim()
+      : "";
+  const topUrl = panelPair ? panelPair[0].preview_url!.trim() : primaryUrl;
+  if (topUrl && secondaryUrl) {
+    const bandHeight = 214;
+    const photoHeight = (CAROUSEL_EXPORT_HEIGHT - bandHeight) / 2;
+    await drawMuPhoto(context, slide, topUrl, slideNumber, 0, photoHeight);
+    await drawMuPhoto(
+      context,
+      panelPair?.[1] ? { ...slide, ...panelPair[1], preview_url: secondaryUrl } : secondary || slide,
+      secondaryUrl,
+      slideNumber,
+      photoHeight + bandHeight,
+      photoHeight
+    );
+    drawMuFade(context, 0, photoHeight, true, false);
+    drawMuFade(context, photoHeight + bandHeight, photoHeight, false, true);
+    context.fillStyle = "#050505";
+    context.fillRect(0, photoHeight, CAROUSEL_EXPORT_WIDTH, bandHeight);
+    drawCenteredCaption(context, slide, text, photoHeight + bandHeight / 2, 2, 54);
+    return;
+  }
+
+  if (primaryUrl || topUrl) {
+    await drawMuPhoto(context, slide, primaryUrl || topUrl, slideNumber, 0, CAROUSEL_EXPORT_HEIGHT);
+    drawMuFade(context, 0, CAROUSEL_EXPORT_HEIGHT);
+    drawCenteredCaption(context, slide, text, 1120, 3, 60);
+    return;
+  }
+  drawCenteredCaption(context, slide, text, CAROUSEL_EXPORT_HEIGHT / 2, 5, 72);
+}
+
 function canvasToJpeg(canvas: HTMLCanvasElement): Promise<Blob> {
   return new Promise((resolve, reject) => {
     canvas.toBlob(
@@ -546,10 +721,11 @@ export async function renderCarouselSlideToCanvas(
   slide: CarouselOutlineSlide,
   layout: CarouselExportLayout,
   slideIndex: number,
-  slideCount: number
+  slideCount: number,
+  options: CarouselRenderOptions = {}
 ): Promise<HTMLCanvasElement> {
   const slideNumber = slideIndex + 1;
-  validateSlideForExport(slide, layout, slideNumber);
+  validateSlideForExport(slide, layout, slideNumber, options.preset);
   const canvas = document.createElement("canvas");
   canvas.width = CAROUSEL_EXPORT_WIDTH;
   canvas.height = CAROUSEL_EXPORT_HEIGHT;
@@ -560,13 +736,17 @@ export async function renderCarouselSlideToCanvas(
   context.fillStyle = "#111111";
   context.fillRect(0, 0, canvas.width, canvas.height);
 
-  if (layout === "split_2") {
+  if (options.preset === "mu_event_photo") {
+    await renderMuEventPhoto(context, slide, slideNumber, slideIndex, options);
+  } else if (layout === "split_2") {
     await renderSplit(context, slide, slideNumber);
   } else {
     const role = slideIndex === 0 ? "cover" : slideIndex === slideCount - 1 ? "final" : "body";
     await renderSingle(context, slide, slideNumber, role);
   }
-  drawSlideNumber(context, slideIndex, slideCount);
+  if (options.preset !== "mu_event_photo") {
+    drawSlideNumber(context, slideIndex, slideCount);
+  }
   return canvas;
 }
 
@@ -574,9 +754,16 @@ export async function renderCarouselSlide(
   slide: CarouselOutlineSlide,
   layout: CarouselExportLayout,
   slideIndex: number,
-  slideCount: number
+  slideCount: number,
+  options: CarouselRenderOptions = {}
 ): Promise<Blob> {
-  const canvas = await renderCarouselSlideToCanvas(slide, layout, slideIndex, slideCount);
+  const canvas = await renderCarouselSlideToCanvas(
+    slide,
+    layout,
+    slideIndex,
+    slideCount,
+    options
+  );
   return canvasToJpeg(canvas);
 }
 
@@ -584,8 +771,9 @@ export async function renderCarouselSlidePreviewUrl(
   slide: CarouselOutlineSlide,
   layout: CarouselExportLayout,
   slideIndex: number,
-  slideCount: number
+  slideCount: number,
+  options: CarouselRenderOptions = {}
 ): Promise<string> {
-  const blob = await renderCarouselSlide(slide, layout, slideIndex, slideCount);
+  const blob = await renderCarouselSlide(slide, layout, slideIndex, slideCount, options);
   return URL.createObjectURL(blob);
 }

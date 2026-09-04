@@ -151,8 +151,19 @@ export type TestFrameCandidateCategory =
   | "group_panel"
   | string;
 
+export type TestImageSourceMetadata = {
+  source_type: "event_photo" | "video_frame" | string;
+  source_id?: string | null;
+  source_name?: string | null;
+  folder_id?: string | null;
+  folder_url?: string | null;
+  mime_type?: string | null;
+  width?: number | null;
+  height?: number | null;
+};
+
 export type TestFrameCandidateItem = {
-  frame_ts: number;
+  frame_ts?: number | null;
   preview_url?: string | null;
   label?: string | null;
   order?: number | null;
@@ -165,6 +176,11 @@ export type TestFrameCandidateItem = {
   identity_id?: string | null;
   identity_label?: string | null;
   hdr?: boolean | null;
+  source_metadata?: TestImageSourceMetadata | null;
+  asset_type?: "event_photo" | "video_frame" | string | null;
+  photo_drive_file_id?: string | null;
+  identity_person_id?: number | string | null;
+  identity_person_name?: string | null;
 };
 
 export type TestSlide = {
@@ -188,6 +204,24 @@ export type TestSlide = {
   front_face_score?: number | null;
   panels?: TestSlidePanel[] | null;
   copy_source?: string | null;
+  source_metadata?: TestImageSourceMetadata | null;
+};
+
+export type TestEventPhotoFolder = {
+  drive_file_id: string;
+  linked: boolean;
+  folder: {
+    id: string;
+    name?: string | null;
+    drive_url?: string | null;
+    is_active?: boolean;
+  } | null;
+  indexed_image_count: number;
+  face_image_count: number;
+  ready?: boolean;
+  indexing_state?: string | null;
+  content_fingerprint?: string | null;
+  last_error?: string | null;
 };
 
 export type TestCarousel = {
@@ -323,6 +357,29 @@ export const testApi = {
       message: string;
     };
   },
+  /**
+   * Test-only MU association contract:
+   * GET reads the event-photo folder linked to one source video.
+   * PUT creates/replaces it from a manually pasted Drive folder URL.
+   */
+  eventPhotoFolder: (driveFileId: string) =>
+    api<TestEventPhotoFolder>(
+      `/search/carousel/videos/${encodeURIComponent(driveFileId)}/event-photo-folder`,
+      { silent: true }
+    ),
+  linkEventPhotoFolder: (driveFileId: string, folderUrl: string) =>
+    api<TestEventPhotoFolder>(
+      `/search/carousel/videos/${encodeURIComponent(driveFileId)}/event-photo-folder`,
+      {
+      method: "PUT",
+      body: JSON.stringify({
+        folder_id:
+          folderUrl.match(/\/folders\/([^/?#]+)/i)?.[1] ||
+          folderUrl.match(/[?&]id=([^&#]+)/i)?.[1] ||
+          folderUrl.trim(),
+      }),
+      }
+    ),
   themes: (
     driveFileId: string,
     opts?: { force?: boolean; generate?: boolean; runConfig?: CarouselRunConfig }

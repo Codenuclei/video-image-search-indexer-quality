@@ -124,6 +124,12 @@ $env:TEST_DATABASE_URL="postgresql+asyncpg://drivefaceindexer:drivefaceindexer@l
 
 Place sample face photos in `backend/tests/fixtures/faces/` (gitignored) for real InsightFace integration tests.
 
+### Inspect image-only carousel reference PDFs (macOS)
+
+```bash
+swift scripts/render-pdf-pages.swift "reference.pdf" /tmp/reference-pages 2
+```
+
 ## Project structure
 
 ```

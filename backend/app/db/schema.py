@@ -155,6 +155,48 @@ async def ensure_schema(engine: AsyncEngine) -> None:
 
         # Required by the current ORM at startup. Keep this ahead of the warm-DB
         # shortcut so a newly introduced setting cannot be skipped.
+        await conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS carousel_event_photo_folders (
+                    video_drive_file_id VARCHAR NOT NULL PRIMARY KEY
+                        REFERENCES drive_files(id) ON DELETE CASCADE,
+                    folder_id VARCHAR NOT NULL
+                        REFERENCES indexed_folders(id) ON DELETE RESTRICT,
+                    folder_name VARCHAR,
+                    indexing_state VARCHAR(32) NOT NULL DEFAULT 'linked',
+                    content_fingerprint VARCHAR(64),
+                    last_error TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                )
+                """
+            )
+        )
+        await _ensure_index(
+            conn,
+            "ix_carousel_event_photo_folders_folder_id",
+            "CREATE INDEX ix_carousel_event_photo_folders_folder_id "
+            "ON carousel_event_photo_folders (folder_id)",
+        )
+        for column, ddl in (
+            ("folder_name", "ALTER TABLE carousel_event_photo_folders ADD COLUMN folder_name VARCHAR"),
+            (
+                "indexing_state",
+                "ALTER TABLE carousel_event_photo_folders ADD COLUMN indexing_state "
+                "VARCHAR(32) NOT NULL DEFAULT 'linked'",
+            ),
+            (
+                "content_fingerprint",
+                "ALTER TABLE carousel_event_photo_folders ADD COLUMN content_fingerprint "
+                "VARCHAR(64)",
+            ),
+            (
+                "last_error",
+                "ALTER TABLE carousel_event_photo_folders ADD COLUMN last_error TEXT",
+            ),
+        ):
+            await _ensure_column(conn, "carousel_event_photo_folders", column, ddl)
         await _ensure_column(
             conn,
             "app_settings",

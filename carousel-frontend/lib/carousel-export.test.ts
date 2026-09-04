@@ -148,6 +148,14 @@ describe("carousel export validation", () => {
       )
     ).toThrowError(/Slide 4 needs two distinct selected panel images/);
   });
+
+  it("allows the MU text-only fallback without weakening default validation", () => {
+    const textOnly = slide({ preview_url: null });
+    expect(() =>
+      validateSlideForExport(textOnly, "single_1", 1, "mu_event_photo")
+    ).not.toThrow();
+    expect(() => validateSlideForExport(textOnly, "single_1", 1)).toThrow();
+  });
 });
 
 describe("carousel slide rendering", () => {
@@ -222,6 +230,51 @@ describe("carousel slide rendering", () => {
     expect(context.drawImage).toHaveBeenCalledTimes(2);
     expect(canvas.width).toBe(1080);
     expect(canvas.height).toBe(1350);
+  });
+
+  it("renders the MU body from two distinct event photos on the canonical canvas", async () => {
+    const { canvas, context } = canvasHarness();
+    vi.stubGlobal("document", { createElement: vi.fn(() => canvas) });
+    const primary = slide({
+      preview_url: "https://images.test/event-1.jpg",
+      source_metadata: { source_type: "event_photo", source_name: "MU Summit" },
+      highlight_words: ["useful"],
+    });
+    const secondary = slide({
+      preview_url: "https://images.test/event-2.jpg",
+      source_metadata: { source_type: "event_photo" },
+    });
+
+    await renderCarouselSlide(primary, "single_1", 1, 4, {
+      preset: "mu_event_photo",
+      secondarySlide: secondary,
+    });
+
+    expect(context.drawImage).toHaveBeenCalledTimes(2);
+    expect(canvas.width).toBe(1080);
+    expect(canvas.height).toBe(1350);
+    expect(context.fillText).toHaveBeenCalledWith(
+      "useful",
+      expect.any(Number),
+      expect.any(Number)
+    );
+  });
+
+  it("renders an MU text-only slide without fetching an image", async () => {
+    const { canvas, context } = canvasHarness();
+    vi.stubGlobal("document", { createElement: vi.fn(() => canvas) });
+
+    await renderCarouselSlide(
+      slide({ preview_url: null }),
+      "single_1",
+      2,
+      4,
+      { preset: "mu_event_photo" }
+    );
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(context.drawImage).not.toHaveBeenCalled();
+    expect(context.fillText).toHaveBeenCalled();
   });
 
   it("reports a clear CORS/network fetch failure", async () => {

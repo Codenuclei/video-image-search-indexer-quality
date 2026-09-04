@@ -13,12 +13,14 @@ import {
   ChevronLeft,
   ChevronRight,
   Copy,
+  Download,
   ImageIcon,
   Pencil,
   Play,
   RefreshCw,
   Upload,
 } from "lucide-react";
+import { ExportSlidePreview } from "@/app/carousel/export-preview";
 import { IgHighlightedCaption } from "@/components/ig-caption";
 import { ItemFeedback } from "@/components/item-feedback";
 import { ItemReferences } from "@/components/item-references";
@@ -29,6 +31,7 @@ import {
   formatApiError,
   type CarouselItemFeedback,
   type CarouselItemReference,
+  type CarouselOutlineSlide,
 } from "@/lib/api";
 import {
   testApi,
@@ -39,7 +42,14 @@ import {
   type TestSlide,
   type TestSlidePanel,
   type TestFrameCandidateItem,
+  type TestImageSourceMetadata,
 } from "@/lib/test-api";
+import {
+  carouselArchiveFilename,
+  carouselSlideFilename,
+  renderCarouselSlide,
+  type CarouselRenderOptions,
+} from "@/lib/carousel-export";
 import { cn } from "@/lib/utils";
 import { LoadingLabel } from "@/components/spinner";
 import { focalPointStyle, splitPanelCaptions, uniquePickerFrames } from "@/app/carousel/utils";
@@ -66,6 +76,7 @@ export function TestIgPost({
   onLayoutModeChange,
   imagesReady = true,
   simpleMode = false,
+  muPreset = false,
   runConfig,
   onSlideUpdated,
   onOpenClip,
@@ -83,6 +94,8 @@ export function TestIgPost({
   imagesReady?: boolean;
   /** Focused picker: one carousel, candidate strip, no clutter. */
   simpleMode?: boolean;
+  /** Test-only MU event-photo composition and canonical exporter preview. */
+  muPreset?: boolean;
   runConfig: CarouselRunConfig;
   onSlideUpdated?: (slideIndex: number, slide: TestSlide) => void;
   onOpenClip?: (item: { start_sec: number; text: string }) => void;
@@ -108,6 +121,7 @@ export function TestIgPost({
   const [imageNote, setImageNote] = useState<string | null>(null);
   const [regenerating, setRegenerating] = useState(false);
   const [savingCopy, setSavingCopy] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const trackRef = useRef<HTMLDivElement>(null);
   const imageFileRef = useRef<HTMLInputElement>(null);
   const current = slides[active];
@@ -155,18 +169,27 @@ export function TestIgPost({
     }
   }
 
-  function applySlideImage(previewUrl: string, frameTs?: number | null) {
+  function applySlideImage(
+    previewUrl: string,
+    frameTs?: number | null,
+    sourceMetadata?: TestImageSourceMetadata | null
+  ) {
     if (!current) return;
     const chosenTs = frameTs ?? current.frame_ts ?? current.timestamp_sec;
     const items = (current.frame_candidate_items || []).map((item) => ({
       ...item,
-      selected: Math.abs(Number(item.frame_ts) - Number(chosenTs)) < 0.011,
+      selected:
+        item.preview_url === previewUrl ||
+        (item.frame_ts != null &&
+          Math.abs(Number(item.frame_ts) - Number(chosenTs)) < 0.011),
     }));
     const next: TestSlide = {
       ...current,
       preview_url: previewUrl,
       frame_ts: chosenTs,
-      frame_source: "manual",
+      frame_source:
+        sourceMetadata?.source_type === "event_photo" ? "event_photo" : "manual",
+      source_metadata: sourceMetadata ?? current.source_metadata,
       frame_candidate_items: items.length ? items : current.frame_candidate_items,
     };
     const key = `${carousel.id}:${active}:${previewUrl}`;
@@ -185,13 +208,26 @@ export function TestIgPost({
   }
 
   function pickCandidate(item: {
-    frame_ts: number;
+    frame_ts?: number | null;
     preview_url?: string | null;
+    source_metadata?: TestImageSourceMetadata | null;
+    asset_type?: string | null;
+    photo_drive_file_id?: string | null;
+    identity_person_name?: string | null;
   }) {
     const url =
       item.preview_url ||
-      `/media/video/${encodeURIComponent(driveFileId)}/frame?ts=${Number(item.frame_ts).toFixed(3)}&cache_only=1&ar=4x5`;
-    applySlideImage(url, item.frame_ts);
+      `/media/video/${encodeURIComponent(driveFileId)}/frame?ts=${Number(item.frame_ts ?? current?.timestamp_sec ?? 0).toFixed(3)}&cache_only=1&ar=4x5`;
+    const sourceMetadata =
+      item.source_metadata ||
+      (item.asset_type
+        ? {
+            source_type: item.asset_type,
+            source_id: item.photo_drive_file_id,
+            source_name: item.identity_person_name,
+          }
+        : null);
+    applySlideImage(url, item.frame_ts, sourceMetadata);
   }
 
   function recommendationBadge(item: TestFrameCandidateItem): string | null {
@@ -212,6 +248,8 @@ export function TestIgPost({
         return "Other people";
       case "group_panel":
         return "Group / panel";
+      case "event_photo":
+        return "Event photos";
       default:
         return "More frames";
     }
@@ -287,6 +325,7 @@ export function TestIgPost({
           focal_y: slide.focal_y,
           front_face_score: slide.front_face_score,
           panels: slide.panels,
+          source_metadata: slide.source_metadata,
         })),
         theme: { title: carousel.title },
         references: slides.map((slide, index) => ({
@@ -350,6 +389,105 @@ export function TestIgPost({
     }
     return sections;
   }, [candidateItems]);
+
+  const exportSlides = useMemo<CarouselOutlineSlide[]>(
+    () =>
+      slides.map((slide, index) => ({
+        ...slide,
+        drive_file_id: driveFileId,
+        name: carousel.title || "MU event",
+        moment_index: slide.index ?? index,
+      })),
+    [carousel.title, driveFileId, slides]
+  );
+
+  const muOptionsBySlide = useMemo<CarouselRenderOptions[]>(
+    () =>
+      exportSlides.map((slide, index) => {
+        const panelPair =
+          slide.panels &&
+          slide.panels.length >= 2 &&
+          slide.panels[0]?.preview_url &&
+          slide.panels[1]?.preview_url &&
+          slide.panels[0].preview_url !== slide.panels[1].preview_url
+            ? slide.panels
+            : null;
+        const primary = panelPair?.[0]?.preview_url || slide.preview_url || "";
+        const secondaryFromPanels = panelPair
+          ? {
+              ...slide,
+              preview_url: panelPair[1].preview_url,
+              focal_x: panelPair[1].focal_x,
+              focal_y: panelPair[1].focal_y,
+            }
+          : null;
+        const secondary =
+          secondaryFromPanels ||
+          exportSlides
+            .slice(index + 1)
+            .concat(exportSlides.slice(0, index))
+            .find((item) => item.preview_url && item.preview_url !== primary) ||
+          null;
+        return {
+          preset: "mu_event_photo",
+          title: carousel.title,
+          speakerName: slide.source_metadata?.source_name,
+          secondarySlide: secondary,
+        };
+      }),
+    [carousel.title, exportSlides]
+  );
+
+  function downloadBlob(blob: Blob, filename: string) {
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filename;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }
+
+  async function downloadMuSlide() {
+    if (!current || exporting) return;
+    setExporting(true);
+    try {
+      const blob = await renderCarouselSlide(
+        exportSlides[active],
+        "single_1",
+        active,
+        n,
+        muOptionsBySlide[active]
+      );
+      downloadBlob(blob, carouselSlideFilename(carousel.title, active));
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  async function downloadMuCarousel() {
+    if (exporting) return;
+    setExporting(true);
+    try {
+      const { default: JSZip } = await import("jszip");
+      const zip = new JSZip();
+      for (let index = 0; index < slides.length; index++) {
+        const blob = await renderCarouselSlide(
+          exportSlides[index],
+          "single_1",
+          index,
+          slides.length,
+          muOptionsBySlide[index]
+        );
+        zip.file(carouselSlideFilename(carousel.title, index), blob);
+      }
+      downloadBlob(
+        await zip.generateAsync({ type: "blob" }),
+        carouselArchiveFilename(carousel.title)
+      );
+    } finally {
+      setExporting(false);
+    }
+  }
 
   if (!n || !current) {
     return <p className="text-sm text-muted-foreground">No slides yet.</p>;
@@ -636,7 +774,16 @@ export function TestIgPost({
                 aria-label={`Slide ${i + 1} of ${n}`}
                 aria-hidden={i !== active}
               >
-                {splitPanels ? (
+                {muPreset ? (
+                  <ExportSlidePreview
+                    slide={exportSlides[i]}
+                    layout="single_1"
+                    slideIndex={i}
+                    slideCount={n}
+                    label={`MU carousel slide ${i + 1}`}
+                    options={muOptionsBySlide[i]}
+                  />
+                ) : splitPanels ? (
                   splitPanels.map((panel: TestSlidePanel, p: number) => (
                     <div className="ig-panel" key={`${slide.index}-panel-${p}`}>
                       {panel.preview_url ? (
@@ -783,8 +930,8 @@ export function TestIgPost({
               </span>
               <span className="test-choose-image-sub">
                 {candidateItems.length
-                  ? `${candidateItems.length} verified frame${candidateItems.length === 1 ? "" : "s"}`
-                  : "No verified frames for this slide"}
+                  ? `${candidateItems.length} photo candidate${candidateItems.length === 1 ? "" : "s"}`
+                  : "No photo candidates for this slide"}
               </span>
             </span>
           </button>
@@ -835,16 +982,28 @@ export function TestIgPost({
                         const selected =
                           item.selected ||
                           (current.preview_url != null &&
-                            Math.abs(Number(item.frame_ts) - Number(current.frame_ts ?? -1)) <
-                              0.011);
+                            (item.preview_url === current.preview_url ||
+                              (item.frame_ts != null &&
+                                Math.abs(
+                                  Number(item.frame_ts) - Number(current.frame_ts ?? -1)
+                                ) < 0.011)));
                         const badge = recommendationBadge(item);
                         const src = testAssetUrl(item.preview_url || "");
                         const meta =
-                          item.identity_label ||
-                          item.label ||
-                          (item.hdr ? "HDR" : `Option ${i + 1}`);
+                          `${
+                            item.asset_type === "event_photo" ||
+                            item.source_metadata?.source_type === "event_photo"
+                              ? "Event photo"
+                              : "Video frame"
+                          } · ${
+                            item.identity_label ||
+                            item.identity_person_name ||
+                            item.source_metadata?.source_name ||
+                            item.label ||
+                            (item.hdr ? "HDR" : `Option ${i + 1}`)
+                          }`;
                         return (
-                          <li key={`cand-${section.key}-${item.frame_ts}-${i}`}>
+                          <li key={`cand-${section.key}-${item.frame_ts ?? item.preview_url}-${i}`}>
                             <button
                               type="button"
                               className={cn(
@@ -879,6 +1038,31 @@ export function TestIgPost({
             )}
           </div>
         </ModalOverlay>
+      ) : null}
+
+      {simpleMode && muPreset ? (
+        <div className="test-mu-export-actions mt-3">
+          <button
+            type="button"
+            className="studio-btn studio-btn-ghost"
+            disabled={exporting}
+            onClick={() => void downloadMuSlide()}
+            data-testid="test-download-mu-slide"
+          >
+            <Download size={14} />
+            {exporting ? "Rendering…" : "Download slide"}
+          </button>
+          <button
+            type="button"
+            className="studio-btn studio-btn-primary"
+            disabled={exporting}
+            onClick={() => void downloadMuCarousel()}
+            data-testid="test-download-mu-carousel"
+          >
+            <Download size={14} />
+            Download carousel
+          </button>
+        </div>
       ) : null}
 
       {!simpleMode && current && driveFileId ? (

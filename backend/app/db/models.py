@@ -71,6 +71,36 @@ class IndexedFolder(Base):
     last_file_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
+class CarouselEventPhotoFolder(Base):
+    """Manual event-photo root linked to one carousel source video.
+
+    This deliberately does not reuse ``DriveUser.selected_folder_id``: selecting
+    event photos is a per-video editorial choice and must not switch Drive sync.
+    """
+
+    __tablename__ = "carousel_event_photo_folders"
+
+    video_drive_file_id: Mapped[str] = mapped_column(
+        ForeignKey("drive_files.id", ondelete="CASCADE"), primary_key=True
+    )
+    folder_id: Mapped[str] = mapped_column(
+        ForeignKey("indexed_folders.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    folder_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    # linked | preparing | ready | error
+    indexing_state: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="linked", server_default="linked"
+    )
+    content_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
 class FileIndexConflict(Base):
     """Pending or resolved same-name / same-content indexing conflicts."""
 

@@ -10,7 +10,7 @@ import pytest
 
 def _catalog_fixture() -> dict:
     return {
-        "version": "identity-v1",
+        "version": "identity-v2-centroids",
         "drive_file_id": "vid-1",
         "fingerprint": "abc",
         "frames_scanned": 6,
@@ -340,4 +340,34 @@ def test_apply_identity_selection_text_first(tmp_path, monkeypatch):
     assert any(i.get("recommended") for i in items)
     assert all(i.get("selected") is False for i in items)
     assert all(i.get("preview_url") and "cache_only=1" in i["preview_url"] for i in items)
-    assert summary["algorithm"] == "identity-v1"
+    assert summary["algorithm"] == "identity-v2-centroids"
+
+
+def test_apply_identity_selection_preserves_explicit_picker_choice(tmp_path, monkeypatch):
+    from app.search import carousel_identity_catalog as cat
+
+    monkeypatch.setattr(
+        cat,
+        "load_or_build_identity_catalog",
+        lambda **kwargs: _catalog_fixture(),
+    )
+    selected = {
+        "frame_source": "event_photo",
+        "preview_url": "/media/event-photo/chosen",
+        "frame_ts": None,
+        "frame_candidate_items": [
+            {
+                "asset_type": "event_photo",
+                "photo_drive_file_id": "chosen",
+                "preview_url": "/media/event-photo/chosen",
+                "selected": True,
+            }
+        ],
+    }
+    out, summary = cat.apply_identity_selection_to_slides(
+        [selected],
+        thumbnail_dir=str(tmp_path),
+        drive_file_id="vid-1",
+    )
+    assert out[0] == selected
+    assert summary["modes"] == {"manual": 1}
