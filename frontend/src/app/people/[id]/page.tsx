@@ -708,24 +708,30 @@ export default function PersonDetailPage() {
                   loading={previewLoadingId === selectedSuggestion.cluster_id}
                   expectedFileCount={selectedSuggestion.file_count}
                 />
-                <div className="flex flex-wrap gap-2">
-                  <Button
+                <div
+                  role="group"
+                  aria-label={`Decide if this cluster is ${person.name}`}
+                  className="inline-flex max-w-full flex-wrap items-center rounded-lg border border-border/80 bg-muted/50 p-0.5"
+                >
+                  <button
+                    type="button"
                     onClick={() => decideSuggestion(selectedSuggestion.cluster_id, "accept")}
                     disabled={suggestionActionId != null}
-                    className="min-w-0"
+                    className="inline-flex h-8 items-center gap-1.5 rounded-md bg-primary px-3 text-[12px] font-medium text-primary-foreground shadow-sm transition-all duration-150 hover:brightness-110 disabled:pointer-events-none disabled:opacity-50"
                   >
-                    <Check size={15} aria-hidden />
+                    <Check size={13} aria-hidden className="shrink-0" />
                     {suggestionBusy ? "Saving…" : `Add to ${person.name}`}
-                  </Button>
-                  <Button
-                    variant="secondary"
+                  </button>
+                  <button
+                    type="button"
                     onClick={() => decideSuggestion(selectedSuggestion.cluster_id, "reject")}
                     disabled={suggestionActionId != null}
                     title={`This cluster is not ${person.name}`}
+                    className="inline-flex h-8 items-center gap-1.5 rounded-md px-3 text-[12px] font-medium text-muted-foreground transition-all duration-150 hover:bg-destructive/10 hover:text-destructive disabled:pointer-events-none disabled:opacity-50"
                   >
-                    <X size={15} aria-hidden />
+                    <X size={13} aria-hidden className="shrink-0" />
                     Not {person.name}
-                  </Button>
+                  </button>
                 </div>
               </div>
             )}
