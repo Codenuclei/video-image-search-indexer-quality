@@ -110,16 +110,34 @@ async def _fetch_jpeg(drive_file_id: str, name: str) -> bytes:
     return _jpeg_bytes(image)
 
 
-async def _runsync(client: httpx.AsyncClient, endpoint_id: str, payload: dict) -> dict:
-    url = f"https://api.runpod.ai/v2/{endpoint_id}/runsync"
-    headers = {"Authorization": f"Bearer {os.environ['RUNPOD_API_KEY']}", "Content-Type": "application/json"}
-    response = await client.post(url, headers=headers, json={"input": payload})
-    if response.status_code >= 400:
-        raise RuntimeError(f"runsync HTTP {response.status_code}: {response.text[:500]}")
-    body = response.json()
-    if body.get("status") not in {"COMPLETED", "completed"}:
-        raise RuntimeError(f"runsync status={body.get('status')} error={body.get('error') or body}")
-    return body.get("output") or {}
+async def _run_job(client: httpx.AsyncClient, endpoint_id: str, payload: dict) -> dict:
+    key = os.environ["RUNPOD_API_KEY"]
+    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+    submit = await client.post(
+        f"https://api.runpod.ai/v2/{endpoint_id}/run",
+        headers=headers,
+        json={"input": payload},
+    )
+    if submit.status_code >= 400:
+        raise RuntimeError(f"run HTTP {submit.status_code}: {submit.text[:500]}")
+    body = submit.json()
+    job_id = body.get("id")
+    if not job_id:
+        raise RuntimeError(f"run missing id: {body}")
+    status_url = f"https://api.runpod.ai/v2/{endpoint_id}/status/{job_id}"
+    deadline = time.monotonic() + 900.0
+    while time.monotonic() < deadline:
+        status_resp = await client.get(status_url, headers=headers)
+        if status_resp.status_code >= 400:
+            raise RuntimeError(f"status HTTP {status_resp.status_code}: {status_resp.text[:500]}")
+        data = status_resp.json()
+        status = str(data.get("status") or "")
+        if status in {"COMPLETED", "completed"}:
+            return data.get("output") or {}
+        if status in {"FAILED", "failed", "CANCELLED", "cancelled", "TIMED_OUT", "timed_out"}:
+            raise RuntimeError(f"job {job_id} {status}: {data.get('error') or data}")
+        await asyncio.sleep(3.0)
+    raise RuntimeError(f"job {job_id} still {status} after 15m")
 
 
 async def main() -> None:
@@ -137,7 +155,7 @@ async def main() -> None:
     results: list[dict] = []
     timeout = httpx.Timeout(600.0, connect=30.0)
     async with httpx.AsyncClient(timeout=timeout) as http:
-        health = await _runsync(http, endpoint_id, {"healthcheck": True})
+        health = await _run_job(http, endpoint_id, {"healthcheck": True})
         print(f"Health: model={health.get('model')} providers={health.get('providers')}")
         for i, (drive_file_id, name, mime) in enumerate(rows, start=1):
             row: dict = {
@@ -149,7 +167,7 @@ async def main() -> None:
             t0 = time.perf_counter()
             try:
                 jpeg = await _fetch_jpeg(drive_file_id, name)
-                output = await _runsync(
+                output = await _run_job(
                     http,
                     endpoint_id,
                     {
