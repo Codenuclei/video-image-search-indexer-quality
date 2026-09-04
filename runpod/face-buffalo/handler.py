@@ -25,7 +25,9 @@ def _load_app():
     if _app is not None:
         return _app
     from insightface.app import FaceAnalysis
+    import onnxruntime as ort
 
+    logger.info("ORT %s available=%s", ort.__version__, ort.get_available_providers())
     providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
     logger.info("Loading InsightFace %s providers=%s", MODEL_NAME, providers)
     app = FaceAnalysis(name=MODEL_NAME, providers=providers)
