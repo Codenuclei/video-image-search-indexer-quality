@@ -1307,6 +1307,14 @@ export const apiClient = {
     api<void>(`/persons/${personId}/suggested-clusters/${clusterId}/reject`, {
       method: "POST",
     }),
+  cluster: (id: number) => api<Cluster>(`/clusters/${id}`),
+  clusterFaces: (clusterId: number, limit = 24) => {
+    const params = new URLSearchParams({
+      cluster_id: String(clusterId),
+      limit: String(limit),
+    });
+    return api<FileFace[]>(`/faces?${params}`);
+  },
   clusters: (opts?: { includeIgnored?: boolean; limit?: number; offset?: number }) => {
     const params = new URLSearchParams();
     if (opts?.includeIgnored) params.set("include_ignored", "true");
