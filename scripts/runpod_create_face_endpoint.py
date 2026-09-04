@@ -27,7 +27,7 @@ START_CMD = [
         "set -euo pipefail; "
         "export PYTHONUNBUFFERED=1; "
         "export RUNPOD_SKIP_AUTO_SYSTEM_CHECKS=true; "
-        "python -m pip install -q numpy opencv-python-headless onnx Pillow requests tqdm easydict runpod; "
+        "python -m pip install -q numpy opencv-python-headless onnx Pillow requests tqdm easydict scikit-image runpod; "
         f"python -m pip install -q --extra-index-url {ORT_CUDA12} 'onnxruntime-gpu==1.20.2'; "
         "python -m pip install -q --no-deps insightface; "
         f"curl -fsSL {HANDLER_URL} -o /tmp/handler.py; "
