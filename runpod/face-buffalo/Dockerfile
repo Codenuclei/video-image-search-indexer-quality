@@ -19,9 +19,9 @@ WORKDIR /app
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -U pip \
-    && pip install --no-cache-dir insightface opencv-python-headless numpy runpod onnx \
-    && pip uninstall -y onnxruntime \
-    && pip install --no-cache-dir "onnxruntime-gpu>=1.20.0"
+    && pip install --no-cache-dir numpy opencv-python-headless onnx Pillow requests tqdm easydict runpod \
+    && pip install --no-cache-dir --extra-index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/ "onnxruntime-gpu==1.20.2" \
+    && pip install --no-cache-dir --no-deps insightface
 
 # Bake buffalo_l ONNX into the image so workers skip the GitHub download.
 ENV INSIGHTFACE_HOME=/root/.insightface

@@ -28,7 +28,7 @@ START_CMD = [
         "export PYTHONUNBUFFERED=1; "
         "export RUNPOD_SKIP_AUTO_SYSTEM_CHECKS=true; "
         "python -m pip install -q numpy opencv-python-headless onnx Pillow requests tqdm easydict runpod; "
-        f"python -m pip install -q --extra-index-url {ORT_CUDA12} 'onnxruntime-gpu==1.20.1'; "
+        f"python -m pip install -q --extra-index-url {ORT_CUDA12} 'onnxruntime-gpu==1.20.2'; "
         "python -m pip install -q --no-deps insightface; "
         f"curl -fsSL {HANDLER_URL} -o /tmp/handler.py; "
         "exec python -u /tmp/handler.py"
@@ -84,7 +84,6 @@ def main() -> None:
                 headers=headers,
                 json={
                     "imageName": IMAGE,
-                    "isServerless": True,
                     "containerDiskInGb": 40,
                     "dockerStartCmd": START_CMD,
                     "env": {
@@ -93,22 +92,6 @@ def main() -> None:
                     },
                 },
             )
-            if updated.status_code >= 400:
-                updated = client.put(
-                    f"{REST}/templates/{template_id}",
-                    headers=headers,
-                    json={
-                        "name": TEMPLATE_NAME,
-                        "imageName": IMAGE,
-                        "isServerless": True,
-                        "containerDiskInGb": 40,
-                        "dockerStartCmd": START_CMD,
-                        "env": {
-                            "PYTHONUNBUFFERED": "1",
-                            "RUNPOD_SKIP_AUTO_SYSTEM_CHECKS": "true",
-                        },
-                    },
-                )
             if updated.status_code >= 400:
                 raise SystemExit(f"Update template failed {updated.status_code}: {updated.text}")
             print(f"Updated template {template_id}")
