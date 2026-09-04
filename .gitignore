@@ -28,6 +28,10 @@ data/
 backend/tests/fixtures/faces/*.jpg
 !backend/tests/fixtures/faces/.gitkeep
 
+# RunPod buffalo_l dry-run artifacts (endpoint id is not secret; results can include Drive ids)
+runpod/face-buffalo/results/
+runpod/face-buffalo/.endpoint_id
+
 # Local face A/B benchmark workspace (heavy models / datasets / results)
 face-ab-benchmark/models/
 face-ab-benchmark/faces/
