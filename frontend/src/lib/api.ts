@@ -1110,6 +1110,18 @@ export const driveGoogleViewUrl = (driveFileId: string) =>
 export const driveFileThumbnailUrl = (driveFileId: string) =>
   `${API_BASE}/drive/files/${encodeURIComponent(driveFileId)}/thumbnail?v=2`;
 
+/** Indexed video keyframe JPEG. Omits cache_only so the backend can snap to a nearby indexed frame. */
+export const driveVideoFrameUrl = (
+  driveFileId: string,
+  timestampSec?: number | null,
+  opts?: { cacheOnly?: boolean }
+) => {
+  const ts = timestampSec != null && Number.isFinite(Number(timestampSec)) ? Number(timestampSec) : 0;
+  const params = new URLSearchParams({ ts: ts.toFixed(3) });
+  if (opts?.cacheOnly) params.set("cache_only", "1");
+  return `${API_BASE}/media/video/${encodeURIComponent(driveFileId)}/frame?${params}`;
+};
+
 /** Full preview via backend stream/cache. Use only after click-to-enlarge. */
 export const driveFilePreviewUrl = (driveFileId: string, mimeType?: string) => {
   // Keep every preview on our backend, including callers that do not have a
@@ -1277,10 +1289,11 @@ export const apiClient = {
         frame_timestamp?: number | null;
       }[]
     >(`/persons/${id}/media`),
-  personClusterSuggestions: (id: number, opts?: { limit?: number; offset?: number }) => {
+  personClusterSuggestions: (id: number, opts?: { limit?: number; offset?: number; minSimilarity?: number }) => {
     const params = new URLSearchParams();
     if (opts?.limit != null) params.set("limit", String(opts.limit));
     if (opts?.offset != null) params.set("offset", String(opts.offset));
+    if (opts?.minSimilarity != null) params.set("min_similarity", String(opts.minSimilarity));
     const qs = params.toString();
     return api<PersonClusterSuggestionList>(
       `/persons/${id}/suggested-clusters${qs ? `?${qs}` : ""}`

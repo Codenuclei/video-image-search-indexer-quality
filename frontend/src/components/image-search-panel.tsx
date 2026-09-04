@@ -7,14 +7,12 @@ import {
   Check,
   ChevronRight,
   ExternalLink,
-  FileVideo,
   ImagePlus,
   Linkedin,
   X,
 } from "lucide-react";
 import {
   apiClient,
-  driveFileThumbnailUrl,
   driveGoogleViewUrl,
   formatApiError,
   type FaceSearchAppearance,
@@ -22,7 +20,7 @@ import {
   type Person,
   type SuggestedClusterMatch,
 } from "@/lib/api";
-import { Button, ConfirmDialog, FaceThumb, Input, LoadingLabel, Spinner } from "@/components/ui";
+import { Button, ConfirmDialog, DriveMediaThumb, FaceThumb, Input, LoadingLabel, Spinner } from "@/components/ui";
 import { ModalOverlay } from "@/components/modal";
 import { PersonMergeSearch } from "@/components/person-merge-search";
 import { cn } from "@/lib/utils";
@@ -407,21 +405,18 @@ function ClusterGalleryDialog({
                     <span className="relative block aspect-square">
                       {isVideo(item) ? (
                         <>
-                          <span className="flex h-full items-center justify-center text-muted-foreground">
-                            <FileVideo size={22} />
-                          </span>
+                          <DriveMediaThumb
+                            driveFileId={item.drive_file_id}
+                            name={item.name}
+                            isVideo
+                            frameTimestamp={item.frame_timestamp}
+                          />
                           <span className="absolute bottom-1 left-1 rounded bg-black/70 px-1 py-0.5 text-[9px] font-semibold uppercase text-white">
                             Video
                           </span>
                         </>
                       ) : (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img
-                          src={driveFileThumbnailUrl(item.drive_file_id)}
-                          alt={item.name}
-                          loading="lazy"
-                          className="h-full w-full object-cover"
-                        />
+                        <DriveMediaThumb driveFileId={item.drive_file_id} name={item.name} />
                       )}
                     </span>
                     <span className="block truncate px-1.5 py-1 text-[10px] text-muted-foreground group-hover:text-foreground">

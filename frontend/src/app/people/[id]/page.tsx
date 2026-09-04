@@ -2,17 +2,16 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, usePathname, useRouter } from "next/navigation";
-import { ArrowLeft, Check, FileVideo, Pencil, X } from "lucide-react";
+import { ArrowLeft, Check, Pencil, X } from "lucide-react";
 import {
   apiClient,
-  driveFileThumbnailUrl,
   driveGoogleViewUrl,
   formatApiError,
   type Person,
   type PersonClusterSuggestion,
   type PersonRole,
 } from "@/lib/api";
-import { Button, Card, ConfirmDialog, FaceThumb, Input, LoadingLabel } from "@/components/ui";
+import { Button, Card, ConfirmDialog, DriveMediaThumb, FaceThumb, Input, LoadingLabel } from "@/components/ui";
 import { RoleSelector } from "@/components/role-selector";
 import { AnimatedTrash } from "@/components/animated-trash";
 import { useRegisterTestShellChrome } from "@/lib/test-shell-chrome";
@@ -31,6 +30,8 @@ function formatTimestamp(sec: number): string {
   const s = Math.floor(sec % 60);
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
+
+const REC_THRESHOLD_OPTIONS = [0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8];
 
 export default function PersonDetailPage() {
   const params = useParams();
@@ -54,6 +55,7 @@ export default function PersonDetailPage() {
   const [suggestionsLoadingMore, setSuggestionsLoadingMore] = useState(false);
   const [suggestionActionId, setSuggestionActionId] = useState<number | null>(null);
   const [suggestionError, setSuggestionError] = useState<string | null>(null);
+  const [recThreshold, setRecThreshold] = useState(0.5);
   const savingRef = useRef(false);
 
   useEffect(() => {
@@ -63,17 +65,31 @@ export default function PersonDetailPage() {
       setName(p.name);
     });
     apiClient.personMedia(id).then(setMedia);
+  }, [id]);
+
+  useEffect(() => {
+    if (!id) return;
+    let cancelled = false;
     setSuggestionsLoading(true);
     apiClient
-      .personClusterSuggestions(id, { limit: 12, offset: 0 })
+      .personClusterSuggestions(id, { limit: 12, offset: 0, minSimilarity: recThreshold })
       .then((result) => {
+        if (cancelled) return;
         setSuggestions(result.items);
         setSuggestionTotal(result.total);
         setSuggestionError(null);
       })
-      .catch((e) => setSuggestionError(formatApiError(e, "Could not load potential matches")))
-      .finally(() => setSuggestionsLoading(false));
-  }, [id]);
+      .catch((e) => {
+        if (cancelled) return;
+        setSuggestionError(formatApiError(e, "Could not load potential matches"));
+      })
+      .finally(() => {
+        if (!cancelled) setSuggestionsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [id, recThreshold]);
 
   async function saveName() {
     if (!person || savingRef.current || saving) return;
@@ -170,6 +186,7 @@ export default function PersonDetailPage() {
       const result = await apiClient.personClusterSuggestions(person.id, {
         limit: 12,
         offset: suggestions.length,
+        minSimilarity: recThreshold,
       });
       setSuggestions((items) => [...items, ...result.items]);
       setSuggestionTotal(result.total);
@@ -333,18 +350,35 @@ export default function PersonDetailPage() {
       </div>
 
       <Card className="min-w-0 overflow-hidden p-0">
-        <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
           <div className="min-w-0">
             <h3 className="font-medium">Potential matches</h3>
             <p className="text-xs text-muted-foreground">
-              Unknown face clusters at least 50% similar to {person.name}
+              Unknown face clusters similar to {person.name}
             </p>
           </div>
-          {suggestionTotal > 0 && (
-            <span className="shrink-0 rounded-full bg-primary/10 px-2.5 py-1 text-xs font-semibold tabular-nums text-primary">
-              {suggestionTotal} suggested
-            </span>
-          )}
+          <div className="flex shrink-0 items-center gap-2">
+            <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+              At least
+              <select
+                value={recThreshold}
+                onChange={(e) => setRecThreshold(Number(e.target.value))}
+                className="rounded-md border border-input bg-background px-1.5 py-0.5 text-[11px] font-medium text-foreground"
+                aria-label="Minimum match similarity"
+              >
+                {REC_THRESHOLD_OPTIONS.map((value) => (
+                  <option key={value} value={value}>
+                    {Math.round(value * 100)}%
+                  </option>
+                ))}
+              </select>
+            </label>
+            {suggestionTotal > 0 && (
+              <span className="rounded-full bg-primary/10 px-2.5 py-1 text-xs font-semibold tabular-nums text-primary">
+                {suggestionTotal} suggested
+              </span>
+            )}
+          </div>
         </div>
         {suggestionsLoading ? (
           <p className="px-4 py-6 text-sm text-muted-foreground">
@@ -352,7 +386,8 @@ export default function PersonDetailPage() {
           </p>
         ) : suggestions.length === 0 ? (
           <p className="px-4 py-6 text-sm text-muted-foreground">
-            No unreviewed clusters currently match this person above 50%.
+            No unreviewed clusters currently match this person at {Math.round(recThreshold * 100)}% or
+            higher.
           </p>
         ) : (
           <ul className="divide-y divide-border">
@@ -369,7 +404,7 @@ export default function PersonDetailPage() {
                       faceId={suggestion.representative_face_id}
                       className="h-14 w-14 shrink-0"
                     />
-                    <div className="min-w-0">
+                    <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
                         <span
                           className={`rounded-full px-2 py-0.5 text-xs font-semibold tabular-nums ${
@@ -386,12 +421,22 @@ export default function PersonDetailPage() {
                         </span>
                       </div>
                       {suggestion.sample_files.length > 0 && (
-                        <p
-                          className="mt-1 truncate text-xs text-muted-foreground"
-                          title={suggestion.sample_files.map((file) => file.name).join(", ")}
-                        >
-                          {suggestion.sample_files.map((file) => file.name).join(" · ")}
-                        </p>
+                        <div className="mt-1.5 flex items-center gap-1">
+                          {suggestion.sample_files.slice(0, 4).map((file) => (
+                            <span
+                              key={file.media_id}
+                              className="h-8 w-8 overflow-hidden rounded border border-border bg-muted/40"
+                              title={file.name}
+                            >
+                              <DriveMediaThumb
+                                driveFileId={file.drive_file_id}
+                                name={file.name}
+                                isVideo={(file.media_type || "").toLowerCase() === "video"}
+                                frameTimestamp={file.frame_timestamp}
+                              />
+                            </span>
+                          ))}
+                        </div>
                       )}
                     </div>
                   </div>
@@ -465,21 +510,19 @@ export default function PersonDetailPage() {
                       className="relative block aspect-square overflow-hidden rounded-md border border-border bg-muted/40 transition-opacity hover:opacity-90"
                     >
                       {isVideo ? (
-                        <span className="flex h-full w-full flex-col items-center justify-center gap-0.5 text-muted-foreground">
-                          <FileVideo size={18} aria-hidden />
-                          {m.frame_timestamp != null && (
-                            <span className="text-[9px] tabular-nums">{formatTimestamp(m.frame_timestamp)}</span>
-                          )}
-                        </span>
+                        <>
+                          <DriveMediaThumb
+                            driveFileId={m.drive_file_id}
+                            name={m.name}
+                            isVideo
+                            frameTimestamp={m.frame_timestamp}
+                          />
+                          <span className="absolute bottom-0.5 left-0.5 rounded bg-black/70 px-1 py-px text-[8px] font-semibold uppercase text-white">
+                            {m.frame_timestamp != null ? formatTimestamp(m.frame_timestamp) : "Video"}
+                          </span>
+                        </>
                       ) : (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img
-                          src={driveFileThumbnailUrl(m.drive_file_id)}
-                          alt={m.name}
-                          loading="lazy"
-                          decoding="async"
-                          className="h-full w-full max-w-full object-cover"
-                        />
+                        <DriveMediaThumb driveFileId={m.drive_file_id} name={m.name} />
                       )}
                     </a>
                   </li>

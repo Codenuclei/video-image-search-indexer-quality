@@ -163,6 +163,9 @@ export function clearReverseFaceSearch() {
 export function runReverseFaceSearch(upload?: File) {
   const target = upload ?? state.file;
   if (!target) return searchJob;
+  void import("@/lib/search-session").then(({ cancelSearch }) => {
+    cancelSearch();
+  });
   const gen = bumpSearchGeneration();
   searchAbort = new AbortController();
   const signal = searchAbort.signal;
@@ -201,6 +204,9 @@ export function selectReverseFaceLeader(person: LeadershipPerson) {
     patchReverseFaceSession({ error: `No portrait URL for ${person.name}` });
     return searchJob;
   }
+  void import("@/lib/search-session").then(({ cancelSearch }) => {
+    cancelSearch();
+  });
   const gen = bumpSearchGeneration();
   const prevUrl = state.previewUrl;
   if (prevUrl) URL.revokeObjectURL(prevUrl);

@@ -14,10 +14,37 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import DriveFile, Face, FaceCluster, Media
+from app.reid.face_thumbs import resolve_face_thumbnail_id, thumb_exists_on_disk
 from app.schemas import MediaOccurrence
 
 # Policy floor: suggestions below 50% similarity are noise, never allow them.
 MIN_SUGGESTION_SIMILARITY = 0.5
+
+
+async def _display_thumb_id(session: AsyncSession, cluster: FaceCluster) -> int | None:
+    """Prefer a cluster face whose JPEG actually exists on disk."""
+    fid = cluster.representative_face_id
+    if fid is not None:
+        thumb_id, _ = await resolve_face_thumbnail_id(session, int(fid))
+        face = await session.get(Face, thumb_id)
+        if face is not None and thumb_exists_on_disk(face):
+            return thumb_id
+    members = (
+        await session.execute(
+            select(Face)
+            .where(Face.cluster_id == cluster.id)
+            .order_by(Face.detection_confidence.desc())
+            .limit(8)
+        )
+    ).scalars().all()
+    for face in members:
+        if thumb_exists_on_disk(face):
+            return face.id
+        thumb_id, _ = await resolve_face_thumbnail_id(session, face.id)
+        resolved = await session.get(Face, thumb_id)
+        if resolved is not None and thumb_exists_on_disk(resolved):
+            return thumb_id
+    return fid
 
 
 async def ranked_cluster_suggestions(
@@ -209,16 +236,18 @@ async def ranked_cluster_suggestions(
         if cluster_id not in clusters:
             continue
         person_id, similarity = best_by_cluster[cluster_id]
+        cluster = clusters[cluster_id]
+        thumb_id = await _display_thumb_id(session, cluster)
         items.append(
             {
                 "cluster_id": cluster_id,
                 "person_id": person_id,
                 "similarity": similarity,
-                "member_count": clusters[cluster_id].member_count,
-                "representative_face_id": clusters[cluster_id].representative_face_id,
-                "representative_confidence": confidences.get(
-                    clusters[cluster_id].representative_face_id
-                ),
+                "member_count": cluster.member_count,
+                "representative_face_id": thumb_id,
+                "representative_confidence": confidences.get(thumb_id)
+                if thumb_id is not None
+                else confidences.get(cluster.representative_face_id),
                 "file_count": file_counts.get(cluster_id, 0),
                 "sample_files": samples.get(cluster_id, []),
             }

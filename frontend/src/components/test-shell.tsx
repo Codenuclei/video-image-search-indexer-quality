@@ -162,6 +162,7 @@ export function TestShell({ children }: { children: React.ReactNode }) {
   function submitHeaderSearch(event: React.FormEvent) {
     event.preventDefault();
     patchSearchSession({ q: headerQuery });
+    clearReverseFaceSearch();
     void runSearch();
   }
 

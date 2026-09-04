@@ -306,6 +306,11 @@ export function runSearch() {
   const q = current.q.trim();
   if (!q) return inFlight;
 
+  // Text search and reverse-face share the Search page — drop leftover face results/spinners.
+  void import("@/lib/reverse-face-session").then(({ clearReverseFaceSearch }) => {
+    clearReverseFaceSearch();
+  });
+
   // Drop any prior request without clearing the query / cached preview results.
   abortInFlightHttp();
 
