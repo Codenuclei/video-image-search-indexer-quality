@@ -36,6 +36,8 @@ def _load_app():
         used = list(session.session.get_providers())  # type: ignore[union-attr]
     except Exception:  # noqa: BLE001
         used = providers
+    if "CUDAExecutionProvider" not in used:
+        raise RuntimeError(f"buffalo_l did not bind CUDA; providers={used}")
     _providers = used
     _app = app
     logger.info("InsightFace ready providers=%s", used)
@@ -106,8 +108,6 @@ def handler(job: dict) -> dict:
         "detect_ms": round(detect_ms, 2),
     }
 
-
-_load_app()
 
 if __name__ == "__main__":
     runpod.serverless.start({"handler": handler})

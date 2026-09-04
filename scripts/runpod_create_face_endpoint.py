@@ -17,19 +17,24 @@ HANDLER_URL = (
     "https://raw.githubusercontent.com/Codenuclei/"
     "video-image-search-indexer-quality/main/runpod/face-buffalo/handler.py"
 )
+ORT_CUDA12 = (
+    "https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/"
+)
 START_CMD = [
     "bash",
     "-lc",
     (
         "set -euo pipefail; "
         "export PYTHONUNBUFFERED=1; "
-        "python -m pip install -q insightface opencv-python-headless runpod onnx; "
-        "python -m pip uninstall -y onnxruntime >/dev/null 2>&1 || true; "
-        "python -m pip install -q onnxruntime-gpu; "
+        "export RUNPOD_SKIP_AUTO_SYSTEM_CHECKS=true; "
+        "python -m pip install -q numpy opencv-python-headless onnx Pillow requests tqdm easydict runpod; "
+        f"python -m pip install -q --extra-index-url {ORT_CUDA12} 'onnxruntime-gpu==1.20.1'; "
+        "python -m pip install -q --no-deps insightface; "
         f"curl -fsSL {HANDLER_URL} -o /tmp/handler.py; "
         "exec python -u /tmp/handler.py"
     ),
 ]
+GPU_TYPE_IDS = ["NVIDIA RTX A4000", "NVIDIA RTX A5000"]
 TEMPLATE_NAME = "dfi-face-buffalo"
 ENDPOINT_NAME = "dfi-face-buffalo"
 REST = "https://rest.runpod.io/v1"
@@ -74,7 +79,39 @@ def main() -> None:
 
         if existing:
             template_id = existing["id"]
-            print(f"Reusing template {template_id}")
+            updated = client.patch(
+                f"{REST}/templates/{template_id}",
+                headers=headers,
+                json={
+                    "imageName": IMAGE,
+                    "isServerless": True,
+                    "containerDiskInGb": 40,
+                    "dockerStartCmd": START_CMD,
+                    "env": {
+                        "PYTHONUNBUFFERED": "1",
+                        "RUNPOD_SKIP_AUTO_SYSTEM_CHECKS": "true",
+                    },
+                },
+            )
+            if updated.status_code >= 400:
+                updated = client.put(
+                    f"{REST}/templates/{template_id}",
+                    headers=headers,
+                    json={
+                        "name": TEMPLATE_NAME,
+                        "imageName": IMAGE,
+                        "isServerless": True,
+                        "containerDiskInGb": 40,
+                        "dockerStartCmd": START_CMD,
+                        "env": {
+                            "PYTHONUNBUFFERED": "1",
+                            "RUNPOD_SKIP_AUTO_SYSTEM_CHECKS": "true",
+                        },
+                    },
+                )
+            if updated.status_code >= 400:
+                raise SystemExit(f"Update template failed {updated.status_code}: {updated.text}")
+            print(f"Updated template {template_id}")
         else:
             created = client.post(
                 f"{REST}/templates",
@@ -86,7 +123,10 @@ def main() -> None:
                     "containerDiskInGb": 40,
                     "volumeInGb": 0,
                     "dockerStartCmd": START_CMD,
-                    "env": {"PYTHONUNBUFFERED": "1"},
+                    "env": {
+                        "PYTHONUNBUFFERED": "1",
+                        "RUNPOD_SKIP_AUTO_SYSTEM_CHECKS": "true",
+                    },
                 },
             )
             if created.status_code >= 400:
@@ -102,7 +142,20 @@ def main() -> None:
         existing_ep = _find_named(ep_payload, ENDPOINT_NAME)
         if existing_ep:
             endpoint_id = existing_ep["id"]
-            print(f"Reusing endpoint {endpoint_id}")
+            patched = client.patch(
+                f"{REST}/endpoints/{endpoint_id}",
+                headers=headers,
+                json={
+                    "gpuTypeIds": GPU_TYPE_IDS,
+                    "workersMin": 0,
+                    "workersMax": 1,
+                    "idleTimeout": 300,
+                    "executionTimeoutMs": 600000,
+                },
+            )
+            if patched.status_code >= 400:
+                raise SystemExit(f"Update endpoint failed {patched.status_code}: {patched.text}")
+            print(f"Updated endpoint {endpoint_id}")
         else:
             created_ep = client.post(
                 f"{REST}/endpoints",
@@ -112,7 +165,7 @@ def main() -> None:
                     "templateId": template_id,
                     "computeType": "GPU",
                     "gpuCount": 1,
-                    "gpuTypeIds": ["NVIDIA RTX A4000", "NVIDIA L4"],
+                    "gpuTypeIds": GPU_TYPE_IDS,
                     "workersMin": 0,
                     "workersMax": 1,
                     "idleTimeout": 300,
