@@ -17,7 +17,7 @@ import { RoleSelector } from "@/components/role-selector";
 import { AnimatedTrash } from "@/components/animated-trash";
 import { useRegisterTestShellChrome } from "@/lib/test-shell-chrome";
 
-type PersonMedia = {
+type ClusterFile = {
   media_id: number;
   drive_file_id: string;
   name: string;
@@ -26,119 +26,261 @@ type PersonMedia = {
   frame_timestamp?: number | null;
 };
 
+type PersonMedia = ClusterFile;
+
+type ClusterPreview = {
+  files: ClusterFile[];
+  faceIds: number[];
+};
+
 function formatTimestamp(sec: number): string {
   const m = Math.floor(sec / 60);
   const s = Math.floor(sec % 60);
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
+function isVideoFile(file: ClusterFile): boolean {
+  return (file.media_type || "").toLowerCase() === "video";
+}
+
 const REC_THRESHOLD_OPTIONS = [0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8];
 
-function SuggestionDropdown({
-  suggestion,
-  personName,
-  busy,
-  actionsDisabled,
-  open,
-  onToggle,
-  onAccept,
-  onReject,
-}: {
-  suggestion: PersonClusterSuggestion;
-  personName: string;
-  busy: boolean;
-  actionsDisabled: boolean;
-  open: boolean;
-  onToggle: () => void;
-  onAccept: () => void;
-  onReject: () => void;
-}) {
+function matchSummary(suggestion: PersonClusterSuggestion): string {
   const percent = Math.round(suggestion.similarity * 100);
-  const summaryId = `match-${suggestion.cluster_id}-summary`;
-  const panelId = `match-${suggestion.cluster_id}-panel`;
+  const faces = `${suggestion.member_count} face${suggestion.member_count === 1 ? "" : "s"}`;
+  const files = `${suggestion.file_count} file${suggestion.file_count === 1 ? "" : "s"}`;
+  return `${percent}% match · ${faces} · ${files}`;
+}
+
+function ClusterFileTile({ file }: { file: ClusterFile }) {
+  const video = isVideoFile(file);
+  return (
+    <a
+      href={driveGoogleViewUrl(file.drive_file_id)}
+      target="_blank"
+      rel="noopener noreferrer"
+      title={file.name}
+      className="group block min-w-0 overflow-hidden rounded-lg border border-border bg-muted/40 transition-colors hover:border-ring"
+    >
+      <span className="relative block aspect-square">
+        <DriveMediaThumb
+          driveFileId={file.drive_file_id}
+          name={file.name}
+          isVideo={video}
+          frameTimestamp={file.frame_timestamp}
+        />
+        {video && (
+          <span className="absolute bottom-1 left-1 rounded bg-black/70 px-1 py-px text-[9px] font-semibold uppercase text-white">
+            {file.frame_timestamp != null ? formatTimestamp(file.frame_timestamp) : "Video"}
+          </span>
+        )}
+      </span>
+      <span className="block truncate px-1.5 py-1 text-[10px] text-muted-foreground group-hover:text-foreground">
+        {file.name}
+      </span>
+    </a>
+  );
+}
+
+function ClusterGallery({
+  files,
+  faceIds,
+  loading,
+  expectedFileCount,
+}: {
+  files: ClusterFile[];
+  faceIds: number[];
+  loading: boolean;
+  expectedFileCount: number;
+}) {
+  const photos = files.filter((file) => !isVideoFile(file));
+  const videos = files.filter(isVideoFile);
+  const sections = [
+    { label: "Photos", items: photos },
+    { label: "Videos", items: videos },
+  ].filter((section) => section.items.length > 0);
+
+  if (loading && files.length === 0 && faceIds.length === 0) {
+    return (
+      <p className="text-sm text-muted-foreground">
+        <LoadingLabel>Loading cluster…</LoadingLabel>
+      </p>
+    );
+  }
 
   return (
-    <li className="border-b border-border last:border-b-0">
+    <div className="space-y-4">
+      {faceIds.length > 0 && (
+        <div>
+          <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+            Faces in this cluster · {faceIds.length}
+          </p>
+          <ul className="flex flex-wrap gap-1.5">
+            {faceIds.map((faceId) => (
+              <li key={faceId}>
+                <FaceThumb faceId={faceId} className="h-14 w-14 rounded-lg" />
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {sections.map((section) => (
+        <div key={section.label}>
+          <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+            {section.label} · {section.items.length}
+          </p>
+          <ul className="grid grid-cols-[repeat(auto-fill,minmax(5.5rem,1fr))] gap-2">
+            {section.items.map((file) => (
+              <li key={file.media_id} className="min-w-0">
+                <ClusterFileTile file={file} />
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))}
+      {files.length === 0 && !loading && (
+        <p className="text-sm text-muted-foreground">No Drive files linked to this cluster yet.</p>
+      )}
+      {expectedFileCount > files.length && files.length > 0 && (
+        <p className="text-[11px] text-muted-foreground">
+          Showing {files.length} of {expectedFileCount} files
+        </p>
+      )}
+    </div>
+  );
+}
+
+function SuggestionPicker({
+  suggestions,
+  selectedId,
+  onSelect,
+}: {
+  suggestions: PersonClusterSuggestion[];
+  selectedId: number | null;
+  onSelect: (clusterId: number) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const selected = suggestions.find((item) => item.cluster_id === selectedId) ?? suggestions[0] ?? null;
+
+  useEffect(() => {
+    if (!open) return;
+    function onDocClick(e: MouseEvent) {
+      if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("mousedown", onDocClick);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDocClick);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  if (!selected) return null;
+
+  return (
+    <div ref={rootRef} className="relative w-full">
       <button
         type="button"
-        id={summaryId}
+        aria-haspopup="listbox"
         aria-expanded={open}
-        aria-controls={panelId}
-        onClick={onToggle}
-        className="flex w-full min-w-0 items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-muted/40"
+        onClick={() => setOpen((value) => !value)}
+        className={cn(
+          "flex h-11 w-full items-center gap-2.5 rounded-xl border border-border bg-background px-3 text-left text-sm shadow-sm outline-none transition-colors hover:border-muted-foreground/30 focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/20",
+          open && "border-ring ring-2 ring-ring/20"
+        )}
       >
         <FaceThumb
-          faceId={suggestion.representative_face_id}
-          className="h-10 w-10 shrink-0"
+          faceId={selected.representative_face_id}
+          className="h-7 w-7 shrink-0 rounded-full"
         />
-        <span className="min-w-0 flex-1">
-          <span className="flex flex-wrap items-center gap-2">
+        <span className="min-w-0 flex-1 truncate text-xs text-foreground">
+          {matchSummary(selected)}
+        </span>
+        <span className="hidden items-center gap-1 sm:flex">
+          {selected.sample_files.slice(0, 3).map((file) => (
             <span
-              className={cn(
-                "rounded-full px-2 py-0.5 text-xs font-semibold tabular-nums",
-                percent >= 60
-                  ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
-                  : "bg-amber-500/15 text-amber-700 dark:text-amber-300"
-              )}
+              key={file.media_id}
+              className="h-7 w-7 overflow-hidden rounded-md border border-border bg-muted/40"
             >
-              {percent}% match
+              <DriveMediaThumb
+                driveFileId={file.drive_file_id}
+                name={file.name}
+                isVideo={isVideoFile(file)}
+                frameTimestamp={file.frame_timestamp}
+              />
             </span>
-            <span className="text-xs text-muted-foreground">
-              {suggestion.member_count} face{suggestion.member_count === 1 ? "" : "s"} ·{" "}
-              {suggestion.file_count} file{suggestion.file_count === 1 ? "" : "s"}
-            </span>
-          </span>
+          ))}
         </span>
         <ChevronDown
-          size={16}
+          size={15}
           aria-hidden
-          className={cn(
-            "shrink-0 text-muted-foreground transition-transform duration-150",
-            open && "rotate-180"
-          )}
+          className={cn("shrink-0 text-muted-foreground transition-transform", open && "rotate-180")}
         />
       </button>
       {open && (
-        <div id={panelId} role="region" aria-labelledby={summaryId} className="space-y-3 px-4 pb-3">
-          {suggestion.sample_files.length > 0 && (
-            <div className="flex flex-wrap items-center gap-1.5 pl-[3.25rem]">
-              {suggestion.sample_files.slice(0, 4).map((file) => (
-                <a
-                  key={file.media_id}
-                  href={driveGoogleViewUrl(file.drive_file_id)}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  title={file.name}
-                  className="h-12 w-12 overflow-hidden rounded-md border border-border bg-muted/40"
-                >
-                  <DriveMediaThumb
-                    driveFileId={file.drive_file_id}
-                    name={file.name}
-                    isVideo={(file.media_type || "").toLowerCase() === "video"}
-                    frameTimestamp={file.frame_timestamp}
-                  />
-                </a>
-              ))}
-            </div>
-          )}
-          <div className="flex flex-wrap gap-2 pl-[3.25rem]">
-            <Button onClick={onAccept} disabled={actionsDisabled} className="min-w-0">
-              <Check size={15} aria-hidden />
-              {busy ? "Saving…" : `Add to ${personName}`}
-            </Button>
-            <Button
-              variant="secondary"
-              onClick={onReject}
-              disabled={actionsDisabled}
-              title={`This cluster is not ${personName}`}
-            >
-              <X size={15} aria-hidden />
-              Not {personName}
-            </Button>
-          </div>
+        <div className="absolute left-0 right-0 top-full z-40 mt-1.5 overflow-hidden rounded-xl border border-border bg-card py-1 shadow-lg">
+          <ul role="listbox" aria-label="Potential matches" className="scrollbar-hidden max-h-80 overflow-y-auto">
+            {suggestions.map((item) => {
+              const isSel = item.cluster_id === selected.cluster_id;
+              const percent = Math.round(item.similarity * 100);
+              return (
+                <li key={item.cluster_id}>
+                  <button
+                    type="button"
+                    role="option"
+                    aria-selected={isSel}
+                    onClick={() => {
+                      onSelect(item.cluster_id);
+                      setOpen(false);
+                    }}
+                    className={cn(
+                      "flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs transition-colors",
+                      isSel
+                        ? "bg-primary/10 font-medium text-primary"
+                        : "text-foreground hover:bg-accent"
+                    )}
+                  >
+                    <FaceThumb
+                      faceId={item.representative_face_id}
+                      className="h-8 w-8 shrink-0 rounded-full"
+                    />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate">
+                        {percent}% match
+                      </span>
+                      <span className={cn("block truncate font-normal", isSel ? "text-primary/80" : "text-muted-foreground")}>
+                        {item.member_count} face{item.member_count === 1 ? "" : "s"} · {item.file_count}{" "}
+                        file{item.file_count === 1 ? "" : "s"}
+                      </span>
+                    </span>
+                    <span className="flex shrink-0 items-center gap-1">
+                      {item.sample_files.slice(0, 3).map((file) => (
+                        <span
+                          key={file.media_id}
+                          className="h-8 w-8 overflow-hidden rounded-md border border-border bg-muted/40"
+                        >
+                          <DriveMediaThumb
+                            driveFileId={file.drive_file_id}
+                            name={file.name}
+                            isVideo={isVideoFile(file)}
+                            frameTimestamp={file.frame_timestamp}
+                          />
+                        </span>
+                      ))}
+                    </span>
+                    {isSel && <Check size={13} className="shrink-0" aria-hidden />}
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
         </div>
       )}
-    </li>
+    </div>
   );
 }
 
@@ -165,8 +307,9 @@ export default function PersonDetailPage() {
   const [suggestionActionId, setSuggestionActionId] = useState<number | null>(null);
   const [suggestionError, setSuggestionError] = useState<string | null>(null);
   const [recThreshold, setRecThreshold] = useState(0.5);
-  const [matchesOpen, setMatchesOpen] = useState(true);
-  const [openClusterId, setOpenClusterId] = useState<number | null>(null);
+  const [selectedClusterId, setSelectedClusterId] = useState<number | null>(null);
+  const [clusterPreviews, setClusterPreviews] = useState<Record<number, ClusterPreview>>({});
+  const [previewLoadingId, setPreviewLoadingId] = useState<number | null>(null);
   const savingRef = useRef(false);
 
   useEffect(() => {
@@ -189,7 +332,8 @@ export default function PersonDetailPage() {
         setSuggestions(result.items);
         setSuggestionTotal(result.total);
         setSuggestionError(null);
-        setOpenClusterId(null);
+        setClusterPreviews({});
+        setSelectedClusterId(result.items[0]?.cluster_id ?? null);
       })
       .catch((e) => {
         if (cancelled) return;
@@ -202,6 +346,36 @@ export default function PersonDetailPage() {
       cancelled = true;
     };
   }, [id, recThreshold]);
+
+  useEffect(() => {
+    if (selectedClusterId == null) return;
+    if (clusterPreviews[selectedClusterId]) return;
+    let cancelled = false;
+    const clusterId = selectedClusterId;
+    const fallbackFiles =
+      suggestions.find((item) => item.cluster_id === clusterId)?.sample_files ?? [];
+    setPreviewLoadingId(clusterId);
+    Promise.all([
+      apiClient.cluster(clusterId).catch(() => null),
+      apiClient.clusterFaces(clusterId, 24).catch(() => []),
+    ])
+      .then(([cluster, faces]) => {
+        if (cancelled) return;
+        setClusterPreviews((current) => ({
+          ...current,
+          [clusterId]: {
+            files: cluster?.appears_in?.length ? cluster.appears_in : fallbackFiles,
+            faceIds: faces.map((face) => face.id),
+          },
+        }));
+      })
+      .finally(() => {
+        if (!cancelled) setPreviewLoadingId((current) => (current === clusterId ? null : current));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedClusterId, suggestions]);
 
   async function saveName() {
     if (!person || savingRef.current || saving) return;
@@ -270,7 +444,11 @@ export default function PersonDetailPage() {
     const previous = suggestions;
     setSuggestionActionId(clusterId);
     setSuggestionError(null);
-    setSuggestions((items) => items.filter((item) => item.cluster_id !== clusterId));
+    const remaining = suggestions.filter((item) => item.cluster_id !== clusterId);
+    setSuggestions(remaining);
+    setSelectedClusterId((current) =>
+      current === clusterId ? remaining[0]?.cluster_id ?? null : current
+    );
     setSuggestionTotal((total) => Math.max(0, total - 1));
     try {
       if (decision === "accept") {
@@ -283,6 +461,7 @@ export default function PersonDetailPage() {
       }
     } catch (e) {
       setSuggestions(previous);
+      setSelectedClusterId(clusterId);
       setSuggestionTotal((total) => total + 1);
       setSuggestionError(formatApiError(e, "Could not save this decision"));
     } finally {
@@ -377,6 +556,11 @@ export default function PersonDetailPage() {
     );
   }
 
+  const selectedSuggestion =
+    suggestions.find((item) => item.cluster_id === selectedClusterId) ?? suggestions[0] ?? null;
+  const suggestionBusy =
+    selectedSuggestion != null && suggestionActionId === selectedSuggestion.cluster_id;
+
   return (
     <div className="min-w-0 max-w-full space-y-6 overflow-x-hidden">
       {!inTestShell && (
@@ -461,30 +645,14 @@ export default function PersonDetailPage() {
         </div>
       </div>
 
-      <Card className="min-w-0 overflow-hidden p-0">
+      <Card className="relative min-w-0 overflow-visible p-0">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
-          <button
-            type="button"
-            onClick={() => setMatchesOpen((open) => !open)}
-            aria-expanded={matchesOpen}
-            aria-controls="potential-matches-panel"
-            className="flex min-w-0 flex-1 items-center gap-2 text-left"
-          >
-            <ChevronDown
-              size={16}
-              aria-hidden
-              className={cn(
-                "shrink-0 text-muted-foreground transition-transform duration-150",
-                matchesOpen && "rotate-180"
-              )}
-            />
-            <span className="min-w-0">
-              <span className="block font-medium">Potential matches</span>
-              <span className="block text-xs text-muted-foreground">
-                Unknown face clusters similar to {person.name}
-              </span>
-            </span>
-          </button>
+          <div className="min-w-0">
+            <h3 className="font-medium">Potential matches</h3>
+            <p className="text-xs text-muted-foreground">
+              Unknown face clusters similar to {person.name}
+            </p>
+          </div>
           <div className="flex shrink-0 items-center gap-2">
             <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
               At least
@@ -508,55 +676,76 @@ export default function PersonDetailPage() {
             )}
           </div>
         </div>
-        {matchesOpen && (
-          <div id="potential-matches-panel">
-            {suggestionsLoading ? (
-              <p className="px-4 py-6 text-sm text-muted-foreground">
-                <LoadingLabel>Finding matches…</LoadingLabel>
-              </p>
-            ) : suggestions.length === 0 ? (
-              <p className="px-4 py-6 text-sm text-muted-foreground">
-                No unreviewed clusters currently match this person at {Math.round(recThreshold * 100)}% or
-                higher.
-              </p>
-            ) : (
-              <ul>
-                {suggestions.map((suggestion) => (
-                  <SuggestionDropdown
-                    key={suggestion.cluster_id}
-                    suggestion={suggestion}
-                    personName={person.name}
-                    busy={suggestionActionId === suggestion.cluster_id}
-                    actionsDisabled={suggestionActionId != null}
-                    open={openClusterId === suggestion.cluster_id}
-                    onToggle={() =>
-                      setOpenClusterId((current) =>
-                        current === suggestion.cluster_id ? null : suggestion.cluster_id
-                      )
-                    }
-                    onAccept={() => decideSuggestion(suggestion.cluster_id, "accept")}
-                    onReject={() => decideSuggestion(suggestion.cluster_id, "reject")}
-                  />
-                ))}
-              </ul>
-            )}
-            {(suggestionError || suggestions.length < suggestionTotal) && (
-              <div className="flex items-center justify-between gap-3 border-t border-border px-4 py-3">
-                {suggestionError ? (
-                  <p className="text-sm text-destructive">{suggestionError}</p>
-                ) : (
-                  <span />
-                )}
-                {suggestions.length < suggestionTotal && (
+        {suggestionsLoading ? (
+          <p className="px-4 py-6 text-sm text-muted-foreground">
+            <LoadingLabel>Finding matches…</LoadingLabel>
+          </p>
+        ) : suggestions.length === 0 ? (
+          <p className="px-4 py-6 text-sm text-muted-foreground">
+            No unreviewed clusters currently match this person at {Math.round(recThreshold * 100)}% or
+            higher.
+          </p>
+        ) : (
+          <div className="space-y-4 px-4 py-4">
+            <SuggestionPicker
+              suggestions={suggestions}
+              selectedId={selectedClusterId}
+              onSelect={setSelectedClusterId}
+            />
+            {selectedSuggestion && (
+              <div className="space-y-4">
+                <ClusterGallery
+                  files={
+                    clusterPreviews[selectedSuggestion.cluster_id]?.files ??
+                    selectedSuggestion.sample_files
+                  }
+                  faceIds={
+                    clusterPreviews[selectedSuggestion.cluster_id]?.faceIds ??
+                    (selectedSuggestion.representative_face_id
+                      ? [selectedSuggestion.representative_face_id]
+                      : [])
+                  }
+                  loading={previewLoadingId === selectedSuggestion.cluster_id}
+                  expectedFileCount={selectedSuggestion.file_count}
+                />
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    onClick={() => decideSuggestion(selectedSuggestion.cluster_id, "accept")}
+                    disabled={suggestionActionId != null}
+                    className="min-w-0"
+                  >
+                    <Check size={15} aria-hidden />
+                    {suggestionBusy ? "Saving…" : `Add to ${person.name}`}
+                  </Button>
                   <Button
                     variant="secondary"
-                    onClick={loadMoreSuggestions}
-                    disabled={suggestionsLoadingMore}
+                    onClick={() => decideSuggestion(selectedSuggestion.cluster_id, "reject")}
+                    disabled={suggestionActionId != null}
+                    title={`This cluster is not ${person.name}`}
                   >
-                    {suggestionsLoadingMore ? <LoadingLabel>Loading…</LoadingLabel> : "Load more"}
+                    <X size={15} aria-hidden />
+                    Not {person.name}
                   </Button>
-                )}
+                </div>
               </div>
+            )}
+          </div>
+        )}
+        {(suggestionError || suggestions.length < suggestionTotal) && (
+          <div className="flex items-center justify-between gap-3 border-t border-border px-4 py-3">
+            {suggestionError ? (
+              <p className="text-sm text-destructive">{suggestionError}</p>
+            ) : (
+              <span />
+            )}
+            {suggestions.length < suggestionTotal && (
+              <Button
+                variant="secondary"
+                onClick={loadMoreSuggestions}
+                disabled={suggestionsLoadingMore}
+              >
+                {suggestionsLoadingMore ? <LoadingLabel>Loading…</LoadingLabel> : "Load more"}
+              </Button>
             )}
           </div>
         )}
