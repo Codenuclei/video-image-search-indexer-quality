@@ -27,6 +27,8 @@ START_CMD = [
         "set -euo pipefail; "
         "export PYTHONUNBUFFERED=1; "
         "export RUNPOD_SKIP_AUTO_SYSTEM_CHECKS=true; "
+        "export FACE_GPU_WORKERS=8; "
+        "export FACE_GPU_MEM_LIMIT_GB=2; "
         "python -m pip install -q numpy opencv-python-headless onnx Pillow requests tqdm easydict scikit-image runpod "
         "nvidia-cublas-cu12 nvidia-cudnn-cu12 nvidia-cuda-nvrtc-cu12 nvidia-cuda-runtime-cu12; "
         f"python -m pip install -q --index-url {ORT_CUDA12} --extra-index-url https://pypi.org/simple 'onnxruntime-gpu==1.20.2'; "
@@ -97,6 +99,8 @@ def main() -> None:
                     "env": {
                         "PYTHONUNBUFFERED": "1",
                         "RUNPOD_SKIP_AUTO_SYSTEM_CHECKS": "true",
+                        "FACE_GPU_WORKERS": "8",
+                        "FACE_GPU_MEM_LIMIT_GB": "2",
                     },
                 },
             )
@@ -117,6 +121,8 @@ def main() -> None:
                     "env": {
                         "PYTHONUNBUFFERED": "1",
                         "RUNPOD_SKIP_AUTO_SYSTEM_CHECKS": "true",
+                        "FACE_GPU_WORKERS": "8",
+                        "FACE_GPU_MEM_LIMIT_GB": "2",
                     },
                 },
             )
