@@ -8,10 +8,12 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 # Browser stays same-origin via /api/proxy; App Router route proxies to Railway backend.
-ARG API_PROXY_TARGET=https://dfi-backend-production.up.railway.app
+ARG API_PROXY_TARGET=https://dfi-carousel-backend-production.up.railway.app
 ENV API_PROXY_TARGET=$API_PROXY_TARGET
 ARG NEXT_PUBLIC_API_URL=/api/proxy
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+ARG NEXT_PUBLIC_BACKEND_URL=https://dfi-carousel-backend-production.up.railway.app
+ENV NEXT_PUBLIC_BACKEND_URL=$NEXT_PUBLIC_BACKEND_URL
 RUN mkdir -p public
 RUN npm run build
 
@@ -19,7 +21,7 @@ FROM node:20-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 # Runtime proxy target (builder ENV is not inherited across stages).
-ARG API_PROXY_TARGET=https://dfi-backend-production.up.railway.app
+ARG API_PROXY_TARGET=https://dfi-carousel-backend-production.up.railway.app
 ENV API_PROXY_TARGET=$API_PROXY_TARGET
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static

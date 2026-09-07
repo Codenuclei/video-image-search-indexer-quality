@@ -2,11 +2,13 @@
 
 ## Railway deploy (production)
 
-Project: `drivefaceindexer` · services: `dfi-backend`, `dfi-frontend`, `dfi-face-worker`, `dfi-carousel`.
+Project: `drivefaceindexer` · services: `dfi-backend`, `dfi-frontend`, `dfi-face-worker`, `dfi-carousel`, `dfi-carousel-backend` (plus `Postgres-WEBK` and `dfi-carousel-qdrant` for Studio only).
 
-### Pre-deploy git sync (required for every service)
+Search stack (`dfi-backend` / `dfi-frontend` / `dfi-face-worker`) and Studio stack (`dfi-carousel` / `dfi-carousel-backend`) are separate. Never `railway up` this pruned tree onto `dfi-backend`.
 
-Before **any** `railway up` (backend, frontend, face-worker, or carousel), agents **must**:
+### Pre-deploy git sync (required for search services)
+
+Before **any** `railway up` for **`dfi-backend`**, **`dfi-frontend`**, or **`dfi-face-worker`**, agents **must**:
 
 1. Be on branch **`main`** (never deploy from a feature branch).
 2. **`git pull`** (or `git pull --ff-only origin main`) so local `main` has **no unpulled commits** left versus `origin/main`.
@@ -40,6 +42,26 @@ These catch runtime `NameError`s (missing imports used only inside functions) th
 
 Frontend / carousel deploys do not require this pytest file, but still follow the git sync above and the upload commands below.
 
+### Carousel Studio exception (`pruned-craousel`)
+
+`dfi-carousel-backend` is the pruned Carousel Studio API. It is **not** on `main`. GitHub source for **both** Studio services is branch **`pruned-craousel`** (`Codenuclei/video-image-search-indexer-quality`):
+
+- `dfi-carousel` — Root Directory `carousel-frontend`
+- `dfi-carousel-backend` — Root Directory `backend`
+
+Do **not** point either at `main` (that would ship search frontend / unpruned search API). Search services (`dfi-backend` / `dfi-frontend` / `dfi-face-worker`) stay on `main`. Do **not** attach search `Postgres` or search `qdrant`. Studio vectors go to `dfi-carousel-qdrant` (`QDRANT_URL=http://dfi-carousel-qdrant.railway.internal:6333`).
+
+Push to `origin/pruned-craousel` to redeploy. Local upload still works:
+
+```bash
+cd backend && python -m pytest tests/test_import_guards.py -q
+cd backend && railway up --service dfi-carousel-backend --detach -y
+# Studio (from repo root; Root Directory = carousel-frontend)
+railway up --service dfi-carousel --detach -y
+```
+
+Studio proxies to `https://dfi-carousel-backend-production.up.railway.app` (`API_PROXY_TARGET`). Search remains on `dfi-backend`.
+
 ### Correct commands
 
 Always `cd` into the service directory first (matches `scripts/auto-deploy.sh`). Do **not** use `--path-as-root`.
@@ -56,6 +78,9 @@ cd backend && railway up --service dfi-face-worker --detach -y
 
 # Carousel: upload from **repo root** (service Root Directory = carousel-frontend)
 cd /path/to/repo && railway up --service dfi-carousel --detach -y
+
+# Carousel API (pruned tree only — never this command against dfi-backend)
+cd backend && railway up --service dfi-carousel-backend --detach -y
 ```
 
 Or from repo root:

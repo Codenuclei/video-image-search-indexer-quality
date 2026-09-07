@@ -31,3 +31,23 @@ cd carousel-frontend && npm run dev   # :3002, proxy to :8000
 ```
 
 Postgres default database name: `carousel`.
+
+## Railway (production)
+
+Isolated services in project `drivefaceindexer` (do not share search Postgres / search `qdrant` / `dfi-backend`):
+
+- API: `dfi-carousel-backend` → https://dfi-carousel-backend-production.up.railway.app
+- DB: `Postgres-WEBK` (referenced only by the Studio API)
+- Vectors: `dfi-carousel-qdrant` (`qdrant/qdrant:latest`, volume `/qdrant/storage`, private only). API `QDRANT_URL=http://dfi-carousel-qdrant.railway.internal:6333`
+- UI: `dfi-carousel` → https://dfi-carousel-production.up.railway.app (`API_PROXY_TARGET` = the API URL above)
+
+Deploy from branch `pruned-craousel` (GitHub on `dfi-carousel` + `dfi-carousel-backend`; never `main`):
+
+```bash
+git push origin pruned-craousel
+# or local upload:
+cd backend && python -m pytest tests/test_import_guards.py -q
+cd backend && railway up --service dfi-carousel-backend --detach -y
+```
+
+Google Cloud: add authorized redirect URI `https://dfi-carousel-backend-production.up.railway.app/auth/google/callback` (keep search’s `dfi-backend` callback). API key referrer: `https://dfi-carousel-production.up.railway.app/*`.

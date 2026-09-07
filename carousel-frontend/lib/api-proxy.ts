@@ -7,6 +7,7 @@
  * "Can't reach the studio API" in Carousel Studio.
  */
 import { NextRequest, NextResponse } from "next/server";
+import { REDIRECT_STATUSES, resolveRedirectLocation } from "@/lib/api-proxy-redirect";
 
 export const API_PROXY_TARGET = (
   process.env.API_PROXY_TARGET ?? "http://127.0.0.1:8000"
@@ -61,7 +62,10 @@ export async function proxyToBackend(
 
   let upstream: Response;
   try {
-    upstream = await fetch(url, init);
+    // Never follow 3xx. `/auth/google` 307s to accounts.google.com; if fetch
+    // follows it, Studio serves Google's HTML on this origin and Sign-in Next
+    // is blocked (CSP/cookies). The browser must navigate to Google itself.
+    upstream = await fetch(url, { ...init, redirect: "manual" });
     if (isSelectImages) {
       console.info(
         `select-images-proxy trace=${requestId} event=upstream_headers status=${upstream.status} elapsed_ms=${
@@ -85,6 +89,16 @@ export async function proxyToBackend(
       },
       { status: 502, headers: { "X-Request-ID": requestId } }
     );
+  }
+
+  if (REDIRECT_STATUSES.has(upstream.status)) {
+    const location = resolveRedirectLocation(upstream.headers.get("location"), url);
+    if (location) {
+      return new NextResponse(null, {
+        status: upstream.status,
+        headers: { location, "x-request-id": requestId },
+      });
+    }
   }
 
   const outHeaders = new Headers();

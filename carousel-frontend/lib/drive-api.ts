@@ -127,11 +127,16 @@ export function createDriveApi(apiBase: string) {
         method: "POST",
         body: JSON.stringify({ drive_file_ids: driveFileIds }),
       }),
-    /** Absolute URL for OAuth start (proxied same-origin). */
+    /**
+     * Top-level navigation to start Drive OAuth.
+     * Prefer the FastAPI origin so the browser follows the 307 to Google.
+     * Same-origin `/api/proxy` fetch would otherwise serve Google HTML on Studio.
+     */
     googleAuthUrl: (returnTo?: string) => {
       const dest = (returnTo || "").trim();
       const qs = dest ? `?return_to=${encodeURIComponent(dest)}` : "";
-      return `${apiBase}/auth/google${qs}`;
+      const origin = (process.env.NEXT_PUBLIC_BACKEND_URL || "").replace(/\/+$/, "");
+      return `${origin || apiBase}/auth/google${qs}`;
     },
   };
 }
