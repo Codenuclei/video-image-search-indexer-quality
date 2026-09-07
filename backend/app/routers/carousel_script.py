@@ -4182,6 +4182,22 @@ async def _build_hook_carousels(
         )
         spans = list(plan.get("spans") or [])
         story_cues = list(plan.get("scoped_cues") or cue_corpus)
+        if len(spans) < 2 and _RELAXED_CUE_LINES.get():
+            logger.warning(
+                "hook carousel thin plan id=%s; trying emergency spans",
+                hook.id or idx,
+            )
+            spans = _emergency_oneline_spans(
+                cue_corpus,
+                hook_start=hs,
+                hook_end=he,
+                min_slides=min_slides,
+                max_slides=max_slides,
+                reserved_texts=reserved_texts,
+                reserved_starts=reserved_starts,
+            )
+            story_cues = cue_corpus
+            plan["source"] = f"{plan.get('source') or 'heuristic'}+emergency"
         if len(spans) < 2:
             logger.warning("hook carousel skipped (thin plan) id=%s", hook.id or idx)
             continue
@@ -4207,6 +4223,39 @@ async def _build_hook_carousels(
             reserved_texts=reserved_texts,
             reserved_starts=reserved_starts,
         )
+        if len(slides) < 2 and _RELAXED_CUE_LINES.get():
+            emergency_spans = _emergency_oneline_spans(
+                cue_corpus,
+                hook_start=hs,
+                hook_end=he,
+                min_slides=min_slides,
+                max_slides=max_slides,
+                reserved_texts=reserved_texts,
+                reserved_starts=reserved_starts,
+            )
+            slides = _slides_from_exact_spans(
+                emergency_spans,
+                cues=cue_corpus,
+                drive_file_id=drive_file_id,
+                video_name=video_name,
+                crafted_hook=hook.text,
+                defer_images=not select_images,
+                reserved_texts=reserved_texts,
+                reserved_starts=reserved_starts,
+            )
+            slides = _top_up_oneline_slides(
+                slides,
+                cues=cue_corpus,
+                hook=anchored,
+                min_slides=min(min_slides, 4),
+                max_slides=max_slides,
+                drive_file_id=drive_file_id,
+                video_name=video_name,
+                defer_images=not select_images,
+                reserved_texts=reserved_texts,
+                reserved_starts=reserved_starts,
+            )
+            plan["source"] = f"{plan.get('source') or 'heuristic'}+emergency"
         if len(slides) < min_slides:
             logger.warning(
                 "hook carousel underfilled id=%s slides=%d<%d",
@@ -4496,6 +4545,29 @@ async def _carousel_pipeline_generate_impl(
             max_slides=max_slides,
             select_images=select_images,
             llm=llm,
+            copy_refs=copy_refs,
+            image_ref_bytes=image_ref_bytes,
+            references=attached_refs,
+        )
+    if not carousels:
+        # Final pass: force relaxed + lower min so short ASR still yields a deck.
+        logger.warning(
+            "carousel generate still empty; emergency relaxed build drive=%s",
+            drive_file_id,
+        )
+        _RELAXED_CUE_LINES.set(True)
+        carousels = await _build_hook_carousels(
+            unique_hooks=unique_hooks,
+            topics=topics,
+            themes=list(body.themes or []),
+            intent=(body.intent or "").strip(),
+            cue_corpus=cue_corpus,
+            drive_file_id=drive_file_id,
+            video_name=video_name,
+            min_slides=min(6, max(2, min_slides)),
+            max_slides=max_slides,
+            select_images=select_images,
+            llm=None,  # heuristic/emergency only — avoid another empty LLM plan
             copy_refs=copy_refs,
             image_ref_bytes=image_ref_bytes,
             references=attached_refs,
@@ -6700,6 +6772,51 @@ def _line_complete_enough(text: str) -> bool:
     return False
 
 
+def _strip_midclause_prefix(text: str) -> str:
+    """Drop leading conjunction/preposition residue so a fragment can open a slide."""
+    words = (text or "").split()
+    while words:
+        first = re.sub(r"[^\w']", "", words[0].lower())
+        if first and first not in _MIDCLAUSE_OPENERS:
+            break
+        words.pop(0)
+    return " ".join(words).strip()
+
+
+def _usable_oneline_candidate(
+    text: str,
+    *,
+    emergency: bool = False,
+) -> str:
+    """Return a slide-ready exact line, softening ASR mid-clause starts when needed."""
+    raw = " ".join((text or "").split()).strip()
+    if not raw:
+        return ""
+    candidates = [raw]
+    if _RELAXED_CUE_LINES.get() or emergency:
+        softened = _strip_midclause_prefix(raw)
+        if softened and softened.casefold() != raw.casefold():
+            candidates.append(softened)
+    min_words = 4 if emergency else _ONELINE_MIN_WORDS
+    for candidate in candidates:
+        line = _trim_to_oneline(candidate)
+        if len(line.split()) < min_words:
+            continue
+        if not _line_starts_clean(line):
+            if not (emergency or _RELAXED_CUE_LINES.get()):
+                continue
+            line = _trim_to_oneline(_strip_midclause_prefix(line))
+            if len(line.split()) < min_words or not _line_starts_clean(line):
+                continue
+        if _line_complete_enough(line):
+            return line
+        if emergency or _RELAXED_CUE_LINES.get():
+            last = line.split()[-1].lower().rstrip(".,;:…।॥\"')")
+            if last not in _DANGLING_ENDS and len(line.split()) <= _ONELINE_MAX_WORDS + 2:
+                return line
+    return ""
+
+
 def _trim_to_oneline(text: str, *, max_words: int = _ONELINE_MAX_WORDS) -> str:
     """Keep exact words but cut at a natural short boundary for one carousel line."""
     cleaned = re.sub(r"\s+", " ", (text or "").strip())
@@ -7156,8 +7273,8 @@ def _plan_hook_oneline_spans_heuristic(
     candidates: list[dict[str, float | str]] = []
 
     def add_candidate(text: str, start: float, end: float) -> None:
-        line = _trim_to_oneline(text)
-        if len(line.split()) < _ONELINE_MIN_WORDS or not _line_starts_clean(line):
+        line = _usable_oneline_candidate(text)
+        if not line:
             return
         if _is_reserved_line(
             line,
@@ -7190,7 +7307,7 @@ def _plan_hook_oneline_spans_heuristic(
     complete = [
         c
         for c in candidates
-        if _line_starts_clean(str(c["text"])) and _line_complete_enough(str(c["text"]))
+        if _usable_oneline_candidate(str(c["text"]))
     ]
     complete.sort(key=lambda c: float(c["start_sec"]))
     picked: list[dict[str, float]] = []
@@ -7241,6 +7358,79 @@ def _plan_hook_oneline_spans_heuristic(
             seen_txt.add(key)
             picked.append({"start_sec": start, "end_sec": float(c["end_sec"])})
 
+    picked.sort(key=lambda c: c["start_sec"])
+    return picked[: max(max_slides, min_slides)]
+
+
+def _emergency_oneline_spans(
+    cues: list[tuple[float, float | None, str]],
+    *,
+    hook_start: float,
+    hook_end: float | None,
+    min_slides: int,
+    max_slides: int,
+    reserved_texts: set[str] | None = None,
+    reserved_starts: set[float] | None = None,
+) -> list[dict[str, float]]:
+    """Last-resort cuts from the full cue stream when strict/heuristic planning starves.
+
+    Ignores hook-token relevance and softens mid-clause ASR fragments so generate
+    still returns a usable deck instead of a hard 400.
+    """
+    hs = float(hook_start or 0)
+    he = float(hook_end) if hook_end is not None else hs + 12.0
+    # Prefer near the hook, then fall back to the whole transcript.
+    windows = (
+        (max(0.0, hs - 20.0), he + 90.0),
+        (max(0.0, hs - 40.0), he + 180.0),
+        (0.0, float("inf")),
+    )
+    picked: list[dict[str, float]] = []
+    seen_txt: set[str] = set()
+    for lo, hi in windows:
+        catalog = [
+            (float(s), float(e) if e is not None else float(s) + 2.0, t or "")
+            for s, e, t in cues
+            if (t or "").strip() and lo <= float(s) <= hi
+        ]
+        catalog.sort(key=lambda row: row[0])
+        i = 0
+        while i < len(catalog) and len(picked) < max(max_slides, min_slides):
+            s0, e0, t0 = catalog[i]
+            merged = t0
+            end = e0
+            j = i
+            line = _usable_oneline_candidate(merged, emergency=True)
+            while (
+                not line
+                and j + 1 < len(catalog)
+                and len(merged.split()) < _ONELINE_MAX_WORDS
+            ):
+                j += 1
+                merged = f"{merged} {catalog[j][2]}".strip()
+                end = catalog[j][1]
+                line = _usable_oneline_candidate(merged, emergency=True)
+            i = max(i + 1, j + 1)
+            if not line:
+                continue
+            key = line.lower()
+            if key in seen_txt or any(
+                key in prior or prior in key for prior in seen_txt if len(prior) >= 12
+            ):
+                continue
+            if _is_reserved_line(
+                line,
+                s0,
+                reserved_texts=reserved_texts,
+                reserved_starts=reserved_starts,
+            ):
+                continue
+            if any(abs(s0 - p["start_sec"]) < 1.5 for p in picked):
+                continue
+            seen_txt.add(key)
+            picked.append({"start_sec": float(s0), "end_sec": float(end)})
+        if len(picked) >= min(min_slides, 4):
+            break
     picked.sort(key=lambda c: c["start_sec"])
     return picked[: max(max_slides, min_slides)]
 
@@ -7601,6 +7791,20 @@ async def _plan_hook_oneline_spans(
         if source.endswith("_cuts"):
             tag = llm_used if llm_used not in ("none", "failed") else "llm"
             source = f"{tag}+heuristic"
+    if len(spans) < 2 and _RELAXED_CUE_LINES.get():
+        emergency = _emergency_oneline_spans(
+            cues,
+            hook_start=hs,
+            hook_end=he,
+            min_slides=min_slides,
+            max_slides=max_slides,
+            reserved_texts=reserved_texts,
+            reserved_starts=reserved_starts,
+        )
+        spans = _merge_span_lists(spans, emergency, limit=max_slides)
+        if emergency:
+            source = f"{source}+emergency"
+            scoped_cues = cues
     return {
         "spans": spans[:max_slides],
         "source": source,
@@ -7889,16 +8093,28 @@ def _slides_from_exact_spans(
             if expanded:
                 text, s, e = expanded, es, float(ee if ee is not None else s + 2.5)
             else:
-                continue
-        if not _line_starts_clean(text):
+                text = _usable_oneline_candidate(text or "", emergency=True)
+                if not text:
+                    continue
+        usable = _usable_oneline_candidate(text, emergency=_RELAXED_CUE_LINES.get())
+        if usable:
+            text = usable
+        elif not _line_starts_clean(text):
             repaired = _exact_text_for_span(cues, max(0.0, s - 2.5), e)
-            if repaired and _line_starts_clean(repaired):
-                text = repaired
+            usable = _usable_oneline_candidate(
+                repaired or "",
+                emergency=_RELAXED_CUE_LINES.get(),
+            )
+            if usable:
+                text = usable
                 s = max(0.0, s - 2.5)
             else:
                 continue
-        if not _line_complete_enough(text):
-            continue
+        elif not _line_complete_enough(text):
+            usable = _usable_oneline_candidate(text, emergency=True)
+            if not usable:
+                continue
+            text = usable
         if _is_reserved_line(
             text,
             s,
@@ -8007,18 +8223,27 @@ def _top_up_oneline_slides(
 ) -> list[dict[str, Any]]:
     """Guarantee ≥ min_slides unique exact one-liners from cues near the hook."""
     # Drop incomplete lines and anything already claimed by another hook.
-    slides = [
-        s
-        for s in slides
-        if _line_complete_enough((s.get("transcript_text") or "").strip())
-        and _line_starts_clean((s.get("transcript_text") or "").strip())
-        and not _is_reserved_line(
-            (s.get("transcript_text") or "").strip(),
+    kept_slides: list[dict[str, Any]] = []
+    for s in slides:
+        text = (s.get("transcript_text") or "").strip()
+        usable = _usable_oneline_candidate(text, emergency=_RELAXED_CUE_LINES.get())
+        if not usable:
+            continue
+        if _is_reserved_line(
+            usable,
             float(s.get("timestamp_sec") or 0),
             reserved_texts=reserved_texts,
             reserved_starts=reserved_starts,
-        )
-    ]
+        ):
+            continue
+        if usable != text:
+            s = dict(s)
+            s["transcript_text"] = usable
+            s["hook_line"] = usable
+            s["caption"] = usable
+            s["snippet"] = usable
+        kept_slides.append(s)
+    slides = kept_slides
     if len(slides) >= min_slides:
         slides = sorted(slides, key=lambda s: float(s.get("timestamp_sec") or 0))
         for i, s in enumerate(slides[:max_slides]):
@@ -8053,7 +8278,14 @@ def _top_up_oneline_slides(
             or not _line_starts_clean(text)
             or not _line_complete_enough(text)
         ):
-            return False
+            usable = _usable_oneline_candidate(
+                text,
+                emergency=allow_weak or _RELAXED_CUE_LINES.get(),
+            )
+            if not usable:
+                return False
+            text = usable
+            key = _norm_slide_key(text)
         # Keep each carousel on-topic for its hook (Instagram: one idea sequence).
         score = _cue_relevance(text, hook_toks)
         if (

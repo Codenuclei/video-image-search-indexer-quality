@@ -75,6 +75,54 @@ def test_punctuated_transcript_keeps_strict_line_rules():
 
 
 @pytest.mark.asyncio
+async def test_fragmented_midclause_cues_build_via_emergency():
+    """ASR streams that open on 'to/and/of' used to 400 even after relaxed."""
+    from app.routers.carousel_script import _usable_oneline_candidate
+
+    fragmented = [
+        (1.0, 3.0, "to build a company you need operators"),
+        (3.0, 5.0, "and students learn by managing capital"),
+        (5.0, 7.0, "of real portfolios with real losses"),
+        (7.0, 9.0, "with recruiters judging proof not grades"),
+        (9.0, 11.0, "for placements that follow that track"),
+        (11.0, 13.0, "from alumni leading teams across industries"),
+        (13.0, 15.0, "into markets where the product has to work"),
+        (15.0, 17.0, "by shipping weekly and talking to customers"),
+    ]
+    hooks = [
+        TimedPick(
+            id="hook_1",
+            text="students learn by managing real capital",
+            start_sec=3.0,
+            end_sec=7.0,
+        )
+    ]
+    _RELAXED_CUE_LINES.set(True)
+    assert _usable_oneline_candidate(
+        "to build a company you need operators",
+        emergency=True,
+    ).startswith("build a company")
+
+    built = await _build_hook_carousels(
+        unique_hooks=hooks,
+        topics=[],
+        themes=[],
+        intent="",
+        cue_corpus=fragmented,
+        drive_file_id="yt:frag",
+        video_name="Fragmented.mp4",
+        min_slides=4,
+        max_slides=8,
+        select_images=False,
+        api_key=None,
+        model=None,
+    )
+    assert len(built) == 1
+    assert len(built[0]["slides"]) >= 2
+    assert all((s.get("transcript_text") or "").strip() for s in built[0]["slides"])
+
+
+@pytest.mark.asyncio
 async def test_autocaption_transcript_builds_carousel():
     hooks = [
         TimedPick(
