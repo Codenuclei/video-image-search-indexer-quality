@@ -107,13 +107,19 @@ async def transcript_status_payload(
     cue_count = await count_text_cues(session, media.id) if media is not None else 0
     phase = transcript_job_phase(drive_file.error_message)
     failed = transcript_job_failed_message(drive_file.error_message)
+    raw_status = getattr(drive_file, "status", None)
+    file_status = raw_status.value if hasattr(raw_status, "value") else (str(raw_status) if raw_status else None)
+    base = {
+        "drive_file_id": drive_file_id,
+        "name": drive_file.name,
+        "file_status": file_status,
+    }
 
     if cue_count > 0:
         return {
+            **base,
             "ok": True,
             "status": "ready",
-            "drive_file_id": drive_file_id,
-            "name": drive_file.name,
             "cue_count": cue_count,
             "has_captions": True,
             "phase": None,
@@ -121,10 +127,9 @@ async def transcript_status_payload(
         }
     if phase == "failed" or failed:
         return {
+            **base,
             "ok": False,
             "status": "failed",
-            "drive_file_id": drive_file_id,
-            "name": drive_file.name,
             "cue_count": 0,
             "has_captions": False,
             "phase": "failed",
@@ -132,20 +137,18 @@ async def transcript_status_payload(
         }
     if phase:
         return {
+            **base,
             "ok": True,
             "status": "running",
-            "drive_file_id": drive_file_id,
-            "name": drive_file.name,
             "cue_count": 0,
             "has_captions": False,
             "phase": phase,
             "message": _phase_message(phase),
         }
     return {
+        **base,
         "ok": True,
         "status": "missing",
-        "drive_file_id": drive_file_id,
-        "name": drive_file.name,
         "cue_count": 0,
         "has_captions": False,
         "phase": None,

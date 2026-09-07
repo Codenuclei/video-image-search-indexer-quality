@@ -15,6 +15,7 @@ GIS login and Drive OAuth are **copied into this process**. Studio does not call
 ## Hour-long videos
 
 - Ingest is **one video at a time** (`VIDEO_INDEX_MAX_PARALLEL=1`).
+- Drive sync is **video-only**. Photos, HEIC, PDFs, and other non-video files are not queued or indexed. Slide stills still come from ffmpeg on the video.
 - Frame dump is **sparse** (8 samples across the file), not 1 fps. Slide stills are ffmpeg seeks after timestamps exist.
 - Whisper audio extract timeout is **3600s**. Index stall watchdog is **7200s**.
 - Gunicorn: **1 worker**, timeout **3600s**.

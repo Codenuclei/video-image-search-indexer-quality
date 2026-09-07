@@ -12,6 +12,7 @@ export type TranscriptStatus = {
   has_captions?: boolean;
   phase?: string | null;
   message?: string;
+  file_status?: string | null;
 };
 
 export type EnsureEnglishResult = {

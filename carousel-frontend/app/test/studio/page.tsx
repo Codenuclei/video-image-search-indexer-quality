@@ -41,6 +41,7 @@ import {
 } from "@/lib/test-api";
 import {
   ensureEnglishTranscript,
+  pollVideoTranscriptStatus,
   waitForEnglishTranscript,
 } from "@/lib/transcript-ensure";
 import {
@@ -55,6 +56,7 @@ import { cn } from "@/lib/utils";
 import { toastApiError } from "@/lib/toast-api-error";
 import { toast } from "sonner";
 import { loadRunConfig, persistRunConfig } from "../carousel-llm-picker";
+import { studioVideoStatus } from "@/lib/studio-video-status";
 import { StageLlmGenerate } from "../stage-llm-generate";
 import { TestIgPost } from "../test-ig-post";
 import { TopicsHooksTree } from "../topics-hooks-tree";
@@ -358,6 +360,8 @@ function TestStudioInner() {
   const [uploadNote, setUploadNote] = useState<string | null>(null);
   const uploadInputRef = useRef<HTMLInputElement>(null);
   const stagedUploadsRef = useRef<TestVideo[]>([]);
+  const videosRef = useRef<TestVideo[]>([]);
+  videosRef.current = videos;
   const previewVideoRef = useRef<HTMLVideoElement>(null);
   const [previewItem, setPreviewItem] = useState<{ start_sec: number; text: string } | null>(
     null
@@ -551,6 +555,70 @@ function TestStudioInner() {
     const task = window.setTimeout(() => void loadVideos(), 0);
     return () => window.clearTimeout(task);
   }, [loadVideos]);
+
+  const inflightIds = videos
+    .filter((v) => studioVideoStatus(v).inflight)
+    .map((v) => v.id)
+    .sort()
+    .join(",");
+
+  useEffect(() => {
+    if (!inflightIds) return;
+    let cancelled = false;
+
+    const applyProgress = (id: string, patch: Partial<TestVideo>) => {
+      stagedUploadsRef.current = stagedUploadsRef.current.map((row) =>
+        row.id === id ? { ...row, ...patch } : row
+      );
+      setVideos((prev) => prev.map((row) => (row.id === id ? { ...row, ...patch } : row)));
+      setSelected((row) => (row?.id === id ? { ...row, ...patch } : row));
+    };
+
+    const tick = async () => {
+      let becameReady = false;
+      const inflight = videosRef.current.filter((v) => studioVideoStatus(v).inflight);
+      for (const video of inflight) {
+        if (cancelled) return;
+        try {
+          const st = await pollVideoTranscriptStatus(API_BASE, video.id);
+          if (cancelled) return;
+          if (st.status === "not_found") continue;
+          const fileStatus = (st.file_status || video.status || "pending").toLowerCase();
+          const cueCount = st.cue_count ?? video.cue_count ?? 0;
+          const hasCaptions = Boolean(st.has_captions || cueCount > 0);
+          const nextStatus =
+            st.status === "failed" ? "error" : fileStatus || video.status;
+          if (
+            nextStatus === video.status &&
+            hasCaptions === Boolean(video.has_captions) &&
+            cueCount === (video.cue_count ?? 0)
+          ) {
+            continue;
+          }
+          applyProgress(video.id, {
+            status: nextStatus,
+            has_captions: hasCaptions,
+            cue_count: cueCount,
+            name: st.name || video.name,
+          });
+          if (st.message) {
+            setUploadNote(`“${st.name || video.name}” — ${st.message}`);
+          }
+          if (hasCaptions && fileStatus === "processed") becameReady = true;
+        } catch {
+          // Keep last known status; the next tick retries.
+        }
+      }
+      if (becameReady && !cancelled) void loadVideos({ silent: true });
+    };
+
+    void tick();
+    const timer = window.setInterval(() => void tick(), 2500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [inflightIds, loadVideos]);
 
   // Deep-link from library
   useEffect(() => {
@@ -1596,8 +1664,8 @@ function TestStudioInner() {
                       </span>
                       <span className="min-w-0 flex-1">
                         <span className="block truncate text-sm font-semibold">{v.name}</span>
-                        <span className="text-xs text-zinc-500">
-                          {v.cue_count ?? "…"} cues · {v.status}
+                        <span className={cn("text-xs", studioVideoStatus(v).tone)}>
+                          {studioVideoStatus(v).label}
                         </span>
                       </span>
                     </button>
@@ -1612,6 +1680,9 @@ function TestStudioInner() {
           <div className="mt-4 flex flex-wrap items-center gap-3">
             <p className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
               Selected: <span className="font-medium text-foreground">{selected.name}</span>
+              <span className={cn("ml-2", studioVideoStatus(selected).tone)}>
+                {studioVideoStatus(selected).label}
+              </span>
             </p>
             <StageLlmGenerate
               label="Generate themes"

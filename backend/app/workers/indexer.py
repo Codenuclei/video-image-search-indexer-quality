@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import and_, case, exists, func, or_, select, text, update
+from sqlalchemy import and_, case, delete, exists, func, or_, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -28,14 +28,12 @@ from app.gemini.service import GeminiFileSearchService, get_gemini_service
 from app.pipelines.common import (
     INDEXABLE_IMAGE_TYPES,
     INDEXABLE_VIDEO_TYPES,
-    file_has_media,
     infer_image_mime,
     is_drive_media_candidate,
     is_image_mime,
     is_indexable_mime,
     is_video_mime,
 )
-from app.pipelines.image import process_image_file
 from app.pipelines.video import process_video_file
 from app.video.youtube_registry import is_youtube_source
 from app.pipelines.decode_recovery import apply_decode_failure, decode_max_attempts, is_decode_failure_error
@@ -300,33 +298,27 @@ class IndexingWorker:
                 logger.exception("Video slot refill failed")
 
     async def ensure_parallel_image_indexing(self) -> int:
-        """Start background image index jobs up to image_index_max_parallel."""
-        from app.db.advisory_locks import LOCK_IMAGE_INDEX_CLAIM, advisory_lock
-        from app.storage import indexing_disk_ready
+        """Studio is video-only — never claim or process Drive photos."""
+        async with self._session_factory() as session:
+            n = await self._purge_non_video_library_rows(session)
+            if n:
+                await session.commit()
+        return 0
 
-        self._prune_image_tasks()
-        # Phase 0: do not admit new downloads when the volume is near full.
-        if not indexing_disk_ready(
-            self._settings.media_cache_dir,
-            high_water_bytes=self._settings.index_disk_high_water_bytes,
-        ):
-            logger.warning(
-                "image_index_paused_disk_low path=%s high_water_bytes=%s",
-                self._settings.media_cache_dir,
-                self._settings.index_disk_high_water_bytes,
+    async def _purge_non_video_library_rows(self, session: AsyncSession) -> int:
+        """Drop image/doc DriveFile rows (keep videos + folder placeholders)."""
+        result = await session.execute(
+            delete(DriveFile).where(
+                DriveFile.status != DriveFileStatus.PROCESSING,
+                DriveFile.mime_type != FOLDER_MIME,
+                DriveFile.mime_type.not_like("video/%"),
+                DriveFile.mime_type.notin_(tuple(INDEXABLE_VIDEO_TYPES)),
             )
-            return 0
-
-        max_parallel = self._image_max_parallel()
-
-        async with advisory_lock(
-            LOCK_IMAGE_INDEX_CLAIM, name="image_index_claim", blocking=False
-        ) as got:
-            if not got:
-                return 0
-            return await self._ensure_parallel_image_indexing_locked(
-                max_parallel=max_parallel, started=0
-            )
+        )
+        n = int(result.rowcount or 0)
+        if n:
+            logger.info("Purged %d non-video library row(s) (Studio is video-only)", n)
+        return n
 
     async def _ensure_parallel_image_indexing_locked(
         self, *, max_parallel: int, started: int
@@ -1660,33 +1652,17 @@ class IndexingWorker:
             await asyncio.to_thread(gemini.delete_document, old_document)
             drive_file.gemini_document_name = None
 
-        if is_image_mime(drive_file.mime_type, drive_file.name) and not await file_has_media(session, file_id):
-            await process_image_file(
-                session,
-                drive_file,
-                self._client,
-                self._settings,
-            )
-            if drive_file.status == DriveFileStatus.SKIPPED:
-                return
-            from app.drive.conflicts import is_duplicate_content_complete
+        if is_image_mime(drive_file.mime_type, drive_file.name):
+            drive_file.status = DriveFileStatus.SKIPPED
+            drive_file.error_message = "studio_video_only"
+            return
 
-            # Twin already indexed — keep PROCESSED + twin pointer; do not clear or re-embed.
-            if is_duplicate_content_complete(drive_file):
-                drive_file.status = DriveFileStatus.PROCESSED
-                drive_file.decode_attempts = 0
-                drive_file.last_synced_at = datetime.now(timezone.utc)
-                return
-
-        # Images: process_image_file already wrote faces + Qdrant image/caption vectors.
-        # Non-image/non-video: skipped upstream as unsupported_mime.
-        # Never upload into Google File Search — local Qdrant RAG only.
+        # Non-video leftovers: skip without downloading. Never File Search.
         if old_document:
-            # Best-effort clear of legacy Google doc id; delete is a no-op when disabled.
             await asyncio.to_thread(gemini.delete_document, old_document)
 
-        drive_file.status = DriveFileStatus.PROCESSED
-        drive_file.error_message = None
+        drive_file.status = DriveFileStatus.SKIPPED
+        drive_file.error_message = "studio_video_only"
         drive_file.decode_attempts = 0
         drive_file.gemini_document_name = None
         drive_file.last_synced_at = datetime.now(timezone.utc)
@@ -1748,6 +1724,7 @@ class IndexingWorker:
             if entry.id:
                 entries_by_id[entry.id] = entry
         async with self._session_factory() as session:
+            await self._purge_non_video_library_rows(session)
             paused_paths = await load_paused_folder_paths(session)
             for entry in entries_by_id.values():
                 if entry.mime_type == SHORTCUT_MIME and not entry.is_folder:
@@ -1767,12 +1744,8 @@ class IndexingWorker:
                 # XML / WAV / docs / etc.: never media — do not sync, download, or skip-noise.
                 if not is_drive_media_candidate(entry.mime_type, entry.name):
                     existing_noise = await session.get(DriveFile, entry.id)
-                    if existing_noise is not None and existing_noise.status in (
-                        DriveFileStatus.PENDING,
-                        DriveFileStatus.SKIPPED,
-                        DriveFileStatus.ERROR,
-                    ):
-                        # Drop queue noise only; never delete PROCESSED/PROCESSING media.
+                    if existing_noise is not None and existing_noise.status != DriveFileStatus.PROCESSING:
+                        # Drop photos/docs from the Studio library (video-only).
                         await session.delete(existing_noise)
                     continue
                 seen += 1
@@ -1920,6 +1893,7 @@ class IndexingWorker:
         fingerprint = hashlib.sha256(fingerprint_seed.encode("utf-8")).hexdigest()[:40]
 
         async with self._session_factory() as session:
+            await self._purge_non_video_library_rows(session)
             paused_paths = await load_paused_folder_paths(session)
             for entry in entries_by_id.values():
                 if entry.mime_type == SHORTCUT_MIME and not entry.is_folder:
