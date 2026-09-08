@@ -339,6 +339,10 @@ _EXPERIMENTAL_OBJECT_FILLER = frozenset({
     "campus", "food", "race", "backdrop", "background", "ceremony",
     "stage", "over", "into", "during", "show", "find",
 })
+_WEAK_OBJECT_MODIFIERS = frozenset({
+    "open", "closed", "large", "small", "big", "huge", "tiny",
+    "empty", "full", "next", "first", "last", "new", "old",
+})
 _EXPERIMENTAL_RARE = frozenset({"hyrox", "cheque", "check", "shure"})
 _CHEQUE_TERMS = frozenset({"cheque", "cheques", "check", "checks"})
 _EXPERIMENTAL_GARMENTS = frozenset({
@@ -362,6 +366,27 @@ _CEREMONIAL_CHEQUE_RE = re.compile(
     r"|\bchecks?\b.{0,80}\b(?:inr|rs\.?|rupees?|₹|lakh|lakhs|payable)\b",
     re.IGNORECASE,
 )
+
+
+def _distinctive_query_objects(query: str, objects: set[str]) -> set[str]:
+    """Objects the caption must hit when the query named a real thing.
+
+    Drops filler (over/stage), weak modifiers (open/large), and compacted
+    leftovers like overopenflame. Keeps synonym expansions (cheque→check).
+    """
+    qtok = set(re.findall(r"[a-z0-9]+", (query or "").casefold()))
+    out: set[str] = set()
+    for token in objects:
+        if token in _EXPERIMENTAL_OBJECT_FILLER or token in _WEAK_OBJECT_MODIFIERS:
+            continue
+        if token in qtok:
+            out.add(token)
+            continue
+        for group in OBJECT_SYNONYM_GROUPS:
+            if token in group and (qtok & group):
+                out.add(token)
+                break
+    return out
 
 
 def ceremonial_cheque_in_caption(caption: str) -> bool:
@@ -411,6 +436,9 @@ def experimental_evidence_score(caption: str, query: str) -> float:
         return 0.0
     hay = _caption_token_set(caption)
     actions = parsed.action_terms
+    distinctive = _distinctive_query_objects(query, objects)
+    if distinctive and not (hay & distinctive):
+        return 0.0
     if not actions and not objects:
         return 0.0
     action_hit = bool(hay & actions) if actions else False

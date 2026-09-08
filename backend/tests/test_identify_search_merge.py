@@ -356,6 +356,35 @@ def test_giving_cheque_keeps_prize_checks_not_checkin() -> None:
         assert experimental_evidence_score(caption, query) == 0.0, caption
 
 
+def test_flame_query_requires_flame_not_open_or_kitchen() -> None:
+    """Live testv2: chef cooking over an open flame, 2026-09-08."""
+    from app.objects.identify_tags import experimental_evidence_score
+
+    query = "chef cooking over an open flame"
+    assert experimental_evidence_score(
+        "A chef cooks over an open flame in a kitchen, creating a large burst of fire, while a man in a white t-shirt stands nearby holding a clipboard.",
+        query,
+    ) > 0
+    drop = [
+        "Five professionals stand in a modern workspace with yellow trim, conversing near an open kitchen area.",
+        "A group of seven people pose together in a brightly lit industrial kitchen setting, smiling and gesturing.",
+        "A man with glasses and short dark hair is speaking in front of a blue background with an IKEA logo and a cast iron frying pan illustration.",
+        "A man with a beard, wearing a white short-sleeve shirt and blue jeans, stands with his arms open in a modern room with a red door.",
+        "A man with a beard and glasses gestures with his hands while speaking at a podium beside a banner reading Open AI Codex Community Hackathon.",
+        "A person sits in a blue armchair in a wooden-paneled room, reading an open magazine that conceals their face.",
+        "A man dressed in traditional white kandura and ghutrah stands behind a wooden lectern with an open laptop, gesturing with his hand while speaking.",
+        "A shirtless man in athletic shorts crouches at the start line of a black turf track, preparing to run while spectators watch from the sidelines.",
+        "A chef in a white uniform prepares food behind a counter in a commercial kitchen while staff and customers stand nearby.",
+    ]
+    for caption in drop:
+        assert experimental_evidence_score(caption, query) == 0.0, caption
+    # Vague cooking+kitchen query still keeps kitchen scenes without flame.
+    assert experimental_evidence_score(
+        "A group of seven people pose together in a brightly lit industrial kitchen setting, smiling and gesturing.",
+        "students cooking food in a campus kitchen",
+    ) > 0
+
+
 def test_production_lexical_still_requires_every_query_token() -> None:
     from app.qdrant.image_captions import caption_matches_query_text
 
