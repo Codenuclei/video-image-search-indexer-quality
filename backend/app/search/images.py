@@ -269,6 +269,9 @@ async def search_image_files(
         cw = settings.image_caption_weight
         visual_keep = 0.0
     ranked: list[tuple[str, float, str | None]] = []
+    evidence_score_fn = None
+    if identify_mode:
+        from app.objects.identify_tags import experimental_evidence_score as evidence_score_fn
 
     for fid in all_ids:
         v = visual_scores.get(fid, 0.0)
@@ -297,6 +300,9 @@ async def search_image_files(
         stored_caption = bool((captions.get(fid) or "").strip())
 
         if identify_mode:
+            evidence = evidence_score_fn(captions.get(fid) or "", query)
+            if evidence <= 0 and not qualified_object_hit:
+                continue
             if has_caption_hit:
                 fused = cw * c + vw * v
             elif qualified_object_hit:

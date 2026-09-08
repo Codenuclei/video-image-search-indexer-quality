@@ -329,6 +329,33 @@ def test_experimental_caption_match_keeps_distinctive_hits() -> None:
     assert both > object_only > 0
 
 
+def test_giving_cheque_keeps_prize_checks_not_checkin() -> None:
+    """Replay live /search/testv2 captions from 2026-09-08 giving cheque."""
+    from app.objects.identify_tags import ceremonial_cheque_in_caption, experimental_evidence_score
+
+    query = "giving cheque"
+    keep = [
+        "Two men stand on a stage during an award presentation, with the man on the right holding a large novelty check in front of a decorative wall.",
+        "A young man and woman smile while holding a large \"NATIONAL WINNER\" check from Flipkart Wired 8.0, with team name \"QUICK FIX\" and campus name \"MASTER'S UNION\" displayed on a colorful backdrop.",
+        "A stylized paper check with the \"masters' union\" logo, reading \"VENTURE INITIATION PROGRAMME,\" filled out with the name \"Cryptique\" and the amount \"INR 5,00,000/-\" for \"Five Lakhs Only\".",
+        "A man in a grey suit holds a trophy and a woman in a black suit holds a large check in an auditorium setting with \"HUSK\" signage.",
+    ]
+    drop = [
+        "A registration desk is set up with laptops, lanyards, and brochures as staff check in attendees arriving in a lobby area with a large banner reading 'The Next Tech'.",
+        "A vintage green guest check paper pad featuring printed headers for \"Persons\", \"Server\", \"Table\", and the check number \"01240\".",
+        "A group of four adults stand together indoors near a red arched entrance, smiling as someone appears to be checking or scanning a wristband.",
+        "A group of people gather around a counter at an indoor event, interacting with staff and checking their phones.",
+        "Three people on a stage in front of a 'masters' union' logo backdrop, with one woman handing a black gift bag to another woman while a man watches and smiles.",
+        "People wait in a registration area inside a large venue, with check-in desks, stanchions, and a sign that reads Welcome to the Start-Up Weekend Register here BATCH 2.",
+    ]
+    for caption in keep:
+        assert ceremonial_cheque_in_caption(caption), caption
+        assert experimental_evidence_score(caption, query) > 0, caption
+    for caption in drop:
+        assert not ceremonial_cheque_in_caption(caption), caption
+        assert experimental_evidence_score(caption, query) == 0.0, caption
+
+
 def test_production_lexical_still_requires_every_query_token() -> None:
     from app.qdrant.image_captions import caption_matches_query_text
 

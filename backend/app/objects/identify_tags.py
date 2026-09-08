@@ -340,16 +340,49 @@ _EXPERIMENTAL_OBJECT_FILLER = frozenset({
     "stage", "over", "into", "during", "show", "find",
 })
 _EXPERIMENTAL_RARE = frozenset({"hyrox", "cheque", "check", "shure"})
+_CHEQUE_TERMS = frozenset({"cheque", "cheques", "check", "checks"})
 _EXPERIMENTAL_GARMENTS = frozenset({
     "blazer", "jacket", "suit", "sari", "dress", "shirt", "tshirt",
 })
+# "checking" → "check" is a false friend of ceremonial cheque.
+_NO_ING_OBJECT_STEM = frozenset({"checking", "checked"})
+_GUEST_CHECK_RE = re.compile(r"\bguest\s+checks?\b", re.IGNORECASE)
+_CHECKIN_RE = re.compile(
+    r"\bcheck-ins?\b|\bcheckins?\b|\bchecking[\s-]+in\b"
+    r"|\bcheck[\s-]+in(?!\s+front)\b",
+    re.IGNORECASE,
+)
+_CEREMONIAL_CHEQUE_RE = re.compile(
+    r"\bcheques?\b"
+    r"|\b(?:prize|novelty|ceremonial|oversized|jumbo|giant|large|mock|award|"
+    r"promotional|winner|donation|national|paper)\s+(?:['\"\w-]+\s+){0,3}checks?\b"
+    r"|\b(?:holding|handing|presenting|giving|awarding|receiving|holds|hold)\s+"
+    r"(?:['\"\w-]+\s+){0,8}checks?\b"
+    r"|\b(?:inr|rs\.?|rupees?|₹|lakh|lakhs)\b.{0,80}\bchecks?\b"
+    r"|\bchecks?\b.{0,80}\b(?:inr|rs\.?|rupees?|₹|lakh|lakhs|payable)\b",
+    re.IGNORECASE,
+)
+
+
+def ceremonial_cheque_in_caption(caption: str) -> bool:
+    """True for prize/novelty cheques; false for check-in desks and guest-check pads."""
+    text = caption or ""
+    if _GUEST_CHECK_RE.search(text):
+        return False
+    if _CEREMONIAL_CHEQUE_RE.search(text):
+        return True
+    return False
 
 
 def _caption_token_set(caption: str) -> set[str]:
     tokens = set(re.findall(r"[a-z0-9]+", (caption or "").casefold()))
     extra: set[str] = set()
     for token in tokens:
-        if len(token) > 4 and token.endswith("ing"):
+        if (
+            len(token) > 4
+            and token.endswith("ing")
+            and token not in _NO_ING_OBJECT_STEM
+        ):
             extra.add(token[:-3])
         if len(token) > 3 and token.endswith("s") and not token.endswith("ss"):
             extra.add(token[:-1])
@@ -373,9 +406,11 @@ def experimental_evidence_score(caption: str, query: str) -> float:
     novelty check, still scores above zero. Full action+object overlap ranks higher.
     """
     parsed = parse_identify_query(query)
+    objects = parsed.object_terms - _EXPERIMENTAL_OBJECT_FILLER
+    if objects & _CHEQUE_TERMS and not ceremonial_cheque_in_caption(caption):
+        return 0.0
     hay = _caption_token_set(caption)
     actions = parsed.action_terms
-    objects = parsed.object_terms - _EXPERIMENTAL_OBJECT_FILLER
     if not actions and not objects:
         return 0.0
     action_hit = bool(hay & actions) if actions else False
