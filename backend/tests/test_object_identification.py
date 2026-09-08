@@ -275,6 +275,8 @@ def test_object_runtime_defaults_are_canary_safe() -> None:
     runtime = _env_defaults()
     assert runtime.object_lane_enabled is False
     assert runtime.object_backfill_enabled is False
+    assert runtime.identify_lane_enabled is False
+    assert runtime.identify_backfill_enabled is False
     assert runtime.object_batch_size <= 8
     assert runtime.object_face_priority_ratio >= 1
 

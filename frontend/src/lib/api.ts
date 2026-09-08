@@ -467,6 +467,8 @@ export type Settings = {
   object_max_labels: number;
   object_batch_size: number;
   object_face_priority_ratio: number;
+  identify_lane_enabled: boolean;
+  identify_backfill_enabled: boolean;
 };
 
 export type FileFace = {
@@ -1467,6 +1469,27 @@ export const apiClient = {
     ),
   objectRequeue: (includeDone = false) =>
     api<{ requeued: number }>(`/objects/requeue?include_done=${includeDone}`, {
+      method: "POST",
+    }),
+  identifyStatus: () =>
+    api<{
+      depth: number;
+      processing: number;
+      throughput_completed: number;
+      retries: number;
+      errors: number;
+      average_latency_ms: number;
+      working_set_files: number;
+      gpu_in_flight: number;
+      backfill_estimate: { eligible: number; paused: boolean };
+    }>("/identify/status", { silent: true }),
+  identifyBackfill: (dryRun = true, limit = 1000) =>
+    api<{ eligible: number; enqueued: number; paused: boolean }>(
+      `/identify/backfill?dry_run=${dryRun}&limit=${limit}`,
+      { method: "POST" }
+    ),
+  identifyRequeue: (includeDone = false) =>
+    api<{ requeued: number }>(`/identify/requeue?include_done=${includeDone}`, {
       method: "POST",
     }),
   cacheCleanupDryRun: () =>

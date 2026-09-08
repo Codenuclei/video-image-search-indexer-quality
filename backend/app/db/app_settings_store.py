@@ -48,6 +48,13 @@ def _defaults_from_env() -> RuntimeSettings:
         object_max_labels=12,
         object_batch_size=8,
         object_face_priority_ratio=10,
+        ocr_lane_enabled=False,
+        ocr_backfill_enabled=False,
+        ocr_batch_size=2,
+        ocr_face_priority_ratio=20,
+        ocr_confidence_floor=0.45,
+        identify_lane_enabled=False,
+        identify_backfill_enabled=False,
         carousel_llm_provider="claude" if has_claude else "auto",
         openrouter_model=(s.openrouter_model or "anthropic/claude-sonnet-4").strip(),
         claude_model=(s.claude_model or "claude-sonnet-4-5-20250929").strip(),
@@ -105,6 +112,17 @@ def _row_to_runtime(row: AppSettings) -> RuntimeSettings:
         object_face_priority_ratio=max(
             1, min(100, _plain_attr(row, "object_face_priority_ratio", 10))
         ),
+        ocr_lane_enabled=_plain_attr(row, "ocr_lane_enabled", False),
+        ocr_backfill_enabled=_plain_attr(row, "ocr_backfill_enabled", False),
+        ocr_batch_size=max(1, min(16, _plain_attr(row, "ocr_batch_size", 2))),
+        ocr_face_priority_ratio=max(
+            1, min(100, _plain_attr(row, "ocr_face_priority_ratio", 20))
+        ),
+        ocr_confidence_floor=max(
+            0.0, min(1.0, _plain_attr(row, "ocr_confidence_floor", 0.45))
+        ),
+        identify_lane_enabled=_plain_attr(row, "identify_lane_enabled", False),
+        identify_backfill_enabled=_plain_attr(row, "identify_backfill_enabled", False),
         carousel_llm_provider=raw,
         openrouter_model=or_model,
         claude_model=claude_model,
@@ -130,6 +148,13 @@ def _apply_runtime_to_row(row: AppSettings, runtime: RuntimeSettings) -> None:
     row.object_max_labels = runtime.object_max_labels
     row.object_batch_size = runtime.object_batch_size
     row.object_face_priority_ratio = runtime.object_face_priority_ratio
+    row.ocr_lane_enabled = runtime.ocr_lane_enabled
+    row.ocr_backfill_enabled = runtime.ocr_backfill_enabled
+    row.ocr_batch_size = runtime.ocr_batch_size
+    row.ocr_face_priority_ratio = runtime.ocr_face_priority_ratio
+    row.ocr_confidence_floor = runtime.ocr_confidence_floor
+    row.identify_lane_enabled = runtime.identify_lane_enabled
+    row.identify_backfill_enabled = runtime.identify_backfill_enabled
     row.carousel_llm_provider = runtime.carousel_llm_provider
     row.openrouter_model = runtime.openrouter_model
     row.claude_model = runtime.claude_model

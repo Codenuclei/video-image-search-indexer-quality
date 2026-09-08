@@ -305,6 +305,26 @@ class Settings(BaseSettings):
     qwen_vlm_model: str = "Qwen/Qwen3-VL-8B-Instruct"
     qwen_vlm_timeout_seconds: float = 120.0
     qwen_vlm_max_tokens: int = 256
+    # Qwen identify backfill (SGLang OpenAI chat). Empty base URL falls back to qwen_vlm_base_url.
+    qwen_identify_base_url: str = ""
+    qwen_identify_model: str = "Qwen/Qwen3-VL-8B-Instruct"
+    qwen_identify_timeout_seconds: float = 180.0
+    qwen_identify_max_tokens: int = 640
+    qwen_identify_concurrency: int = 32
+    qwen_identify_working_set: int = 1000
+    qwen_identify_max_edge: int = 1536
+    qwen_identify_jpeg_quality: int = 85
+    qwen_identify_max_bytes: int = 12 * 1024 * 1024
+    qwen_identify_download_cap_bytes: int = 80 * 1024 * 1024
+    qwen_identify_lease_seconds: int = 1800
+
+    # RapidOCR side-lane (default off). Only used by idle face-worker + /search/testv1.
+    ocr_lane_enabled: bool = False
+    ocr_backfill_enabled: bool = False
+    ocr_batch_size: int = 2
+    ocr_face_priority_ratio: int = 20
+    ocr_confidence_floor: float = 0.45
+    ocr_search_subset_limit: int = 24
 
 
 @lru_cache

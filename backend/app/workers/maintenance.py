@@ -587,6 +587,12 @@ async def maintenance_tick(worker: IndexingWorker) -> None:
             )
             if int(produced.get("enqueued", 0)):
                 logger.info("Object backfill enqueued=%s", produced["enqueued"])
+        if runtime.identify_backfill_enabled:
+            from app.workers.identify_queue import produce_identify_backfill
+
+            produced = await produce_identify_backfill(session, limit=1000)
+            if int(produced.get("enqueued", 0)):
+                logger.info("Identify backfill enqueued=%s", produced["enqueued"])
         saved = await restore_archived_when_index_complete(session)
         if saved:
             await session.commit()

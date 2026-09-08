@@ -28,6 +28,13 @@ class RuntimeSettings:
     object_max_labels: int = 12
     object_batch_size: int = 8
     object_face_priority_ratio: int = 10
+    ocr_lane_enabled: bool = False
+    ocr_backfill_enabled: bool = False
+    ocr_batch_size: int = 2
+    ocr_face_priority_ratio: int = 20
+    ocr_confidence_floor: float = 0.45
+    identify_lane_enabled: bool = False
+    identify_backfill_enabled: bool = False
 
 
 _runtime: RuntimeSettings | None = None
@@ -61,6 +68,13 @@ def _env_defaults() -> RuntimeSettings:
         object_max_labels=12,
         object_batch_size=8,
         object_face_priority_ratio=10,
+        ocr_lane_enabled=False,
+        ocr_backfill_enabled=False,
+        ocr_batch_size=2,
+        ocr_face_priority_ratio=20,
+        ocr_confidence_floor=0.45,
+        identify_lane_enabled=False,
+        identify_backfill_enabled=False,
         # Default Claude-direct when Anthropic key is present; picker can override.
         carousel_llm_provider="claude"
         if (settings.anthropic_api_key or settings.claude_api_key or "").strip()
@@ -102,6 +116,13 @@ def update_runtime_settings(
     object_max_labels: int | None = None,
     object_batch_size: int | None = None,
     object_face_priority_ratio: int | None = None,
+    ocr_lane_enabled: bool | None = None,
+    ocr_backfill_enabled: bool | None = None,
+    ocr_batch_size: int | None = None,
+    ocr_face_priority_ratio: int | None = None,
+    ocr_confidence_floor: float | None = None,
+    identify_lane_enabled: bool | None = None,
+    identify_backfill_enabled: bool | None = None,
     carousel_llm_provider: str | None = None,
     openrouter_model: str | None = None,
     claude_model: str | None = None,
@@ -143,6 +164,20 @@ def update_runtime_settings(
         runtime.object_batch_size = max(1, min(64, object_batch_size))
     if object_face_priority_ratio is not None:
         runtime.object_face_priority_ratio = max(1, min(100, object_face_priority_ratio))
+    if ocr_lane_enabled is not None:
+        runtime.ocr_lane_enabled = ocr_lane_enabled
+    if ocr_backfill_enabled is not None:
+        runtime.ocr_backfill_enabled = ocr_backfill_enabled
+    if ocr_batch_size is not None:
+        runtime.ocr_batch_size = max(1, min(16, ocr_batch_size))
+    if ocr_face_priority_ratio is not None:
+        runtime.ocr_face_priority_ratio = max(1, min(100, ocr_face_priority_ratio))
+    if ocr_confidence_floor is not None:
+        runtime.ocr_confidence_floor = max(0.0, min(1.0, ocr_confidence_floor))
+    if identify_lane_enabled is not None:
+        runtime.identify_lane_enabled = identify_lane_enabled
+    if identify_backfill_enabled is not None:
+        runtime.identify_backfill_enabled = identify_backfill_enabled
     if carousel_llm_provider is not None:
         runtime.carousel_llm_provider = _normalize_provider(carousel_llm_provider)
     if openrouter_model is not None:

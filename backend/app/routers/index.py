@@ -244,6 +244,46 @@ async def object_requeue(
     return {"ok": True, "requeued": count, "include_done": include_done}
 
 
+@router.get("/identify/status")
+async def identify_status(
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, object]:
+    from app.workers.identify_queue import identify_queue_status, produce_identify_backfill
+
+    status = await identify_queue_status(session)
+    estimate = await produce_identify_backfill(session, limit=5000, dry_run=True)
+    return {"ok": True, **status, "backfill_estimate": estimate}
+
+
+@router.post("/identify/backfill")
+async def identify_backfill(
+    dry_run: bool = Query(True),
+    limit: int = Query(1000, ge=1, le=5000),
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, object]:
+    from app.workers.identify_queue import produce_identify_backfill
+
+    runtime = await refresh_runtime_settings_from_db(session)
+    if not dry_run and not runtime.identify_backfill_enabled:
+        raise HTTPException(
+            status_code=409,
+            detail="Enable identify_backfill_enabled before enqueueing historical media",
+        )
+    result = await produce_identify_backfill(session, limit=limit, dry_run=dry_run)
+    return {"ok": True, "dry_run": dry_run, **result}
+
+
+@router.post("/identify/requeue")
+async def identify_requeue(
+    include_done: bool = Query(False),
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, object]:
+    from app.workers.identify_queue import requeue_identify_jobs
+
+    count = await requeue_identify_jobs(session, include_done=include_done)
+    return {"ok": True, "requeued": count, "include_done": include_done}
+
+
 @router.post("/index/recover-from-qdrant")
 async def recover_from_qdrant_endpoint(
     session: AsyncSession = Depends(get_db),

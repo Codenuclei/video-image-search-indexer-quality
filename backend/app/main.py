@@ -298,6 +298,14 @@ async def lifespan(app: FastAPI):
                 settings_now.face_worker_concurrency,
             )
 
+        if not settings_now.run_face_worker and is_background_leader():
+            from app.workers.identify_queue import IdentifyWorkerLoop
+
+            identify_loop = IdentifyWorkerLoop()
+            identify_loop.ensure_started()
+            app.state.identify_worker_loop = identify_loop
+            logger.info("Identify Qwen worker loop started on dfi-backend leader")
+
         if settings_now.run_indexer:
             if not is_background_leader():
                 logger.info("Skipping indexer loops — not leader")
@@ -342,6 +350,12 @@ async def lifespan(app: FastAPI):
             await object_loop.stop()
         except Exception:  # noqa: BLE001
             logger.exception("Object worker loop stop failed")
+    identify_loop = getattr(app.state, "identify_worker_loop", None)
+    if identify_loop is not None:
+        try:
+            await identify_loop.stop()
+        except Exception:  # noqa: BLE001
+            logger.exception("Identify worker loop stop failed")
     worker_tasks = getattr(app.state, "worker_tasks", ())
     for task in (workers_starter, boot_task, *worker_tasks):
         try:

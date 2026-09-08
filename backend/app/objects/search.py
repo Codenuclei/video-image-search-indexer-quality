@@ -4,7 +4,7 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Media, MediaObjectLabel
+from app.db.models import Media, MediaIdentifyLabel, MediaObjectLabel
 from app.objects.identify_tags import (
     QWEN_IDENTIFY_MODEL_VERSION,
     cached_identify_overlay,
@@ -18,7 +18,7 @@ OBJECT_EXACT_BOOST = 0.08
 OBJECT_EXACT_BASE_SCORE = 0.72
 
 
-def _evidence(label: MediaObjectLabel) -> ObjectEvidence:
+def _evidence(label: MediaObjectLabel | MediaIdentifyLabel) -> ObjectEvidence:
     return ObjectEvidence(
         label=label.canonical_label,
         category=label.category,
@@ -45,16 +45,12 @@ async def object_matches_for_query(
     if not lookup:
         return {}
 
-    versions = [OBJECT_MODEL_VERSION]
-    if include_identify:
-        versions.append(QWEN_IDENTIFY_MODEL_VERSION)
-
     rows = (
         await session.execute(
             select(Media.drive_file_id, MediaObjectLabel)
             .join(MediaObjectLabel, MediaObjectLabel.media_id == Media.id)
             .where(
-                MediaObjectLabel.model_version.in_(versions),
+                MediaObjectLabel.model_version == OBJECT_MODEL_VERSION,
                 MediaObjectLabel.canonical_label.in_(lookup),
             )
             .order_by(
@@ -68,12 +64,31 @@ async def object_matches_for_query(
     for drive_file_id, label in rows:
         matches.setdefault(drive_file_id, []).append(_evidence(label))
 
+    if include_identify:
+        identify_rows = (
+            await session.execute(
+                select(Media.drive_file_id, MediaIdentifyLabel)
+                .join(MediaIdentifyLabel, MediaIdentifyLabel.media_id == Media.id)
+                .where(
+                    MediaIdentifyLabel.model_version == QWEN_IDENTIFY_MODEL_VERSION,
+                    MediaIdentifyLabel.canonical_label.in_(lookup),
+                )
+                .order_by(
+                    Media.drive_file_id,
+                    MediaIdentifyLabel.confidence.desc(),
+                    MediaIdentifyLabel.canonical_label,
+                )
+            )
+        ).all()
+        for drive_file_id, label in identify_rows:
+            matches.setdefault(drive_file_id, []).append(_evidence(label))
+
     if include_identify and identify_query is not None:
         overlay = cached_identify_overlay()
         lookup_set = set(lookup)
         for fid, parsed in overlay.items():
-            rows = persist_rows(parsed)
-            phrases = [str(row["canonical_label"]) for row in rows]
+            overlay_rows = persist_rows(parsed)
+            phrases = [str(row["canonical_label"]) for row in overlay_rows]
             if not (lookup_set & set(phrases)):
                 continue
             extra = [
@@ -85,7 +100,7 @@ async def object_matches_for_query(
                     evidence_text=str(row.get("evidence_text") or ""),
                     hit_count=int(row.get("hit_count") or 1),
                 )
-                for row in rows
+                for row in overlay_rows
                 if str(row["canonical_label"]) in lookup_set
                 or str(row["evidence_source"]) in {"qwen_identify", "qwen_action"}
             ]

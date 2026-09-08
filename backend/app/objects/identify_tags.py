@@ -300,7 +300,7 @@ def phrases_for_index(item: IdentifyLabel) -> tuple[str, ...]:
 
 
 def persist_rows(parsed: IdentifyResult) -> list[dict[str, object]]:
-    """Rows for media_object_labels: primary, synonyms, and tokens. Separate lanes."""
+    """Rows for media_identify_labels: primary, synonyms, and tokens. Separate lanes."""
     rows: list[dict[str, object]] = []
     seen: set[str] = set()
     for item in parsed.merged:

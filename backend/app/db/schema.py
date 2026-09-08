@@ -108,6 +108,10 @@ _ONLINE_INDEX_DDLS = (
     "ON object_jobs (created_at, id) WHERE status = 'PENDING'",
     "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_media_object_labels_search "
     "ON media_object_labels (canonical_label, confidence DESC, media_id)",
+    "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_identify_jobs_pending_created "
+    "ON identify_jobs (created_at, id) WHERE status = 'PENDING'",
+    "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_media_identify_labels_search "
+    "ON media_identify_labels (canonical_label, confidence DESC, media_id)",
 )
 
 
@@ -181,6 +185,13 @@ async def ensure_schema(engine: AsyncEngine) -> None:
             ("object_max_labels", "INTEGER NOT NULL DEFAULT 12"),
             ("object_batch_size", "INTEGER NOT NULL DEFAULT 8"),
             ("object_face_priority_ratio", "INTEGER NOT NULL DEFAULT 10"),
+            ("ocr_lane_enabled", "BOOLEAN NOT NULL DEFAULT false"),
+            ("ocr_backfill_enabled", "BOOLEAN NOT NULL DEFAULT false"),
+            ("ocr_batch_size", "INTEGER NOT NULL DEFAULT 2"),
+            ("ocr_face_priority_ratio", "INTEGER NOT NULL DEFAULT 20"),
+            ("ocr_confidence_floor", "DOUBLE PRECISION NOT NULL DEFAULT 0.45"),
+            ("identify_lane_enabled", "BOOLEAN NOT NULL DEFAULT false"),
+            ("identify_backfill_enabled", "BOOLEAN NOT NULL DEFAULT false"),
         )
         for column, ddl_type in object_settings:
             await _ensure_column(
@@ -189,6 +200,88 @@ async def ensure_schema(engine: AsyncEngine) -> None:
                 column,
                 f"ALTER TABLE app_settings ADD COLUMN {column} {ddl_type}",
             )
+
+        # Isolated Qwen identify tables. Additive only — never ALTER media_object_labels / object_jobs.
+        await conn.execute(
+            text(
+                """
+                DO $$ BEGIN
+                    CREATE TYPE identify_job_status AS ENUM (
+                        'PENDING', 'PROCESSING', 'DONE', 'ERROR'
+                    );
+                EXCEPTION
+                    WHEN duplicate_object THEN null;
+                END $$
+                """
+            )
+        )
+        await conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS identify_jobs (
+                    id SERIAL PRIMARY KEY,
+                    drive_file_id VARCHAR NOT NULL REFERENCES drive_files(id) ON DELETE CASCADE,
+                    status identify_job_status NOT NULL DEFAULT 'PENDING',
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    lock_token VARCHAR(96),
+                    locked_at TIMESTAMPTZ,
+                    error_message TEXT,
+                    model_version VARCHAR(96) NOT NULL,
+                    scan_completed_at TIMESTAMPTZ,
+                    label_count INTEGER,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    CONSTRAINT uq_identify_job_file_model UNIQUE (drive_file_id, model_version)
+                )
+                """
+            )
+        )
+        await conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS media_identify_labels (
+                    id SERIAL PRIMARY KEY,
+                    media_id INTEGER NOT NULL REFERENCES media(id) ON DELETE CASCADE,
+                    canonical_label VARCHAR(96) NOT NULL,
+                    category VARCHAR(48) NOT NULL,
+                    confidence DOUBLE PRECISION NOT NULL,
+                    evidence_source VARCHAR(32) NOT NULL,
+                    evidence_text VARCHAR(240),
+                    best_timestamp DOUBLE PRECISION,
+                    hit_count INTEGER NOT NULL DEFAULT 1,
+                    model_version VARCHAR(96) NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    CONSTRAINT uq_media_identify_label_media_label_model
+                        UNIQUE (media_id, canonical_label, model_version)
+                )
+                """
+            )
+        )
+        await _ensure_index(
+            conn,
+            "ix_identify_jobs_status_created",
+            "CREATE INDEX IF NOT EXISTS ix_identify_jobs_status_created "
+            "ON identify_jobs (status, created_at)",
+        )
+        await _ensure_index(
+            conn,
+            "ix_identify_jobs_drive_file_id",
+            "CREATE INDEX IF NOT EXISTS ix_identify_jobs_drive_file_id "
+            "ON identify_jobs (drive_file_id)",
+        )
+        await _ensure_index(
+            conn,
+            "ix_media_identify_labels_label_conf",
+            "CREATE INDEX IF NOT EXISTS ix_media_identify_labels_label_conf "
+            "ON media_identify_labels (canonical_label, confidence)",
+        )
+        await _ensure_index(
+            conn,
+            "ix_media_identify_labels_media_model",
+            "CREATE INDEX IF NOT EXISTS ix_media_identify_labels_media_model "
+            "ON media_identify_labels (media_id, model_version)",
+        )
 
         # Warm prod DBs already have additive columns. Skip ALTER TABLE entirely —
         # even IF NOT EXISTS takes AccessExclusiveLock and can 503 the API on boot.

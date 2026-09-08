@@ -63,6 +63,9 @@ export default function AdminPage() {
   const [objectSettings, setObjectSettings] = useState<Settings | null>(null);
   const [objectStatus, setObjectStatus] = useState<Awaited<ReturnType<typeof apiClient.objectStatus>> | null>(null);
   const [objectBusy, setObjectBusy] = useState(false);
+  const [identifySettings, setIdentifySettings] = useState<Settings | null>(null);
+  const [identifyStatus, setIdentifyStatus] = useState<Awaited<ReturnType<typeof apiClient.identifyStatus>> | null>(null);
+  const [identifyBusy, setIdentifyBusy] = useState(false);
 
   useEffect(() => {
     if (!allowed) router.replace("/");
@@ -75,21 +78,24 @@ export default function AdminPage() {
       .then((settings) => {
         setSemanticThreshold(settings.search_semantic_min_score.toFixed(2));
         setObjectSettings(settings);
+        setIdentifySettings(settings);
       })
       .catch(() => setSemanticStatus("Could not load the current threshold."));
   }, [allowed]);
 
   const loadSecondary = useCallback(async () => {
-    const [skips, control, tat, objects] = await Promise.all([
+    const [skips, control, tat, objects, identify] = await Promise.all([
       apiClient.skipStats().catch(() => null),
       apiClient.controlReaderStatus().catch(() => null),
       apiClient.indexTatStats().catch(() => null),
       apiClient.objectStatus().catch(() => null),
+      apiClient.identifyStatus().catch(() => null),
     ]);
     setSkipStats(skips);
     setControlStatus(control);
     setTatStats(tat);
     setObjectStatus(objects);
+    setIdentifyStatus(identify);
   }, []);
 
   useEffect(() => {
@@ -226,6 +232,32 @@ export default function AdminPage() {
       setObjectStatus(await apiClient.objectStatus());
     } finally {
       setObjectBusy(false);
+    }
+  }
+
+  async function saveIdentifySettings() {
+    if (!identifySettings) return;
+    setIdentifyBusy(true);
+    try {
+      setIdentifySettings(
+        await apiClient.updateSettings({
+          identify_lane_enabled: identifySettings.identify_lane_enabled,
+          identify_backfill_enabled: identifySettings.identify_backfill_enabled,
+        })
+      );
+      setIdentifyStatus(await apiClient.identifyStatus());
+    } finally {
+      setIdentifyBusy(false);
+    }
+  }
+
+  async function runIdentifyBackfill(dryRun: boolean) {
+    setIdentifyBusy(true);
+    try {
+      await apiClient.identifyBackfill(dryRun, 1000);
+      setIdentifyStatus(await apiClient.identifyStatus());
+    } finally {
+      setIdentifyBusy(false);
     }
   }
 
@@ -406,6 +438,76 @@ export default function AdminPage() {
             {formatCount(objectStatus.throughput_completed)} · retries{" "}
             {formatCount(objectStatus.retries)} · errors {formatCount(objectStatus.errors)} · avg{" "}
             {formatTatMs(objectStatus.average_latency_ms)}
+          </p>
+        )}
+      </Card>
+
+      <Card className="space-y-3">
+        <div>
+          <h3 className="font-medium">Qwen identify backfill</h3>
+          <p className="text-sm text-muted-foreground">
+            Downloads original Drive photos in 1000-file windows, sends JPEG bytes to RunPod
+            SGLang, then deletes the files. Labels go to a separate table for /search/testv2
+            only. Both toggles default off.
+          </p>
+        </div>
+        {identifySettings && (
+          <>
+            <div className="flex flex-wrap gap-4 text-sm">
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={identifySettings.identify_lane_enabled}
+                  onChange={(e) =>
+                    setIdentifySettings({
+                      ...identifySettings,
+                      identify_lane_enabled: e.target.checked,
+                    })
+                  }
+                />
+                Enable identify worker
+              </label>
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={identifySettings.identify_backfill_enabled}
+                  onChange={(e) =>
+                    setIdentifySettings({
+                      ...identifySettings,
+                      identify_backfill_enabled: e.target.checked,
+                    })
+                  }
+                />
+                Enable historical producer
+              </label>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button disabled={identifyBusy} onClick={() => void saveIdentifySettings()}>
+                Save identify settings
+              </Button>
+              <Button variant="secondary" disabled={identifyBusy} onClick={() => void runIdentifyBackfill(true)}>
+                Dry-run count
+              </Button>
+              <Button
+                variant="secondary"
+                disabled={identifyBusy || !identifySettings.identify_backfill_enabled}
+                onClick={() => void runIdentifyBackfill(false)}
+              >
+                Enqueue 1000
+              </Button>
+            </div>
+          </>
+        )}
+        {identifyStatus && (
+          <p className="text-xs text-muted-foreground">
+            Queue {formatCount(identifyStatus.depth)} · processing{" "}
+            {formatCount(identifyStatus.processing)} · eligible{" "}
+            {formatCount(identifyStatus.backfill_estimate.eligible)} · completed{" "}
+            {formatCount(identifyStatus.throughput_completed)} · working-set{" "}
+            {formatCount(identifyStatus.working_set_files)} · GPU in-flight{" "}
+            {formatCount(identifyStatus.gpu_in_flight)} · retries{" "}
+            {formatCount(identifyStatus.retries)} · errors {formatCount(identifyStatus.errors)} · avg{" "}
+            {formatTatMs(identifyStatus.average_latency_ms)}
           </p>
         )}
       </Card>
