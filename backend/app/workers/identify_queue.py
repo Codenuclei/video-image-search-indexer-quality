@@ -56,6 +56,7 @@ _METRICS: dict[str, float | int | str | None] = {
     "last_completed_at": None,
     "last_starved_at": None,
     "last_gpu_ms": None,
+    "last_jpeg_kb": None,
     "working_set_files": 0,
     "gpu_in_flight": 0,
     "fetch_in_flight": 0,
@@ -88,6 +89,7 @@ class _PersistIdentify:
     item: IdentifyInput
     parsed: object
     gpu_ms: float
+    jpeg_kb: float
     started: float
 
 
@@ -179,6 +181,7 @@ def _publish_metrics() -> None:
         "ready_queue": int(_METRICS["ready_queue"] or 0),
         "persist_queue": int(_METRICS["persist_queue"] or 0),
         "last_gpu_ms": _METRICS["last_gpu_ms"],
+        "last_jpeg_kb": _METRICS["last_jpeg_kb"],
         "completed": int(_METRICS["completed"] or 0),
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -589,6 +592,7 @@ async def identify_queue_status(session: AsyncSession) -> dict[str, object]:
     ready_queue = int(published.get("ready_queue") or _METRICS["ready_queue"] or 0)
     persist_queue = int(published.get("persist_queue") or _METRICS["persist_queue"] or 0)
     last_gpu_ms = published.get("last_gpu_ms", _METRICS["last_gpu_ms"])
+    last_jpeg_kb = published.get("last_jpeg_kb", _METRICS["last_jpeg_kb"])
     return {
         "counts": counts,
         "depth": counts.get("pending", 0),
@@ -600,6 +604,7 @@ async def identify_queue_status(session: AsyncSession) -> dict[str, object]:
         "last_completed_at": last_completed_at.isoformat() if last_completed_at else None,
         "last_starved_at": _METRICS["last_starved_at"],
         "last_gpu_ms": last_gpu_ms,
+        "last_jpeg_kb": last_jpeg_kb,
         "working_set_files": working_set_files,
         "gpu_in_flight": gpu_in_flight,
         "fetch_in_flight": fetch_in_flight,
@@ -839,12 +844,14 @@ async def process_identify_job(
         _METRICS["total_latency_ms"] = float(_METRICS["total_latency_ms"]) + elapsed_ms
         _METRICS["total_gpu_ms"] = float(_METRICS["total_gpu_ms"] or 0) + gpu_ms
         _METRICS["last_gpu_ms"] = round(gpu_ms, 1)
+        _METRICS["last_jpeg_kb"] = round(len(jpeg_bytes) / 1024.0, 1)
         _METRICS["last_completed_at"] = datetime.now(timezone.utc).isoformat()
         _publish_metrics()
         logger.info(
-            "identify_done file=%s labels=%d gpu_ms=%.0f wall_ms=%.0f",
+            "identify_done file=%s labels=%d jpeg_kb=%.1f gpu_ms=%.0f wall_ms=%.0f",
             item.drive_file_id[:12],
             label_count,
+            float(_METRICS["last_jpeg_kb"] or 0),
             gpu_ms,
             elapsed_ms,
         )
@@ -1147,21 +1154,16 @@ class IdentifyWorkerLoop:
             self._sync_queue_metrics()
             _METRICS["gpu_in_flight"] = int(_METRICS["gpu_in_flight"] or 0) + 1
             _publish_metrics()
+            parsed = None
+            gpu_ms = 0.0
+            jpeg_kb = round(len(ready.jpeg_bytes) / 1024.0, 1)
             try:
                 gpu_started = time.monotonic()
                 text_out = await _post_identify(http, ready.jpeg_bytes, settings)
                 gpu_ms = (time.monotonic() - gpu_started) * 1000
                 _METRICS["last_gpu_ms"] = round(gpu_ms, 1)
+                _METRICS["last_jpeg_kb"] = jpeg_kb
                 parsed = parse_identify_output(text_out)
-                await persist_q.put(
-                    _PersistIdentify(
-                        item=ready.item,
-                        parsed=parsed,
-                        gpu_ms=gpu_ms,
-                        started=ready.started,
-                    )
-                )
-                self._sync_queue_metrics()
             except asyncio.CancelledError:
                 await release_identify_job(self._session_factory, ready.item.job_id)
                 raise
@@ -1171,6 +1173,22 @@ class IdentifyWorkerLoop:
             finally:
                 _METRICS["gpu_in_flight"] = max(0, int(_METRICS["gpu_in_flight"] or 0) - 1)
                 _publish_metrics()
+            if parsed is None:
+                continue
+            try:
+                await persist_q.put(
+                    _PersistIdentify(
+                        item=ready.item,
+                        parsed=parsed,
+                        gpu_ms=gpu_ms,
+                        jpeg_kb=jpeg_kb,
+                        started=ready.started,
+                    )
+                )
+                self._sync_queue_metrics()
+            except asyncio.CancelledError:
+                await release_identify_job(self._session_factory, ready.item.job_id)
+                raise
 
     async def _persist_worker(self) -> None:
         persist_q = self._persist_q
@@ -1204,9 +1222,10 @@ class IdentifyWorkerLoop:
                 _METRICS["last_completed_at"] = datetime.now(timezone.utc).isoformat()
                 _publish_metrics()
                 logger.info(
-                    "identify_done file=%s labels=%d gpu_ms=%.0f persist_ms=%.0f wall_ms=%.0f",
+                    "identify_done file=%s labels=%d jpeg_kb=%.1f gpu_ms=%.0f persist_ms=%.0f wall_ms=%.0f",
                     item.item.drive_file_id[:12],
                     label_count,
+                    item.jpeg_kb,
                     item.gpu_ms,
                     persist_ms,
                     elapsed_ms,

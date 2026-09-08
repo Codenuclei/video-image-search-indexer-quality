@@ -315,11 +315,12 @@ class Settings(BaseSettings):
     qwen_identify_prefetch: int = 48
     qwen_identify_persist_concurrency: int = 4
     qwen_identify_working_set: int = 1000
-    qwen_identify_max_edge: int = 1536
-    qwen_identify_jpeg_quality: int = 85
+    # Match the 18/s SGLang dry-run (1024px / q82). 1536px made 32 in-flight prefills queue.
+    qwen_identify_max_edge: int = 1024
+    qwen_identify_jpeg_quality: int = 82
     qwen_identify_max_bytes: int = 12 * 1024 * 1024
     qwen_identify_download_cap_bytes: int = 80 * 1024 * 1024
-    qwen_identify_lease_seconds: int = 180
+    qwen_identify_lease_seconds: int = 900
 
     # RapidOCR side-lane (default off). Only used by idle face-worker + /search/testv1.
     ocr_lane_enabled: bool = False
