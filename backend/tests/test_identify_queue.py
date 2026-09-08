@@ -16,6 +16,7 @@ from app.objects.identify_tags import (
 from app.objects.taxonomy import OBJECT_MODEL_VERSION
 from app.workers.identify_queue import (
     build_identify_payload,
+    encode_identify_jpeg,
     payload_contains_drive_url,
     persist_identify_labels,
     process_identify_job,
@@ -57,6 +58,20 @@ def test_payload_contains_drive_url_detects_http_drive() -> None:
         ]
     }
     assert payload_contains_drive_url(bad) is True
+
+
+def test_encode_identify_jpeg_stays_in_memory() -> None:
+    data = encode_identify_jpeg(
+        _tiny_jpeg(edge=2000),
+        file_name="photo.jpg",
+        max_edge=256,
+        quality=85,
+        max_bytes=200_000,
+    )
+    assert data.startswith(b"\xff\xd8")
+    assert len(data) <= 200_000
+    with Image.open(io.BytesIO(data)) as img:
+        assert max(img.size) <= 256
 
 
 def test_write_identify_jpeg_resizes_and_caps(tmp_path: Path) -> None:
