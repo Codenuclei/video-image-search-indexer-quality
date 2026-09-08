@@ -375,6 +375,7 @@ def test_flame_query_requires_flame_not_open_or_kitchen() -> None:
         "A man dressed in traditional white kandura and ghutrah stands behind a wooden lectern with an open laptop, gesturing with his hand while speaking.",
         "A shirtless man in athletic shorts crouches at the start line of a black turf track, preparing to run while spectators watch from the sidelines.",
         "A chef in a white uniform prepares food behind a counter in a commercial kitchen while staff and customers stand nearby.",
+        "The image displays the white text 'NOVARTIS' alongside a flame-like icon on a solid black background.",
     ]
     for caption in drop:
         assert experimental_evidence_score(caption, query) == 0.0, caption

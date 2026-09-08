@@ -442,6 +442,13 @@ def experimental_evidence_score(caption: str, query: str) -> float:
     if not actions and not objects:
         return 0.0
     action_hit = bool(hay & actions) if actions else False
+    # Query named an action and a real object: a logo that only mentions
+    # the object (Novartis "flame-like icon") is not a hit. Prize-cheque
+    # stills without a giving verb are still cheques.
+    if distinctive and actions and not action_hit:
+        cheque_ok = bool(objects & _CHEQUE_TERMS) and ceremonial_cheque_in_caption(caption)
+        if not cheque_ok:
+            return 0.0
     object_overlap = hay & objects if objects else set()
     object_hit = bool(object_overlap)
     if not action_hit and not object_hit:
