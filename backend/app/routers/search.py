@@ -260,6 +260,119 @@ async def search(
         await clear_search(active_search_id)
 
 
+@router.get("/testv1", response_model=SearchResponse)
+async def search_testv1(
+    request: Request,
+    q: str,
+    person: str | None = None,
+    mime: str | None = None,
+    folder_path: str | None = None,
+    source: str | None = None,
+    rerank: bool = True,
+    captions: bool = False,
+    search_id: str | None = None,
+    session: AsyncSession = Depends(get_db),
+) -> SearchResponse:
+    """Isolated retrieval variant. Does not read/write the production search cache."""
+    query = q.strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="Query cannot be empty")
+
+    mime_filter = (mime or "all").strip().lower()
+    if mime_filter not in ("all", "image", "pdf", "video"):
+        raise HTTPException(status_code=400, detail="mime must be all, image, pdf, or video")
+
+    source_filter = (source or "all").strip().lower()
+    if source_filter not in ("all", "youtube", "drive"):
+        raise HTTPException(status_code=400, detail="source must be all, youtube, or drive")
+    if source_filter == "all":
+        source_filter = None
+
+    active_search_id = (search_id or "").strip() or None
+    await register_search(active_search_id)
+
+    async def _checkpoint() -> None:
+        await ensure_search_active(request, active_search_id)
+
+    try:
+        return await _run_search(
+            session=session,
+            query=query,
+            person=person,
+            mime_filter=mime_filter,
+            folder_path=folder_path,
+            source_filter=source_filter,
+            rerank=rerank,
+            captions=captions,
+            checkpoint=_checkpoint,
+            skip_cache=True,
+            retrieval_policy="testv1",
+        )
+    except SearchCancelled:
+        raise cancelled_http_exception() from None
+    finally:
+        await clear_search(active_search_id)
+
+
+@router.get("/testv2", response_model=SearchResponse)
+async def search_testv2(
+    request: Request,
+    q: str,
+    person: str | None = None,
+    mime: str | None = None,
+    folder_path: str | None = None,
+    source: str | None = None,
+    rerank: bool = True,
+    captions: bool = True,
+    search_id: str | None = None,
+    session: AsyncSession = Depends(get_db),
+) -> SearchResponse:
+    """Demo retrieval: Qwen object+action identify with synonyms.
+
+    Isolated from production /search (no cache read/write). Promote only after review.
+    Caption lexical recall is scored overlap, not an AND-gate. LLM, student,
+    object-anchor, and conjunctive brand filters are skipped.
+    """
+    query = q.strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="Query cannot be empty")
+
+    mime_filter = (mime or "all").strip().lower()
+    if mime_filter not in ("all", "image", "pdf", "video"):
+        raise HTTPException(status_code=400, detail="mime must be all, image, pdf, or video")
+
+    source_filter = (source or "all").strip().lower()
+    if source_filter not in ("all", "youtube", "drive"):
+        raise HTTPException(status_code=400, detail="source must be all, youtube, or drive")
+    if source_filter == "all":
+        source_filter = None
+
+    active_search_id = (search_id or "").strip() or None
+    await register_search(active_search_id)
+
+    async def _checkpoint() -> None:
+        await ensure_search_active(request, active_search_id)
+
+    try:
+        return await _run_search(
+            session=session,
+            query=query,
+            person=person,
+            mime_filter=mime_filter,
+            folder_path=folder_path,
+            source_filter=source_filter,
+            rerank=rerank,
+            captions=captions,
+            checkpoint=_checkpoint,
+            skip_cache=True,
+            retrieval_policy="testv2",
+        )
+    except SearchCancelled:
+        raise cancelled_http_exception() from None
+    finally:
+        await clear_search(active_search_id)
+
+
 async def _run_search(
     *,
     session: AsyncSession,
@@ -271,6 +384,8 @@ async def _run_search(
     rerank: bool,
     captions: bool,
     checkpoint,
+    skip_cache: bool = False,
+    retrieval_policy: str = "default",
 ) -> SearchResponse:
     # Settings are persisted globally; refresh this worker before cache lookup
     # so an admin threshold change takes effect on the next search everywhere.
@@ -285,39 +400,40 @@ async def _run_search(
     cache_captions = bool(captions)
     cache_rerank = bool(rerank)
 
-    cached = await lookup_exact(
-        session,
-        query=query,
-        person=cache_person,
-        mime=mime_filter,
-        folder_path=cache_folder,
-        captions=cache_captions,
-        rerank=cache_rerank,
-    )
-    if cached is not None:
-        return cached
-
-    await checkpoint()
     query_embedding: list[float] | None = None
-    try:
-        query_embedding = await asyncio.to_thread(embed_text_sync, query)
+    if not skip_cache:
+        cached = await lookup_exact(
+            session,
+            query=query,
+            person=cache_person,
+            mime=mime_filter,
+            folder_path=cache_folder,
+            captions=cache_captions,
+            rerank=cache_rerank,
+        )
+        if cached is not None:
+            return cached
+
         await checkpoint()
-        if query_embedding:
-            cached = await lookup_semantic(
-                session,
-                query_embedding=query_embedding,
-                person=cache_person,
-                mime=mime_filter,
-                folder_path=cache_folder,
-                captions=cache_captions,
-                rerank=cache_rerank,
-            )
-            if cached is not None:
-                return cached
-    except SearchCancelled:
-        raise
-    except Exception:  # noqa: BLE001
-        logger.debug("search cache embed/semantic lookup skipped", exc_info=True)
+        try:
+            query_embedding = await asyncio.to_thread(embed_text_sync, query)
+            await checkpoint()
+            if query_embedding:
+                cached = await lookup_semantic(
+                    session,
+                    query_embedding=query_embedding,
+                    person=cache_person,
+                    mime=mime_filter,
+                    folder_path=cache_folder,
+                    captions=cache_captions,
+                    rerank=cache_rerank,
+                )
+                if cached is not None:
+                    return cached
+        except SearchCancelled:
+            raise
+        except Exception:  # noqa: BLE001
+            logger.debug("search cache embed/semantic lookup skipped", exc_info=True)
 
     effective_persons, visual_query, role_ctx = await resolve_search_context(session, query, person)
     await checkpoint()
@@ -484,7 +600,8 @@ async def _run_search(
                 use_captions=use_captions,
                 action_query=vector_action_query,
                 enable_conjunctive_object_gate=(
-                    not effective_persons
+                    retrieval_policy != "testv2"
+                    and not effective_persons
                     and (
                         # Always gate apparel+brand (mastersunion tshirt), even
                         # when student/wearing would otherwise disable it.
@@ -496,6 +613,7 @@ async def _run_search(
                         )
                     )
                 ),
+                retrieval_policy=retrieval_policy,
             )
 
     await checkpoint()
@@ -620,7 +738,7 @@ async def _run_search(
     # Compound (student/exercising+object): keep evidence OR strong visual scores.
     # Sandbag: always require caption/object evidence — visual ANN confuses
     # sandbags with medicine balls / kettlebells / wall balls.
-    if object_anchored and image_files:
+    if object_anchored and image_files and retrieval_policy != "testv2":
         sandbag_anchored = "sandbag" in concrete_object_anchor_labels(query)
         image_files = filter_files_to_object_anchor(
             image_files,
@@ -639,10 +757,13 @@ async def _run_search(
             f for f in image_files
             if f.caption
             and caption_matches_action(f.caption, keywords)
-            and not caption_contradicts_action(f.caption, query)
+            and (
+                retrieval_policy == "testv2"
+                or not caption_contradicts_action(f.caption, query)
+            )
         ]
         if action_query and not person_action:
-            if strict_student_query:
+            if strict_student_query and retrieval_policy != "testv2":
                 image_files = build_strict_action_pool(
                     image_files,
                     keyword_matched,
@@ -652,12 +773,17 @@ async def _run_search(
             elif object_anchored:
                 # Object already constrains the scene — keep full action recall.
                 pass
-            elif keyword_matched:
+            elif keyword_matched and retrieval_policy != "testv2":
                 image_files = merge_action_search_pool(image_files, keyword_matched)
-        elif keyword_matched:
+        elif keyword_matched and retrieval_policy != "testv2":
             image_files = merge_action_search_pool(image_files, keyword_matched)
 
-    if use_rerank and image_files and not get_settings().search_caption_filter_enabled:
+    if (
+        use_rerank
+        and image_files
+        and not get_settings().search_caption_filter_enabled
+        and retrieval_policy != "testv2"
+    ):
         await checkpoint()
         pre_rerank = list(image_files)
         try:
@@ -713,6 +839,7 @@ async def _run_search(
             and role_ctx.student_context
             and not combined_person_student
             and not object_anchored
+            and retrieval_policy != "testv2"
         ):
             from app.search.local import drive_file_ids_with_student_captions
 
@@ -726,6 +853,15 @@ async def _run_search(
                 image_hits = [f for f in image_hits if f.drive_file_id in student_cap_ids]
         if combined_person_student:
             files = dedupe_search_files(image_hits + other_hits)
+        elif retrieval_policy == "testv2" and image_hits:
+            kept = list(image_hits)
+            if action_query or person_action:
+                kept = finalize_action_search_results(image_hits, keyword_matched)
+            files = dedupe_search_files(kept + other_hits)
+            files = sorted(
+                files,
+                key=lambda f: (-(f.score or 0.0), f.name.lower()),
+            )
         elif image_hits:
             pre_filter_hits = list(image_hits)
             try:
@@ -790,7 +926,7 @@ async def _run_search(
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Caption LLM filter failed, keeping unfiltered results: %s", exc)
 
-    if object_anchored and files:
+    if object_anchored and files and retrieval_policy != "testv2":
         sandbag_anchored = "sandbag" in concrete_object_anchor_labels(query)
         image_kept = filter_files_to_object_anchor(
             [f for f in files if f.mime_type.startswith("image/")],
@@ -813,18 +949,19 @@ async def _run_search(
         moments=moments,
         cache="miss",
     )
-    try:
-        await store_search_cache(
-            session,
-            query=query,
-            person=cache_person,
-            mime=mime_filter,
-            folder_path=cache_folder,
-            captions=cache_captions,
-            rerank=cache_rerank,
-            response=response,
-            query_embedding=query_embedding,
-        )
-    except Exception:  # noqa: BLE001
-        logger.warning("search cache store failed", exc_info=True)
+    if not skip_cache:
+        try:
+            await store_search_cache(
+                session,
+                query=query,
+                person=cache_person,
+                mime=mime_filter,
+                folder_path=cache_folder,
+                captions=cache_captions,
+                rerank=cache_rerank,
+                response=response,
+                query_embedding=query_embedding,
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning("search cache store failed", exc_info=True)
     return response

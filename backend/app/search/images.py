@@ -33,10 +33,20 @@ async def search_image_files(
     use_captions: bool = False,
     action_query: bool = False,
     enable_conjunctive_object_gate: bool = True,
+    retrieval_policy: str = "default",
 ) -> list[SearchResultFile]:
-    """Text→image retrieval; optional caption fusion when use_captions=True."""
+    """Text→image retrieval; optional caption fusion when use_captions=True.
+
+    retrieval_policy=\"testv1\": caption/object-first; visual ANN is recall-only
+    (strong visual floor or incomplete-index fallback). Production default unchanged.
+    retrieval_policy=\"testv2\": caption lexical recall on distinctive objects/actions
+    (not every filler token), plus Qwen identify labels. Isolated demo — not production.
+    """
     settings = get_settings()
     semantic_min_score = get_runtime_settings().search_semantic_min_score
+    policy = (retrieval_policy or "default").strip().lower()
+    caption_first = policy in {"testv1", "testv2"}
+    identify_mode = policy == "testv2"
     if not settings.gemini_api_key:
         return []
 
@@ -52,6 +62,7 @@ async def search_image_files(
         use_captions=use_captions,
         person=person_name or "-",
         folder=folder_path or "*",
+        policy=policy if policy in {"testv1", "testv2"} else "default",
     )
     started = __import__("time").perf_counter()
 
@@ -144,6 +155,7 @@ async def search_image_files(
                 search_caption_keywords_sync,
                 queries[0],
                 page_size=settings.gemini_image_result_limit,
+                experimental=identify_mode,
             )
             from app.objects.query_concepts import (
                 apparel_brand_association_strength,
@@ -161,10 +173,11 @@ async def search_image_files(
                         caption,
                         lexical_concepts,
                     )
-                    # Skip backdrop-only co-occurrence in the lexical lane.
-                    if assoc <= 0:
+                    if assoc <= 0 and not identify_mode:
                         continue
-                    lexical_score = 0.55 + 0.40 * assoc
+                    lexical_score = 0.55 + 0.40 * max(assoc, 0.0)
+                elif identify_mode:
+                    lexical_score = 0.50 + 0.45 * float(hit.get("evidence_score") or 0.0)
                 else:
                     lexical_score = semantic_min_score
                 captions[fid] = caption
@@ -176,7 +189,15 @@ async def search_image_files(
         logger.warning("Image vector search failed (query=%r): %s", query, exc)
         return []
 
-    if action_query and use_captions and settings.image_caption_enabled:
+    # Production only: promote visual neighbors into the caption lane via v*0.75.
+    # Caption-first policy refuses that laundering — it turns ANN lookalikes into
+    # fake semantic hits.
+    if (
+        not caption_first
+        and action_query
+        and use_captions
+        and settings.image_caption_enabled
+    ):
         from app.qdrant.image_captions import get_captions_by_ids_sync
 
         visual_top = sorted(visual_scores.items(), key=lambda x: -x[1])
@@ -200,7 +221,11 @@ async def search_image_files(
     )
     from app.objects.search import fuse_object_score, object_matches_for_query
 
-    object_matches = await object_matches_for_query(session, query)
+    object_matches = await object_matches_for_query(
+        session,
+        query,
+        include_identify=identify_mode,
+    )
     query_concepts = parse_query_concepts(query)
     apparel_brand_conjunctive = bool(
         apparel_labels_in(query_concepts) and query_concepts.residual_terms
@@ -209,6 +234,7 @@ async def search_image_files(
     # or the query mentions students (role context).
     conjunctive_object_gate = (
         enable_conjunctive_object_gate
+        and not identify_mode
         and (not action_query or apparel_brand_conjunctive)
         and not person_name
         and not person_names
@@ -220,7 +246,7 @@ async def search_image_files(
         and query_concepts.residual_terms
     )
     all_ids = set(visual_scores) | set(caption_scores) | set(object_matches)
-    if conjunctive_object_gate and all_ids:
+    if (conjunctive_object_gate or caption_first) and all_ids:
         from app.qdrant.image_captions import get_captions_by_ids_sync
 
         stored = await asyncio.to_thread(
@@ -234,8 +260,14 @@ async def search_image_files(
     if not all_ids:
         return []
 
-    vw = settings.image_visual_weight
-    cw = settings.image_caption_weight
+    if caption_first:
+        vw = 0.25
+        cw = 0.75
+        visual_keep = max(0.55, float(settings.image_visual_strong_score or 0.50))
+    else:
+        vw = settings.image_visual_weight
+        cw = settings.image_caption_weight
+        visual_keep = 0.0
     ranked: list[tuple[str, float, str | None]] = []
 
     for fid in all_ids:
@@ -255,12 +287,42 @@ async def search_image_files(
         if conjunctive_object_gate and not fully_satisfies_object_scope:
             continue
         qualified_object_hit = has_object_hit and fully_satisfies_object_scope
-        if max(v, c) < semantic_min_score and not qualified_object_hit:
+        if (
+            not identify_mode
+            and max(v, c) < semantic_min_score
+            and not qualified_object_hit
+        ):
             continue
         has_caption_hit = fid in caption_scores
-        if use_captions and settings.image_caption_enabled:
+        stored_caption = bool((captions.get(fid) or "").strip())
+
+        if identify_mode:
+            if has_caption_hit:
+                fused = cw * c + vw * v
+            elif qualified_object_hit:
+                fused = max(c, v * 0.5, semantic_min_score)
+            else:
+                fused = v
+        elif caption_first and use_captions and settings.image_caption_enabled:
+            # Keep if caption/object evidence exists, else only strong visual
+            # (incomplete index / missing caption fallback).
+            if not has_caption_hit and not qualified_object_hit and not stored_caption:
+                if v < visual_keep:
+                    continue
+            if action_query and not has_caption_hit and not qualified_object_hit:
+                if v < visual_keep:
+                    continue
+            if has_caption_hit:
+                fused = cw * c + vw * v
+            elif qualified_object_hit:
+                fused = max(c, v * 0.5, semantic_min_score)
+            else:
+                fused = v
+        elif use_captions and settings.image_caption_enabled:
             if action_query:
-                if not has_caption_hit:
+                if not has_caption_hit and not (
+                    identify_mode and qualified_object_hit
+                ):
                     continue
                 fused = cw * c + vw * v
             elif has_caption_hit:
@@ -353,7 +415,11 @@ async def search_image_files(
         enriched: list[SearchResultFile] = []
         for item in results:
             cap = (item.caption or stored.get(item.drive_file_id) or "").strip()
-            if action_query and not cap:
+            if (
+                action_query
+                and not identify_mode
+                and not cap
+            ):
                 continue
             enriched.append(item.model_copy(update={"caption": cap or None}))
         results = enriched

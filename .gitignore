@@ -31,6 +31,11 @@ backend/tests/fixtures/faces/*.jpg
 # RunPod buffalo_l dry-run artifacts (endpoint id is not secret; results can include Drive ids)
 runpod/face-buffalo/results/
 runpod/face-buffalo/.endpoint_id
+runpod/object-yoloe/results/
+runpod/qwen-vl/results/
+runpod/qwen-vl/.pod_id
+runpod/qwen-vl/.endpoint_id
+runpod/qwen-vl/images/
 
 # Local face A/B benchmark workspace (heavy models / datasets / results)
 face-ab-benchmark/models/

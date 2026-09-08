@@ -1866,6 +1866,11 @@ export const apiClient = {
       clearTimeout(timeout);
     }
   },
+  searchTestV2: (q: string, mime?: string) => {
+    const params = new URLSearchParams({ q, captions: "true" });
+    if (mime && mime !== "all") params.set("mime", mime);
+    return api<SearchResponse>(`/search/testv2?${params}`, { timeoutMs: 120_000 });
+  },
   settings: () => api<Settings>("/settings"),
   settingsRevision: () =>
     api<{ revision: string }>("/settings/revision", { silent: true }),

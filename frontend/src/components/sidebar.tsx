@@ -44,6 +44,7 @@ const links: NavLink[] = [
   { href: "/review", label: "Review Queue", icon: UserCheck, mobile: true },
   { href: "/people", label: "People", icon: Users, mobile: true },
   { href: "/search", label: "Search", icon: Search, mobile: true, section: "find" },
+  { href: "/labs/search-v2", label: "Search demo v2", icon: Search, mobile: false, section: "find" },
   // Video Carousel disabled on main app — lives on dfi-carousel (carousel-frontend).
   { href: "/labs/reverse-face", label: "Reverse Face", icon: ScanFace, mobile: false, section: "find" },
   { href: "/library", label: "Library", icon: HardDrive, mobile: true },

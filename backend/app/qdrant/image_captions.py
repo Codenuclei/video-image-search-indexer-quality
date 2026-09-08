@@ -242,9 +242,18 @@ def search_caption_keywords_sync(
     query: str,
     *,
     page_size: int = 500,
+    experimental: bool = False,
 ) -> list[dict]:
-    """Return every valid caption with a direct query/concept text match."""
+    """Return every valid caption with a direct query/concept text match.
+
+    experimental=True uses the testv2 evidence score (any distinctive overlap).
+    Production callers must leave this false.
+    """
     from app.config import get_settings
+
+    evidence_fn = None
+    if experimental:
+        from app.objects.identify_tags import experimental_evidence_score as evidence_fn
 
     client = _client()
     collection = get_settings().qdrant_image_captions_collection
@@ -261,7 +270,20 @@ def search_caption_keywords_sync(
         for point in points:
             payload = point.payload or {}
             caption = str(payload.get("caption") or "")
-            if is_valid_caption(caption) and caption_matches_query_text(caption, query):
+            if not is_valid_caption(caption):
+                continue
+            if evidence_fn is not None:
+                evidence = evidence_fn(caption, query)
+                if evidence <= 0:
+                    continue
+                matches.append(
+                    {
+                        "drive_file_id": payload["drive_file_id"],
+                        "caption": caption,
+                        "evidence_score": evidence,
+                    }
+                )
+            elif caption_matches_query_text(caption, query):
                 matches.append(
                     {
                         "drive_file_id": payload["drive_file_id"],
