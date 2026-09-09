@@ -29,6 +29,66 @@ def test_filter_tags_still_drops_generic_body_parts() -> None:
     assert tags == ["black shirt", "nike"]
 
 
+def test_parse_keeps_scene_graduation_cap_hat_and_restaurant() -> None:
+    text = """
+    SCENE
+    restaurant interior | buffet, cafeteria
+    event photo backdrop | stage
+
+    OBJECTS
+    graduation cap | mortarboard, academic cap
+    hat | cap
+    menu board | restaurant menu
+
+    ACTIONS
+    dining in restaurant | eating at buffet
+    posing with graduation cap | holding mortarboard
+    """
+    parsed = parse_identify_output(text)
+    assert [item.label for item in parsed.objects] == [
+        "restaurant interior",
+        "event photo backdrop",
+        "graduation cap",
+        "hat",
+        "menu board",
+    ]
+    assert "mortarboard" in parsed.objects[2].synonyms
+    assert [item.label for item in parsed.actions] == [
+        "dining in restaurant",
+        "posing with graduation cap",
+    ]
+    rows = persist_rows(parsed)
+    labels = {row["canonical_label"] for row in rows}
+    assert "mortarboard" in labels
+    assert "buffet" in labels
+    assert "hat" in labels
+
+
+def test_parse_mixed_output_keeps_caption_out_of_tag_lanes() -> None:
+    text = """
+    SCENE
+    restaurant interior | buffet
+
+    OBJECTS
+    graduation cap | mortarboard
+
+    ACTIONS
+    posing with graduation cap | holding mortarboard
+
+    CAPTION
+    A man in a grey t-shirt poses under a hanging graduation cap in a restaurant interior with a "HYROX DELHI" backdrop.
+    """
+    parsed = parse_identify_output(text)
+    assert [item.label for item in parsed.objects] == [
+        "restaurant interior",
+        "graduation cap",
+    ]
+    assert [item.label for item in parsed.actions] == ["posing with graduation cap"]
+    assert "hyrox delhi" in parsed.caption.lower()
+    assert "graduation cap" in parsed.caption
+    assert all("a man in" not in item.label for item in parsed.objects)
+
+
 def test_parse_keeps_objects_and_actions_separate_with_synonyms() -> None:
     text = """
     OBJECTS

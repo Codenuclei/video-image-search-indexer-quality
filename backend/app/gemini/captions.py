@@ -12,14 +12,15 @@ import logging
 import re
 import time
 
+from app.objects.identify_tags import CAPTION_PROMPT
+
 logger = logging.getLogger(__name__)
 
 _DESCRIBE_INSTRUCTION = (
-    "You are an image cataloguer. For EACH image below, write ONE concise, factual "
-    "description (1-2 sentences) capturing: the main subjects, what they are doing, "
-    "the setting/scene type, notable objects, and any clearly legible text/signage. "
-    "Be literal and specific; do not speculate or add commentary. "
-    "Reply with ONLY a JSON array of strings, one description per image, in order. "
+    "You are an image cataloguer. For EACH image below, write ONE caption using "
+    "these rules:\n\n"
+    f"{CAPTION_PROMPT.strip()}\n\n"
+    "Reply with ONLY a JSON array of strings, one caption per image, in order. "
     "No markdown, no extra keys."
 )
 

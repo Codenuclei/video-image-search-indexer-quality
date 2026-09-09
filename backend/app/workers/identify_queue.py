@@ -35,7 +35,7 @@ from app.db.models import (
 )
 from app.db.session import get_session_factory
 from app.objects.identify_tags import (
-    IDENTIFY_PROMPT,
+    IDENTIFY_AND_CAPTION_PROMPT,
     QWEN_IDENTIFY_MODEL_VERSION,
     parse_identify_output,
     persist_rows,
@@ -135,8 +135,8 @@ def build_identify_payload(
     jpeg_bytes: bytes,
     *,
     model: str,
-    prompt: str = IDENTIFY_PROMPT,
-    max_tokens: int = 640,
+    prompt: str = IDENTIFY_AND_CAPTION_PROMPT,
+    max_tokens: int = 1536,
 ) -> dict[str, object]:
     """One photo as a JPEG data URL. Never a Drive HTTP URL."""
     b64 = base64.b64encode(jpeg_bytes).decode("ascii")

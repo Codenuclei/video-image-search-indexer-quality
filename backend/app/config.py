@@ -316,12 +316,12 @@ class Settings(BaseSettings):
     qwen_vlm_base_url: str = "http://127.0.0.1:8003"
     qwen_vlm_model: str = "Qwen/Qwen3-VL-8B-Instruct"
     qwen_vlm_timeout_seconds: float = 120.0
-    qwen_vlm_max_tokens: int = 256
+    qwen_vlm_max_tokens: int = 512
     # Qwen identify backfill (SGLang OpenAI chat). Empty base URL falls back to qwen_vlm_base_url.
     qwen_identify_base_url: str = ""
     qwen_identify_model: str = "Qwen/Qwen3-VL-8B-Instruct"
     qwen_identify_timeout_seconds: float = 180.0
-    qwen_identify_max_tokens: int = 640
+    qwen_identify_max_tokens: int = 1536
     qwen_identify_concurrency: int = 32
     qwen_identify_fetch_concurrency: int = 16
     qwen_identify_prefetch: int = 48

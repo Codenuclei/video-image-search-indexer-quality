@@ -42,6 +42,12 @@ def test_identify_payload_is_jpeg_data_url_not_drive() -> None:
     url = content[0]["image_url"]["url"]
     assert url.startswith("data:image/jpeg;base64,")
     assert "http" not in url
+    assert payload["max_tokens"] == 1536
+    prompt = content[1]["text"]
+    assert "graduation cap" in prompt
+    assert "restaurant interior" in prompt
+    assert "CAPTION" in prompt
+    assert "ACTIONS" in prompt
 
 
 def test_payload_contains_drive_url_detects_http_drive() -> None:
