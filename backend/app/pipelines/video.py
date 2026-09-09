@@ -273,7 +273,7 @@ async def apply_faces_to_prepared_video(
 ) -> Media:
     """Download video on the API; GPU worker does ffmpeg + buffalo_l when configured."""
     settings = settings or get_settings()
-    from app.faces.runpod_gpu import detect_faces_runpod_video, runpod_face_configured
+    from app.faces.runpod_gpu import RunPodFaceError, detect_faces_runpod_video, runpod_face_configured
     from app.drive.media_cache import unlink_drive_source_cache
 
     use_gpu = bool(use_runpod) and runpod_face_configured(settings)
@@ -311,26 +311,31 @@ async def apply_faces_to_prepared_video(
     tracker = LocalIdentityTracker(settings.media_dedup_similarity_threshold)
     try:
         if use_gpu:
-            gpu_frames = await detect_faces_runpod_video(
-                cache_path,
-                timestamps,
-                drive_file_id=drive_file.id,
-                settings=settings,
-            )
-            for ts, detections, width, height in gpu_frames:
-                size = (width, height) if width > 0 and height > 0 else (1, 1)
-                await _detect_faces_on_frame(
-                    session,
-                    media,
-                    None,
-                    ts,
-                    None,
-                    settings,
-                    tracker,
-                    detections=detections,
-                    frame_size=size,
+            try:
+                gpu_frames = await detect_faces_runpod_video(
+                    cache_path,
+                    timestamps,
+                    drive_file_id=drive_file.id,
+                    settings=settings,
                 )
-        else:
+                for ts, detections, width, height in gpu_frames:
+                    size = (width, height) if width > 0 and height > 0 else (1, 1)
+                    await _detect_faces_on_frame(
+                        session,
+                        media,
+                        None,
+                        ts,
+                        None,
+                        settings,
+                        tracker,
+                        detections=detections,
+                        frame_size=size,
+                    )
+            except RunPodFaceError:
+                logger.exception("face_gpu_video_failed_fallback_cpu file=%s", drive_file.id[:12])
+                use_gpu = False
+        if not use_gpu:
+            engine = engine or get_face_engine()
             extracted: list[tuple[float, np.ndarray]] = []
             with tempfile.TemporaryDirectory(prefix="dfi-vfaces-") as tmpdir:
                 for ts in timestamps:
@@ -619,7 +624,7 @@ async def process_video_file(
         frame_paths[ts] = frame_path
 
     if not settings.face_jobs_enabled:
-        from app.faces.runpod_gpu import detect_faces_runpod_batch, runpod_face_configured
+        from app.faces.runpod_gpu import RunPodFaceError, detect_faces_runpod_batch, runpod_face_configured
 
         extracted = []
         for ts, frame_path in frame_paths.items():
@@ -627,12 +632,17 @@ async def process_video_file(
             if image_bgr is not None:
                 extracted.append((ts, image_bgr))
         use_gpu = runpod_face_configured(settings)
+        batched = None
         if use_gpu:
-            batched = await detect_faces_runpod_batch(
-                [image for _ts, image in extracted],
-                drive_file_id=drive_file.id,
-                settings=settings,
-            )
+            try:
+                batched = await detect_faces_runpod_batch(
+                    [image for _ts, image in extracted],
+                    drive_file_id=drive_file.id,
+                    settings=settings,
+                )
+            except RunPodFaceError:
+                logger.exception("face_gpu_video_frames_failed_fallback_cpu file=%s", drive_file.id[:12])
+        if batched is not None:
             for (ts, image_bgr), detections in zip(extracted, batched, strict=True):
                 await _detect_faces_on_frame(
                     session,

@@ -294,6 +294,11 @@ async def lifespan(app: FastAPI):
             object_loop = ObjectWorkerLoop()
             object_loop.ensure_started()
             app.state.object_worker_loop = object_loop
+            from app.workers.ocr_queue import OcrWorkerLoop
+
+            ocr_loop = OcrWorkerLoop()
+            ocr_loop.ensure_started()
+            app.state.ocr_worker_loop = ocr_loop
             logger.info(
                 "Face worker loop started concurrency=%s",
                 settings_now.face_worker_concurrency,
@@ -311,6 +316,12 @@ async def lifespan(app: FastAPI):
                 identify_loop.ensure_started()
                 app.state.identify_worker_loop = identify_loop
                 logger.info("Identify Qwen worker loop started on dfi-backend leader")
+                from app.workers.ocr_queue import OcrWorkerLoop
+
+                ocr_loop = OcrWorkerLoop()
+                ocr_loop.ensure_started()
+                app.state.ocr_worker_loop = ocr_loop
+                logger.info("OCR side-lane started on API leader (idle unless ocr_lane_enabled)")
                 if not settings_now.run_indexer:
                     from app.faces.runpod_gpu import runpod_face_configured
                     from app.workers.face_queue import FaceWorkerLoop
@@ -374,6 +385,12 @@ async def lifespan(app: FastAPI):
             await identify_loop.stop()
         except Exception:  # noqa: BLE001
             logger.exception("Identify worker loop stop failed")
+    ocr_loop = getattr(app.state, "ocr_worker_loop", None)
+    if ocr_loop is not None:
+        try:
+            await ocr_loop.stop()
+        except Exception:  # noqa: BLE001
+            logger.exception("OCR worker loop stop failed")
     worker_tasks = getattr(app.state, "worker_tasks", ())
     for task in (workers_starter, boot_task, *worker_tasks):
         try:

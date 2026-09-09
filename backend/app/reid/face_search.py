@@ -193,7 +193,16 @@ async def search_faces_by_image_bytes(
 
     settings = get_settings()
     if runpod_face_configured(settings):
-        detections = await detect_faces_runpod(image_bgr, settings=settings)
+        from app.faces.runpod_gpu import RunPodFaceError
+
+        try:
+            detections = await detect_faces_runpod(image_bgr, settings=settings)
+        except RunPodFaceError:
+            logger.exception("face_gpu_search_failed_fallback_cpu")
+            detections = None
+        if detections is None:
+            engine = get_face_engine()
+            detections = await run_cpu_bound(engine.detect_faces, image_bgr)
     else:
         engine = get_face_engine()
         detections = await run_cpu_bound(engine.detect_faces, image_bgr)

@@ -53,14 +53,20 @@ def _nvidia_smi() -> dict:
         ).strip()
     except (OSError, subprocess.SubprocessError) as exc:
         return {"error": str(exc)}
-    name, total, used, free, util = [p.strip() for p in raw.split(",")]
-    return {
-        "name": name,
-        "total_mb": int(float(total)),
-        "used_mb": int(float(used)),
-        "free_mb": int(float(free)),
-        "util_pct": int(float(util)),
-    }
+    parts = [p.strip() for p in raw.split(",")]
+    if len(parts) < 5:
+        return {"error": raw[:200]}
+    name, total, used, free, util = parts[:5]
+    try:
+        return {
+            "name": name,
+            "total_mb": int(float(total)),
+            "used_mb": int(float(used)),
+            "free_mb": int(float(free)),
+            "util_pct": int(float(util)),
+        }
+    except (TypeError, ValueError):
+        return {"name": name, "error": raw[:240]}
 
 
 def _ffmpeg_hwaccels() -> list[str]:
@@ -456,6 +462,14 @@ def _detect_item(item: dict, min_confidence: float) -> dict:
 
 
 def handler(job: dict) -> dict:
+    try:
+        return _handle_job(job)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("face_handler_failed")
+        return {"ok": False, "error": str(exc)[:500]}
+
+
+def _handle_job(job: dict) -> dict:
     inp = job.get("input") or {}
     _ensure_runtime()
     if inp.get("healthcheck"):

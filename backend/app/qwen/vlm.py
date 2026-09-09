@@ -13,9 +13,15 @@ from pathlib import Path
 import httpx
 
 from app.config import Settings, get_settings
-from app.objects.identify_tags import CAPTION_PROMPT
 
 logger = logging.getLogger(__name__)
+
+# Video-frame captions only. Identify/testv2 prompts must not be imported here.
+_DESCRIBE_PROMPT = (
+    "This is a single frame from a video. "
+    "Describe what is visible in one concise sentence for visual search indexing. "
+    "Focus on objects, people, actions, and scene context."
+)
 
 
 class QwenVlmError(RuntimeError):
@@ -55,7 +61,7 @@ def describe_image_sync(
         raise QwenVlmError(f"Image not found: {image_path}")
 
     image_b64 = base64.b64encode(path.read_bytes()).decode("ascii")
-    prompt = f"{CAPTION_PROMPT.strip()}\nTimestamp: {timestamp_sec:.1f}s"
+    prompt = f"{_DESCRIBE_PROMPT}\nTimestamp: {timestamp_sec:.1f}s"
 
     payload = {
         "model": settings.qwen_vlm_model,

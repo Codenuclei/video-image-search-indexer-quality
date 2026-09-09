@@ -14,6 +14,44 @@ sys.path.insert(0, str(REPO / "runpod" / "face-buffalo"))
 from handler import extract_frame_ffmpeg, faces_from_insightface  # noqa: E402
 
 
+def test_nvidia_smi_insufficient_permissions_does_not_raise(monkeypatch) -> None:
+    from handler import _nvidia_smi
+
+    def fake_check_output(*args, **kwargs):
+        return (
+            "NVIDIA RTX A4000, [Insufficient Permissions], "
+            "[Insufficient Permissions], [Insufficient Permissions], "
+            "[Insufficient Permissions]"
+        )
+
+    monkeypatch.setattr("handler.subprocess.check_output", fake_check_output)
+    info = _nvidia_smi()
+    assert "error" in info
+    assert "Insufficient Permissions" in info["error"]
+
+
+def test_handler_swallows_runtime_init_errors(monkeypatch) -> None:
+    from handler import handler
+
+    def boom() -> None:
+        raise RuntimeError("could not convert string to float: '[Insufficient Permissions]'")
+
+    monkeypatch.setattr("handler._ensure_runtime", boom)
+    out = handler({"input": {"healthcheck": True}})
+    assert out["ok"] is False
+    assert "Insufficient Permissions" in out["error"]
+
+
+def test_image_pipeline_falls_back_to_cpu_on_gpu_error() -> None:
+    from app.pipelines import image as image_mod
+    import inspect
+
+    src = inspect.getsource(image_mod.apply_faces_to_prepared_image)
+    assert "RunPodFaceError" in src
+    assert "face_gpu_failed_fallback_cpu" in src
+    assert "detect_faces_async" in src
+
+
 def test_handler_uses_faceanalysis_get_not_split_det_rec() -> None:
     text = (REPO / "runpod" / "face-buffalo" / "handler.py").read_text()
     assert "_app.get(" in text

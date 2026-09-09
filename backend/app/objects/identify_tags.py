@@ -394,26 +394,34 @@ def phrases_for_index(item: IdentifyLabel) -> tuple[str, ...]:
 
 
 def persist_rows(parsed: IdentifyResult) -> list[dict[str, object]]:
-    """Rows for media_identify_labels: primary, synonyms, and tokens. Separate lanes."""
+    """Rows for media_identify_labels: primary, synonyms, and tokens. Separate lanes.
+
+    Never writes the mixed-prompt CAPTION (it lives only on IdentifyResult.caption).
+    Clips every VARCHAR so a long Qwen line cannot raise DataError in production.
+    """
     rows: list[dict[str, object]] = []
     seen: set[str] = set()
     for item in parsed.merged:
+        if item.kind not in {"object", "action"}:
+            continue
         source = "qwen_action" if item.kind == "action" else "qwen_identify"
         category = "action" if item.kind == "action" else "object"
         phrases = phrases_for_index(item)
         for index, phrase in enumerate(phrases):
-            if phrase in seen:
+            label = str(phrase or "").strip()[:96]
+            if not label or label in seen:
                 continue
-            seen.add(phrase)
+            seen.add(label)
+            evidence = item.label if index == 0 else f"synonym of {item.label}"
             rows.append(
                 {
-                    "canonical_label": phrase[:96],
-                    "category": category,
+                    "canonical_label": label,
+                    "category": category[:48],
                     "confidence": 0.92 if index == 0 else 0.8,
-                    "evidence_source": source if index == 0 else "qwen_synonym",
-                    "evidence_text": item.label if index else f"synonym of {item.label}",
+                    "evidence_source": (source if index == 0 else "qwen_synonym")[:32],
+                    "evidence_text": str(evidence or "")[:240] or None,
                     "hit_count": 1,
-                    "model_version": QWEN_IDENTIFY_MODEL_VERSION,
+                    "model_version": QWEN_IDENTIFY_MODEL_VERSION[:96],
                 }
             )
     return rows

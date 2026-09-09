@@ -42,7 +42,7 @@ services:
     environment:
       RUN_INDEXER: "false"
       RUN_FACE_WORKER: "false"
-      FACE_JOBS_ENABLED: "false"
+      FACE_JOBS_ENABLED: "true"
       AUTO_INDEX_ENABLED: "false"
       RUNPOD_FACE_ENDPOINT_ID: ${RUNPOD_FACE_ENDPOINT_ID:-0zub88paibpsf3}
       RUNPOD_FACE_GPU_ENABLED: "true"

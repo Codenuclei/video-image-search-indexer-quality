@@ -120,7 +120,13 @@ async def _fetch_jpeg(drive_file_id: str, name: str) -> tuple[bytes, tuple[int, 
     return _jpeg_bytes(image)
 
 
-async def _run_job(client: httpx.AsyncClient, endpoint_id: str, payload: dict) -> dict:
+async def _run_job(
+    client: httpx.AsyncClient,
+    endpoint_id: str,
+    payload: dict,
+    *,
+    timeout_s: float = 900.0,
+) -> dict:
     key = os.environ["RUNPOD_API_KEY"]
     headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
     submit = await client.post(
@@ -135,7 +141,7 @@ async def _run_job(client: httpx.AsyncClient, endpoint_id: str, payload: dict) -
     if not job_id:
         raise RuntimeError(f"run missing id: {body}")
     status_url = f"https://api.runpod.ai/v2/{endpoint_id}/status/{job_id}"
-    deadline = time.monotonic() + 900.0
+    deadline = time.monotonic() + timeout_s
     status = ""
     while time.monotonic() < deadline:
         status_resp = await client.get(status_url, headers=headers)
@@ -148,7 +154,7 @@ async def _run_job(client: httpx.AsyncClient, endpoint_id: str, payload: dict) -
         if status in {"FAILED", "failed", "CANCELLED", "cancelled", "TIMED_OUT", "timed_out"}:
             raise RuntimeError(f"job {job_id} {status}: {data.get('error') or data}")
         await asyncio.sleep(0.5)
-    raise RuntimeError(f"job {job_id} still {status} after 15m")
+    raise RuntimeError(f"job {job_id} still {status} after {timeout_s:.0f}s")
 
 
 def _iou(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> float:
@@ -208,6 +214,7 @@ def _match_faces(gpu_faces: list[dict], db_faces: list[dict], sent_wh, orig_wh) 
             {
                 "iou": round(score, 4),
                 "cosine": None if cos is None else round(cos, 6),
+                "gpu_index": gi,
                 "gpu_conf": gpu_faces[gi].get("confidence"),
                 "db_conf": db_faces[di].get("detection_confidence"),
                 "db_face_id": db_faces[di].get("id"),

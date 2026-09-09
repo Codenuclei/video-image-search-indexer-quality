@@ -437,6 +437,7 @@ async def persist_identify_labels(
     model_version: str = QWEN_IDENTIFY_MODEL_VERSION,
 ) -> int:
     """Replace this media's Qwen identify rows only."""
+    model_version = str(model_version or QWEN_IDENTIFY_MODEL_VERSION)[:96]
     await session.execute(
         delete(MediaIdentifyLabel).where(
             MediaIdentifyLabel.media_id == media_id,
@@ -447,21 +448,28 @@ async def persist_identify_labels(
     rows = persist_rows(parsed)
     if not rows:
         return 0
-    payload = [
-        {
-            "media_id": media_id,
-            "canonical_label": row["canonical_label"],
-            "category": row["category"],
-            "confidence": row["confidence"],
-            "evidence_source": row["evidence_source"],
-            "evidence_text": row.get("evidence_text"),
-            "best_timestamp": None,
-            "hit_count": row.get("hit_count", 1),
-            "model_version": model_version,
-            "updated_at": now,
-        }
-        for row in rows
-    ]
+    payload = []
+    for row in rows:
+        label = str(row["canonical_label"] or "").strip()[:96]
+        if not label:
+            continue
+        evidence = row.get("evidence_text")
+        payload.append(
+            {
+                "media_id": media_id,
+                "canonical_label": label,
+                "category": str(row["category"] or "object")[:48],
+                "confidence": float(row["confidence"]),
+                "evidence_source": str(row["evidence_source"] or "qwen_identify")[:32],
+                "evidence_text": (str(evidence)[:240] if evidence else None),
+                "best_timestamp": None,
+                "hit_count": int(row.get("hit_count", 1) or 1),
+                "model_version": str(model_version or QWEN_IDENTIFY_MODEL_VERSION)[:96],
+                "updated_at": now,
+            }
+        )
+    if not payload:
+        return 0
     stmt = insert(MediaIdentifyLabel).values(payload)
     await session.execute(
         stmt.on_conflict_do_update(

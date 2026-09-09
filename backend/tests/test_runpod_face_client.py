@@ -252,6 +252,7 @@ def test_video_pipeline_uses_runpod_batch() -> None:
     assert "detect_faces_runpod_video" in src
     assert "extract_frame_at" in src  # CPU fallback only
     assert "unlink_drive_source_cache" in src
+    assert "RunPodFaceError" in src
     inline = inspect.getsource(video_mod.process_video_file)
     assert "detect_faces_runpod_batch" in inline
 
@@ -290,6 +291,7 @@ def test_api_leader_starts_face_loop_alongside_identify() -> None:
     src = inspect.getsource(main_mod.lifespan)
     assert "IdentifyWorkerLoop" in src
     assert "FaceWorkerLoop" in src
+    assert "OcrWorkerLoop" in src
     assert "runpod_face_configured" in src
     assert "not settings_now.run_indexer" in src
 
@@ -301,6 +303,7 @@ def test_image_pipeline_uses_gpu_when_configured() -> None:
     src = inspect.getsource(image_mod.apply_faces_to_prepared_image)
     assert "detect_faces_runpod" in src
     assert "use_runpod" in src
+    assert "RunPodFaceError" in src
 
 
 @patch("app.faces.runpod_gpu.set_face_workers_max", new_callable=AsyncMock)
