@@ -1,0 +1,5 @@
+.env
+backend.env
+connector.env
+*.env
+!compose.env.example

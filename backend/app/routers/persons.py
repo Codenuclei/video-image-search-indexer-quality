@@ -68,8 +68,8 @@ async def _best_face_id(session: AsyncSession, person: Person) -> int | None:
             try:
                 await ensure_face_thumbnail_jpeg(session, rep.id, allow_fallback=True)
                 return rep.id
-            except ValueError:
-                pass
+            except Exception:
+                return rep.id
 
     faces = (
         await session.execute(
@@ -94,8 +94,8 @@ async def _best_face_id(session: AsyncSession, person: Person) -> int | None:
         try:
             await ensure_face_thumbnail_jpeg(session, face.id, allow_fallback=True)
             return face.id
-        except ValueError:
-            continue
+        except Exception:
+            return face.id
     return None
 
 

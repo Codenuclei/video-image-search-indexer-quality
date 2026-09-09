@@ -115,12 +115,14 @@ async def _regen_face_thumbnail(
     timeout_sec: float = 30.0,
 ) -> tuple[Path, ThumbSource] | None:
     settings = get_settings()
-    media = face.media if face.media is not None else await session.get(Media, face.media_id)
+    # Always load by PK — lazy face.media / media.drive_file raises MissingGreenlet
+    # in the async session (and there is no thumbnail volume on DigitalOcean yet).
+    media = await session.get(Media, face.media_id)
     if media is None:
         return None
-    drive_file = media.drive_file
-    if drive_file is None and media.drive_file_id:
-        drive_file = await session.get(DriveFile, media.drive_file_id)
+    drive_file = (
+        await session.get(DriveFile, media.drive_file_id) if media.drive_file_id else None
+    )
     if drive_file is None:
         return None
 

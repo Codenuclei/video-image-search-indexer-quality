@@ -18,7 +18,7 @@ import threading
 import time
 from pathlib import Path
 
-from app.gemini.rate_limit import gemini_embed_slot
+from app.gemini.rate_limit import gemini_embed_slot, gemini_error_is_retryable
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +57,7 @@ def _embed_with_retry(contents, task_type: str) -> list[float]:
             return result.embeddings[0].values
         except Exception as exc:
             msg = str(exc)
-            if any(code in msg for code in ("503", "429", "UNAVAILABLE", "RESOURCE_EXHAUSTED")):
+            if gemini_error_is_retryable(msg):
                 wait = 5 * (2**attempt)
                 logger.warning(
                     "Gemini embed transient error (attempt %d) — retrying in %ds: %s",
@@ -172,7 +172,7 @@ def embed_frames_batch_bytes_sync(
             return [list(e.values or []) for e in emb]
         except Exception as exc:  # noqa: BLE001
             msg = str(exc)
-            if any(code in msg for code in ("503", "429", "UNAVAILABLE", "RESOURCE_EXHAUSTED")):
+            if gemini_error_is_retryable(msg):
                 wait = 5 * (2**attempt)
                 logger.warning(
                     "Gemini batch embed transient error (attempt %d) — retrying in %ds: %s",
@@ -225,7 +225,7 @@ def embed_texts_batch_sync(texts: list[str]) -> list[list[float]]:
             return [list(item.values or []) for item in embeddings]
         except Exception as exc:  # noqa: BLE001
             msg = str(exc)
-            if any(code in msg for code in ("503", "429", "UNAVAILABLE", "RESOURCE_EXHAUSTED")):
+            if gemini_error_is_retryable(msg):
                 time.sleep(5 * (2**attempt))
                 continue
             raise

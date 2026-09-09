@@ -74,6 +74,18 @@ def gemini_upload_slot():
         sem.release()
 
 
+def gemini_error_is_billing_exhausted(msg: str) -> bool:
+    """Prepaid/credits-empty is not transient — retrying hammers the same project."""
+    lower = (msg or "").lower()
+    return "prepayment credits are depleted" in lower or "credits are depleted" in lower
+
+
+def gemini_error_is_retryable(msg: str) -> bool:
+    if gemini_error_is_billing_exhausted(msg):
+        return False
+    return any(code in (msg or "") for code in ("503", "429", "UNAVAILABLE", "RESOURCE_EXHAUSTED"))
+
+
 def retry_on_rate_limit(func, *args, max_attempts: int = 8, **kwargs):
     """Run *func* with exponential backoff on 429 / RESOURCE_EXHAUSTED."""
     for attempt in range(max_attempts):
@@ -81,7 +93,7 @@ def retry_on_rate_limit(func, *args, max_attempts: int = 8, **kwargs):
             return func(*args, **kwargs)
         except Exception as exc:
             msg = str(exc)
-            if any(code in msg for code in ("503", "429", "UNAVAILABLE", "RESOURCE_EXHAUSTED")):
+            if gemini_error_is_retryable(msg):
                 wait = min(120, 5 * (2 ** attempt))
                 logger.warning(
                     "Gemini rate limit (attempt %d/%d) — retry in %ds: %s",

@@ -1,0 +1,20 @@
+{
+	email bran.creative.studio@gmail.com
+}
+
+# UI
+165-245-170-117.sslip.io {
+	reverse_proxy frontend:3001
+}
+
+# API (separate hostname so Next.js /search does not collide with GET /search)
+api.165.245.170.117.sslip.io {
+	reverse_proxy backend:8000 {
+		flush_interval -1
+		transport http {
+			read_timeout 1h
+			write_timeout 1h
+			dial_timeout 10s
+		}
+	}
+}

@@ -18,7 +18,7 @@ from app.config import Settings, get_settings
 from app.db.models import DriveFile, Face, FaceEmbedding, Media, MediaType, VideoSegment
 from app.drive.client import DriveConnectorClient
 from app.drive.schemas import ConnectorFolderListing
-from app.faces.engine import FaceEngine, get_face_engine
+from app.faces.engine import DetectedFace, FaceEngine, get_face_engine
 from app.gemini.service import GeminiFileSearchService, get_gemini_service
 from app.gemini.video_embeddings import embed_frame_sync
 from app.matching.service import assign_face
@@ -217,14 +217,24 @@ def _merge_sample_times(
 async def _detect_faces_on_frame(
     session: AsyncSession,
     media: Media,
-    image_bgr: np.ndarray,
+    image_bgr: np.ndarray | None,
     timestamp_sec: float,
-    engine: FaceEngine,
+    engine: FaceEngine | None,
     settings: Settings,
     tracker: LocalIdentityTracker,
+    detections: list[DetectedFace] | None = None,
+    frame_size: tuple[int, int] | None = None,
 ) -> None:
-    img_h, img_w = image_bgr.shape[:2]
-    detections = await detect_faces_async(engine, image_bgr)
+    if image_bgr is not None:
+        img_h, img_w = image_bgr.shape[:2]
+    elif frame_size is not None:
+        img_w, img_h = frame_size
+    else:
+        raise RuntimeError("face persist needs a frame image or frame_size")
+    if detections is None:
+        if engine is None or image_bgr is None:
+            raise RuntimeError("face detection requires an engine or precomputed detections")
+        detections = await detect_faces_async(engine, image_bgr)
     for detection in detections:
         if not passes_quality_filter(detection, img_w, img_h, settings.min_face_area_fraction):
             continue
@@ -259,10 +269,16 @@ async def apply_faces_to_prepared_video(
     client: DriveConnectorClient,
     settings: Settings | None = None,
     engine: FaceEngine | None = None,
+    use_runpod: bool = False,
 ) -> Media:
-    """Run InsightFace on sampled video frames (face-worker path; re-downloads video)."""
+    """Download video on the API; GPU worker does ffmpeg + buffalo_l when configured."""
     settings = settings or get_settings()
-    engine = engine or get_face_engine()
+    from app.faces.runpod_gpu import detect_faces_runpod_video, runpod_face_configured
+    from app.drive.media_cache import unlink_drive_source_cache
+
+    use_gpu = bool(use_runpod) and runpod_face_configured(settings)
+    if not use_gpu:
+        engine = engine or get_face_engine()
 
     existing_face = await session.scalar(
         select(Face.id)
@@ -293,20 +309,49 @@ async def apply_faces_to_prepared_video(
         client, drive_file, settings, session=session
     )
     tracker = LocalIdentityTracker(settings.media_dedup_similarity_threshold)
-
-    with tempfile.TemporaryDirectory(prefix="dfi-vfaces-") as tmpdir:
-        for ts in timestamps:
-            partial = os.path.join(tmpdir, f"{ts:.3f}.partial.jpg")
-            frame_path = os.path.join(tmpdir, f"{ts:.3f}.jpg")
-            ok = await run_cpu_bound(extract_frame_at, cache_path, ts, partial)
-            if not ok:
-                continue
-            os.replace(partial, frame_path)
-            image_bgr = cv2.imread(frame_path)
-            if image_bgr is not None:
+    try:
+        if use_gpu:
+            gpu_frames = await detect_faces_runpod_video(
+                cache_path,
+                timestamps,
+                drive_file_id=drive_file.id,
+                settings=settings,
+            )
+            for ts, detections, width, height in gpu_frames:
+                size = (width, height) if width > 0 and height > 0 else (1, 1)
                 await _detect_faces_on_frame(
-                    session, media, image_bgr, ts, engine, settings, tracker
+                    session,
+                    media,
+                    None,
+                    ts,
+                    None,
+                    settings,
+                    tracker,
+                    detections=detections,
+                    frame_size=size,
                 )
+        else:
+            extracted: list[tuple[float, np.ndarray]] = []
+            with tempfile.TemporaryDirectory(prefix="dfi-vfaces-") as tmpdir:
+                for ts in timestamps:
+                    partial = os.path.join(tmpdir, f"{ts:.3f}.partial.jpg")
+                    frame_path = os.path.join(tmpdir, f"{ts:.3f}.jpg")
+                    ok = await run_cpu_bound(extract_frame_at, cache_path, ts, partial)
+                    if not ok:
+                        continue
+                    os.replace(partial, frame_path)
+                    image_bgr = cv2.imread(frame_path)
+                    if image_bgr is not None:
+                        extracted.append((ts, image_bgr))
+                for ts, image_bgr in extracted:
+                    await _detect_faces_on_frame(
+                        session, media, image_bgr, ts, engine, settings, tracker
+                    )
+    finally:
+        unlink_drive_source_cache(drive_file, settings)
+        leftover_partial = f"{cache_path}.partial"
+        if os.path.exists(leftover_partial):
+            os.remove(leftover_partial)
 
     from app.drive.display_name import drive_file_display_name
 
@@ -414,7 +459,6 @@ async def process_video_file(
     """
     settings = settings or get_settings()
     gemini = gemini or get_gemini_service()
-    engine = engine or get_face_engine()
 
     from app.pipelines.common import file_has_media
 
@@ -575,9 +619,34 @@ async def process_video_file(
         frame_paths[ts] = frame_path
 
     if not settings.face_jobs_enabled:
+        from app.faces.runpod_gpu import detect_faces_runpod_batch, runpod_face_configured
+
+        extracted = []
         for ts, frame_path in frame_paths.items():
             image_bgr = cv2.imread(frame_path)
             if image_bgr is not None:
+                extracted.append((ts, image_bgr))
+        use_gpu = runpod_face_configured(settings)
+        if use_gpu:
+            batched = await detect_faces_runpod_batch(
+                [image for _ts, image in extracted],
+                drive_file_id=drive_file.id,
+                settings=settings,
+            )
+            for (ts, image_bgr), detections in zip(extracted, batched, strict=True):
+                await _detect_faces_on_frame(
+                    session,
+                    media,
+                    image_bgr,
+                    ts,
+                    None,
+                    settings,
+                    tracker,
+                    detections=detections,
+                )
+        else:
+            engine = engine or get_face_engine()
+            for ts, image_bgr in extracted:
                 await _detect_faces_on_frame(
                     session, media, image_bgr, ts, engine, settings, tracker
                 )

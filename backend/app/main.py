@@ -36,6 +36,7 @@ from app.routers import (
     diagnostics,
     drive,
     drive_oauth,
+    face_gpu_pull,
     faces,
     fennec,
     folder_contexts,
@@ -298,13 +299,30 @@ async def lifespan(app: FastAPI):
                 settings_now.face_worker_concurrency,
             )
 
-        if not settings_now.run_face_worker and is_background_leader():
-            from app.workers.identify_queue import IdentifyWorkerLoop
+        if not settings_now.run_face_worker:
+            if not is_background_leader():
+                became = await try_become_background_leader()
+                if became:
+                    logger.info("API background leader elected for identify/face GPU loops")
+            if is_background_leader():
+                from app.workers.identify_queue import IdentifyWorkerLoop
 
-            identify_loop = IdentifyWorkerLoop()
-            identify_loop.ensure_started()
-            app.state.identify_worker_loop = identify_loop
-            logger.info("Identify Qwen worker loop started on dfi-backend leader")
+                identify_loop = IdentifyWorkerLoop()
+                identify_loop.ensure_started()
+                app.state.identify_worker_loop = identify_loop
+                logger.info("Identify Qwen worker loop started on dfi-backend leader")
+                if not settings_now.run_indexer:
+                    from app.faces.runpod_gpu import runpod_face_configured
+                    from app.workers.face_queue import FaceWorkerLoop
+
+                    if runpod_face_configured(settings_now):
+                        face_loop = FaceWorkerLoop(settings=settings_now)
+                        face_loop.ensure_started()
+                        app.state.face_worker_loop = face_loop
+                        logger.info(
+                            "Face worker loop started on API leader (RunPod) concurrency=%s",
+                            settings_now.face_worker_concurrency,
+                        )
 
         if settings_now.run_indexer:
             if not is_background_leader():
@@ -526,6 +544,7 @@ app.include_router(settings.router)
 app.include_router(persons.router)
 app.include_router(clusters.router)
 app.include_router(faces.router)
+app.include_router(face_gpu_pull.router)
 app.include_router(media.router)
 app.include_router(folder_contexts.router)
 app.include_router(fennec.router)

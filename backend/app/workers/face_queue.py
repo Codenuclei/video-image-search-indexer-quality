@@ -116,11 +116,17 @@ async def process_face_job(
 ) -> None:
     """Run InsightFace for one claimed job, then embed/status or ERROR."""
     from app.dependencies import get_drive_client
-    from app.faces.engine import get_face_engine
+    from app.faces.runpod_gpu import runpod_face_configured
     from app.pipelines.image import apply_faces_to_prepared_image
     from app.pipelines.video import apply_faces_to_prepared_video
 
     settings = settings or get_settings()
+    use_gpu = runpod_face_configured(settings)
+    engine = None
+    if not use_gpu:
+        from app.faces.engine import get_face_engine
+
+        engine = get_face_engine()
     drive_file = await session.get(DriveFile, job.drive_file_id)
     if drive_file is None:
         job.status = FaceJobStatus.DONE
@@ -176,7 +182,8 @@ async def process_face_job(
                 media,
                 client=client,
                 settings=settings,
-                engine=get_face_engine(),
+                engine=engine,
+                use_runpod=use_gpu,
             )
         else:
             await apply_faces_to_prepared_image(
@@ -185,8 +192,9 @@ async def process_face_job(
                 media,
                 client=client,
                 settings=settings,
-                engine=get_face_engine(),
+                engine=engine,
                 allow_redownload=repair_processed_zero_face,
+                use_runpod=True,
             )
         detected_face_count = int(
             await session.scalar(
@@ -318,15 +326,22 @@ class FaceWorkerLoop:
             )
             self._embed_queue.ensure_started()
 
-        n = max(1, min(4, int(self._settings.face_worker_concurrency)))
+        n = max(1, int(self._settings.face_worker_concurrency))
+        from app.faces.runpod_gpu import runpod_face_configured
+
+        if runpod_face_configured(self._settings):
+            n = min(16, max(4, n))
+        else:
+            n = min(4, n)
         for i in range(n):
             self._tasks.append(
                 asyncio.create_task(self._worker_loop(i), name=f"face-worker-{i}")
             )
         logger.info(
-            "FaceWorkerLoop started concurrency=%d lease_s=%d",
+            "FaceWorkerLoop started concurrency=%d lease_s=%d gpu=%s",
             n,
             self._settings.face_job_lease_seconds,
+            runpod_face_configured(self._settings),
         )
 
     async def stop(self) -> None:
@@ -341,19 +356,35 @@ class FaceWorkerLoop:
 
     async def _worker_loop(self, slot: int) -> None:
         settings = self._settings
+        idle_ticks = 0
         while not self._stop.is_set():
             try:
+                from app.drive.indexing_pause import global_indexing_is_paused
+                from app.faces.runpod_gpu import runpod_face_configured, set_face_workers_max
+
+                paused = False
+                jobs: list = []
                 async with self._session_factory() as session:
-                    jobs = await claim_face_jobs(
-                        session,
-                        limit=1,
-                        lease_seconds=settings.face_job_lease_seconds,
-                        worker_token=f"{self._token}:{slot}",
-                    )
-                    await session.commit()
-                if not jobs:
+                    paused = await global_indexing_is_paused(session)
+                    if not paused:
+                        jobs = await claim_face_jobs(
+                            session,
+                            limit=1,
+                            lease_seconds=settings.face_job_lease_seconds,
+                            worker_token=f"{self._token}:{slot}",
+                        )
+                        await session.commit()
+                if paused or not jobs:
+                    idle_ticks += 1
+                    if slot == 0 and idle_ticks >= 180 and runpod_face_configured(settings):
+                        try:
+                            await set_face_workers_max(settings, 0)
+                        except Exception:  # noqa: BLE001
+                            logger.warning("face_gpu_scale_zero_failed", exc_info=True)
+                        idle_ticks = 0
                     await asyncio.sleep(1.0)
                     continue
+                idle_ticks = 0
                 for job in jobs:
                     async with self._session_factory() as session:
                         fresh = await session.get(FaceJob, job.id)

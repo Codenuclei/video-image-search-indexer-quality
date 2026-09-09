@@ -95,8 +95,20 @@ class Settings(BaseSettings):
     # Keep WEB_CONCURRENCY=1 and FACE_WORKER_CONCURRENCY=1 (sequential InsightFace lock).
     run_face_worker: bool = False
     face_worker_concurrency: int = 1
-    face_job_lease_seconds: int = 900
+    face_job_lease_seconds: int = 3600
     face_job_max_attempts: int = 3
+    # RunPod **serverless** buffalo_l (dfi-face-buffalo). Never a dedicated pod.
+    # workersMin=1 while jobs run, then both min/max autoscale to 0 when idle.
+    runpod_api_key: str = ""
+    runpod_face_endpoint_id: str = "0zub88paibpsf3"
+    runpod_qwen_endpoint_id: str = ""
+    runpod_face_gpu_enabled: bool = True
+    runpod_face_timeout_seconds: float = 3600.0
+    runpod_face_max_edge: int = 0  # 0 = full resolution (same pixels as CPU FaceEngine)
+    runpod_face_jpeg_quality: int = 95
+    # Hard cap (10GiB). Worker pulls via signed HTTPS Range GET — never JSON/base64.
+    runpod_face_video_max_bytes: int = 10 * 1024 * 1024 * 1024
+    runpod_face_video_pull_ttl_seconds: int = 3600
     # Stop claiming new index downloads when free space on media/video volume is below this.
     index_disk_high_water_bytes: int = 2 * 1024 * 1024 * 1024
 

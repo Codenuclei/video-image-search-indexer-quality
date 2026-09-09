@@ -482,8 +482,13 @@ def apparel_brand_association_strength(
     concepts: QueryConcepts,
     *,
     evidence_texts: Iterable[str | None] = (),
+    ocr_spans: Iterable[object] | None = None,
 ) -> float:
-    """Score how clearly residual brand text is on the apparel (0 = not)."""
+    """Score how clearly residual brand text is on the apparel (0 = not).
+
+    Optional ocr_spans (objects with normalized_text + region) boost garment
+    hits and demote backdrop/signage OCR. Production callers omit ocr_spans.
+    """
     apparel = apparel_labels_in(concepts)
     if not apparel or not concepts.residual_terms:
         return 0.0
@@ -491,11 +496,75 @@ def apparel_brand_association_strength(
     haystack = normalized_concept_tokens(searchable)
     apparel_spans = _apparel_spans(haystack, apparel)
     residual_spans = _residual_spans(haystack, concepts.residual_terms)
-    if not apparel_spans or not residual_spans:
+    text_score = 0.0
+    if apparel_spans and residual_spans:
+        text_score = apparel_brand_association_strength_from_spans(
+            apparel_spans, residual_spans, haystack
+        )
+
+    ocr_score = _ocr_brand_on_garment_strength(concepts, ocr_spans)
+    if ocr_score > 0:
+        # Geometry wins over caption co-mention of backdrop brand.
+        return max(text_score, ocr_score) if ocr_score >= 0.85 else max(text_score * 0.5, ocr_score)
+    if ocr_spans is not None and _ocr_brand_on_signage_only(concepts, ocr_spans):
+        # Explicit OCR evidence brand is only on backdrop → kill association.
         return 0.0
-    return apparel_brand_association_strength_from_spans(
-        apparel_spans, residual_spans, haystack
-    )
+    return text_score
+
+
+def _ocr_residual_match(span_text: str, residual_terms: Iterable[str]) -> bool:
+    hay = (span_text or "").casefold().replace(" ", "")
+    if not hay:
+        return False
+    residuals = [t for t in residual_terms if t]
+    if not residuals:
+        return False
+    joined = "".join(residuals).casefold().replace(" ", "")
+    if joined and joined in hay:
+        return True
+    return all(term.casefold().replace(" ", "") in hay for term in residuals)
+
+
+def _ocr_brand_on_garment_strength(
+    concepts: QueryConcepts,
+    ocr_spans: Iterable[object] | None,
+) -> float:
+    if not ocr_spans or not concepts.residual_terms:
+        return 0.0
+    best = 0.0
+    for span in ocr_spans:
+        text = getattr(span, "normalized_text", None) or getattr(span, "text", "") or ""
+        region = (getattr(span, "region", None) or "other").lower()
+        if not _ocr_residual_match(str(text), concepts.residual_terms):
+            continue
+        if region == "torso":
+            best = max(best, 0.98)
+        elif region == "upper":
+            # Hat / chest-adjacent print.
+            best = max(best, 0.94)
+        # signage/other never count as on-garment evidence
+    return best
+
+
+def _ocr_brand_on_signage_only(
+    concepts: QueryConcepts,
+    ocr_spans: Iterable[object] | None,
+) -> bool:
+    if not ocr_spans or not concepts.residual_terms:
+        return False
+    matched_regions: list[str] = []
+    for span in ocr_spans:
+        text = getattr(span, "normalized_text", None) or getattr(span, "text", "") or ""
+        if not _ocr_residual_match(str(text), concepts.residual_terms):
+            continue
+        matched_regions.append((getattr(span, "region", None) or "other").lower())
+    if not matched_regions:
+        return False
+    # Any garment hit keeps it.
+    if any(r in {"torso", "upper"} for r in matched_regions):
+        return False
+    # Brand only seen on signage/other → not on apparel.
+    return True
 
 
 def residual_associated_with_apparel(
@@ -503,6 +572,7 @@ def residual_associated_with_apparel(
     concepts: QueryConcepts,
     *,
     evidence_texts: Iterable[str | None] = (),
+    ocr_spans: Iterable[object] | None = None,
 ) -> bool:
     """Require residual brand/text to be linked to apparel, not only the scene."""
     apparel = apparel_labels_in(concepts)
@@ -512,6 +582,7 @@ def residual_associated_with_apparel(
         caption,
         concepts,
         evidence_texts=evidence_texts,
+        ocr_spans=ocr_spans,
     ) > 0
 
 
@@ -581,6 +652,7 @@ def all_query_concepts_supported(
     structured_labels: Iterable[str] = (),
     evidence_texts: Iterable[str | None] = (),
     caption: str | None = None,
+    ocr_spans: Iterable[object] | None = None,
 ) -> bool:
     """Require every taxonomy and residual concept across available evidence."""
     labels = set(structured_labels)
@@ -606,10 +678,20 @@ def all_query_concepts_supported(
             ):
                 continue
             return False
-    if not all(
+    # OCR brand text can satisfy residual even when caption is weak.
+    residual_ok = all(
         text_supports_concept(searchable_text, term)
         for term in concepts.residual_terms
-    ):
+    )
+    if not residual_ok and ocr_spans is not None:
+        residual_ok = any(
+            _ocr_residual_match(
+                getattr(span, "normalized_text", None) or getattr(span, "text", "") or "",
+                concepts.residual_terms,
+            )
+            for span in ocr_spans
+        )
+    if not residual_ok:
         return False
     # Apparel + brand/modifier queries must attach the residual to the garment.
     if apparel_labels_in(concepts) and concepts.residual_terms:
@@ -617,6 +699,7 @@ def all_query_concepts_supported(
             caption,
             concepts,
             evidence_texts=evidence_texts,
+            ocr_spans=ocr_spans,
         )
     if concepts.require_signage_brand:
         return residual_associated_with_signage(

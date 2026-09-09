@@ -188,8 +188,15 @@ async def search_faces_by_image_bytes(
     if image_bgr is None:
         raise ValueError("Could not decode image")
 
-    engine = get_face_engine()
-    detections = await run_cpu_bound(engine.detect_faces, image_bgr)
+    from app.config import get_settings
+    from app.faces.runpod_gpu import detect_faces_runpod, runpod_face_configured
+
+    settings = get_settings()
+    if runpod_face_configured(settings):
+        detections = await detect_faces_runpod(image_bgr, settings=settings)
+    else:
+        engine = get_face_engine()
+        detections = await run_cpu_bound(engine.detect_faces, image_bgr)
     if not detections:
         return {"faces_detected": 0, "matches": [], "message": "No face detected in upload"}
 

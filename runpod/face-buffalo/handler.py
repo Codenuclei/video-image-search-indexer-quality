@@ -1,19 +1,27 @@
-"""RunPod serverless: buffalo_l detect + batched ArcFace (same 512-d space). No DB writes."""
+"""RunPod serverless: FaceEngine.detect_faces on CUDA, plus NVDEC ffmpeg for video.
+
+InsightFace buffalo_l FaceAnalysis.get — not a split det+rec path.
+Video: signed HTTPS Range GET into /tmp, then ffmpeg -hwaccel cuda (NVDEC)
+then software ffmpeg on this worker. No Drive. No Postgres. Always delete /tmp leftovers.
+"""
 
 from __future__ import annotations
 
 import base64
 import logging
 import os
-import queue
+import shutil
 import subprocess
+import tempfile
 import threading
 import time
+import urllib.error
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from urllib.parse import urlparse
 
 import numpy as np
-import runpod
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("dfi-face-buffalo")
@@ -21,20 +29,15 @@ logger = logging.getLogger("dfi-face-buffalo")
 MODEL_NAME = "buffalo_l"
 DET_SIZE = (640, 640)
 MIN_CONFIDENCE = 0.5
-REC_BATCH = max(1, int(os.environ.get("FACE_REC_BATCH", "32")))
-VRAM_RESERVE_MB = max(512, int(os.environ.get("FACE_VRAM_RESERVE_MB", "2048")))
-DET_MEM_LIMIT_GB = max(1, int(os.environ.get("FACE_DET_MEM_LIMIT_GB", "2")))
-REC_MEM_LIMIT_GB = max(1, int(os.environ.get("FACE_REC_MEM_LIMIT_GB", "4")))
-MAX_DET_WORKERS = max(1, int(os.environ.get("FACE_MAX_DET_WORKERS", "16")))
-REQUESTED_DET_WORKERS = int(os.environ.get("FACE_GPU_WORKERS", "0"))
+DEFAULT_VIDEO_MAX_BYTES = 10 * 1024 * 1024 * 1024
+DOWNLOAD_PARTS = 8
+DOWNLOAD_CHUNK = 8 * 1024 * 1024
+RANGE_MIN_BYTES = 256 * 1024
 
-_det_pool: queue.Queue | None = None
-_det_executor: ThreadPoolExecutor | None = None
-_rec = None
-_rec_batched = False
-_rec_lock = threading.Lock()
+_app = None
 _providers: list[str] = []
 _runtime: dict = {}
+_lock = threading.Lock()
 
 
 def _nvidia_smi() -> dict:
@@ -60,152 +63,360 @@ def _nvidia_smi() -> dict:
     }
 
 
-def _cuda_provider(mem_limit_gb: int) -> tuple:
-    return (
-        "CUDAExecutionProvider",
-        {
-            "device_id": 0,
-            "arena_extend_strategy": "kSameAsRequested",
-            "gpu_mem_limit": mem_limit_gb * 1024 * 1024 * 1024,
-            "cudnn_conv_algo_search": "HEURISTIC",
-            "do_copy_in_default_stream": True,
-        },
-    )
+def _ffmpeg_hwaccels() -> list[str]:
+    try:
+        raw = subprocess.check_output(
+            ["ffmpeg", "-hide_banner", "-hwaccels"],
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    names = []
+    for line in raw.splitlines():
+        name = line.strip().lower()
+        if name and name != "hardware acceleration methods:":
+            names.append(name)
+    return names
 
 
-def _providers_list(mem_limit_gb: int) -> list:
-    return [_cuda_provider(mem_limit_gb), "CPUExecutionProvider"]
+def extract_frame_ffmpeg(video_path: str, timestamp_sec: float, output_path: str) -> str:
+    """NVDEC first (``-hwaccel cuda``), then software ffmpeg on this worker.
+
+    Same seek as CPU ``extract_frame_at`` (``-ss`` before ``-i``). Returns ``nvdec`` or ``cpu``.
+    """
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    ss = f"{float(timestamp_sec):.3f}"
+    nvdec = [
+        "ffmpeg",
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-hwaccel",
+        "cuda",
+        "-ss",
+        ss,
+        "-i",
+        video_path,
+        "-frames:v",
+        "1",
+        "-q:v",
+        "2",
+        output_path,
+    ]
+    proc = subprocess.run(nvdec, capture_output=True, timeout=120)
+    if proc.returncode == 0 and Path(output_path).is_file() and Path(output_path).stat().st_size > 0:
+        return "nvdec"
+    cpu = [
+        "ffmpeg",
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-ss",
+        ss,
+        "-i",
+        video_path,
+        "-frames:v",
+        "1",
+        "-q:v",
+        "2",
+        output_path,
+    ]
+    proc = subprocess.run(cpu, capture_output=True, timeout=120)
+    if proc.returncode == 0 and Path(output_path).is_file() and Path(output_path).stat().st_size > 0:
+        return "cpu"
+    err = (proc.stderr or b"").decode("utf-8", errors="replace")[:300]
+    raise RuntimeError(f"ffmpeg extract failed at {ss}s: {err}")
 
 
-def _assert_cuda(session) -> list[str]:
-    used = list(session.get_providers())
-    if "CUDAExecutionProvider" not in used:
-        raise RuntimeError(f"did not bind CUDA; providers={used}")
+def video_url_is_blocked(url: str) -> bool:
+    lowered = (url or "").casefold()
+    return "drive.google.com" in lowered or "googleapis.com/drive" in lowered
+
+
+def _http_open(url: str, headers: dict[str, str] | None = None, timeout: float = 600.0):
+    req = urllib.request.Request(url, headers=headers or {})
+    return urllib.request.urlopen(req, timeout=timeout)
+
+
+def _parse_content_range_total(header: str) -> int:
+    # bytes 0-0/12345
+    if not header or "/" not in header:
+        return 0
+    total = header.rsplit("/", 1)[-1].strip()
+    if total == "*":
+        return 0
+    return int(total)
+
+
+def _stream_copy(url: str, dest: str, max_bytes: int) -> int:
+    written = 0
+    with _http_open(url) as resp, open(dest, "wb") as out:
+        while True:
+            chunk = resp.read(DOWNLOAD_CHUNK)
+            if not chunk:
+                break
+            written += len(chunk)
+            if written > max_bytes:
+                raise RuntimeError(f"download exceeded max_bytes={max_bytes}")
+            out.write(chunk)
+    return written
+
+
+def _write_range(url: str, dest: str, start: int, end: int) -> None:
+    headers = {"Range": f"bytes={start}-{end}"}
+    with _http_open(url, headers=headers) as resp:
+        if getattr(resp, "status", 200) != 206:
+            raise RuntimeError(f"range GET expected 206, got {getattr(resp, 'status', '?')}")
+        remaining = end - start + 1
+        with open(dest, "r+b") as out:
+            out.seek(start)
+            while remaining > 0:
+                chunk = resp.read(min(DOWNLOAD_CHUNK, remaining))
+                if not chunk:
+                    raise RuntimeError("range GET truncated")
+                out.write(chunk)
+                remaining -= len(chunk)
+
+
+def download_http_file(url: str, dest: str, *, max_bytes: int, parts: int = DOWNLOAD_PARTS) -> dict:
+    """Parallel HTTP Range GET — fastest pull into the worker without stuffing JSON."""
+    if video_url_is_blocked(url):
+        raise RuntimeError("refusing Drive URL")
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise RuntimeError("video_url must be http(s)")
+    if max_bytes <= 0:
+        raise RuntimeError("max_bytes must be positive")
+
+    total = 0
+    ranged = False
+    probe = None
+    try:
+        probe = _http_open(url, headers={"Range": "bytes=0-0"}, timeout=60.0)
+        status = int(getattr(probe, "status", 200))
+        if status == 206:
+            total = _parse_content_range_total(probe.headers.get("Content-Range") or "")
+            ranged = total > 0
+        elif status == 200:
+            total = int(probe.headers.get("Content-Length") or 0)
+    except urllib.error.HTTPError as exc:
+        try:
+            exc.close()
+        except Exception:  # noqa: BLE001
+            pass
+        if exc.code in {400, 405, 416, 501}:
+            ranged = False
+            total = 0
+        else:
+            raise RuntimeError(f"download probe HTTP {exc.code}") from exc
+    finally:
+        if probe is not None:
+            probe.close()
+
+    if total > max_bytes:
+        raise RuntimeError(f"video {total} bytes exceeds max_bytes={max_bytes}")
+
+    use_parts = min(max(1, int(parts)), DOWNLOAD_PARTS)
+    if ranged and total > RANGE_MIN_BYTES and use_parts > 1:
+        Path(dest).write_bytes(b"")
+        with open(dest, "r+b") as out:
+            out.truncate(total)
+        span = total
+        chunk = (span + use_parts - 1) // use_parts
+        ranges = []
+        start = 0
+        while start < span:
+            end = min(span - 1, start + chunk - 1)
+            ranges.append((start, end))
+            start = end + 1
+        with ThreadPoolExecutor(max_workers=len(ranges)) as pool:
+            list(pool.map(lambda r: _write_range(url, dest, r[0], r[1]), ranges))
+        return {"bytes": total, "parts": len(ranges), "mode": "range"}
+
+    written = _stream_copy(url, dest, max_bytes)
+    return {"bytes": written, "parts": 1, "mode": "stream"}
+
+
+def _assert_cuda_app(app) -> list[str]:
+    used: list[str] = []
+    models = getattr(app, "models", {}) or {}
+    for name, model in models.items():
+        session = getattr(model, "session", None)
+        if session is None:
+            continue
+        providers = list(session.get_providers())
+        if "CUDAExecutionProvider" not in providers:
+            raise RuntimeError(f"{name} did not bind CUDA; providers={providers}")
+        used = providers
+    if not used:
+        raise RuntimeError("no ONNX sessions found on FaceAnalysis")
     return used
 
 
-def _buffalo_dir() -> Path:
-    homes = []
-    env_home = os.environ.get("INSIGHTFACE_HOME", "").strip()
-    if env_home:
-        homes.append(Path(env_home))
-    homes.append(Path.home() / ".insightface")
-    for home in homes:
-        path = home / "models" / MODEL_NAME
-        if (path / "w600k_r50.onnx").is_file():
-            return path
-    return homes[0] / "models" / MODEL_NAME
+def faces_from_insightface(image_bgr: np.ndarray, faces, min_confidence: float) -> list[dict]:
+    """Same post-get extras as backend FaceEngine.detect_faces (CPU)."""
+    results: list[dict] = []
+    for face in faces:
+        confidence = float(getattr(face, "det_score", 0.0) or 0.0)
+        if confidence < min_confidence:
+            continue
+        bbox = face.bbox.astype(float)
+        x1, y1, x2, y2 = bbox
+        embedding = face.normed_embedding
+        if embedding is None:
+            continue
+        thumb_b64 = ""
+        try:
+            import cv2
 
-
-def _dynamic_batch_onnx(src: Path) -> Path:
-    import onnx
-
-    dst = Path("/tmp") / f"{src.stem}_dynbatch.onnx"
-    if dst.is_file() and dst.stat().st_mtime >= src.stat().st_mtime:
-        return dst
-    model = onnx.load(str(src))
-
-    def _dyn(vi) -> None:
-        shape = vi.type.tensor_type.shape
-        if not shape.dim:
-            return
-        shape.dim[0].ClearField("dim_value")
-        shape.dim[0].dim_param = "N"
-
-    for vi in list(model.graph.input) + list(model.graph.output) + list(model.graph.value_info):
-        _dyn(vi)
-    onnx.save(model, str(dst))
-    return dst
-
-
-def _load_rec():
-    import onnxruntime as ort
-    from insightface.model_zoo.arcface_onnx import ArcFaceONNX
-
-    src = _buffalo_dir() / "w600k_r50.onnx"
-    if not src.is_file():
-        raise RuntimeError(f"missing ArcFace weights at {src}")
-    dummy = [np.zeros((112, 112, 3), dtype=np.uint8) for _ in range(min(8, REC_BATCH))]
-    dyn = _dynamic_batch_onnx(src)
-    sess = ort.InferenceSession(str(dyn), providers=_providers_list(REC_MEM_LIMIT_GB))
-    used = _assert_cuda(sess)
-    rec = ArcFaceONNX(model_file=str(dyn), session=sess)
-    batched = True
-    try:
-        rec.get_feat(dummy)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("dynamic-batch ArcFace failed (%s); sequential fallback", exc)
-        sess = ort.InferenceSession(str(src), providers=_providers_list(REC_MEM_LIMIT_GB))
-        used = _assert_cuda(sess)
-        rec = ArcFaceONNX(model_file=str(src), session=sess)
-        rec.get_feat(dummy[:1])
-        batched = False
-    logger.info("ArcFace ready providers=%s batched=%s", used, batched)
-    return rec, used, batched
-
-
-def _load_det():
-    from insightface.app import FaceAnalysis
-
-    app = FaceAnalysis(
-        name=MODEL_NAME,
-        allowed_modules=["detection"],
-        providers=_providers_list(DET_MEM_LIMIT_GB),
-    )
-    app.prepare(ctx_id=0, det_size=DET_SIZE)
-    session = app.models["detection"].session
-    used = _assert_cuda(session)
-    return app, used
+            h, w = image_bgr.shape[:2]
+            ix1, iy1 = max(0, int(x1)), max(0, int(y1))
+            ix2, iy2 = min(w, int(x2)), min(h, int(y2))
+            crop = image_bgr[iy1:iy2, ix1:ix2]
+            if crop.size > 0:
+                ok, buf = cv2.imencode(".jpg", crop)
+                if ok:
+                    thumb_b64 = base64.b64encode(buf.tobytes()).decode("ascii")
+        except Exception:  # noqa: BLE001
+            pass
+        results.append(
+            {
+                "bbox_x": float(x1),
+                "bbox_y": float(y1),
+                "bbox_width": float(x2 - x1),
+                "bbox_height": float(y2 - y1),
+                "confidence": confidence,
+                "embedding": embedding.astype(float).tolist(),
+                "thumbnail_b64": thumb_b64,
+            }
+        )
+    return results
 
 
 def _ensure_runtime() -> None:
-    global _det_pool, _det_executor, _rec, _rec_batched, _providers, _runtime
-    if _det_pool is not None:
+    global _app, _providers, _runtime
+    if _app is not None:
         return
-    import onnxruntime as ort
+    from insightface.app import FaceAnalysis
 
     vram0 = _nvidia_smi()
-    logger.info("ORT %s available=%s vram=%s", ort.__version__, ort.get_available_providers(), vram0)
-    first, det_providers = _load_det()
-    _providers = det_providers
-    dets = [first]
-    vram_det = _nvidia_smi()
-    per_mb = max(512, int(vram_det.get("used_mb", 0) - int(vram0.get("used_mb", 0))))
-    rec, rec_providers, rec_batched = _load_rec()
-    _rec = rec
-    _rec_batched = rec_batched
-    _providers = rec_providers
-    vram1 = _nvidia_smi()
-    if REQUESTED_DET_WORKERS > 0:
-        target = min(MAX_DET_WORKERS, REQUESTED_DET_WORKERS)
-    else:
-        free = int(vram1.get("free_mb") or 0)
-        extra = max(0, (free - VRAM_RESERVE_MB) // per_mb)
-        target = min(MAX_DET_WORKERS, 1 + extra)
-    while len(dets) < target:
-        dets.append(_load_det()[0])
-        now = _nvidia_smi()
-        if int(now.get("free_mb") or 0) < VRAM_RESERVE_MB:
-            break
-
-    _det_pool = queue.Queue()
-    for app in dets:
-        _det_pool.put(app)
-    _det_executor = ThreadPoolExecutor(max_workers=len(dets), thread_name_prefix="det")
-    vram = _nvidia_smi()
+    logger.info("Loading InsightFace model %s on CUDA vram=%s", MODEL_NAME, vram0)
+    app = FaceAnalysis(
+        name=MODEL_NAME,
+        providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
+    )
+    app.prepare(ctx_id=0, det_size=DET_SIZE)
+    _providers = _assert_cuda_app(app)
+    _app = app
     _runtime = {
-        "det_workers": len(dets),
-        "rec_batch": REC_BATCH,
-        "rec_mem_limit_gb": REC_MEM_LIMIT_GB,
-        "det_mem_limit_gb": DET_MEM_LIMIT_GB,
-        "vram_before": vram0,
-        "vram_loaded": vram,
-        "det_mb_each": per_mb,
-        "rec_batched": rec_batched,
         "model": MODEL_NAME,
         "det_size": list(DET_SIZE),
+        "min_confidence": MIN_CONFIDENCE,
+        "process": "FaceAnalysis.get",
+        "ffmpeg_hwaccels": _ffmpeg_hwaccels(),
+        "vram_before": vram0,
+        "vram_loaded": _nvidia_smi(),
+        "providers": list(_providers),
     }
     logger.info("Runtime %s", _runtime)
+
+
+def _detect_bgr(image_bgr: np.ndarray, min_confidence: float) -> list[dict]:
+    with _lock:
+        assert _app is not None
+        raw_faces = _app.get(image_bgr)
+        return faces_from_insightface(image_bgr, raw_faces, min_confidence)
+
+
+def _process_video(inp: dict, min_confidence: float) -> dict:
+    import cv2
+
+    drive_file_id = str(inp.get("drive_file_id") or "")
+    video_url = str(inp.get("video_url") or "").strip()
+    video_b64 = inp.get("video_b64")
+    timestamps = inp.get("timestamps") or []
+    if not video_url and not video_b64:
+        return {"error": "video_url is required"}
+    if video_url and video_url_is_blocked(video_url):
+        return {"error": "refusing Drive URL"}
+    if not isinstance(timestamps, list) or not timestamps:
+        return {"error": "timestamps[] is required"}
+    ts_list = sorted({round(float(t), 3) for t in timestamps})
+    max_bytes = int(inp.get("video_max_bytes") or DEFAULT_VIDEO_MAX_BYTES)
+    tmpdir = tempfile.mkdtemp(prefix="dfi-rface-video-")
+    try:
+        suffix = str(inp.get("video_suffix") or ".mp4")
+        if not suffix.startswith("."):
+            suffix = "." + suffix
+        video_path = os.path.join(tmpdir, f"input{suffix}")
+        download_ms = 0.0
+        download_info: dict = {}
+        if video_url:
+            t_dl = time.perf_counter()
+            try:
+                download_info = download_http_file(video_url, video_path, max_bytes=max_bytes)
+            except (OSError, urllib.error.URLError, RuntimeError, ValueError) as exc:
+                return {"error": f"video download failed: {exc}"}
+            download_ms = (time.perf_counter() - t_dl) * 1000.0
+        else:
+            raw = base64.b64decode(video_b64)
+            if len(raw) > max_bytes:
+                return {"error": f"video {len(raw)} bytes exceeds max_bytes={max_bytes}"}
+            Path(video_path).write_bytes(raw)
+            download_info = {"bytes": len(raw), "parts": 0, "mode": "b64"}
+        t0 = time.perf_counter()
+
+        def _one(ts: float) -> tuple[float, str, str]:
+            out = os.path.join(tmpdir, f"{ts:.3f}.jpg")
+            decoder = extract_frame_ffmpeg(video_path, ts, out)
+            return ts, out, decoder
+
+        workers = min(8, max(1, len(ts_list)))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            extracted = list(pool.map(_one, ts_list))
+        decode_ms = (time.perf_counter() - t0) * 1000.0
+        t1 = time.perf_counter()
+        frames = []
+        for ts, jpeg_path, decoder in extracted:
+            image = cv2.imread(jpeg_path)
+            if image is None:
+                frames.append({"timestamp": ts, "error": "jpeg decode failed", "decoder": decoder})
+                continue
+            h, w = image.shape[:2]
+            faces = _detect_bgr(image, min_confidence)
+            frames.append(
+                {
+                    "timestamp": ts,
+                    "width": int(w),
+                    "height": int(h),
+                    "decoder": decoder,
+                    "faces": faces,
+                    "face_count": len(faces),
+                }
+            )
+        detect_ms = (time.perf_counter() - t1) * 1000.0
+        decoders = [row.get("decoder") for row in frames if row.get("decoder")]
+        if decoders and all(d == "nvdec" for d in decoders):
+            ffmpeg_mode = "nvdec"
+        elif decoders and all(d == "cpu" for d in decoders):
+            ffmpeg_mode = "cpu"
+        else:
+            ffmpeg_mode = "mixed"
+        return {
+            "drive_file_id": drive_file_id,
+            "frames": frames,
+            "frame_count": len(frames),
+            "decode_ms": round(decode_ms, 2),
+            "detect_ms": round(detect_ms, 2),
+            "download_ms": round(download_ms, 2),
+            "download": download_info,
+            "ffmpeg": ffmpeg_mode,
+        }
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 def _decode_jpeg_png(image_b64: str) -> np.ndarray:
@@ -218,54 +429,7 @@ def _decode_jpeg_png(image_b64: str) -> np.ndarray:
     return image
 
 
-def _detect_one(app, image_bgr: np.ndarray, min_confidence: float) -> list[dict]:
-    from insightface.utils import face_align
-
-    bboxes, kpss = app.det_model.detect(image_bgr, input_size=DET_SIZE, max_num=0)
-    out: list[dict] = []
-    if bboxes is None or len(bboxes) == 0:
-        return out
-    for i, row in enumerate(bboxes):
-        confidence = float(row[4])
-        if confidence < min_confidence:
-            continue
-        kps = None if kpss is None else kpss[i]
-        if kps is None:
-            continue
-        x1, y1, x2, y2 = [float(v) for v in row[:4]]
-        crop = face_align.norm_crop(image_bgr, landmark=kps, image_size=112)
-        if crop is None:
-            continue
-        out.append(
-            {
-                "bbox_x": x1,
-                "bbox_y": y1,
-                "bbox_width": x2 - x1,
-                "bbox_height": y2 - y1,
-                "confidence": confidence,
-                "crop": crop,
-            }
-        )
-    return out
-
-
-def _embed_crops(crops: list[np.ndarray]) -> np.ndarray:
-    assert _rec is not None
-    step = REC_BATCH if _rec_batched else 1
-    chunks: list[np.ndarray] = []
-    with _rec_lock:
-        for i in range(0, len(crops), step):
-            batch = crops[i : i + step]
-            feats = np.asarray(_rec.get_feat(batch), dtype=np.float32)
-            chunks.append(feats)
-    feats = np.concatenate(chunks, axis=0) if chunks else np.zeros((0, 512), dtype=np.float32)
-    norms = np.linalg.norm(feats, axis=1, keepdims=True)
-    feats = feats / np.clip(norms, 1e-8, None)
-    return feats
-
-
 def _detect_item(item: dict, min_confidence: float) -> dict:
-    assert _det_pool is not None
     drive_file_id = str(item.get("drive_file_id") or "")
     image_b64 = item.get("image_b64")
     if not image_b64:
@@ -276,19 +440,16 @@ def _detect_item(item: dict, min_confidence: float) -> dict:
     except Exception as exc:  # noqa: BLE001
         return {"drive_file_id": drive_file_id, "error": str(exc)}
     decode_ms = (time.perf_counter() - t0) * 1000.0
-    app = _det_pool.get()
-    try:
-        t1 = time.perf_counter()
-        faces = _detect_one(app, image, min_confidence)
-        detect_ms = (time.perf_counter() - t1) * 1000.0
-    finally:
-        _det_pool.put(app)
+    t1 = time.perf_counter()
+    faces = _detect_bgr(image, min_confidence)
+    detect_ms = (time.perf_counter() - t1) * 1000.0
     h, w = image.shape[:2]
     return {
         "drive_file_id": drive_file_id,
         "width": int(w),
         "height": int(h),
         "faces": faces,
+        "face_count": len(faces),
         "decode_ms": round(decode_ms, 2),
         "detect_ms": round(detect_ms, 2),
     }
@@ -302,53 +463,34 @@ def handler(job: dict) -> dict:
             "ok": True,
             "model": MODEL_NAME,
             "providers": _providers,
-            "gpu_workers": _runtime.get("det_workers"),
+            "gpu_workers": 1,
+            "ffmpeg_hwaccels": _ffmpeg_hwaccels(),
             "runtime": {**_runtime, "vram_now": _nvidia_smi()},
         }
 
     min_confidence = float(inp.get("min_detection_confidence") or MIN_CONFIDENCE)
+    t0 = time.perf_counter()
+    if inp.get("video_url") or inp.get("video_b64") or inp.get("timestamps"):
+        result = _process_video(inp, min_confidence)
+        result["batch_ms"] = round((time.perf_counter() - t0) * 1000.0, 2)
+        result["model"] = MODEL_NAME
+        result["providers"] = _providers
+        result["gpu_workers"] = 1
+        result["vram"] = _nvidia_smi()
+        return result
+
     items = inp.get("images")
     if not items and inp.get("image_b64"):
         items = [{"drive_file_id": inp.get("drive_file_id") or "", "image_b64": inp["image_b64"]}]
     if not items:
-        return {"error": "images[] or image_b64 is required"}
+        return {"error": "images[] / image_b64 or video_url+timestamps is required"}
 
-    assert _det_executor is not None
-    t0 = time.perf_counter()
-    futures = [_det_executor.submit(_detect_item, item, min_confidence) for item in items]
-    detected = [fut.result() for fut in futures]
-    crops: list[np.ndarray] = []
-    owners: list[tuple[int, int]] = []
-    for img_i, row in enumerate(detected):
-        for face_i, face in enumerate(row.get("faces") or []):
-            crop = face.pop("crop", None)
-            if crop is None:
-                continue
-            crops.append(crop)
-            owners.append((img_i, face_i))
-    t_emb = time.perf_counter()
-    if crops:
-        embs = _embed_crops(crops)
-        for (img_i, face_i), vec in zip(owners, embs, strict=True):
-            detected[img_i]["faces"][face_i]["embedding"] = [round(float(x), 7) for x in vec.tolist()]
-    embed_ms = (time.perf_counter() - t_emb) * 1000.0
-    results = []
-    for row in detected:
-        faces = row.get("faces") or []
-        results.append(
-            {
-                **{k: v for k, v in row.items() if k != "faces"},
-                "face_count": len(faces),
-                "faces": faces,
-                "embed_ms": round(embed_ms, 2) if not row.get("error") else None,
-            }
-        )
+    results = [_detect_item(item, min_confidence) for item in items]
     batch_ms = (time.perf_counter() - t0) * 1000.0
     return {
         "model": MODEL_NAME,
         "providers": _providers,
-        "gpu_workers": _runtime.get("det_workers"),
-        "rec_batch": REC_BATCH,
+        "gpu_workers": 1,
         "vram": _nvidia_smi(),
         "batch_size": len(results),
         "batch_ms": round(batch_ms, 2),
@@ -357,4 +499,6 @@ def handler(job: dict) -> dict:
 
 
 if __name__ == "__main__":
+    import runpod
+
     runpod.serverless.start({"handler": handler})

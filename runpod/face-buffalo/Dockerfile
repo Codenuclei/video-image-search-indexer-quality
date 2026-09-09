@@ -1,8 +1,16 @@
+# Bake handler + buffalo_l so RunPod workers pull GHCR, not Docker Hub.
+# Build/push once:
+#   docker build -t ghcr.io/codenuclei/video-image-search-indexer-quality/dfi-face-buffalo:gpu runpod/face-buffalo
+#   docker push ghcr.io/codenuclei/video-image-search-indexer-quality/dfi-face-buffalo:gpu
+#
+# The FROM below is only used on the build machine. Workers never hit docker.io.
+
 FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility,video
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.11 \
@@ -11,6 +19,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1 \
     libglib2.0-0 \
     libgomp1 \
+    ffmpeg \
     && ln -sf /usr/bin/python3.11 /usr/bin/python \
     && ln -sf /usr/bin/python3.11 /usr/bin/python3 \
     && rm -rf /var/lib/apt/lists/*

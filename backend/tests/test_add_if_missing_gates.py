@@ -8,8 +8,14 @@ from app.pipelines import image as image_mod
 from app.pipelines import video as video_mod
 
 
-def test_image_pipeline_gates_clear_existing_media():
+def test_image_pipeline_enqueues_identify_on_new_files():
     src = inspect.getsource(image_mod.process_image_file)
+    assert "enqueue_identify_job" in src
+    assert src.index("enqueue_identify_job") < src.index("face_jobs_enabled")
+
+
+def test_image_pipeline_gates_clear_existing_media():
+    src = inspect.getsource(image_mod.prepare_image_media)
     assert "file_has_media" in src
     assert "clear_existing_media" in src
     # Gate must run before wipe.

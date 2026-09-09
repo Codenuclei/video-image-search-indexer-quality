@@ -15,7 +15,7 @@ from contextlib import asynccontextmanager
 import pytest
 
 from app.config import Settings
-from app.db.models import DriveFile, DriveFileStatus, Face, FaceCluster, FaceEmbedding
+from app.db.models import DriveFile, DriveFileStatus, Face, FaceCluster, FaceEmbedding, IdentifyJob
 from app.faces.engine import DetectedFace
 from app.pipelines.image import process_image_file
 from tests.conftest import requires_postgres
@@ -108,6 +108,13 @@ async def test_process_image_file_persists_media_face_and_embedding(db_session, 
 
     clusters = (await db_session.execute(FaceCluster.__table__.select())).all()
     assert len(clusters) == 1
+
+    jobs = (
+        await db_session.execute(
+            IdentifyJob.__table__.select().where(IdentifyJob.drive_file_id == drive_file.id)
+        )
+    ).all()
+    assert len(jobs) == 1
 
 
 @requires_postgres

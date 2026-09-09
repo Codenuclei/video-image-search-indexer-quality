@@ -1,7 +1,9 @@
 import logging
 import os
+import ssl
 import time
 from collections.abc import AsyncGenerator
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
@@ -24,16 +26,53 @@ def _normalize_db_url(url: str) -> str:
     return url
 
 
+def _asyncpg_url_and_connect_args(url: str) -> tuple[str, dict]:
+    """DigitalOcean managed Postgres requires TLS; asyncpg needs ssl in connect_args."""
+    parts = urlsplit(url)
+    query = dict(parse_qsl(parts.query, keep_blank_values=True))
+    ssl_val = query.pop("ssl", None) or query.pop("sslmode", None)
+    cleaned = urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
+    env_ssl = os.getenv("DATABASE_SSL", "").lower()
+    want_ssl = (
+        env_ssl in {"1", "true", "require", "verify-full"}
+        or (ssl_val or "").lower() in {"1", "true", "require", "verify-full"}
+        or "ondigitalocean.com" in url
+    )
+    extra: dict = {}
+    if want_ssl:
+        verify = env_ssl == "verify-full" or (ssl_val or "").lower() == "verify-full"
+        if verify:
+            extra["ssl"] = True
+        else:
+            # DigitalOcean managed Postgres presents a chain Python's default
+            # store does not fully verify. Encrypt the session without CA pin.
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            extra["ssl"] = ctx
+    return cleaned, extra
+
+
 def get_engine() -> AsyncEngine:
     global _engine
     if _engine is None:
         settings = get_settings()
-        db_url = _normalize_db_url(settings.database_url)
+        db_url, ssl_args = _asyncpg_url_and_connect_args(_normalize_db_url(settings.database_url))
         service_name = os.getenv("RAILWAY_SERVICE_NAME", "dfi-local")
         application_name = "".join(
             char if char.isalnum() or char in "._-" else "-"
             for char in service_name
         )[:63]
+        connect_args: dict = {
+            "timeout": 15,
+            "server_settings": {
+                "application_name": application_name,
+                # Prevent abandoned/cancelled requests from retaining a
+                # transaction and exhausting the production connection pool.
+                "idle_in_transaction_session_timeout": "120000",
+            },
+        }
+        connect_args.update(ssl_args)
         _engine = create_async_engine(
             db_url,
             pool_pre_ping=True,
@@ -43,15 +82,7 @@ def get_engine() -> AsyncEngine:
             pool_timeout=settings.db_pool_timeout,
             pool_recycle=300,
             pool_use_lifo=True,
-            connect_args={
-                "timeout": 15,
-                "server_settings": {
-                    "application_name": application_name,
-                    # Prevent abandoned/cancelled requests from retaining a
-                    # transaction and exhausting the production connection pool.
-                    "idle_in_transaction_session_timeout": "120000",
-                },
-            },
+            connect_args=connect_args,
         )
     return _engine
 
