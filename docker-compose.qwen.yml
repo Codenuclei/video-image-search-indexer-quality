@@ -26,13 +26,18 @@ services:
     environment:
       HF_HOME: /root/.cache/huggingface
       VLLM_WORKER_MULTIPROC_METHOD: spawn
-    command: >
-      --model Qwen/Qwen3-VL-8B-Instruct
-      --host 0.0.0.0
-      --port 8003
-      --max-model-len 8192
-      --limit-mm-per-prompt image=1
-      --dtype auto
+    command:
+      - Qwen/Qwen3-VL-8B-Instruct
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8003"
+      - --max-model-len
+      - "8192"
+      - --limit-mm-per-prompt
+      - '{"image":1,"video":0}'
+      - --dtype
+      - auto
     deploy:
       resources:
         reservations:

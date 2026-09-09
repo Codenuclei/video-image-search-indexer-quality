@@ -1,0 +1,501 @@
+query_id,query,query_type,source_caption_snippet
+1,hat with text mastersunion,apparel_brand,"Two men stand side-by-side in athletic wear at an indoor venue, posing in front of a backdrop featuring the text 'MASTERS UNION' and 'CLASS OF HYROX '26' beneat"
+2,people wearing mastersunion hat,apparel_brand,"Two men stand side-by-side in athletic wear at an indoor venue, posing in front of a backdrop featuring the text 'MASTERS UNION' and 'CLASS OF HYROX '26' beneat"
+3,matching mastersunion hat,apparel_brand,"Two men stand side-by-side in athletic wear at an indoor venue, posing in front of a backdrop featuring the text 'MASTERS UNION' and 'CLASS OF HYROX '26' beneat"
+4,hat with text hyrox,apparel_brand,"Two men stand side-by-side in athletic wear at an indoor venue, posing in front of a backdrop featuring the text 'MASTERS UNION' and 'CLASS OF HYROX '26' beneat"
+5,people wearing hyrox hat,apparel_brand,"Two men stand side-by-side in athletic wear at an indoor venue, posing in front of a backdrop featuring the text 'MASTERS UNION' and 'CLASS OF HYROX '26' beneat"
+6,matching hyrox hat,apparel_brand,"Two men stand side-by-side in athletic wear at an indoor venue, posing in front of a backdrop featuring the text 'MASTERS UNION' and 'CLASS OF HYROX '26' beneat"
+7,shorts with text mastersunion,apparel_brand,"A woman in an orange top and black shorts jogs on an indoor track underneath a large ""masters' union HYROX DELHI"" sign."
+8,people wearing mastersunion shorts,apparel_brand,"A woman in an orange top and black shorts jogs on an indoor track underneath a large ""masters' union HYROX DELHI"" sign."
+9,matching mastersunion shorts,apparel_brand,"A woman in an orange top and black shorts jogs on an indoor track underneath a large ""masters' union HYROX DELHI"" sign."
+10,shorts with text hyrox,apparel_brand,"A woman in an orange top and black shorts jogs on an indoor track underneath a large ""masters' union HYROX DELHI"" sign."
+11,people wearing hyrox shorts,apparel_brand,"A woman in an orange top and black shorts jogs on an indoor track underneath a large ""masters' union HYROX DELHI"" sign."
+12,matching hyrox shorts,apparel_brand,"A woman in an orange top and black shorts jogs on an indoor track underneath a large ""masters' union HYROX DELHI"" sign."
+13,jacket with text mastersunion,apparel_brand,"A man in a black jacket sits in a grey armchair holding a document, with text reading ""MASTERS' UNION"" visible in the top right corner."
+14,people wearing mastersunion jacket,apparel_brand,"A man in a black jacket sits in a grey armchair holding a document, with text reading ""MASTERS' UNION"" visible in the top right corner."
+15,matching mastersunion jacket,apparel_brand,"A man in a black jacket sits in a grey armchair holding a document, with text reading ""MASTERS' UNION"" visible in the top right corner."
+16,t-shirt with text mastersunion,apparel_brand,A man wearing a grey t-shirt and black pants poses in front of a backdrop that reads 'masters' union HYROX DELHI CLASS OF HYROX'26' under a large graduation cap
+17,people wearing mastersunion t-shirt,apparel_brand,A man wearing a grey t-shirt and black pants poses in front of a backdrop that reads 'masters' union HYROX DELHI CLASS OF HYROX'26' under a large graduation cap
+18,matching mastersunion t-shirt,apparel_brand,A man wearing a grey t-shirt and black pants poses in front of a backdrop that reads 'masters' union HYROX DELHI CLASS OF HYROX'26' under a large graduation cap
+19,t-shirt with text hyrox,apparel_brand,A man wearing a grey t-shirt and black pants poses in front of a backdrop that reads 'masters' union HYROX DELHI CLASS OF HYROX'26' under a large graduation cap
+20,people wearing hyrox t-shirt,apparel_brand,A man wearing a grey t-shirt and black pants poses in front of a backdrop that reads 'masters' union HYROX DELHI CLASS OF HYROX'26' under a large graduation cap
+21,matching hyrox t-shirt,apparel_brand,A man wearing a grey t-shirt and black pants poses in front of a backdrop that reads 'masters' union HYROX DELHI CLASS OF HYROX'26' under a large graduation cap
+22,shirt with text mastersunion,apparel_brand,A man wearing a grey t-shirt and black pants poses in front of a backdrop that reads 'masters' union HYROX DELHI CLASS OF HYROX'26' under a large graduation cap
+23,people wearing mastersunion shirt,apparel_brand,A man wearing a grey t-shirt and black pants poses in front of a backdrop that reads 'masters' union HYROX DELHI CLASS OF HYROX'26' under a large graduation cap
+24,matching mastersunion shirt,apparel_brand,A man wearing a grey t-shirt and black pants poses in front of a backdrop that reads 'masters' union HYROX DELHI CLASS OF HYROX'26' under a large graduation cap
+25,shirt with text hyrox,apparel_brand,A man wearing a grey t-shirt and black pants poses in front of a backdrop that reads 'masters' union HYROX DELHI CLASS OF HYROX'26' under a large graduation cap
+26,people wearing hyrox shirt,apparel_brand,A man wearing a grey t-shirt and black pants poses in front of a backdrop that reads 'masters' union HYROX DELHI CLASS OF HYROX'26' under a large graduation cap
+27,matching hyrox shirt,apparel_brand,A man wearing a grey t-shirt and black pants poses in front of a backdrop that reads 'masters' union HYROX DELHI CLASS OF HYROX'26' under a large graduation cap
+28,pants with text mastersunion,apparel_brand,A man wearing a grey t-shirt and black pants poses in front of a backdrop that reads 'masters' union HYROX DELHI CLASS OF HYROX'26' under a large graduation cap
+29,people wearing mastersunion pants,apparel_brand,A man wearing a grey t-shirt and black pants poses in front of a backdrop that reads 'masters' union HYROX DELHI CLASS OF HYROX'26' under a large graduation cap
+30,matching mastersunion pants,apparel_brand,A man wearing a grey t-shirt and black pants poses in front of a backdrop that reads 'masters' union HYROX DELHI CLASS OF HYROX'26' under a large graduation cap
+31,pants with text hyrox,apparel_brand,A man wearing a grey t-shirt and black pants poses in front of a backdrop that reads 'masters' union HYROX DELHI CLASS OF HYROX'26' under a large graduation cap
+32,people wearing hyrox pants,apparel_brand,A man wearing a grey t-shirt and black pants poses in front of a backdrop that reads 'masters' union HYROX DELHI CLASS OF HYROX'26' under a large graduation cap
+33,matching hyrox pants,apparel_brand,A man wearing a grey t-shirt and black pants poses in front of a backdrop that reads 'masters' union HYROX DELHI CLASS OF HYROX'26' under a large graduation cap
+34,jacket with text hyrox,apparel_brand,"A man in a blue zip-up jacket and yellow shorts stands in front of a backdrop with a giant graduation cap and the text ""CLASS OF HYROX'26"", making hand gestures"
+35,people wearing hyrox jacket,apparel_brand,"A man in a blue zip-up jacket and yellow shorts stands in front of a backdrop with a giant graduation cap and the text ""CLASS OF HYROX'26"", making hand gestures"
+36,matching hyrox jacket,apparel_brand,"A man in a blue zip-up jacket and yellow shorts stands in front of a backdrop with a giant graduation cap and the text ""CLASS OF HYROX'26"", making hand gestures"
+37,vest with text mastersunion,apparel_brand,A shirtless man wearing light blue shorts and a vest stands and flexes his bicep while holding a rolled diploma in front of a branded wall that reads 'masters' 
+38,people wearing mastersunion vest,apparel_brand,A shirtless man wearing light blue shorts and a vest stands and flexes his bicep while holding a rolled diploma in front of a branded wall that reads 'masters' 
+39,matching mastersunion vest,apparel_brand,A shirtless man wearing light blue shorts and a vest stands and flexes his bicep while holding a rolled diploma in front of a branded wall that reads 'masters' 
+40,vest with text hyrox,apparel_brand,A shirtless man wearing light blue shorts and a vest stands and flexes his bicep while holding a rolled diploma in front of a branded wall that reads 'masters' 
+41,people wearing hyrox vest,apparel_brand,A shirtless man wearing light blue shorts and a vest stands and flexes his bicep while holding a rolled diploma in front of a branded wall that reads 'masters' 
+42,matching hyrox vest,apparel_brand,A shirtless man wearing light blue shorts and a vest stands and flexes his bicep while holding a rolled diploma in front of a branded wall that reads 'masters' 
+43,jersey with text hyrox,apparel_brand,"A man wearing a red basketball jersey and cap poses with a sign in front of a branded event backdrop reading ""CLASS OF HYROX'26""."
+44,people wearing hyrox jersey,apparel_brand,"A man wearing a red basketball jersey and cap poses with a sign in front of a branded event backdrop reading ""CLASS OF HYROX'26""."
+45,matching hyrox jersey,apparel_brand,"A man wearing a red basketball jersey and cap poses with a sign in front of a branded event backdrop reading ""CLASS OF HYROX'26""."
+46,shoe with text mastersunion,apparel_brand,"A young man stands in front of a backdrop reading ""MASTERS' UNION HYROX DELHI"" and ""CLASS OF HYROX'26"", beneath a large hanging graduation cap. He wears a grey "
+47,people wearing mastersunion shoe,apparel_brand,"A young man stands in front of a backdrop reading ""MASTERS' UNION HYROX DELHI"" and ""CLASS OF HYROX'26"", beneath a large hanging graduation cap. He wears a grey "
+48,matching mastersunion shoe,apparel_brand,"A young man stands in front of a backdrop reading ""MASTERS' UNION HYROX DELHI"" and ""CLASS OF HYROX'26"", beneath a large hanging graduation cap. He wears a grey "
+49,shoe with text hyrox,apparel_brand,"A young man stands in front of a backdrop reading ""MASTERS' UNION HYROX DELHI"" and ""CLASS OF HYROX'26"", beneath a large hanging graduation cap. He wears a grey "
+50,people wearing hyrox shoe,apparel_brand,"A young man stands in front of a backdrop reading ""MASTERS' UNION HYROX DELHI"" and ""CLASS OF HYROX'26"", beneath a large hanging graduation cap. He wears a grey "
+51,matching hyrox shoe,apparel_brand,"A young man stands in front of a backdrop reading ""MASTERS' UNION HYROX DELHI"" and ""CLASS OF HYROX'26"", beneath a large hanging graduation cap. He wears a grey "
+52,gloves with text mastersunion,apparel_brand,"A man wearing a neon yellow tank top, black shorts, and fingerless gloves poses in front of a dark backdrop featuring the text ""masters' union HYROX DELHI""."
+53,people wearing mastersunion gloves,apparel_brand,"A man wearing a neon yellow tank top, black shorts, and fingerless gloves poses in front of a dark backdrop featuring the text ""masters' union HYROX DELHI""."
+54,matching mastersunion gloves,apparel_brand,"A man wearing a neon yellow tank top, black shorts, and fingerless gloves poses in front of a dark backdrop featuring the text ""masters' union HYROX DELHI""."
+55,gloves with text hyrox,apparel_brand,"A man wearing a neon yellow tank top, black shorts, and fingerless gloves poses in front of a dark backdrop featuring the text ""masters' union HYROX DELHI""."
+56,people wearing hyrox gloves,apparel_brand,"A man wearing a neon yellow tank top, black shorts, and fingerless gloves poses in front of a dark backdrop featuring the text ""masters' union HYROX DELHI""."
+57,matching hyrox gloves,apparel_brand,"A man wearing a neon yellow tank top, black shorts, and fingerless gloves poses in front of a dark backdrop featuring the text ""masters' union HYROX DELHI""."
+58,suit with text mastersunion,apparel_brand,"A young person in a dark suit stands on a stage with a microphone, presenting in front of a wall with ""MASTERSUNION"" lettering and a sign that reads ""QUESTIFY""."
+59,people wearing mastersunion suit,apparel_brand,"A young person in a dark suit stands on a stage with a microphone, presenting in front of a wall with ""MASTERSUNION"" lettering and a sign that reads ""QUESTIFY""."
+60,matching mastersunion suit,apparel_brand,"A young person in a dark suit stands on a stage with a microphone, presenting in front of a wall with ""MASTERSUNION"" lettering and a sign that reads ""QUESTIFY""."
+61,suit with text questify,apparel_brand,"A young person in a dark suit stands on a stage with a microphone, presenting in front of a wall with ""MASTERSUNION"" lettering and a sign that reads ""QUESTIFY""."
+62,people wearing questify suit,apparel_brand,"A young person in a dark suit stands on a stage with a microphone, presenting in front of a wall with ""MASTERSUNION"" lettering and a sign that reads ""QUESTIFY""."
+63,matching questify suit,apparel_brand,"A young person in a dark suit stands on a stage with a microphone, presenting in front of a wall with ""MASTERSUNION"" lettering and a sign that reads ""QUESTIFY""."
+64,gown with text mastersunion,apparel_brand,An official wearing a black and yellow graduation gown and cap speaks behind a podium bearing the 'masters' union' logo during an outdoor event.
+65,people wearing mastersunion gown,apparel_brand,An official wearing a black and yellow graduation gown and cap speaks behind a podium bearing the 'masters' union' logo during an outdoor event.
+66,matching mastersunion gown,apparel_brand,An official wearing a black and yellow graduation gown and cap speaks behind a podium bearing the 'masters' union' logo during an outdoor event.
+67,t-shirt with text nivia,apparel_brand,"A young man wearing a black t-shirt with the ""masters union"" logo stands next to a reception desk in front of a wall featuring the white ""NIVIA"" logo, gesturing"
+68,people wearing nivia t-shirt,apparel_brand,"A young man wearing a black t-shirt with the ""masters union"" logo stands next to a reception desk in front of a wall featuring the white ""NIVIA"" logo, gesturing"
+69,matching nivia t-shirt,apparel_brand,"A young man wearing a black t-shirt with the ""masters union"" logo stands next to a reception desk in front of a wall featuring the white ""NIVIA"" logo, gesturing"
+70,shirt with text nivia,apparel_brand,"A young man wearing a black t-shirt with the ""masters union"" logo stands next to a reception desk in front of a wall featuring the white ""NIVIA"" logo, gesturing"
+71,people wearing nivia shirt,apparel_brand,"A young man wearing a black t-shirt with the ""masters union"" logo stands next to a reception desk in front of a wall featuring the white ""NIVIA"" logo, gesturing"
+72,matching nivia shirt,apparel_brand,"A young man wearing a black t-shirt with the ""masters union"" logo stands next to a reception desk in front of a wall featuring the white ""NIVIA"" logo, gesturing"
+73,hoodie with text mastersunion,apparel_brand,Young adults wearing black hoodies labeled 'MASTERS' UNION' stand outdoors near a display table arranged with ceramic vases.
+74,people wearing mastersunion hoodie,apparel_brand,Young adults wearing black hoodies labeled 'MASTERS' UNION' stand outdoors near a display table arranged with ceramic vases.
+75,matching mastersunion hoodie,apparel_brand,Young adults wearing black hoodies labeled 'MASTERS' UNION' stand outdoors near a display table arranged with ceramic vases.
+76,jersey with text mastersunion,apparel_brand,"A group of seven young women wearing matching black and yellow ""masters' union"" athletic jerseys pose together on an outdoor basketball court at night."
+77,people wearing mastersunion jersey,apparel_brand,"A group of seven young women wearing matching black and yellow ""masters' union"" athletic jerseys pose together on an outdoor basketball court at night."
+78,matching mastersunion jersey,apparel_brand,"A group of seven young women wearing matching black and yellow ""masters' union"" athletic jerseys pose together on an outdoor basketball court at night."
+79,uniform with text mastersunion,apparel_brand,A chef in a white uniform prepares food behind a counter in a commercial kitchen while staff and customers stand nearby. Signage in the upper right corner reads
+80,people wearing mastersunion uniform,apparel_brand,A chef in a white uniform prepares food behind a counter in a commercial kitchen while staff and customers stand nearby. Signage in the upper right corner reads
+81,matching mastersunion uniform,apparel_brand,A chef in a white uniform prepares food behind a counter in a commercial kitchen while staff and customers stand nearby. Signage in the upper right corner reads
+82,jacket with text nivia,apparel_brand,A woman with long dark hair and a black jacket poses with her arms outstretched in front of a large stack of cardboard boxes labeled 'NIVIA'.
+83,people wearing nivia jacket,apparel_brand,A woman with long dark hair and a black jacket poses with her arms outstretched in front of a large stack of cardboard boxes labeled 'NIVIA'.
+84,matching nivia jacket,apparel_brand,A woman with long dark hair and a black jacket poses with her arms outstretched in front of a large stack of cardboard boxes labeled 'NIVIA'.
+85,mastersunion hat,brand_apparel,"Two men stand side-by-side in athletic wear at an indoor venue, posing in front of a backdrop featuring the text 'MASTERS UNION' and 'CLASS OF HYROX '26' beneat"
+86,hyrox hat,brand_apparel,"Two men stand side-by-side in athletic wear at an indoor venue, posing in front of a backdrop featuring the text 'MASTERS UNION' and 'CLASS OF HYROX '26' beneat"
+87,mastersunion shorts,brand_apparel,"A woman in an orange top and black shorts jogs on an indoor track underneath a large ""masters' union HYROX DELHI"" sign."
+88,hyrox shorts,brand_apparel,"A woman in an orange top and black shorts jogs on an indoor track underneath a large ""masters' union HYROX DELHI"" sign."
+89,mastersunion jacket,brand_apparel,"A man in a black jacket sits in a grey armchair holding a document, with text reading ""MASTERS' UNION"" visible in the top right corner."
+90,mastersunion t-shirt,brand_apparel,A man wearing a grey t-shirt and black pants poses in front of a backdrop that reads 'masters' union HYROX DELHI CLASS OF HYROX'26' under a large graduation cap
+91,hyrox t-shirt,brand_apparel,A man wearing a grey t-shirt and black pants poses in front of a backdrop that reads 'masters' union HYROX DELHI CLASS OF HYROX'26' under a large graduation cap
+92,mastersunion shirt,brand_apparel,A man wearing a grey t-shirt and black pants poses in front of a backdrop that reads 'masters' union HYROX DELHI CLASS OF HYROX'26' under a large graduation cap
+93,hyrox shirt,brand_apparel,A man wearing a grey t-shirt and black pants poses in front of a backdrop that reads 'masters' union HYROX DELHI CLASS OF HYROX'26' under a large graduation cap
+94,mastersunion pants,brand_apparel,A man wearing a grey t-shirt and black pants poses in front of a backdrop that reads 'masters' union HYROX DELHI CLASS OF HYROX'26' under a large graduation cap
+95,hyrox pants,brand_apparel,A man wearing a grey t-shirt and black pants poses in front of a backdrop that reads 'masters' union HYROX DELHI CLASS OF HYROX'26' under a large graduation cap
+96,hyrox jacket,brand_apparel,"A man in a blue zip-up jacket and yellow shorts stands in front of a backdrop with a giant graduation cap and the text ""CLASS OF HYROX'26"", making hand gestures"
+97,mastersunion vest,brand_apparel,A shirtless man wearing light blue shorts and a vest stands and flexes his bicep while holding a rolled diploma in front of a branded wall that reads 'masters' 
+98,hyrox vest,brand_apparel,A shirtless man wearing light blue shorts and a vest stands and flexes his bicep while holding a rolled diploma in front of a branded wall that reads 'masters' 
+99,hyrox jersey,brand_apparel,"A man wearing a red basketball jersey and cap poses with a sign in front of a branded event backdrop reading ""CLASS OF HYROX'26""."
+100,mastersunion shoe,brand_apparel,"A young man stands in front of a backdrop reading ""MASTERS' UNION HYROX DELHI"" and ""CLASS OF HYROX'26"", beneath a large hanging graduation cap. He wears a grey "
+101,hyrox shoe,brand_apparel,"A young man stands in front of a backdrop reading ""MASTERS' UNION HYROX DELHI"" and ""CLASS OF HYROX'26"", beneath a large hanging graduation cap. He wears a grey "
+102,mastersunion gloves,brand_apparel,"A man wearing a neon yellow tank top, black shorts, and fingerless gloves poses in front of a dark backdrop featuring the text ""masters' union HYROX DELHI""."
+103,hyrox gloves,brand_apparel,"A man wearing a neon yellow tank top, black shorts, and fingerless gloves poses in front of a dark backdrop featuring the text ""masters' union HYROX DELHI""."
+104,mastersunion suit,brand_apparel,"A young person in a dark suit stands on a stage with a microphone, presenting in front of a wall with ""MASTERSUNION"" lettering and a sign that reads ""QUESTIFY""."
+105,questify suit,brand_apparel,"A young person in a dark suit stands on a stage with a microphone, presenting in front of a wall with ""MASTERSUNION"" lettering and a sign that reads ""QUESTIFY""."
+106,mastersunion gown,brand_apparel,An official wearing a black and yellow graduation gown and cap speaks behind a podium bearing the 'masters' union' logo during an outdoor event.
+107,nivia t-shirt,brand_apparel,"A young man wearing a black t-shirt with the ""masters union"" logo stands next to a reception desk in front of a wall featuring the white ""NIVIA"" logo, gesturing"
+108,nivia shirt,brand_apparel,"A young man wearing a black t-shirt with the ""masters union"" logo stands next to a reception desk in front of a wall featuring the white ""NIVIA"" logo, gesturing"
+109,mastersunion hoodie,brand_apparel,Young adults wearing black hoodies labeled 'MASTERS' UNION' stand outdoors near a display table arranged with ceramic vases.
+110,mastersunion jersey,brand_apparel,"A group of seven young women wearing matching black and yellow ""masters' union"" athletic jerseys pose together on an outdoor basketball court at night."
+111,mastersunion uniform,brand_apparel,A chef in a white uniform prepares food behind a counter in a commercial kitchen while staff and customers stand nearby. Signage in the upper right corner reads
+112,nivia jacket,brand_apparel,A woman with long dark hair and a black jacket poses with her arms outstretched in front of a large stack of cardboard boxes labeled 'NIVIA'.
+113,black shorts with text mastersunion,color_apparel_brand,"A woman in an orange top and black shorts jogs on an indoor track underneath a large ""masters' union HYROX DELHI"" sign."
+114,black shorts with text hyrox,color_apparel_brand,"A woman in an orange top and black shorts jogs on an indoor track underneath a large ""masters' union HYROX DELHI"" sign."
+115,black jacket with text mastersunion,color_apparel_brand,"A man in a black jacket sits in a grey armchair holding a document, with text reading ""MASTERS' UNION"" visible in the top right corner."
+116,black t-shirt with text mastersunion,color_apparel_brand,A man wearing a grey t-shirt and black pants poses in front of a backdrop that reads 'masters' union HYROX DELHI CLASS OF HYROX'26' under a large graduation cap
+117,black t-shirt with text hyrox,color_apparel_brand,A man wearing a grey t-shirt and black pants poses in front of a backdrop that reads 'masters' union HYROX DELHI CLASS OF HYROX'26' under a large graduation cap
+118,black shirt with text mastersunion,color_apparel_brand,A man wearing a grey t-shirt and black pants poses in front of a backdrop that reads 'masters' union HYROX DELHI CLASS OF HYROX'26' under a large graduation cap
+119,black shirt with text hyrox,color_apparel_brand,A man wearing a grey t-shirt and black pants poses in front of a backdrop that reads 'masters' union HYROX DELHI CLASS OF HYROX'26' under a large graduation cap
+120,black hat with text mastersunion,color_apparel_brand,A man wearing a grey t-shirt and black pants poses in front of a backdrop that reads 'masters' union HYROX DELHI CLASS OF HYROX'26' under a large graduation cap
+121,black hat with text hyrox,color_apparel_brand,A man wearing a grey t-shirt and black pants poses in front of a backdrop that reads 'masters' union HYROX DELHI CLASS OF HYROX'26' under a large graduation cap
+122,black pants with text mastersunion,color_apparel_brand,A man wearing a grey t-shirt and black pants poses in front of a backdrop that reads 'masters' union HYROX DELHI CLASS OF HYROX'26' under a large graduation cap
+123,black pants with text hyrox,color_apparel_brand,A man wearing a grey t-shirt and black pants poses in front of a backdrop that reads 'masters' union HYROX DELHI CLASS OF HYROX'26' under a large graduation cap
+124,white shirt with text mastersunion,color_apparel_brand,"Four men wearing hairnets and casual shirts stand and converse inside a warehouse stacked with large white bags, with the text ""MASTERS' UNION"" visible in the t"
+125,white shirt with text hyrox,color_apparel_brand,"Two young men pose together in front of a branded event backdrop featuring a large hanging graduation cap and white 3D text that reads ""CLASS OF HYROX '26"". Bot"
+126,white hat with text hyrox,color_apparel_brand,"Two young men pose together in front of a branded event backdrop featuring a large hanging graduation cap and white 3D text that reads ""CLASS OF HYROX '26"". Bot"
+127,blue jacket with text hyrox,color_apparel_brand,"A man in a blue zip-up jacket and yellow shorts stands in front of a backdrop with a giant graduation cap and the text ""CLASS OF HYROX'26"", making hand gestures"
+128,blue hat with text hyrox,color_apparel_brand,"A man in a blue zip-up jacket and yellow shorts stands in front of a backdrop with a giant graduation cap and the text ""CLASS OF HYROX'26"", making hand gestures"
+129,blue shorts with text hyrox,color_apparel_brand,"A man in a blue zip-up jacket and yellow shorts stands in front of a backdrop with a giant graduation cap and the text ""CLASS OF HYROX'26"", making hand gestures"
+130,blue shorts with text mastersunion,color_apparel_brand,A shirtless man wearing light blue shorts and a vest stands and flexes his bicep while holding a rolled diploma in front of a branded wall that reads 'masters' 
+131,blue vest with text mastersunion,color_apparel_brand,A shirtless man wearing light blue shorts and a vest stands and flexes his bicep while holding a rolled diploma in front of a branded wall that reads 'masters' 
+132,blue vest with text hyrox,color_apparel_brand,A shirtless man wearing light blue shorts and a vest stands and flexes his bicep while holding a rolled diploma in front of a branded wall that reads 'masters' 
+133,white hat with text mastersunion,color_apparel_brand,"Two men pose for a photo in front of a branded event backdrop featuring a large hanging graduation cap and the text ""masters' union HYROX DELHI CLASS OF HYROX '"
+134,white shorts with text mastersunion,color_apparel_brand,"Two men pose for a photo in front of a branded event backdrop featuring a large hanging graduation cap and the text ""masters' union HYROX DELHI CLASS OF HYROX '"
+135,white shorts with text hyrox,color_apparel_brand,"Two men pose for a photo in front of a branded event backdrop featuring a large hanging graduation cap and the text ""masters' union HYROX DELHI CLASS OF HYROX '"
+136,white pants with text mastersunion,color_apparel_brand,"Two men pose for a photo in front of a branded event backdrop featuring a large hanging graduation cap and the text ""masters' union HYROX DELHI CLASS OF HYROX '"
+137,white pants with text hyrox,color_apparel_brand,"Two men pose for a photo in front of a branded event backdrop featuring a large hanging graduation cap and the text ""masters' union HYROX DELHI CLASS OF HYROX '"
+138,red shirt with text mastersunion,color_apparel_brand,"A group of students wearing red shirts with ""masters' union GLOBAL IMMERSION"" printed on the back are seated around large tables in a conference room, facing th"
+139,blue shirt with text mastersunion,color_apparel_brand,"A man in an orange athletic shirt and blue shorts stands holding a small shopping bag with the text ""EARNED Not Given"" in front of a backdrop that reads ""master"
+140,blue shirt with text hyrox,color_apparel_brand,"A man in an orange athletic shirt and blue shorts stands holding a small shopping bag with the text ""EARNED Not Given"" in front of a backdrop that reads ""master"
+141,yellow t-shirt with text hyrox,color_apparel_brand,"A man wearing a neon yellow t-shirt and glasses stands next to a young girl in light-colored clothing, posing in front of a backdrop that reads 'CLASS OF HYROX'"
+142,yellow shirt with text hyrox,color_apparel_brand,"A man wearing a neon yellow t-shirt and glasses stands next to a young girl in light-colored clothing, posing in front of a backdrop that reads 'CLASS OF HYROX'"
+143,gold hat with text mastersunion,color_apparel_brand,"An indoor event backdrop featuring a tiled wall, a giant hanging graduation cap with a gold tassel, and bold lettering that reads ""CLASS OF HYROX'26"" below ""MAS"
+144,gold hat with text hyrox,color_apparel_brand,"An indoor event backdrop featuring a tiled wall, a giant hanging graduation cap with a gold tassel, and bold lettering that reads ""CLASS OF HYROX'26"" below ""MAS"
+145,orange shirt with text mastersunion,color_apparel_brand,"A young man in an orange athletic shirt and dark shorts is standing and posing for a photo at an event, holding a small branded bag, in front of a backdrop with"
+146,orange shirt with text hyrox,color_apparel_brand,"A young man in an orange athletic shirt and dark shorts is standing and posing for a photo at an event, holding a small branded bag, in front of a backdrop with"
+147,orange hat with text mastersunion,color_apparel_brand,"A young man in an orange athletic shirt and dark shorts is standing and posing for a photo at an event, holding a small branded bag, in front of a backdrop with"
+148,orange hat with text hyrox,color_apparel_brand,"A young man in an orange athletic shirt and dark shorts is standing and posing for a photo at an event, holding a small branded bag, in front of a backdrop with"
+149,orange shorts with text mastersunion,color_apparel_brand,"A young man in an orange athletic shirt and dark shorts is standing and posing for a photo at an event, holding a small branded bag, in front of a backdrop with"
+150,orange shorts with text hyrox,color_apparel_brand,"A young man in an orange athletic shirt and dark shorts is standing and posing for a photo at an event, holding a small branded bag, in front of a backdrop with"
+151,green shirt with text mastersunion,color_apparel_brand,"A man in a green shirt and a woman pose together in front of a promotional wall displaying ""MASTERS' UNION HYROX DELHI"" and ""CLASS OF HYROX '26""."
+152,green shirt with text hyrox,color_apparel_brand,"A man in a green shirt and a woman pose together in front of a promotional wall displaying ""MASTERS' UNION HYROX DELHI"" and ""CLASS OF HYROX '26""."
+153,black vest with text mastersunion,color_apparel_brand,"A man wearing a white shirt and black vest stands behind a wooden podium, speaking in front of a projection screen that reads ""masters' union"" in a large room."
+154,red hat with text hyrox,color_apparel_brand,"A man wearing a red basketball jersey and cap poses with a sign in front of a branded event backdrop reading ""CLASS OF HYROX'26""."
+155,red jersey with text hyrox,color_apparel_brand,"A man wearing a red basketball jersey and cap poses with a sign in front of a branded event backdrop reading ""CLASS OF HYROX'26""."
+156,white shoe with text mastersunion,color_apparel_brand,"A young man stands in front of a backdrop reading ""MASTERS' UNION HYROX DELHI"" and ""CLASS OF HYROX'26"", beneath a large hanging graduation cap. He wears a grey "
+157,white shoe with text hyrox,color_apparel_brand,"A young man stands in front of a backdrop reading ""MASTERS' UNION HYROX DELHI"" and ""CLASS OF HYROX'26"", beneath a large hanging graduation cap. He wears a grey "
+158,grey jacket with text mastersunion,color_apparel_brand,"A man with glasses and a jacket is seated in a grey armchair, holding a pen during an indoor event with the text ""MASTERS' UNION"" visible in the top right corne"
+159,black gloves with text mastersunion,color_apparel_brand,"A man wearing a neon yellow tank top, black shorts, and fingerless gloves poses in front of a dark backdrop featuring the text ""masters' union HYROX DELHI""."
+160,black gloves with text hyrox,color_apparel_brand,"A man wearing a neon yellow tank top, black shorts, and fingerless gloves poses in front of a dark backdrop featuring the text ""masters' union HYROX DELHI""."
+161,blue t-shirt with text mastersunion,color_apparel_brand,"A man in a light blue t-shirt and beige shorts gives a thumbs-up in front of a promotional backdrop that reads ""MASTERS' UNION HYROX DELHI CLASS OF HYROX'26"" be"
+162,blue t-shirt with text hyrox,color_apparel_brand,"A man in a light blue t-shirt and beige shorts gives a thumbs-up in front of a promotional backdrop that reads ""MASTERS' UNION HYROX DELHI CLASS OF HYROX'26"" be"
+163,background with text mastersunion,signage_brand,"Two men stand side-by-side in athletic wear at an indoor venue, posing in front of a backdrop featuring the text 'MASTERS UNION' and 'CLASS OF HYROX '26' beneat"
+164,mastersunion backdrop,signage_brand,"Two men stand side-by-side in athletic wear at an indoor venue, posing in front of a backdrop featuring the text 'MASTERS UNION' and 'CLASS OF HYROX '26' beneat"
+165,background with text hyrox,signage_brand,"Two men stand side-by-side in athletic wear at an indoor venue, posing in front of a backdrop featuring the text 'MASTERS UNION' and 'CLASS OF HYROX '26' beneat"
+166,hyrox backdrop,signage_brand,"Two men stand side-by-side in athletic wear at an indoor venue, posing in front of a backdrop featuring the text 'MASTERS UNION' and 'CLASS OF HYROX '26' beneat"
+167,background with text questify,signage_brand,"A young person in a dark suit stands on a stage with a microphone, presenting in front of a wall with ""MASTERSUNION"" lettering and a sign that reads ""QUESTIFY""."
+168,questify backdrop,signage_brand,"A young person in a dark suit stands on a stage with a microphone, presenting in front of a wall with ""MASTERSUNION"" lettering and a sign that reads ""QUESTIFY""."
+169,background with text nivia,signage_brand,"A young man wearing a black t-shirt with the ""masters union"" logo stands next to a reception desk in front of a wall featuring the white ""NIVIA"" logo, gesturing"
+170,nivia backdrop,signage_brand,"A young man wearing a black t-shirt with the ""masters union"" logo stands next to a reception desk in front of a wall featuring the white ""NIVIA"" logo, gesturing"
+171,backdrop with text mastersunion,scene_brand,"Two men stand side-by-side in athletic wear at an indoor venue, posing in front of a backdrop featuring the text 'MASTERS UNION' and 'CLASS OF HYROX '26' beneat"
+172,backdrop with text hyrox,scene_brand,"Two men stand side-by-side in athletic wear at an indoor venue, posing in front of a backdrop featuring the text 'MASTERS UNION' and 'CLASS OF HYROX '26' beneat"
+173,indoor event mastersunion,scene_brand,"Two men stand side-by-side in athletic wear at an indoor venue, posing in front of a backdrop featuring the text 'MASTERS UNION' and 'CLASS OF HYROX '26' beneat"
+174,indoor event hyrox,scene_brand,"Two men stand side-by-side in athletic wear at an indoor venue, posing in front of a backdrop featuring the text 'MASTERS UNION' and 'CLASS OF HYROX '26' beneat"
+175,outdoor track mastersunion,scene_brand,"A woman in an orange top and black shorts jogs on an indoor track underneath a large ""masters' union HYROX DELHI"" sign."
+176,outdoor track hyrox,scene_brand,"A woman in an orange top and black shorts jogs on an indoor track underneath a large ""masters' union HYROX DELHI"" sign."
+177,stage mastersunion,scene_brand,"A man and a woman sit in yellow armchairs on a stage in front of a white wall bearing the text 'MASTERS' UNION', with a small table between them holding water b"
+178,classroom mastersunion,scene_brand,"Students sit at long wooden desks in a modern classroom listening to a panel discussion at the front, with a ""masters' union"" logo displayed on a wall screen."
+179,factory mastersunion,scene_brand,"Four men wearing blue hairnets stand and talk in a large warehouse filled with stacked bags of materials, with a ""MASTERS' UNION"" watermark in the upper right."
+180,cafe mastersunion,scene_brand,"Several people stand and converse in a brightly lit modern cafe interior with a counter, tables, and decorative lighting. The text 'masters' union' is visible i"
+181,stage hyrox,scene_brand,"A man wearing an orange t-shirt and black shorts stands on a stage holding a small bag and medal, in front of a backdrop with the text 'CLASS OF HYROX '26' and "
+182,gym mastersunion,scene_brand,"An empty indoor gym wall features a gridded pattern, a trampoline at its base, and the text ""MASTERS' UNION REACH HIGHER THAN YOU WERE TAUGHT""."
+183,conference room mastersunion,scene_brand,"A group of young adults attend an indoor event or conference, with one woman in the foreground wearing a lanyard and a black polo shirt labeled ""Masters' Union"""
+184,office mastersunion,scene_brand,"Four business professionals are seated in a casual office lounge area, engaged in a conversation around a small table with a laptop. The wall behind them featur"
+185,office lobby mastersunion,scene_brand,"A large group of people stands and socializes in a brightly lit modern lobby with wooden slat ceilings and a reception desk. A large sign reads ""MASTERS' UNION"""
+186,gym hyrox,scene_brand,A young man in a black HYROX tank top carries a heavy sandbag across his shoulders down a gym track.
+187,stage questify,scene_brand,"A young person in a dark suit stands on a stage with a microphone, presenting in front of a wall with ""MASTERSUNION"" lettering and a sign that reads ""QUESTIFY""."
+188,office lobby nivia,scene_brand,"A young man wearing a black t-shirt with the ""masters union"" logo stands next to a reception desk in front of a wall featuring the white ""NIVIA"" logo, gesturing"
+189,rooftop mastersunion,scene_brand,"A group of young men pose together outdoors on a rooftop with a city skyline in the background, featuring bold overlay text reading ""MASTERS' UNION PREMIERE LEA"
+190,basketball court mastersunion,scene_brand,"A group of seven young women wearing matching black and yellow ""masters' union"" athletic jerseys pose together on an outdoor basketball court at night."
+191,office nivia,scene_brand,A man wearing a black Masters' Union t-shirt leaning against a reception desk in a brightly lit office lobby with a prominent Nivia logo on the wall.
+192,basketball court hyrox,scene_brand,A man seated in a wheelchair smiles directly at the camera while holding up a card in front of a dark backdrop with the text 'HYROX TRAINING CLUB' and a grid of
+193,hat,object,"Two men stand side-by-side in athletic wear at an indoor venue, posing in front of a backdrop featuring the text 'MASTERS UNION' and 'CLASS OF HYROX '26' beneat"
+194,backdrop,object,"Two men stand side-by-side in athletic wear at an indoor venue, posing in front of a backdrop featuring the text 'MASTERS UNION' and 'CLASS OF HYROX '26' beneat"
+195,trophy,object,"Three people stand in front of a branded backdrop, holding a small trophy together. The backdrop features repeated logos with the text ""FINANCIAL EXPRESS.COM IC"
+196,award,object,"Three people stand in front of a branded backdrop, holding a small trophy together. The backdrop features repeated logos with the text ""FINANCIAL EXPRESS.COM IC"
+197,ball,object,"Two athletes in dark tank tops run down a bright indoor hallway lined with yellow and black inflatable pillars labeled ""WALL BALLS""."
+198,stage,object,"A group of performers in red and white traditional attire dance on an outdoor stage with large screens displaying text including ""UNMUTE""."
+199,screen,object,"A group of performers in red and white traditional attire dance on an outdoor stage with large screens displaying text including ""UNMUTE""."
+200,shorts,object,A young man in a black tank top and shorts works out on a rowing machine in a gym setting with other participants nearby.
+201,rope,object,"A shirtless young man stands on a gym floor, holding a rope attached to a weighted sled stacked with 25kg plates, with spectators watching in the background."
+202,table,object,"A group of students sit attentively at desks in a classroom setting, with water glasses and name cards on the tables."
+203,card,object,"A group of students sit attentively at desks in a classroom setting, with water glasses and name cards on the tables."
+204,glasses,object,"A group of students sit attentively at desks in a classroom setting, with water glasses and name cards on the tables."
+205,sign,object,"A woman in an orange top and black shorts jogs on an indoor track underneath a large ""masters' union HYROX DELHI"" sign."
+206,chair,object,"Two speakers sit in armchairs on a stage during a panel discussion, in front of a blue backdrop with large speaker identification text."
+207,certificate,object,"Three people are standing in a tiered auditorium holding certificates, with two large screens displayed in the background."
+208,pen,object,"A white marker board is mounted on a wall, displaying a list titled ""Market Like You Gossip"" with ten numbered humorous statements about spreading secrets."
+209,microphone,object,"Five people stand on a stage at an event, with one woman speaking into a microphone while others look on."
+210,pants,object,"Two women are sitting in yellow armchairs on a stage, engaged in conversation. The woman on the left is wearing a light blue blazer and pants and gesturing with"
+211,shirt,object,A man in a dark suit and white shirt stands in an office setting with a bookshelf in the background.
+212,suit,object,A man in a dark suit and white shirt stands in an office setting with a bookshelf in the background.
+213,jacket,object,"A man in a black jacket sits in a grey armchair holding a document, with text reading ""MASTERS' UNION"" visible in the top right corner."
+214,document,object,"A man in a black jacket sits in a grey armchair holding a document, with text reading ""MASTERS' UNION"" visible in the top right corner."
+215,laptop,object,Three young men in white shirts are gathered around a laptop on a wooden conference table in an office setting.
+216,banner,object,"Several people participate in a fitness class inside a large hall with a patterned ceiling and black banners reading 'CENT', with one woman throwing a medicine "
+217,bottle,object,"A man and a woman sit in yellow armchairs on a stage in front of a white wall bearing the text 'MASTERS' UNION', with a small table between them holding water b"
+218,box,object,"A man and a woman sit in yellow armchairs on a stage in front of a white wall bearing the text 'MASTERS' UNION', with a small table between them holding water b"
+219,bag,object,"Three people are standing together indoors in an event space, smiling and posing for a photo. The man on the right holds a black gift bag with white and yellow "
+220,camera,object,"A woman in a black outfit uses an indoor rowing machine while smiling at the camera, with spectators and a banner reading 'concept' in the background."
+221,podium,object,A man in a suit is standing by a podium and addressing an audience seated at desks in a conference room with large windows. A projection screen displaying portr
+222,t-shirt,object,A man wearing a grey t-shirt and black pants poses in front of a backdrop that reads 'masters' union HYROX DELHI CLASS OF HYROX'26' under a large graduation cap
+223,vest,object,"A woman in a black dress sits on an armchair on a stage, speaking into a microphone while interviewing a seated man wearing glasses and a green vest."
+224,book,object,"A man with short dark hair and a beard stands indoors with arms crossed, wearing a dark patterned suit jacket over a white dress shirt and a watch. A bookshelf "
+225,rower,object,"Several athletes are exercising on a row of rowing machines in an indoor fitness hall, with spectators watching from the sidelines. The rowers feature 'Concept "
+226,whiteboard,object,"A man wearing a white jacket over a black shirt stands in front of a large screen and a whiteboard containing handwritten notes, gesturing with both hands."
+227,phone,object,"Several young men are standing in front of a large aquarium tank, looking at the exhibits and taking photos or videos with their phones, beneath digital signage"
+228,gown,object,A man in a graduation gown and cap speaks into a microphone at a podium with a yellow background.
+229,car,object,"An elevated view of a bustling city street shows cars driving, buses at a stop, and many pedestrians walking along the sidewalk on a sunny day."
+230,bus,object,"An elevated view of a bustling city street shows cars driving, buses at a stop, and many pedestrians walking along the sidewalk on a sunny day."
+231,mat,object,"A young woman in a black athletic outfit performs battle rope exercises on a black turf mat indoors, while other participants stand and watch in the background."
+232,tablet,object,"A man in a suit and glasses sits in an armchair on a stage, holding a stylus and a tablet, with a 3D printer visible on a table to the right."
+233,mirror,object,A person holds a phone to take a mirror selfie while wearing a black backpack heavily decorated with various Red Bull and Hyrox city event patches and tags.
+234,flag,object,"A tall, stacked sandwich with a blue 'lexi's' toothpick flag sits on branded paper next to a white cup of potato chips against a black background."
+235,helmet,object,"A humanoid robot with a black helmet, illuminated blue visor, and silver torso stands indoors on a wooden floor. Several people are visible in the blurred backg"
+236,jersey,object,"Four young people stand in front of a banner for Progressive Table Tennis Academy, holding trophies. Two of them wear green sports jerseys, one wears a black t-"
+237,dumbbell,object,A woman with braided hair wears a black sports bra and shorts while carrying a black weight across her shoulders in a gym.
+238,watch,object,"A young woman rows on an indoor rowing machine while a spectator stands and watches behind her in a large event space with ""concept 2"" signage."
+239,bicycle,object,A man rides a bicycle rickshaw through a bustling street with large historic stone archways and buildings in the background under a blue sky.
+240,shoe,object,"A young man stands in front of a backdrop reading ""MASTERS' UNION HYROX DELHI"" and ""CLASS OF HYROX'26"", beneath a large hanging graduation cap. He wears a grey "
+241,hoodie,object,"A man wearing a black zip-up hoodie stands in front of a wall with the text 'TERS' UNION' visible, gesturing with his hands while speaking."
+242,gloves,object,"A man wearing a neon yellow tank top, black shorts, and fingerless gloves poses in front of a dark backdrop featuring the text ""masters' union HYROX DELHI""."
+243,treadmill,object,"A man with a beard and a black tank top flexes his biceps while standing on a treadmill in a gym, with fire extinguishers in the background."
+244,keyboard,object,"A man sits at a wooden desk with his back to the camera, intently viewing two large computer monitors displaying financial charts and data. A smartphone lies fl"
+245,flower,object,Five people are seated around a circular table in a brightly lit cafe with a large painted wall mural of a woman and pink flowers. They are engaged in conversat
+246,umbrella,object,"A man and a woman wearing traditional kimonos stand on a paved city sidewalk, looking at a smartphone beneath a dark umbrella. A third person walks by in the ba"
+247,train,object,"A woman in a black athletic outfit jumps to throw a medicine ball upward towards a target attached to a rig, while other participants train in the background of"
+248,uniform,object,A woman in a blue uniform is standing and pointing at a wall-mounted display screen while speaking to a group of people standing around her.
+249,net,object,"A group of people participate in a fitness training session inside a gym, with some individuals holding medicine balls and looking up toward a net overhead."
+250,clock,object,"Two young women smile and hug on a black platform in front of a backdrop reading ""HYROX"" with a digital clock displaying ""2:08:40""."
+251,scarf,object,"A woman with glasses and long dark hair, wearing a black shirt and a patterned scarf, sits in a yellow chair during an event."
+252,map,object,"A large flat-screen television on a rolling stand displays a graphic titled ""KYOTO STARTUP MAP"" featuring a map layout and a QR code."
+253,scooter,object,A man wearing a pink sweater gestures while talking to three people standing near parked motor scooters in a showroom.
+254,ladder,object,Two men are seated in yellow armchairs facing each other for a discussion in front of a dark screen and two wooden ladder shelves displaying books.
+255,racket,object,"A large group of people poses together on an indoor blue sports court, many holding sports rackets and wearing athletic clothing. A white sign on the floor near"
+256,dress,object,A group of models showcase diverse avant-garde fashion designs on a stage with a brightly lit red futuristic graphic background. The stage features various outf
+257,mouse,object,"A person sits at a desk facing two computer monitors displaying financial charts and data, with a keyboard, mouse, notebook, pen, and smartphone on the desk."
+258,black ball,color_object,"Two athletes in dark tank tops run down a bright indoor hallway lined with yellow and black inflatable pillars labeled ""WALL BALLS""."
+259,yellow ball,color_object,"Two athletes in dark tank tops run down a bright indoor hallway lined with yellow and black inflatable pillars labeled ""WALL BALLS""."
+260,white stage,color_object,"A group of performers in red and white traditional attire dance on an outdoor stage with large screens displaying text including ""UNMUTE""."
+261,red stage,color_object,"A group of performers in red and white traditional attire dance on an outdoor stage with large screens displaying text including ""UNMUTE""."
+262,white screen,color_object,"A group of performers in red and white traditional attire dance on an outdoor stage with large screens displaying text including ""UNMUTE""."
+263,red screen,color_object,"A group of performers in red and white traditional attire dance on an outdoor stage with large screens displaying text including ""UNMUTE""."
+264,black shorts,color_object,A young man in a black tank top and shorts works out on a rowing machine in a gym setting with other participants nearby.
+265,orange shorts,color_object,"A woman in an orange top and black shorts jogs on an indoor track underneath a large ""masters' union HYROX DELHI"" sign."
+266,black sign,color_object,"A woman in an orange top and black shorts jogs on an indoor track underneath a large ""masters' union HYROX DELHI"" sign."
+267,orange sign,color_object,"A woman in an orange top and black shorts jogs on an indoor track underneath a large ""masters' union HYROX DELHI"" sign."
+268,blue chair,color_object,"Two speakers sit in armchairs on a stage during a panel discussion, in front of a blue backdrop with large speaker identification text."
+269,blue backdrop,color_object,"Two speakers sit in armchairs on a stage during a panel discussion, in front of a blue backdrop with large speaker identification text."
+270,blue stage,color_object,"Two speakers sit in armchairs on a stage during a panel discussion, in front of a blue backdrop with large speaker identification text."
+271,white pen,color_object,"A white marker board is mounted on a wall, displaying a list titled ""Market Like You Gossip"" with ten numbered humorous statements about spreading secrets."
+272,black pants,color_object,"Two women are sitting in yellow armchairs on a stage, engaged in conversation. The woman on the left is wearing a light blue blazer and pants and gesturing with"
+273,blue pants,color_object,"Two women are sitting in yellow armchairs on a stage, engaged in conversation. The woman on the left is wearing a light blue blazer and pants and gesturing with"
+274,black chair,color_object,"Two women are sitting in yellow armchairs on a stage, engaged in conversation. The woman on the left is wearing a light blue blazer and pants and gesturing with"
+275,black table,color_object,"Two women are sitting in yellow armchairs on a stage, engaged in conversation. The woman on the left is wearing a light blue blazer and pants and gesturing with"
+276,blue table,color_object,"Two women are sitting in yellow armchairs on a stage, engaged in conversation. The woman on the left is wearing a light blue blazer and pants and gesturing with"
+277,black stage,color_object,"Two women are sitting in yellow armchairs on a stage, engaged in conversation. The woman on the left is wearing a light blue blazer and pants and gesturing with"
+278,white table,color_object,A round chocolate cake with decorative chocolate curls sits on a table next to a black knife and a white napkin.
+279,white shirt,color_object,A man in a dark suit and white shirt stands in an office setting with a bookshelf in the background.
+280,white suit,color_object,A man in a dark suit and white shirt stands in an office setting with a bookshelf in the background.
+281,black jacket,color_object,"A man in a black jacket sits in a grey armchair holding a document, with text reading ""MASTERS' UNION"" visible in the top right corner."
+282,grey jacket,color_object,"A man in a black jacket sits in a grey armchair holding a document, with text reading ""MASTERS' UNION"" visible in the top right corner."
+283,grey chair,color_object,"A man in a black jacket sits in a grey armchair holding a document, with text reading ""MASTERS' UNION"" visible in the top right corner."
+284,black document,color_object,"A man in a black jacket sits in a grey armchair holding a document, with text reading ""MASTERS' UNION"" visible in the top right corner."
+285,grey document,color_object,"A man in a black jacket sits in a grey armchair holding a document, with text reading ""MASTERS' UNION"" visible in the top right corner."
+286,white laptop,color_object,Three young men in white shirts are gathered around a laptop on a wooden conference table in an office setting.
+287,red chair,color_object,"A large crowd of attendees fills the tiered seating of an auditorium with red and grey chairs, watching an event from an elevated angle. The theatre has pattern"
+288,black banner,color_object,"Several people participate in a fitness class inside a large hall with a patterned ceiling and black banners reading 'CENT', with one woman throwing a medicine "
+289,blue shirt,color_object,A man wearing a blue blazer and pink shirt sits on a yellow chair and gestures outward while speaking indoors.
+290,yellow shirt,color_object,A man wearing a blue blazer and pink shirt sits on a yellow chair and gestures outward while speaking indoors.
+291,yellow chair,color_object,A man wearing a blue blazer and pink shirt sits on a yellow chair and gestures outward while speaking indoors.
+292,blue screen,color_object,"An empty exhibition booth features a white desk with ""THE NEXT TECH 1.0 AI SUMMIT 2026"" branding and a wall-mounted TV screen displaying a blue ""No Signal!"" mes"
+293,white sign,color_object,"Two young men pose together in front of a decorative display booth with a red archway cutout and illustrated background. The white sign above reads ""khet"" on th"
+294,red sign,color_object,"Two young men pose together in front of a decorative display booth with a red archway cutout and illustrated background. The white sign above reads ""khet"" on th"
+295,white bottle,color_object,"A man and a woman sit in yellow armchairs on a stage in front of a white wall bearing the text 'MASTERS' UNION', with a small table between them holding water b"
+296,yellow bottle,color_object,"A man and a woman sit in yellow armchairs on a stage in front of a white wall bearing the text 'MASTERS' UNION', with a small table between them holding water b"
+297,white chair,color_object,"A man and a woman sit in yellow armchairs on a stage in front of a white wall bearing the text 'MASTERS' UNION', with a small table between them holding water b"
+298,yellow table,color_object,"A man and a woman sit in yellow armchairs on a stage in front of a white wall bearing the text 'MASTERS' UNION', with a small table between them holding water b"
+299,white box,color_object,"A man and a woman sit in yellow armchairs on a stage in front of a white wall bearing the text 'MASTERS' UNION', with a small table between them holding water b"
+300,yellow box,color_object,"A man and a woman sit in yellow armchairs on a stage in front of a white wall bearing the text 'MASTERS' UNION', with a small table between them holding water b"
+301,yellow stage,color_object,"A man and a woman sit in yellow armchairs on a stage in front of a white wall bearing the text 'MASTERS' UNION', with a small table between them holding water b"
+302,black bag,color_object,"Three people are standing together indoors in an event space, smiling and posing for a photo. The man on the right holds a black gift bag with white and yellow "
+303,white bag,color_object,"Three people are standing together indoors in an event space, smiling and posing for a photo. The man on the right holds a black gift bag with white and yellow "
+304,black rope,color_object,A woman in a black athletic tank top and pants pulls a heavy rope during a strength training exercise inside a gym.
+305,black camera,color_object,"A woman in a black outfit uses an indoor rowing machine while smiling at the camera, with spectators and a banner reading 'concept' in the background."
+306,black backdrop,color_object,A young girl stands smiling in front of a backdrop that reads 'Masters' Union HYROX DELHI CLASS OF HYROX '26' while holding a small black bag.
+307,black t-shirt,color_object,A man wearing a grey t-shirt and black pants poses in front of a backdrop that reads 'masters' union HYROX DELHI CLASS OF HYROX'26' under a large graduation cap
+308,grey t-shirt,color_object,A man wearing a grey t-shirt and black pants poses in front of a backdrop that reads 'masters' union HYROX DELHI CLASS OF HYROX'26' under a large graduation cap
+309,black shirt,color_object,A man wearing a grey t-shirt and black pants poses in front of a backdrop that reads 'masters' union HYROX DELHI CLASS OF HYROX'26' under a large graduation cap
+310,grey shirt,color_object,A man wearing a grey t-shirt and black pants poses in front of a backdrop that reads 'masters' union HYROX DELHI CLASS OF HYROX'26' under a large graduation cap
+311,black hat,color_object,A man wearing a grey t-shirt and black pants poses in front of a backdrop that reads 'masters' union HYROX DELHI CLASS OF HYROX'26' under a large graduation cap
+312,grey hat,color_object,A man wearing a grey t-shirt and black pants poses in front of a backdrop that reads 'masters' union HYROX DELHI CLASS OF HYROX'26' under a large graduation cap
+313,grey pants,color_object,A man wearing a grey t-shirt and black pants poses in front of a backdrop that reads 'masters' union HYROX DELHI CLASS OF HYROX'26' under a large graduation cap
+314,grey backdrop,color_object,A man wearing a grey t-shirt and black pants poses in front of a backdrop that reads 'masters' union HYROX DELHI CLASS OF HYROX'26' under a large graduation cap
+315,black vest,color_object,"A woman in a black dress sits on an armchair on a stage, speaking into a microphone while interviewing a seated man wearing glasses and a green vest."
+316,green vest,color_object,"A woman in a black dress sits on an armchair on a stage, speaking into a microphone while interviewing a seated man wearing glasses and a green vest."
+317,black microphone,color_object,"A woman in a black dress sits on an armchair on a stage, speaking into a microphone while interviewing a seated man wearing glasses and a green vest."
+318,hat with backdrop,multi_object,"Two men stand side-by-side in athletic wear at an indoor venue, posing in front of a backdrop featuring the text 'MASTERS UNION' and 'CLASS OF HYROX '26' beneat"
+319,shorts with sign,multi_object,"A woman in an orange top and black shorts jogs on an indoor track underneath a large ""masters' union HYROX DELHI"" sign."
+320,pants with chair,multi_object,"Two women are sitting in yellow armchairs on a stage, engaged in conversation. The woman on the left is wearing a light blue blazer and pants and gesturing with"
+321,pants with table,multi_object,"Two women are sitting in yellow armchairs on a stage, engaged in conversation. The woman on the left is wearing a light blue blazer and pants and gesturing with"
+322,pants with stage,multi_object,"Two women are sitting in yellow armchairs on a stage, engaged in conversation. The woman on the left is wearing a light blue blazer and pants and gesturing with"
+323,jacket with chair,multi_object,"A man in a black jacket sits in a grey armchair holding a document, with text reading ""MASTERS' UNION"" visible in the top right corner."
+324,jacket with document,multi_object,"A man in a black jacket sits in a grey armchair holding a document, with text reading ""MASTERS' UNION"" visible in the top right corner."
+325,shirt with laptop,multi_object,Three young men in white shirts are gathered around a laptop on a wooden conference table in an office setting.
+326,shirt with table,multi_object,Three young men in white shirts are gathered around a laptop on a wooden conference table in an office setting.
+327,shirt with chair,multi_object,A man wearing a blue blazer and pink shirt sits on a yellow chair and gestures outward while speaking indoors.
+328,jacket with stage,multi_object,"A smiling man wearing glasses and a dark suit jacket sits on stage, holding papers during a panel discussion."
+329,suit with stage,multi_object,"A smiling man wearing glasses and a dark suit jacket sits on stage, holding papers during a panel discussion."
+330,suit with document,multi_object,"A smiling man wearing glasses and a dark suit jacket sits on stage, holding papers during a panel discussion."
+331,jacket with glasses,multi_object,"A smiling man wearing glasses and a dark suit jacket sits on stage, holding papers during a panel discussion."
+332,suit with glasses,multi_object,"A smiling man wearing glasses and a dark suit jacket sits on stage, holding papers during a panel discussion."
+333,pants with rope,multi_object,A woman in a black athletic tank top and pants pulls a heavy rope during a strength training exercise inside a gym.
+334,suit with podium,multi_object,A man in a suit is standing by a podium and addressing an audience seated at desks in a conference room with large windows. A projection screen displaying portr
+335,suit with table,multi_object,A man in a suit is standing by a podium and addressing an audience seated at desks in a conference room with large windows. A projection screen displaying portr
+336,suit with screen,multi_object,A man in a suit is standing by a podium and addressing an audience seated at desks in a conference room with large windows. A projection screen displaying portr
+337,t-shirt with backdrop,multi_object,A man wearing a grey t-shirt and black pants poses in front of a backdrop that reads 'masters' union HYROX DELHI CLASS OF HYROX'26' under a large graduation cap
+338,shirt with backdrop,multi_object,A man wearing a grey t-shirt and black pants poses in front of a backdrop that reads 'masters' union HYROX DELHI CLASS OF HYROX'26' under a large graduation cap
+339,vest with microphone,multi_object,"A woman in a black dress sits on an armchair on a stage, speaking into a microphone while interviewing a seated man wearing glasses and a green vest."
+340,vest with chair,multi_object,"A woman in a black dress sits on an armchair on a stage, speaking into a microphone while interviewing a seated man wearing glasses and a green vest."
+341,vest with stage,multi_object,"A woman in a black dress sits on an armchair on a stage, speaking into a microphone while interviewing a seated man wearing glasses and a green vest."
+342,vest with glasses,multi_object,"A woman in a black dress sits on an armchair on a stage, speaking into a microphone while interviewing a seated man wearing glasses and a green vest."
+343,shirt with microphone,multi_object,An older man with short grey hair wearing a checked shirt and blazer holds a microphone and gestures with his hand while speaking on stage.
+344,shorts with microphone,multi_object,An older man with short grey hair wearing a checked shirt and blazer holds a microphone and gestures with his hand while speaking on stage.
+345,shirt with stage,multi_object,An older man with short grey hair wearing a checked shirt and blazer holds a microphone and gestures with his hand while speaking on stage.
+346,shorts with stage,multi_object,An older man with short grey hair wearing a checked shirt and blazer holds a microphone and gestures with his hand while speaking on stage.
+347,shorts with bag,multi_object,"A man wearing a grey tank top and black shorts kneels on one knee in front of a backdrop reading ""MASTERS' UNION HYROX DELHI CLASS OF HYROX'26"", flexing his bic"
+348,shorts with backdrop,multi_object,"A man wearing a grey tank top and black shorts kneels on one knee in front of a backdrop reading ""MASTERS' UNION HYROX DELHI CLASS OF HYROX'26"", flexing his bic"
+349,shorts with card,multi_object,"A man wearing a grey tank top and black shorts kneels on one knee in front of a backdrop reading ""MASTERS' UNION HYROX DELHI CLASS OF HYROX'26"", flexing his bic"
+350,shirt with book,multi_object,"A man with short dark hair and a beard stands indoors with arms crossed, wearing a dark patterned suit jacket over a white dress shirt and a watch. A bookshelf "
+351,jacket with book,multi_object,"A man with short dark hair and a beard stands indoors with arms crossed, wearing a dark patterned suit jacket over a white dress shirt and a watch. A bookshelf "
+352,jacket with podium,multi_object,"A man in a black Nehru jacket stands on a stage with a purple background, gesturing outward with both hands. A wooden podium is visible on the left side of the "
+353,t-shirt with award,multi_object,"A man wearing an orange t-shirt and black shorts stands on a stage holding a small bag and medal, in front of a backdrop with the text 'CLASS OF HYROX '26' and "
+354,shirt with award,multi_object,"A man wearing an orange t-shirt and black shorts stands on a stage holding a small bag and medal, in front of a backdrop with the text 'CLASS OF HYROX '26' and "
+355,t-shirt with bag,multi_object,"A man wearing an orange t-shirt and black shorts stands on a stage holding a small bag and medal, in front of a backdrop with the text 'CLASS OF HYROX '26' and "
+356,shirt with bag,multi_object,"A man wearing an orange t-shirt and black shorts stands on a stage holding a small bag and medal, in front of a backdrop with the text 'CLASS OF HYROX '26' and "
+357,t-shirt with stage,multi_object,"A man wearing an orange t-shirt and black shorts stands on a stage holding a small bag and medal, in front of a backdrop with the text 'CLASS OF HYROX '26' and "
+358,sign with text mastersunion,object_brand,"A woman in an orange top and black shorts jogs on an indoor track underneath a large ""masters' union HYROX DELHI"" sign."
+359,chair with text mastersunion,object_brand,"A man in a black jacket sits in a grey armchair holding a document, with text reading ""MASTERS' UNION"" visible in the top right corner."
+360,document with text mastersunion,object_brand,"A man in a black jacket sits in a grey armchair holding a document, with text reading ""MASTERS' UNION"" visible in the top right corner."
+361,screen with text mastersunion,object_brand,"Two young men pose together in front of a decorative display booth with a red archway cutout and illustrated background. The white sign above reads ""khet"" on th"
+362,bottle with text mastersunion,object_brand,"A man and a woman sit in yellow armchairs on a stage in front of a white wall bearing the text 'MASTERS' UNION', with a small table between them holding water b"
+363,table with text mastersunion,object_brand,"A man and a woman sit in yellow armchairs on a stage in front of a white wall bearing the text 'MASTERS' UNION', with a small table between them holding water b"
+364,box with text mastersunion,object_brand,"A man and a woman sit in yellow armchairs on a stage in front of a white wall bearing the text 'MASTERS' UNION', with a small table between them holding water b"
+365,stage with text mastersunion,object_brand,"A man and a woman sit in yellow armchairs on a stage in front of a white wall bearing the text 'MASTERS' UNION', with a small table between them holding water b"
+366,bag with text mastersunion,object_brand,"Three people are standing together indoors in an event space, smiling and posing for a photo. The man on the right holds a black gift bag with white and yellow "
+367,card with text mastersunion,object_brand,"A man wearing a grey tank top and black shorts kneels on one knee in front of a backdrop reading ""MASTERS' UNION HYROX DELHI CLASS OF HYROX'26"", flexing his bic"
+368,sign with text hyrox,object_brand,"Several smiling spectators pose behind a barrier, holding a black promotional sign that reads ""L'ORÉAL PARIS, Gujarat ki Hyrox girl, You can be finisher, #vixit"
+369,award with text hyrox,object_brand,"A man wearing an orange t-shirt and black shorts stands on a stage holding a small bag and medal, in front of a backdrop with the text 'CLASS OF HYROX '26' and "
+370,bag with text hyrox,object_brand,"A man wearing an orange t-shirt and black shorts stands on a stage holding a small bag and medal, in front of a backdrop with the text 'CLASS OF HYROX '26' and "
+371,stage with text hyrox,object_brand,"A man wearing an orange t-shirt and black shorts stands on a stage holding a small bag and medal, in front of a backdrop with the text 'CLASS OF HYROX '26' and "
+372,card with text hyrox,object_brand,"A young man in a black T-shirt and shorts poses holding a small card and bag in front of a backdrop featuring a hanging graduation cap and signage for ""HYROX DE"
+373,screen with text hyrox,object_brand,A bald man with a beard holds a branded bag and stands in front of a display that reads 'CLASS OF HYROX '26'.
+374,phone with text mastersunion,object_brand,"Four young men in matching black t-shirts with the text ""Masters' Union"" stand behind a barrier in an indoor venue, holding phones and looking towards the right"
+375,banner with text hyrox,object_brand,A woman wearing a black athletic top and shorts walks away while carrying two heavy kettlebells in an indoor arena. Banners featuring 'L'Oréal Paris' and 'HYROX
+376,glasses with text mastersunion,object_brand,"A young man in a dark athletic tank top, sunglasses, and shorts poses in front of a branded backdrop featuring the text ""MASTERS' UNION HYROX DELHI"" and ""CLASS "
+377,phone with text hyrox,object_brand,A person holds a phone to take a mirror selfie while wearing a black backpack heavily decorated with various Red Bull and Hyrox city event patches and tags.
+378,mirror with text hyrox,object_brand,A person holds a phone to take a mirror selfie while wearing a black backpack heavily decorated with various Red Bull and Hyrox city event patches and tags.
+379,laptop with text mastersunion,object_brand,"Four business professionals are seated in a casual office lounge area, engaged in a conversation around a small table with a laptop. The wall behind them featur"
+380,whiteboard with text hyrox,object_brand,"A young boy stands smiling and holding up a small white whiteboard with text, in front of a dark tiled wall displaying event signage including 'HYROX DELHI' and"
+381,glasses with text hyrox,object_brand,"A man wearing sunglasses and a white tank top poses standing in front of a dark tiled backdrop with large white lettering that reads ""Class of Hyrox '26""."
+382,camera with text hyrox,object_brand,"A person with long dark hair stands with their back to the camera, flexing in front of a backdrop reading ""CLASS OF HYROX '26"" beneath a giant graduation cap."
+383,microphone with text mastersunion,object_brand,"Two women stand on a stage in front of a large screen displaying the ""masters' union"" logo, with one woman speaking into a microphone."
+384,award with text mastersunion,object_brand,"A metallic silver award plaque stands upright against a black background, featuring geometric cutouts and the text ""FINANCIAL EXPRESS AICONIC SUMMIT & AWARDS 24"
+385,camera with text mastersunion,object_brand,"A young man sits on the floor in front of a promotional backdrop that reads ""MASTERS' UNION HYROX DELHI CLASS OF HYROX'26"". He wears a white sleeveless shirt an"
+386,watch with text mastersunion,object_brand,"Three people on a stage in front of a 'masters' union' logo backdrop, with one woman handing a black gift bag to another woman while a man watches and smiles."
+387,podium with text mastersunion,object_brand,"A man wearing a white shirt and black vest stands behind a wooden podium, speaking in front of a projection screen that reads ""masters' union"" in a large room."
+388,graduating,action,"Two men stand side-by-side in athletic wear at an indoor venue, posing in front of a backdrop featuring the text 'MASTERS UNION' and 'CLASS OF HYROX '26' beneat"
+389,dancing,action,"A group of performers in red and white traditional attire dance on an outdoor stage with large screens displaying text including ""UNMUTE""."
+390,exercising,action,A young man in a black tank top and shorts works out on a rowing machine in a gym setting with other participants nearby.
+391,rowing,action,A young man in a black tank top and shorts works out on a rowing machine in a gym setting with other participants nearby.
+392,speaking on stage,action,"Two speakers sit in armchairs on a stage during a panel discussion, in front of a blue backdrop with large speaker identification text."
+393,presenting,action,"Five people stand on a stage at an event, with one woman speaking into a microphone while others look on."
+394,posing for group photo,action,"A group of six people stand on a stage posing together while one person holds up an award, with a large screen in the background bearing the text ""This is where"
+395,jumping,action,"A young woman jumps mid-air on a black grid-lined athletic track inside a large indoor arena, with other participants exercising in the background."
+396,racing,action,A woman in activewear throws a medicine ball labeled CENTR toward a target on a rig structure inside a crowded indoor fitness competition arena.
+397,lifting weights,action,"A group of people are exercising in a large, indoor gym with a black matted floor marked with white grid lines. Several individuals are performing wall ball exe"
+398,clapping,action,A woman holding a trophy and a man in a suit clapping stand on stage.
+399,stretching,action,"A shirtless athlete stretches his arms upward near a rowing machine in a busy indoor gym, while another shirtless man in glasses stands nearby."
+400,running,action,A woman in athletic wear stretches her arms upward in an indoor fitness arena with running tracks and other participants in the background.
+401,eating,action,A man in a grey sweater sits at a table discussing packaged food items with three colleagues sitting opposite him in an office.
+402,networking,action,"Several people stand in a brightly lit indoor space, gathered in a circle and conversing during what appears to be a conference or networking event."
+403,celebrating,action,"A large group of people outdoors covered in brightly colored powder, smiling and looking up at the camera during a Holi celebration."
+404,graduating mastersunion,action_brand,"Two men stand side-by-side in athletic wear at an indoor venue, posing in front of a backdrop featuring the text 'MASTERS UNION' and 'CLASS OF HYROX '26' beneat"
+405,graduating hyrox,action_brand,"Two men stand side-by-side in athletic wear at an indoor venue, posing in front of a backdrop featuring the text 'MASTERS UNION' and 'CLASS OF HYROX '26' beneat"
+406,speaking on stage mastersunion,action_brand,"A man and a woman sit in yellow armchairs on a stage in front of a white wall bearing the text 'MASTERS' UNION', with a small table between them holding water b"
+407,speaking on stage hyrox,action_brand,"A man wearing an orange t-shirt and black shorts stands on a stage holding a small bag and medal, in front of a backdrop with the text 'CLASS OF HYROX '26' and "
+408,exercising mastersunion,action_brand,"An empty indoor gym wall features a gridded pattern, a trampoline at its base, and the text ""MASTERS' UNION REACH HIGHER THAN YOU WERE TAUGHT""."
+409,posing for group photo mastersunion,action_brand,"Three people are smiling and posing together in a photo booth at an event, with a large graduation cap hanging above and the backdrop displaying 'MASTERS' UNION"
+410,posing for group photo hyrox,action_brand,"Three people are smiling and posing together in a photo booth at an event, with a large graduation cap hanging above and the backdrop displaying 'MASTERS' UNION"
+411,presenting mastersunion,action_brand,"Three men stand indoors presenting a black shopping bag with the text ""Masters' Union"" on it, while a video call is projected on the wall behind them."
+412,exercising hyrox,action_brand,A young man in a black HYROX tank top carries a heavy sandbag across his shoulders down a gym track.
+413,speaking on stage questify,action_brand,"A young person in a dark suit stands on a stage with a microphone, presenting in front of a wall with ""MASTERSUNION"" lettering and a sign that reads ""QUESTIFY""."
+414,presenting questify,action_brand,"A young person in a dark suit stands on a stage with a microphone, presenting in front of a wall with ""MASTERSUNION"" lettering and a sign that reads ""QUESTIFY""."
+415,racing hyrox,action_brand,"A man wearing athletic clothing and sunglasses stands smiling and holding race items in front of a backdrop with a giant graduation cap and ""HYROX DELHI"" signag"
+416,lifting weights hyrox,action_brand,"A young boy holding a sign that reads ""My Dad Is Cooler Than Your Dad!!"" poses next to a smiling woman squatting in front of a ""HYROX DELHI"" backdrop."
+417,running hyrox,action_brand,"A shirtless man wearing blue running shorts and turquoise socks flexes his biceps while standing in front of a ""CLASS OF HYROX '26"" backdrop with a large gradua"
+418,jumping mastersunion,action_brand,"A man wearing a black t-shirt and jeans jumps on a trampoline to reach up and stick a note on a black grid wall that reads ""REACH HIGHER THAN YOU WERE TAUGHT"" w"
+419,rowing mastersunion,action_brand,"A man uses a rowing machine inside a large venue while another man stands nearby watching him. The background features crowd members and signage with the text """
+420,eating mastersunion,action_brand,"Four young people wearing hairnets and black t-shirts with ""MASTERS' UNION"" branding stand in a processing facility with large tables of food."
+421,rowing hyrox,action_brand,"A young man in a black HYROX tank top rows on an indoor rowing machine, while another man stands behind him watching."
+422,running mastersunion,action_brand,"A young woman runs forward along a track through an archway beneath a sign reading 'MASTERS' UNION HYROX DELHI', while other runners and spectators are visible "
+423,jumping hyrox,action_brand,"A young boy in a black outfit jumps enthusiastically in front of a backdrop with the text ""Masters' Union Hyrox Delhi Class of Hyrox'26."""
+424,racing mastersunion,action_brand,"Six individuals pose on a stage holding a large ceremonial check, with a branded backdrop reading 'Masters' Union Case Competition' visible behind them."
+425,celebrating hyrox,action_brand,"Two young women celebrate on a stage with a digital finish time display, piggybacking and holding up small cards in front of a branded ""HYROX"" wall."
+426,dancing mastersunion,action_brand,"A group of people in maroon jackets and black pants perform a synchronized dance routine on a stage outdoors. In the background, a large digital screen displays"
+427,celebrating mastersunion,action_brand,"A young man wearing a white tank top and black shorts flexes his arm in celebration while holding a medal in front of a wall with the text ""masters' union HYROX"
+428,eating hyrox,action_brand,A man seated in a wheelchair smiles directly at the camera while holding up a card in front of a dark backdrop with the text 'HYROX TRAINING CLUB' and a grid of
+429,backdrop with text,scene,"Two men stand side-by-side in athletic wear at an indoor venue, posing in front of a backdrop featuring the text 'MASTERS UNION' and 'CLASS OF HYROX '26' beneat"
+430,indoor event,scene,"Two men stand side-by-side in athletic wear at an indoor venue, posing in front of a backdrop featuring the text 'MASTERS UNION' and 'CLASS OF HYROX '26' beneat"
+431,gym,scene,A young man in a black tank top and shorts works out on a rowing machine in a gym setting with other participants nearby.
+432,classroom,scene,"A group of students sit attentively at desks in a classroom setting, with water glasses and name cards on the tables."
+433,outdoor track,scene,"A woman in an orange top and black shorts jogs on an indoor track underneath a large ""masters' union HYROX DELHI"" sign."
+434,office,scene,A man in a dark suit and white shirt stands in an office setting with a bookshelf in the background.
+435,conference room,scene,Three young men in white shirts are gathered around a laptop on a wooden conference table in an office setting.
+436,factory,scene,"Four men wearing blue hairnets stand and talk in a large warehouse filled with stacked bags of materials, with a ""MASTERS' UNION"" watermark in the upper right."
+437,cafe,scene,"Several people stand and converse in a brightly lit modern cafe interior with a counter, tables, and decorative lighting. The text 'masters' union' is visible i"
+438,office lobby,scene,A man and woman smiling and posing together near a reception desk in a large indoor hall.
+439,rooftop,scene,"An eye-level shot captures a large outdoor plaza with striped stone paving beneath a prominent, angled modern canopy roof."
+440,basketball court,scene,"An overhead view shows two tennis players in white on a red clay tennis court, with a yellow tennis ball mid-air near the net."
+441,parking lot,scene,"Four people stand and converse in a large, brightly lit indoor parking garage with multiple parked cars. Pillar number 100 is visible in the upper left backgrou"
+442,mastersunion,brand,"A man in a black jacket sits in a grey armchair holding a document, with text reading ""MASTERS' UNION"" visible in the top right corner."
+443,hyrox,brand,A man with a beard wearing a grey tank top and black sweatpants flexes his arms in front of a 'Masters' Union Hyrox Delhi Class of Hyrox '26' sign.
+444,nivia,brand,"A young woman stands outdoors with outstretched arms in front of a large stack of cardboard shipping boxes branded with ""NIVIA""."
+445,class of hyrox,quoted_text,"Two men stand side-by-side in athletic wear at an indoor venue, posing in front of a backdrop featuring the text 'MASTERS UNION' and 'CLASS OF HYROX '26' beneat"
+446,financial express.com iconic awards,quoted_text,"Three people stand in front of a branded backdrop, holding a small trophy together. The backdrop features repeated logos with the text ""FINANCIAL EXPRESS.COM IC"
+447,wall balls,quoted_text,"Two athletes in dark tank tops run down a bright indoor hallway lined with yellow and black inflatable pillars labeled ""WALL BALLS""."
+448,market like you gossip,quoted_text,"A white marker board is mounted on a wall, displaying a list titled ""Market Like You Gossip"" with ten numbered humorous statements about spreading secrets."
+449,this is where your transformation begins.,quoted_text,"A group of six people stand on a stage posing together while one person holds up an award, with a large screen in the background bearing the text ""This is where"
+450,fireside chat,quoted_text,"An audience sits in red auditorium seats facing a stage hosting a ""Fireside Chat"" event. A large screen at the front of the auditorium displays event graphics a"
+451,the next tech 1.0 ai summit 2026,quoted_text,"An empty exhibition booth features a white desk with ""THE NEXT TECH 1.0 AI SUMMIT 2026"" branding and a wall-mounted TV screen displaying a blue ""No Signal!"" mes"
+452,no signal!,quoted_text,"An empty exhibition booth features a white desk with ""THE NEXT TECH 1.0 AI SUMMIT 2026"" branding and a wall-mounted TV screen displaying a blue ""No Signal!"" mes"
+453,built at masters,quoted_text,"Two young men pose together in front of a decorative display booth with a red archway cutout and illustrated background. The white sign above reads ""khet"" on th"
+454,do it badly. just don,quoted_text,"Several people sit at rows of tables in a conference room with large typography on the wall reading ""Do it badly. Just DON'T NOT do it."""
+455,9 kg,quoted_text,A young man lifts and holds a heavy '9 KG' black medicine ball in a gym setting while spectators watch from the background.
+456,series c + ama fireside chat,quoted_text,"Two speakers sit on a stage under large studio lights during a fireside chat, with an audience seated in a tiered auditorium watching them and a large screen di"
+457,take the feeling home,quoted_text,"Two staff members stand behind a registration desk with a sign reading ""TAKE THE FEELING HOME"" and ""COLLECT YOUR PERSONALISED TIME TAG HERE"", surrounded by prom"
+458,collect your personalised time tag here,quoted_text,"Two staff members stand behind a registration desk with a sign reading ""TAKE THE FEELING HOME"" and ""COLLECT YOUR PERSONALISED TIME TAG HERE"", surrounded by prom"
+459,vivek gambhir,quoted_text,"Two men in business attire sit in armchairs on a stage, speaking into microphones during a panel discussion with 'Vivek gambhir' and 'Vishal Dhupar' displayed o"
+460,vishal dhupar,quoted_text,"Two men in business attire sit in armchairs on a stage, speaking into microphones during a panel discussion with 'Vivek gambhir' and 'Vishal Dhupar' displayed o"
+461,re worth it.,quoted_text,"Several smiling spectators pose behind a barrier, holding a black promotional sign that reads ""L'ORÉAL PARIS, Gujarat ki Hyrox girl, You can be finisher, #vixit"
+462,excuse me brother handpainted bags,quoted_text,"Two men stand against a black background, holding up signs with handwritten text. The man on the right holds a large white sign reading ""EXCUSE ME BROTHER HANDP"
+463,two lakh rupees,quoted_text,A group of people proudly hold a large novelty check for 'Two Lakh Rupees' on a stage with a blue backdrop.
+464,concept 2,quoted_text,"Several athletes are exercising on a row of rowing machines in an indoor fitness hall, with spectators watching from the sidelines. The rowers feature 'Concept "
+465,hyrox delhi class of hyrox,quoted_text,"A young man in a black T-shirt and shorts poses holding a small card and bag in front of a backdrop featuring a hanging graduation cap and signage for ""HYROX DE"
+466,24k16 films,quoted_text,"Three people standing inside a booth, holding up promotional flyers with the title ""24K16 FILMS""."
+467,venture initiation program pre-seed demo day,quoted_text,"Four men stand on a stage holding a large ceremonial check reading ""Venture Initiation Program Pre-Seed Demo Day"" with the amount ""One Lakh Fifty Thousand Rupee"
+468,one lakh fifty thousand rupees only,quoted_text,"Four men stand on a stage holding a large ceremonial check reading ""Venture Initiation Program Pre-Seed Demo Day"" with the amount ""One Lakh Fifty Thousand Rupee"
+469,"inr 1,50,000/-",quoted_text,"Four men stand on a stage holding a large ceremonial check reading ""Venture Initiation Program Pre-Seed Demo Day"" with the amount ""One Lakh Fifty Thousand Rupee"
+470,masters union hyrox delhi,quoted_text,Two women wearing matching red sports bras and black shorts stand side-by-side flexing their biceps in front of a dark wall with the text 'MASTERS UNION HYROX D
+471,1% better,quoted_text,"An audience of students and participants sits attentively at rows of desks in a lecture hall, with a screen and a wall sign reading ""1% better"" visible in the b"
+472,jhanvi shah,quoted_text,"Numerous people are working on laptops at long wooden tables in a large, brightly lit open-plan office space with a dark ceiling and hanging light fixtures, fea"
+473,hyrox training club,quoted_text,"A man in a wheelchair poses in front of a ""HYROX TRAINING CLUB"" sponsor wall inside a large hall."
+474,pokerbaazi presents unmute,quoted_text,A man in a blue cap holds up a paper on a stage with a large banner reading 'PokerBaazi presents UNMUTE'.
+475,our core values,quoted_text,"Four young men conversing in an office setting near a yellow wall featuring the text ""Our Core Values"" and bullet points including ""Aligned to Purpose"" and ""Cus"
+476,aligned to purpose,quoted_text,"Four young men conversing in an office setting near a yellow wall featuring the text ""Our Core Values"" and bullet points including ""Aligned to Purpose"" and ""Cus"
+477,customer first,quoted_text,"Four young men conversing in an office setting near a yellow wall featuring the text ""Our Core Values"" and bullet points including ""Aligned to Purpose"" and ""Cus"
+478,mr. rajat mathur,quoted_text,"A middle-aged man wearing glasses and a yellow vest over a white shirt sits in an armchair, resting his chin on his hand while holding a pen. A lanyard with an "
+479,newest sando place in town order now,quoted_text,"A person holding a large gourmet sandwich in front of an orange background, featuring promotional text reading 'NEWEST SANDO PLACE IN TOWN ORDER NOW' with Zomat"
+480,oréal paris,quoted_text,A woman wearing a black athletic top and shorts walks away while carrying two heavy kettlebells in an indoor arena. Banners featuring 'L'Oréal Paris' and 'HYROX
+481,reach higher than you were taught,quoted_text,"A person in a white tank top and black shorts jumps on a small trampoline to place a sticky note high up on a grid-patterned wall under the text ""REACH HIGHER T"
+482,creative shift,quoted_text,"A woman stands on a stage holding a small rectangular object near her face, with a backdrop displaying logos such as ""CISCO"" and ""CREATIVE SHIFT""."
+483,go faster!! they are so proud of you,quoted_text,"A young man holds up a large handmade poster with photos and the text ""Go Faster!! They Are So Proud Of You"" in a crowded indoor hall."
+484,fireside chat next tech 1.0,quoted_text,An auditorium filled with seated audience members facing a stage where two speakers are participating in a panel discussion beneath a large projector screen rea
+485,hat with text class of hyrox,apparel_quoted,"Two men stand side-by-side in athletic wear at an indoor venue, posing in front of a backdrop featuring the text 'MASTERS UNION' and 'CLASS OF HYROX '26' beneat"
+486,t-shirt with text class of hyrox,apparel_quoted,"A man wearing an orange t-shirt and black shorts stands on a stage holding a small bag and medal, in front of a backdrop with the text 'CLASS OF HYROX '26' and "
+487,t-shirt with text hyrox delhi class of hyrox,apparel_quoted,"A young man in a black T-shirt and shorts poses holding a small card and bag in front of a backdrop featuring a hanging graduation cap and signage for ""HYROX DE"
+488,shirt with text class of hyrox,apparel_quoted,"Two young men pose together in front of a branded event backdrop featuring a large hanging graduation cap and white 3D text that reads ""CLASS OF HYROX '26"". Bot"
+489,shorts with text masters union hyrox delhi,apparel_quoted,Two women wearing matching red sports bras and black shorts stand side-by-side flexing their biceps in front of a dark wall with the text 'MASTERS UNION HYROX D
+490,pants with text class of hyrox,apparel_quoted,"A man wearing a grey tank top and black pants flexes his biceps in front of a backdrop that reads ""CLASS OF HYROX '26""."
+491,jacket with text class of hyrox,apparel_quoted,"A man in a blue zip-up jacket and yellow shorts stands in front of a backdrop with a giant graduation cap and the text ""CLASS OF HYROX'26"", making hand gestures"
+492,hat with text pokerbaazi presents unmute,apparel_quoted,A man in a blue cap holds up a paper on a stage with a large banner reading 'PokerBaazi presents UNMUTE'.
+493,shirt with text mr rajat mathur,apparel_quoted,"A middle-aged man wearing glasses and a yellow vest over a white shirt sits in an armchair, resting his chin on his hand while holding a pen. A lanyard with an "
+494,shorts with text or al paris,apparel_quoted,A woman wearing a black athletic top and shorts walks away while carrying two heavy kettlebells in an indoor arena. Banners featuring 'L'Oréal Paris' and 'HYROX
+495,shorts with text reach higher than you were taught,apparel_quoted,"A person in a white tank top and black shorts jumps on a small trampoline to place a sticky note high up on a grid-patterned wall under the text ""REACH HIGHER T"
+496,jacket with text ramit rawal,apparel_quoted,"A woman with dark hair wearing a teal jacket and dark skirt stands in a conference room, gesturing toward a desk with a sign reading ""RAMIT RAWAL"". In the backg"
+497,suit with text welcome to the next tech 1 0,apparel_quoted,"A man in a suit is walking across a stage toward two chairs, with a large screen behind him displaying ""Welcome to The Next Tech 1.0""."
+498,jacket with text people powered startups,apparel_quoted,"A man wearing glasses and a dark blue jacket sits in a yellow armchair and gestures with both hands while speaking on a stage, with a display stand holding copi"
+499,jacket with text the next tech 1 0 panels keynotes,apparel_quoted,"A man wearing glasses and a dark suit jacket sits in a yellow armchair on a stage, speaking into a microphone while gesturing with his hands. A banner on the le"
+500,shirt with text earned not given,apparel_quoted,"A man in an orange athletic shirt and blue shorts stands holding a small shopping bag with the text ""EARNED Not Given"" in front of a backdrop that reads ""master"

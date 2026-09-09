@@ -1,0 +1,1989 @@
+{
+  "search_base": "https://dfi-backend-production.up.railway.app",
+  "queries": [
+    "person handing over a ceremonial cheque",
+    "students cooking food in a campus kitchen",
+    "people wearing a navy blazer on stage",
+    "hyrox delhi masters union race backdrop",
+    "person speaking into a shure microphone",
+    "students presenting a trophy during the ceremony"
+  ],
+  "captions": true,
+  "rerank": true,
+  "top": 24,
+  "production": {
+    "person handing over a ceremonial cheque": [
+      {
+        "drive_file_id": "1Aa2HWN0utYYtd054i3-z7oEYigVsu40W",
+        "name": "Copy of C0025.png",
+        "score": 0.5315,
+        "caption": "Two men stand on a stage during an award presentation, with the man on the right holding a large novelty check in front of a decorative wall.",
+        "matched_objects": []
+      },
+      {
+        "drive_file_id": "1QJ_-gvSoCBcoOYn0rbD2AYJehfUHEwv0",
+        "name": "Copy of P1090114.JPG",
+        "score": 0.5148,
+        "caption": "A woman holding a large promotional check stands next to a man in a blue shirt on a stage, with a projection screen in the background showing text and profile pictures.",
+        "matched_objects": []
+      },
+      {
+        "drive_file_id": "13BypTwYCzfhg7z7Zxzax3LObsIdqPUMb",
+        "name": "Copy of Copy of P1090114.JPG",
+        "score": 0.512,
+        "caption": "A man and a woman stand side-by-side holding a large novelty check that displays the text 'MASTERS' UNION' and 'Atlas Foods'.",
+        "matched_objects": []
+      },
+      {
+        "drive_file_id": "1l5GqgWk1I3vVKbtzpQ2_CxXfaPp28rHv",
+        "name": "page04_img01_2134x1601.jpeg",
+        "score": 0.507,
+        "caption": "A group of people proudly hold a large promotional check on a stage. The check displays text including \"BIG DREAMS DESERVE BIG CHEQUES\", \"TWO LAKH RUPEES\", and \"SECOND RUNNER UP OF PITCH PERFECT 2025\".",
+        "matched_objects": []
+      },
+      {
+        "drive_file_id": "1c71jllY2g1hqgfb4JA3ZTAGjoYdpM7AR",
+        "name": "page54_img02_3024x2016.jpeg",
+        "score": 0.5034,
+        "caption": "A group of people stand on a stage holding a large ceremonial check while logos are displayed on the projection screen behind them.",
+        "matched_objects": []
+      },
+      {
+        "drive_file_id": "1rjbG1TFvNAJhEd6lBpI9NQmNvS-rI5zE",
+        "name": "11.jpg",
+        "score": 0.4998,
+        "caption": "A young man seated in an armchair is writing on a large ceremonial check that reads \"ONE LAKH ONLY\" and \"1,00,000/-\" with the \"Masters Union\" logo, set in a modern auditorium with a green carpeted tier.",
+        "matched_objects": []
+      },
+      {
+        "drive_file_id": "1T4ExGf1nRK3ztPLTbPdzqJorLuVzS29H",
+        "name": "Copy of P1121159.JPG",
+        "score": 0.4901,
+        "caption": "Three people hold a large oversized promotional check reading \"masters' union\" and payable to \"Shagun Malik\" for the amount of \"Three Thousand Only\" (INR 3000/-). The woman in the center also holds a framed certificate.",
+        "matched_objects": []
+      },
+      {
+        "drive_file_id": "1R3sMmLDWDiKWy8SsLTtFBp9BfqibpN_Q",
+        "name": "page53_img01_4095x2993.jpeg",
+        "score": 0.4883,
+        "caption": "A group of people pose on a stage holding a large ceremonial check while a digital display graph is visible in the background.",
+        "matched_objects": []
+      },
+      {
+        "drive_file_id": "15ik2Y8RIDo1DPDwqtHxFho9F5uoUgLpI",
+        "name": "Copy of Copy of AE8I0225.JPG",
+        "score": 0.4882,
+        "caption": "Three people are standing in front of a plant wall holding a large oversized novelty check that displays the text \"MASTERS' UNION\", \"THE CEO CHALLENGE\", and \"RUPEES TWO LACS ONLY\".",
+        "matched_objects": []
+      },
+      {
+        "drive_file_id": "1cP2ALG0Yh41MZAswtn5pRSJ1-xOrPJET",
+        "name": "page40_img02_3565x2926.jpeg",
+        "score": 0.4814,
+        "caption": "Five people stand on a stage holding a large ceremonial check on a dark gray background with blue and red accent lights.",
+        "matched_objects": []
+      },
+      {
+        "drive_file_id": "1IP3vUs9j4qgkW5uC_1xf5aZwVDGF0ucX",
+        "name": "P1042024.JPG",
+        "score": 0.4788,
+        "caption": "Three people stand on a stage holding certificates and a large novelty check, with a backdrop that reads \"Organised by Student Clubs\" and features various company logos.",
+        "matched_objects": []
+      },
+      {
+        "drive_file_id": "1ee9uTevCy7g6FDELd1nnbVPGtMK9bdJd",
+        "name": "page20_img02_4096x2731.jpeg",
+        "score": 0.477,
+        "caption": "Three individuals stand on a lit indoor stage holding oversized novelty checks, with a company logo sign on the left wall reading \"MASTERS' UNION The CEO Challenge\".",
+        "matched_objects": []
+      },
+      {
+        "drive_file_id": "1EKhanvTV5injH4qlzpp854JdDYd5izte",
+        "name": "page05_img06_1080x1350.jpeg",
+        "score": 0.4761,
+        "caption": "A man and a woman pose indoors in front of a blue branded backdrop, holding a large novelty check that reads \"FLIPKART WIRED 8.0 NATIONAL WINNER\" and \"QUICK FIX MASTER'S UNION\".",
+        "matched_objects": []
+      },
+      {
+        "drive_file_id": "1FF1Th1HyKQ8pmGCTrl9NOw-iTfgBOV6c",
+        "name": "Copy of Copy of P1090126.JPG",
+        "score": 0.4751,
+        "caption": "Three men stand proudly holding a large novelty check for \"Masters' Union Venture Incubation Programme\" with the name \"Beyond Veda\" and an amount of \"Fifteen Thousand Only\".",
+        "matched_objects": []
+      },
+      {
+        "drive_file_id": "1sjsHUkL0Pho0hGd-LgdIG0HYlYsI0Syr",
+        "name": "P1041922.JPG",
+        "score": 0.4744,
+        "caption": "Five diverse individuals pose on a stage holding a large ceremonial check against a black backdrop that features text reading 'Organised by Student Clubs' and 'Master's Union presents CaseU'.",
+        "matched_objects": []
+      },
+      {
+        "drive_file_id": "1qeBKfWYqvvdgQ7CICMSC9vRg1yjxyQNQ",
+        "name": "P1117562.jpeg",
+        "score": 0.4732,
+        "caption": "Four men stand on a stage holding a large ceremonial check reading \"Venture Initiation Program Pre-Seed Demo Day\" with the amount \"One Lakh Fifty Thousand Rupees Only\" and \"INR 1,50,000/-\".",
+        "matched_objects": []
+      },
+      {
+        "drive_file_id": "1439ouN0A3kAFQqBal-pM_1sGTjXZupTB",
+        "name": "P1022394.JPG",
+        "score": 0.4721,
+        "caption": "A group of people stand on a stage holding an award while a large screen in the background displays text.",
+        "matched_objects": []
+      },
+      {
+        "drive_file_id": "1ojL27kjkgCFuA2YFqV-SF7GlcOCSI2en",
+        "name": "page04_img02_1600x1200.jpeg",
+        "score": 0.4692,
+        "caption": "A group of people proudly hold a large novelty check for 'Two Lakh Rupees' on a stage with a blue backdrop.",
+        "matched_objects": []
+      },
+      {
+        "drive_file_id": "1yEdOTqJjey8FuX6AOTt6yCGEn2VGEHco",
+        "name": "P1089543.JPG",
+        "score": 0.4683,
+        "caption": "A smiling woman in a blue blazer holds a large novelty certificate and check with the text Masters Union visible at the top.",
+        "matched_objects": []
+      },
+      {
+        "drive_file_id": "1NlwlB2pnn7PRtNNvnXbkRxPerSFH_ZkX",
+        "name": "P1041875.JPG",
+        "score": 0.4667,
+        "caption": "Four people on a stage hold a large ceremonial check in front of a dark backdrop with the text \"masters' union presents CASEUNION\". A woman stands nearby watching them.",
+        "matched_objects": []
+      },
+      {
+        "drive_file_id": "1HhFWnyjnCTeuoVJ0FV7NpceaOwIMHhHv",
+        "name": "P1124398.JPG",
+        "score": 0.466,
+        "caption": "Five people stand on a stage holding a large prize check and a trophy during an awards ceremony. A large dark wall behind them features the text 'Organised by Student Clubs' and 'masters' union CASEUNION' alongside various sponsor logos.",
+        "matched_objects": []
+      },
+      {
+        "drive_file_id": "10-wdx3GVY4_pOGy_XKKWvh3Xw_lsvZPE",
+        "name": "SCREEN GRABS.00_00_02_13.Still003.jpg",
+        "score": 0.4653,
+        "caption": "A young man is sitting in a yellow chair, holding a marker and writing on a large novelty check on a table, with another person sitting nearby.",
+        "matched_objects": []
+      },
+      {
+        "drive_file_id": "1FwPWJZhGZ33Z334674kVvXNq63ZLQwVC",
+        "name": "page17_img04_4096x2731.jpeg",
+        "score": 0.4641,
+        "caption": "Three young men pose together holding a large ceremonial novelty check for 'Five Lakhs Only' against a black background.",
+        "matched_objects": []
+      },
+      {
+        "drive_file_id": "1AXkVNKIDOgf8BLnq2hObg_wkJS0qE0hX",
+        "name": "P1117571.JPG.jpeg",
+        "score": 0.4588,
+        "caption": "Five people stand proudly on a stage holding a large prize check that reads \"Venture Initiation Program, Pre-Seed Demo Day, First Prize, INR 2,50,000\" with the Masters' Union logo.",
+        "matched_objects": []
+      }
+    ],
+    "students cooking food in a campus kitchen": [],
+    "people wearing a navy blazer on stage": [
+      {
+        "drive_file_id": "1xupWEZ_u_3U5pU361CH8IHsUMTCBpcbX",
+        "name": "9S0A9133.JPG",
+        "score": 0.4922,
+        "caption": "A group portrait features multiple individuals posing on a stage, with some holding microphones and others smiling at the camera.",
+        "matched_objects": []
+      },
+      {
+        "drive_file_id": "1okZapDMzJII6DwzZP-klwOU5O66EhnH1",
+        "name": "P1028919.JPG",
+        "score": 0.48,
+        "caption": "A large group of people is gathered on a stage and in the audience for a group photo in a dark auditorium.",
+        "matched_objects": []
+      },
+      {
+        "drive_file_id": "1FJjcyowOuvAYUOxFd8WQU_wJ760lH-NK",
+        "name": "Copy of P1057026.JPG",
+        "score": 0.4792,
+        "caption": "A man in a dark gray suit jacket stands beside a podium on a stage, speaking with his hands clasped, while audience members are visible seated in the background.",
+        "matched_objects": []
+      },
+      {
+        "drive_file_id": "1aw-V9MFTtPvaZDYpB-N3qSBqLmQAogjN",
+        "name": "P1123634.JPG",
+        "score": 0.4605,
+        "caption": "A group of performers wearing matching maroon blazers and caps dance on an outdoor stage beneath stage lights and a large event backdrop.",
+        "matched_objects": []
+      },
+      {
+        "drive_file_id": "1K_EAhgxqDZLIedPdt9UjjhHSjL2Sp2eU",
+        "name": "Copy of P1096514.JPG",
+        "score": 0.4582,
+        "caption": "A large group of people gathers on a stage and poses together while one man in a blue blazer holds up a smartphone to take a selfie.",
+        "matched_objects": []
+      },
+      {
+        "drive_file_id": "1HmgIvK2HOaylpNi1_QhT2hjBXanwaiQb",
+        "name": "9S0A8879.JPG",
+        "score": 0.4556,
+        "caption": "A large group of people stand together on the tiered seating of an auditorium for a group photo in front of a stage.",
+        "matched_objects": []
+      },
+      {
+        "drive_file_id": "1m4dTEpQX7TG7nMEC4Azi7q3hFqKqaUUo",
+        "name": "9S0A8883.JPG",
+        "score": 0.4553,
+        "caption": "A large group of attendees poses for a group photograph on the stage of an auditorium with red seats. Bright studio lights flank the stage, and the event name is partially visible on the floor.",
+        "matched_objects": []
+      },
+      {
+        "drive_file_id": "1c5jTfVhBHjqZhGgjE6_xpjIq4Qq-M2OG",
+        "name": "DSC05297.JPG",
+        "score": 0.4546,
+        "caption": "A young man in a light-colored suit jacket and dark t-shirt stands on a stage holding a microphone, speaking to an audience seated in a dark auditorium.",
+        "matched_objects": []
+      },
+      {
+        "drive_file_id": "1r-MnkPp7FQonFwV_2co9_rJB8I0d4hY4",
+        "name": "374A9789.JPG",
+        "score": 0.4541,
+        "caption": "A panel of speakers and attendees are seated at a long table on a stage, listening to a presentation during an event.",
+        "matched_objects": []
+      },
+      {
+        "drive_file_id": "1yCzs3SCEQ-MheKW6pl0YW1uyxOCCKT02",
+        "name": "Copy of 9S0A8996 (1).jpg",
+        "score": 0.4534,
+        "caption": "A large group of people poses for a photo on tiered seating inside an auditorium, with stage lights on either side.",
+        "matched_objects": []
+      },
+      {
+        "drive_file_id": "1liEISg-kJRNOiUJrgc9OrHe_wRTQiNp4",
+        "name": "FullSizeRender 6.JPG",
+        "score": 0.4519,
+        "caption": "A woman wearing a black jacket and pink trousers stands on a stage holding a microphone, speaking to an audience. Another person stands nearby beside a dark podium on the wooden-floored stage.",
+        "matched_objects": []
+      },
+      {
+        "drive_file_id": "1lKs9NDjnq6--U9av1fPzfmtGDLcUWB8D",
+        "name": "9S0A9134.JPG",
+        "score": 0.4517,
+        "caption": "A large group of people poses closely together for a group photograph on a stage or auditorium. In the front row, several individuals stand smiling, including a man in a grey suit, a man in a blue jacket, and a woman in a blue and white saree.",
+        "matched_objects": []
+      },
+      {
+        "drive_file_id": "1RgEkaOAb43lcGhTsVtVLwHxlcpHaenkY",
+        "name": "9S0A8886.JPG",
+        "score": 0.4514,
+        "caption": "A large group of people pose together on tiered seating inside an auditorium, facing the camera with stage lighting overhead.",
+        "matched_objects": []
+      },
+      {
+        "drive_file_id": "1eeAjTdAtGh5yGZeyqbMQHYZ4eDPZkP_c",
+        "name": "P1022320.JPG",
+        "score": 0.45,
+        "caption": "Several presenters stand on a stage in a large auditorium with a large digital presentation screen behind them.",
+        "matched_objects": []
+      },
+      {
+        "drive_file_id": "1FNe7Y500VggPFA7IWQxOoPCoWLPWC7a3",
+        "name": "P1028914.JPG",
+        "score": 0.4493,
+        "caption": "A large group of people pose for a group photo on a stage with stadium seating in the background, featuring various attendees and speakers.",
+        "matched_objects": []
+      },
+      {
+        "drive_file_id": "1OfBBttYfIyYjQUJUWtyF-HHmXlQIZkab",
+        "name": "P1028917.JPG",
+        "score": 0.4482,
+        "caption": "A large crowd of people fills an auditorium, posing for a group photograph in front of a raised stage.",
+        "matched_objects": []
+      },
+      {
+        "drive_file_id": "1okSwE2MuZv0KAh_V3NHOVLiLdfFX-bT-",
+        "name": "P1028813.JPG",
+        "score": 0.4477,
+        "caption": "A large audience of people gathers on stairs and in front of a stage for a group photograph in an auditorium.",
+        "matched_objects": []
+      },
+      {
+        "drive_file_id": "16CEgEFbDtArtr-l8PgTnmtuvpiCiQb5r",
+        "name": "P1028765.JPG",
+        "score": 0.4476,
+        "caption": "A large group of people poses on tiered seating in an auditorium during an event with lighting equipment visible at the top.",
+        "matched_objects": []
+      },
+      {
+        "drive_file_id": "1jLd1TXj4JfSL1BhWsahadn8A6rNd6I89",
+        "name": "0H1A8472.JPG",
+        "score": 0.4466,
+        "caption": "A man with dark hair, wearing a navy blue blazer, white shirt, and jeans, is seated in a yellow armchair on a stage, holding a microphone in front of a purple backdrop with the text \"er of\" and \"Board.ai\".",
+        "matched_objects": []
+      },
+      {
+        "drive_file_id": "11z3g9htZi3eTakGIB1L2Cb5pMi35ni_-",
+        "name": "Copy of P1155357.JPG",
+        "score": 0.4456,
+        "caption": "A man wearing a blue fleece jacket stands in front of a dark backdrop with partially visible white text, holding a microphone in one hand and gesturing with the other while speaking.",
+        "matched_objects": []
+      },
+      {
+        "drive_file_id": "1qFixcOLZwpGQKW8TTvv9NTcuP4cH_zmr",
+        "name": "Copy of P1057043.JPG",
+        "score": 0.4447,
+        "caption": "A man in a gray blazer speaks from behind a podium on a stage, smiling while holding a small object, with an audience seated on tiered steps in the background.",
+        "matched_objects": []
+      },
+      {
+        "drive_file_id": "19sntxPcrnPu1kzYPtGW1Inb30vcWHxHe",
+        "name": "9S0A8710.JPG",
+        "score": 0.4446,
+        "caption": "Dr. Nandini Seth and Bikram Singh Bedi speak on a conference stage with futuristic tech displays flanking a seated panel.",
+        "matched_objects": []
+      },
+      {
+        "drive_file_id": "1UnWKRV4T2idUhoAjf9UOE8G8MQtUen3_",
+        "name": "P1028858.JPG",
+        "score": 0.4431,
+        "caption": "A large group of people poses for a group photograph inside an auditorium with tiered seating and stage lighting.",
+        "matched_objects": []
+      },
+      {
+        "drive_file_id": "1fbBHOfvFligaBzktbcav4lkVt2RN4njE",
+        "name": "P1022249.JPG",
+        "score": 0.4427,
+        "caption": "A group of people are giving a presentation on a stage in an auditorium, with a speaker standing at a podium and others standing before a large screen displaying dog images.",
+        "matched_objects": []
+      }
+    ],
+    "hyrox delhi masters union race backdrop": [
+      {
+        "drive_file_id": "1JZxqAeleBfdE6bBap06EhyRxUGG31oi-",
+        "name": "_D6A1305.JPG",
+        "score": 0.962,
+        "caption": "Several runners are participating in an indoor race event under a large overhead sign that reads \"masters' union HYROX DELHI\".",
+        "matched_objects": [
+          {
+            "label": "sign",
+            "category": "signage",
+            "confidence": 0.9,
+            "source": "caption",
+            "evidence_text": "sign",
+            "best_timestamp": null,
+            "hit_count": 1
+          }
+        ]
+      },
+      {
+        "drive_file_id": "1bT6BikbzF_N0NW7Z51u4Xjs1UkBOixQD",
+        "name": "IMG_2581.HEIC",
+        "score": 0.6072,
+        "caption": "A man poses for a photo holding a small bag and a race tag in front of a branded wall featuring the text \"CLASS OF HYROX '26\" and \"masters' union HYROX DELHI\".",
+        "matched_objects": []
+      }
+    ],
+    "person speaking into a shure microphone": [
+      {
+        "drive_file_id": "1NfFkN2yOVogBnfiph860WE1Uo7w0PrsD",
+        "name": "0H1A8309.JPG",
+        "score": 0.962,
+        "caption": "A woman stands behind a podium speaking into a microphone at an event with blue lighting and corporate logos.",
+        "matched_objects": [
+          {
+            "label": "microphone",
+            "category": "electronics",
+            "confidence": 0.9,
+            "source": "caption",
+            "evidence_text": "microphone",
+            "best_timestamp": null,
+            "hit_count": 1
+          }
+        ]
+      },
+      {
+        "drive_file_id": "1B8TOEwGINLU0_ImnYIjRQcxwOBeNygl-",
+        "name": "0H1A8335.JPG",
+        "score": 0.962,
+        "caption": "A man in a light blue blazer and jeans sits comfortably in a yellow chair during a panel discussion, holding a microphone while water bottles and wooden tissue boxes sit on tables nearby.",
+        "matched_objects": [
+          {
+            "label": "microphone",
+            "category": "electronics",
+            "confidence": 0.9,
+            "source": "caption",
+            "evidence_text": "microphone",
+            "best_timestamp": null,
+            "hit_count": 1
+          }
+        ]
+      },
+      {
+        "drive_file_id": "1nMHfTAe7S47URDsq2mLfzdqSNFLuL6FZ",
+        "name": "0H1A8336.JPG",
+        "score": 0.962,
+        "caption": "A man in a light blue blazer speaks into a microphone while seated in a yellow armchair on a stage with a blue backdrop.",
+        "matched_objects": [
+          {
+            "label": "microphone",
+            "category": "electronics",
+            "confidence": 0.9,
+            "source": "caption",
+            "evidence_text": "microphone",
+            "best_timestamp": null,
+            "hit_count": 1
+          }
+        ]
+      },
+      {
+        "drive_file_id": "1y_bDu-DA8qkzAXCSy_dWO6cwcIRHRyZa",
+        "name": "0H1A8344.JPG",
+        "score": 0.962,
+        "caption": "A man wearing glasses and a grey blazer is seated on a stage during a panel discussion, speaking into a microphone while a large blue backdrop displays text.",
+        "matched_objects": [
+          {
+            "label": "microphone",
+            "category": "electronics",
+            "confidence": 0.9,
+            "source": "caption",
+            "evidence_text": "microphone",
+            "best_timestamp": null,
+            "hit_count": 1
+          }
+        ]
+      },
+      {
+        "drive_file_id": "1NqBf7NsLQrEHjxlDe-u3G1XtYn-0hKm4",
+        "name": "0H1A8345.JPG",
+        "score": 0.962,
+        "caption": "A man with glasses and a beard speaks into a microphone while seated on stage at a panel event. A purple backdrop with white text reading \"E NEXT\" and \"Shung the Ne\" is visible behind him.",
+        "matched_objects": [
+          {
+            "label": "microphone",
+            "category": "electronics",
+            "confidence": 0.9,
+            "source": "caption",
+            "evidence_text": "microphone",
+            "best_timestamp": null,
+            "hit_count": 1
+          }
+        ]
+      },
+      {
+        "drive_file_id": "1W0Fu0nxmrK8-5yUcaKLKWb7nZVEnOXZ8",
+        "name": "0H1A8347.JPG",
+        "score": 0.962,
+        "caption": "A man wearing a light green polo shirt speaks into a microphone while seated on a stage with a blue backdrop.",
+        "matched_objects": [
+          {
+            "label": "microphone",
+            "category": "electronics",
+            "confidence": 0.9,
+            "source": "caption",
+            "evidence_text": "microphone",
+            "best_timestamp": null,
+            "hit_count": 1
+          }
+        ]
+      },
+      {
+        "drive_file_id": "1vfHDqqneOS1KlsNNfMc-TIgVMaOgrN93",
+        "name": "0H1A8348.JPG",
+        "score": 0.962,
+        "caption": "A man wearing a light green polo shirt and blue jeans sits in a yellow chair holding a microphone and talking at an event. A white lanyard with text hangs around his neck.",
+        "matched_objects": [
+          {
+            "label": "microphone",
+            "category": "electronics",
+            "confidence": 0.9,
+            "source": "caption",
+            "evidence_text": "microphone",
+            "best_timestamp": null,
+            "hit_count": 1
+          }
+        ]
+      },
+      {
+        "drive_file_id": "1KzXsW1OgTkZ48lZudyQhjLavQg3oeZZY",
+        "name": "0H1A8349.JPG",
+        "score": 0.962,
+        "caption": "A man in a light green polo shirt and blue jeans sits in a yellow armchair on a stage, speaking into a microphone. A banner with text is visible in the background against a blue wall.",
+        "matched_objects": [
+          {
+            "label": "microphone",
+            "category": "electronics",
+            "confidence": 0.9,
+            "source": "caption",
+            "evidence_text": "microphone",
+            "best_timestamp": null,
+            "hit_count": 1
+          }
+        ]
+      },
+      {
+        "drive_file_id": "1R9UpsZwPVS583XOPI7JVN0ygK1VobXby",
+        "name": "0H1A8357.JPG",
+        "score": 0.962,
+        "caption": "A man wearing glasses and a dark suit jacket sits in a yellow armchair on a stage, speaking into a microphone while gesturing with his hands. A banner on the left reads \"THE NEXT TECH 1.0 Panels & Keynotes\".",
+        "matched_objects": [
+          {
+            "label": "microphone",
+            "category": "electronics",
+            "confidence": 0.9,
+            "source": "caption",
+            "evidence_text": "microphone",
+            "best_timestamp": null,
+            "hit_count": 1
+          }
+        ]
+      },
+      {
+        "drive_file_id": "1GR6ZLMgidznBSaCk1T30DLEHSX25XlmP",
+        "name": "0H1A8358.JPG",
+        "score": 0.962,
+        "caption": "A man in a suit and glasses is seated on stage, speaking into a microphone with a black banner behind him reading Panels & Keynotes.",
+        "matched_objects": [
+          {
+            "label": "microphone",
+            "category": "electronics",
+            "confidence": 0.9,
+            "source": "caption",
+            "evidence_text": "microphone",
+            "best_timestamp": null,
+            "hit_count": 1
+          }
+        ]
+      },
+      {
+        "drive_file_id": "1LLPUYUUY1padfUTLngvb_IFbXS-QiQbc",
+        "name": "0H1A8391.JPG",
+        "score": 0.962,
+        "caption": "A man in a light pink button-down shirt holds a microphone and speaks while seated on a stage panel before a dark branded backdrop.",
+        "matched_objects": [
+          {
+            "label": "microphone",
+            "category": "electronics",
+            "confidence": 0.9,
+            "source": "caption",
+            "evidence_text": "microphone",
+            "best_timestamp": null,
+            "hit_count": 1
+          }
+        ]
+      },
+      {
+        "drive_file_id": "15Sc3svqZGuZ1bCkRLKo40RAliCBuHRaC",
+        "name": "0H1A8392.JPG",
+        "score": 0.962,
+        "caption": "A man in a light pink button-down shirt holds a microphone and speaks while seated in a yellow armchair on stage.",
+        "matched_objects": [
+          {
+            "label": "microphone",
+            "category": "electronics",
+            "confidence": 0.9,
+            "source": "caption",
+            "evidence_text": "microphone",
+            "best_timestamp": null,
+            "hit_count": 1
+          }
+        ]
+      },
+      {
+        "drive_file_id": "1gW4P0KvbeItgyasR3IOx2GbXJZmuXWgr",
+        "name": "0H1A8393.JPG",
+        "score": 0.962,
+        "caption": "A close-up shot captures the same man speaking animatedly into a microphone on stage, with a panelist seated beside him in the foreground.",
+        "matched_objects": [
+          {
+            "label": "microphone",
+            "category": "electronics",
+            "confidence": 0.9,
+            "source": "caption",
+            "evidence_text": "microphone",
+            "best_timestamp": null,
+            "hit_count": 1
+          }
+        ]
+      },
+      {
+        "drive_file_id": "1RzAxZ1v6i6e7yJqAEiqWhoiP0DJ7eLcf",
+        "name": "0H1A8394.JPG",
+        "score": 0.962,
+        "caption": "A man in a light-colored button-down shirt speaks into a microphone while gesturing with his hand during a panel discussion, with a dark background and partial view of another panelist.",
+        "matched_objects": [
+          {
+            "label": "microphone",
+            "category": "electronics",
+            "confidence": 0.9,
+            "source": "caption",
+            "evidence_text": "microphone",
+            "best_timestamp": null,
+            "hit_count": 1
+          }
+        ]
+      },
+      {
+        "drive_file_id": "1fNASwAVIql7JjXvA4G91qHvWoFMEUJNF",
+        "name": "0H1A8397.JPG",
+        "score": 0.962,
+        "caption": "A man with glasses and a beard speaks into a microphone while seated on a stage, holding a notebook.",
+        "matched_objects": [
+          {
+            "label": "microphone",
+            "category": "electronics",
+            "confidence": 0.9,
+            "source": "caption",
+            "evidence_text": "microphone",
+            "best_timestamp": null,
+            "hit_count": 1
+          }
+        ]
+      },
+      {
+        "drive_file_id": "17YUNaTPYe6RG4xDJt3_ESzK0h7EoWAUd",
+        "name": "0H1A8398.JPG",
+        "score": 0.962,
+        "caption": "A man wearing glasses and a tan Nehru jacket speaks into a microphone during a panel session. The background features a purple display with text reading \"Shapire Next\".",
+        "matched_objects": [
+          {
+            "label": "microphone",
+            "category": "electronics",
+            "confidence": 0.9,
+            "source": "caption",
+            "evidence_text": "microphone",
+            "best_timestamp": null,
+            "hit_count": 1
+          }
+        ]
+      },
+      {
+        "drive_file_id": "1aBdWrfXR7UghpEhy9kzy5tMLPDhBGdkB",
+        "name": "0H1A8400.JPG",
+        "score": 0.962,
+        "caption": "A bearded panelist wearing a white collared shirt speaks into a microphone while seated on stage.",
+        "matched_objects": [
+          {
+            "label": "microphone",
+            "category": "electronics",
+            "confidence": 0.9,
+            "source": "caption",
+            "evidence_text": "microphone",
+            "best_timestamp": null,
+            "hit_count": 1
+          }
+        ]
+      },
+      {
+        "drive_file_id": "1HWbkSW8Eg6Fu9oU4WzD5d4HLjXNnMhbN",
+        "name": "0H1A8402.JPG",
+        "score": 0.962,
+        "caption": "A man in a white collared shirt sits on a stage speaking into a microphone against a blue graphic backdrop.",
+        "matched_objects": [
+          {
+            "label": "microphone",
+            "category": "electronics",
+            "confidence": 0.9,
+            "source": "caption",
+            "evidence_text": "microphone",
+            "best_timestamp": null,
+            "hit_count": 1
+          }
+        ]
+      },
+      {
+        "drive_file_id": "1Lv7TlzTLjZCwxHB2utP_9bQC6Az5-FSZ",
+        "name": "0H1A8403.JPG",
+        "score": 0.962,
+        "caption": "A man with a beard and mustache wearing a white collared shirt speaks into a black microphone while gesturing with his hands. He is seated on a stage against a blue backdrop featuring the text \"e Next Cha r of AI\".",
+        "matched_objects": [
+          {
+            "label": "microphone",
+            "category": "electronics",
+            "confidence": 0.9,
+            "source": "caption",
+            "evidence_text": "microphone",
+            "best_timestamp": null,
+            "hit_count": 1
+          }
+        ]
+      },
+      {
+        "drive_file_id": "1MgoQMObbF-dI6ub0tykVHuOvInbDl804",
+        "name": "0H1A8428.JPG",
+        "score": 0.962,
+        "caption": "A panel discussion takes place on a stage with a blue backdrop reading THE NEXT TECH 1.0, featuring five men seated in yellow armchairs holding microphones, while audience members sit in the foreground facing them.",
+        "matched_objects": [
+          {
+            "label": "microphone",
+            "category": "electronics",
+            "confidence": 0.9,
+            "source": "caption",
+            "evidence_text": "microphone",
+            "best_timestamp": null,
+            "hit_count": 1
+          }
+        ]
+      },
+      {
+        "drive_file_id": "1wcGHa_xaaKviIv70wqnGdycsblO9eEDz",
+        "name": "0H1A8431.JPG",
+        "score": 0.962,
+        "caption": "A man with glasses and a beard sits in a yellow armchair on a stage, speaking into a microphone. A banner in the background reads \"TECH 1.0\" and \"Panels & Keynotes\".",
+        "matched_objects": [
+          {
+            "label": "microphone",
+            "category": "electronics",
+            "confidence": 0.9,
+            "source": "caption",
+            "evidence_text": "microphone",
+            "best_timestamp": null,
+            "hit_count": 1
+          }
+        ]
+      },
+      {
+        "drive_file_id": "13RzLJuJa-0PMnQZXsZUWjbNds42Tibjr",
+        "name": "0H1A8432.JPG",
+        "score": 0.962,
+        "caption": "A bearded man wearing glasses and a black polo shirt sits in a yellow armchair, holding a microphone and gesturing with his hand while speaking.",
+        "matched_objects": [
+          {
+            "label": "microphone",
+            "category": "electronics",
+            "confidence": 0.9,
+            "source": "caption",
+            "evidence_text": "microphone",
+            "best_timestamp": null,
+            "hit_count": 1
+          }
+        ]
+      },
+      {
+        "drive_file_id": "16s3xhm-cgjcz_YlfBdpEPGtbwu6bY4Mb",
+        "name": "0H1A8433.JPG",
+        "score": 0.962,
+        "caption": "A panelist wearing a tan Nehru jacket and glasses speaks into a microphone while gesturing with his hand during a session.",
+        "matched_objects": [
+          {
+            "label": "microphone",
+            "category": "electronics",
+            "confidence": 0.9,
+            "source": "caption",
+            "evidence_text": "microphone",
+            "best_timestamp": null,
+            "hit_count": 1
+          }
+        ]
+      },
+      {
+        "drive_file_id": "1MJOTQFTyOqw2QVrDQhfoZ5ORAWnQpQyx",
+        "name": "0H1A8434.JPG",
+        "score": 0.962,
+        "caption": "A man with glasses and a beard sits on a yellow chair on a stage, holding a microphone and speaking. A backdrop behind him has text reading \\\"Panels & Keynotes\\\".",
+        "matched_objects": [
+          {
+            "label": "microphone",
+            "category": "electronics",
+            "confidence": 0.9,
+            "source": "caption",
+            "evidence_text": "microphone",
+            "best_timestamp": null,
+            "hit_count": 1
+          }
+        ]
+      }
+    ],
+    "students presenting a trophy during the ceremony": [
+      {
+        "drive_file_id": "12Dbi7Z9fTkZ7b6VAOerBP5SoE0cisq4c",
+        "name": "4f348782-508f-41ff-8912-cbe7c076afd9 2.JPG",
+        "score": 0.962,
+        "caption": "Several people stand on a stage decorated with purple lighting and string lights, facing a table with a trophy and lit candles.",
+        "matched_objects": [
+          {
+            "label": "trophy",
+            "category": "common",
+            "confidence": 0.9,
+            "source": "caption",
+            "evidence_text": "trophy",
+            "best_timestamp": null,
+            "hit_count": 1
+          }
+        ]
+      },
+      {
+        "drive_file_id": "1tZtQfTgL94xxHrz4ddCPhTEPU42r_YKW",
+        "name": "4f348782-508f-41ff-8912-cbe7c076afd9.JPG",
+        "score": 0.962,
+        "caption": "Four individuals in dark clothing stand on a stage decorated with purple and blue party lights, string lights, and a central trophy table.",
+        "matched_objects": [
+          {
+            "label": "trophy",
+            "category": "common",
+            "confidence": 0.9,
+            "source": "caption",
+            "evidence_text": "trophy",
+            "best_timestamp": null,
+            "hit_count": 1
+          }
+        ]
+      },
+      {
+        "drive_file_id": "1XnduUYwIHrqq7VcmK-xYxzfcOM6fVEEp",
+        "name": "9S0A9146.JPG",
+        "score": 0.962,
+        "caption": "A woman holding a trophy and a man in a suit clapping stand on stage.",
+        "matched_objects": [
+          {
+            "label": "trophy",
+            "category": "common",
+            "confidence": 0.9,
+            "source": "caption",
+            "evidence_text": "trophy",
+            "best_timestamp": null,
+            "hit_count": 1
+          }
+        ]
+      },
+      {
+        "drive_file_id": "1-ukQy7Y3XMc2qaV6NkfkIFmPe6GMSRJ_",
+        "name": "9S0A9147.JPG",
+        "score": 0.962,
+        "caption": "Four people stand on a stage during an award ceremony, with one holding a trophy.",
+        "matched_objects": [
+          {
+            "label": "trophy",
+            "category": "common",
+            "confidence": 0.9,
+            "source": "caption",
+            "evidence_text": "trophy",
+            "best_timestamp": null,
+            "hit_count": 1
+          }
+        ]
+      },
+      {
+        "drive_file_id": "1xsTD9rhFzxQKFIJG5VaLT-3p2AxLeCu1",
+        "name": "9S0A9148.JPG",
+        "score": 0.962,
+        "caption": "Four people stand on a stage with a blue backdrop, posing together as a woman in a polka-dot dress holds a glass trophy with assistance from another woman while two others look on.",
+        "matched_objects": [
+          {
+            "label": "trophy",
+            "category": "common",
+            "confidence": 0.9,
+            "source": "caption",
+            "evidence_text": "trophy",
+            "best_timestamp": null,
+            "hit_count": 1
+          }
+        ]
+      },
+      {
+        "drive_file_id": "1MsPtH1XjQo_FW2vPH2xWzz0HilgZaTRu",
+        "name": "9S0A9149.JPG",
+        "score": 0.962,
+        "caption": "Four people stand on a stage for an award presentation, with one holding a tall trophy.",
+        "matched_objects": [
+          {
+            "label": "trophy",
+            "category": "common",
+            "confidence": 0.9,
+            "source": "caption",
+            "evidence_text": "trophy",
+            "best_timestamp": null,
+            "hit_count": 1
+          }
+        ]
+      },
+      {
+        "drive_file_id": "1jPHSV7f-qq5lZfgWaJVV_sI-kV_8YaDA",
+        "name": "9S0A9151.JPG",
+        "score": 0.962,
+        "caption": "Four people stand on a stage with a blue background, featuring a woman in a pink jacket, a man in a dark suit holding a trophy, another man in a brown blazer receiving the trophy, and a man in a suit on the far right.",
+        "matched_objects": [
+          {
+            "label": "trophy",
+            "category": "common",
+            "confidence": 0.9,
+            "source": "caption",
+            "evidence_text": "trophy",
+            "best_timestamp": null,
+            "hit_count": 1
+          }
+        ]
+      },
+      {
+        "drive_file_id": "1xYMTTMj1vTMz7lZ7P0yVTuCQwMtd8HsI",
+        "name": "9S0A9152.JPG",
+        "score": 0.962,
+        "caption": "Four people stand on stage holding a trophy together, with purple backdrop lighting.",
+        "matched_objects": [
+          {
+            "label": "trophy",
+            "category": "common",
+            "confidence": 0.9,
+            "source": "caption",
+            "evidence_text": "trophy",
+            "best_timestamp": null,
+            "hit_count": 1
+          }
+        ]
+      },
+      {
+        "drive_file_id": "1OXpXcPguIs4AlFmMxpUs19BjBf136x7J",
+        "name": "9S0A9153.JPG",
+        "score": 0.962,
+        "caption": "Four people pose together on a stage, holding a glass trophy award, with a woman on the left and three men in suits next to her.",
+        "matched_objects": [
+          {
+            "label": "trophy",
+            "category": "common",
+            "confidence": 0.9,
+            "source": "caption",
+            "evidence_text": "trophy",
+            "best_timestamp": null,
+            "hit_count": 1
+          }
+        ]
+      },
+      {
+        "drive_file_id": "1FU4XToGypROtqhFnzKvkIfrK8IYiMe0E",
+        "name": "9S0A9154.JPG",
+        "score": 0.962,
+        "caption": "Four people pose together on a stage, with the two central men holding a glass trophy and a large screen behind them.",
+        "matched_objects": [
+          {
+            "label": "trophy",
+            "category": "common",
+            "confidence": 0.9,
+            "source": "caption",
+            "evidence_text": "trophy",
+            "best_timestamp": null,
+            "hit_count": 1
+          }
+        ]
+      },
+      {
+        "drive_file_id": "1G-2s4oQXtT42_LH5fO5VapxAMQtUlIVW",
+        "name": "9S0A9160.JPG",
+        "score": 0.962,
+        "caption": "Four individuals stand together on a stage with a blue background, holding a glass trophy.",
+        "matched_objects": [
+          {
+            "label": "trophy",
+            "category": "common",
+            "confidence": 0.9,
+            "source": "caption",
+            "evidence_text": "trophy",
+            "best_timestamp": null,
+            "hit_count": 1
+          }
+        ]
+      },
+      {
+        "drive_file_id": "12VkiT9rolTRnXeKrcpvbHlPPZ4zty70v",
+        "name": "9S0A9161.JPG",
+        "score": 0.962,
+        "caption": "Four people stand on a blue-lit stage holding an award trophy.",
+        "matched_objects": [
+          {
+            "label": "trophy",
+            "category": "common",
+            "confidence": 0.9,
+            "source": "caption",
+            "evidence_text": "trophy",
+            "best_timestamp": null,
+            "hit_count": 1
+          }
+        ]
+      },
+      {
+        "drive_file_id": "10TBLa-I1O2iDlAEt1yrj3KBgGmPfxJ70",
+        "name": "9S0A9162.JPG",
+        "score": 0.962,
+        "caption": "Four people stand on a stage holding a trophy, with a large projection screen and blue lighting in the background.",
+        "matched_objects": [
+          {
+            "label": "trophy",
+            "category": "common",
+            "confidence": 0.9,
+            "source": "caption",
+            "evidence_text": "trophy",
+            "best_timestamp": null,
+            "hit_count": 1
+          }
+        ]
+      },
+      {
+        "drive_file_id": "11vjRREuWhQmmtFQKiRqv-xLMIdWzuhD5",
+        "name": "9S0A9164.JPG",
+        "score": 0.962,
+        "caption": "Three people stand on a stage with a blue backdrop, smiling while holding a glass award trophy.",
+        "matched_objects": [
+          {
+            "label": "trophy",
+            "category": "common",
+            "confidence": 0.9,
+            "source": "caption",
+            "evidence_text": "trophy",
+            "best_timestamp": null,
+            "hit_count": 1
+          }
+        ]
+      },
+      {
+        "drive_file_id": "1MhJt1pKV0F_m1JtzGkfFmBc5696DN1_8",
+        "name": "9S0A9170.JPG",
+        "score": 0.962,
+        "caption": "Four people pose on stage as a man in the center presents an award trophy to another attendee.",
+        "matched_objects": [
+          {
+            "label": "trophy",
+            "category": "common",
+            "confidence": 0.9,
+            "source": "caption",
+            "evidence_text": "trophy",
+            "best_timestamp": null,
+            "hit_count": 1
+          }
+        ]
+      },
+      {
+        "drive_file_id": "11XWyauyNrQrZktUJi-LPKRaHLaZ1CnUK",
+        "name": "9S0A9171.JPG",
+        "score": 0.962,
+        "caption": "Four individuals stand on a stage, posing with an award trophy handed over to one person.",
+        "matched_objects": [
+          {
+            "label": "trophy",
+            "category": "common",
+            "confidence": 0.9,
+            "source": "caption",
+            "evidence_text": "trophy",
+            "best_timestamp": null,
+            "hit_count": 1
+          }
+        ]
+      },
+      {
+        "drive_file_id": "1uYTgjCJFMzkP6K3fDJT1CRYzSZ_fMlLL",
+        "name": "9S0A9173.JPG",
+        "score": 0.962,
+        "caption": "Three people stand on a stage together, with the central person holding a small trophy.",
+        "matched_objects": [
+          {
+            "label": "trophy",
+            "category": "common",
+            "confidence": 0.9,
+            "source": "caption",
+            "evidence_text": "trophy",
+            "best_timestamp": null,
+            "hit_count": 1
+          }
+        ]
+      },
+      {
+        "drive_file_id": "14uMs9TD3oDcAnjGQOc2i9JMqmOOvKUAM",
+        "name": "9S0A9174.JPG",
+        "score": 0.962,
+        "caption": "Three individuals stand on a stage with a digital display in the background, with the woman in the center holding a small trophy.",
+        "matched_objects": [
+          {
+            "label": "trophy",
+            "category": "common",
+            "confidence": 0.9,
+            "source": "caption",
+            "evidence_text": "trophy",
+            "best_timestamp": null,
+            "hit_count": 1
+          }
+        ]
+      },
+      {
+        "drive_file_id": "19MIbB_BSQ1tptPxnqXk0qu454z3zFcMP",
+        "name": "9S0A9175.JPG",
+        "score": 0.962,
+        "caption": "Three people stand on a stage posing for a photo, with the central person holding a small award trophy.",
+        "matched_objects": [
+          {
+            "label": "trophy",
+            "category": "common",
+            "confidence": 0.9,
+            "source": "caption",
+            "evidence_text": "trophy",
+            "best_timestamp": null,
+            "hit_count": 1
+          }
+        ]
+      },
+      {
+        "drive_file_id": "18IDhc-WNt0sYAYeTPIICPv2FTtTIdQBe",
+        "name": "9S0A9176.JPG",
+        "score": 0.962,
+        "caption": "Three individuals pose on a stage, holding an award trophy together.",
+        "matched_objects": [
+          {
+            "label": "trophy",
+            "category": "common",
+            "confidence": 0.9,
+            "source": "caption",
+            "evidence_text": "trophy",
+            "best_timestamp": null,
+            "hit_count": 1
+          }
+        ]
+      },
+      {
+        "drive_file_id": "1oNcqs7pxoZgTHa2BiYeSTWDsvc1spWbU",
+        "name": "9S0A9180.JPG",
+        "score": 0.962,
+        "caption": "Four individuals stand on a stage in front of a blue backdrop, with a woman in a yellow sari holding a glass trophy alongside a man in traditional Indian attire while two others stand nearby.",
+        "matched_objects": [
+          {
+            "label": "trophy",
+            "category": "common",
+            "confidence": 0.9,
+            "source": "caption",
+            "evidence_text": "trophy",
+            "best_timestamp": null,
+            "hit_count": 1
+          }
+        ]
+      },
+      {
+        "drive_file_id": "15cdmjIP5YXJl8ZS1UnLdYlhQToqQaL04",
+        "name": "9S0A9181.JPG",
+        "score": 0.962,
+        "caption": "Four people stand together on a stage holding an award trophy, with the two central awardees wearing traditional attire.",
+        "matched_objects": [
+          {
+            "label": "trophy",
+            "category": "common",
+            "confidence": 0.9,
+            "source": "caption",
+            "evidence_text": "trophy",
+            "best_timestamp": null,
+            "hit_count": 1
+          }
+        ]
+      },
+      {
+        "drive_file_id": "1RgZHZVxZrlaiWnGuxM9AQB_4a4UlNgE9",
+        "name": "9S0A9182.JPG",
+        "score": 0.962,
+        "caption": "Four people stand on a stage holding a trophy, with a banner and screen behind them.",
+        "matched_objects": [
+          {
+            "label": "trophy",
+            "category": "common",
+            "confidence": 0.9,
+            "source": "caption",
+            "evidence_text": "trophy",
+            "best_timestamp": null,
+            "hit_count": 1
+          }
+        ]
+      },
+      {
+        "drive_file_id": "1pNqPJDg-17_PodVez4o5U-d9sThlY0FB",
+        "name": "9S0A9183.JPG",
+        "score": 0.962,
+        "caption": "Four people pose on a stage with a blue background, holding a glass award trophy together.",
+        "matched_objects": [
+          {
+            "label": "trophy",
+            "category": "common",
+            "confidence": 0.9,
+            "source": "caption",
+            "evidence_text": "trophy",
+            "best_timestamp": null,
+            "hit_count": 1
+          }
+        ]
+      }
+    ]
+  },
+  "images": [
+    {
+      "index": 1,
+      "drive_file_id": "1Aa2HWN0utYYtd054i3-z7oEYigVsu40W",
+      "name": "Copy of C0025.png",
+      "path": "runpod/qwen-vl/prod-hits/001_Copy_of_C0025.jpg",
+      "bytes": 57065,
+      "source": "cache"
+    },
+    {
+      "index": 2,
+      "drive_file_id": "1QJ_-gvSoCBcoOYn0rbD2AYJehfUHEwv0",
+      "name": "Copy of P1090114.JPG",
+      "path": "runpod/qwen-vl/prod-hits/002_Copy_of_P1090114.jpg",
+      "bytes": 61178,
+      "source": "cache"
+    },
+    {
+      "index": 3,
+      "drive_file_id": "13BypTwYCzfhg7z7Zxzax3LObsIdqPUMb",
+      "name": "Copy of Copy of P1090114.JPG",
+      "path": "runpod/qwen-vl/prod-hits/003_Copy_of_Copy_of_P1090114.jpg",
+      "bytes": 61178,
+      "source": "cache"
+    },
+    {
+      "index": 4,
+      "drive_file_id": "1l5GqgWk1I3vVKbtzpQ2_CxXfaPp28rHv",
+      "name": "page04_img01_2134x1601.jpeg",
+      "path": "runpod/qwen-vl/prod-hits/004_page04_img01_2134x1601.jpg",
+      "bytes": 65187,
+      "source": "cache"
+    },
+    {
+      "index": 5,
+      "drive_file_id": "1c71jllY2g1hqgfb4JA3ZTAGjoYdpM7AR",
+      "name": "page54_img02_3024x2016.jpeg",
+      "path": "runpod/qwen-vl/prod-hits/005_page54_img02_3024x2016.jpg",
+      "bytes": 81786,
+      "source": "cache"
+    },
+    {
+      "index": 6,
+      "drive_file_id": "1rjbG1TFvNAJhEd6lBpI9NQmNvS-rI5zE",
+      "name": "11.jpg",
+      "path": "runpod/qwen-vl/prod-hits/006_11.jpg",
+      "bytes": 66425,
+      "source": "cache"
+    },
+    {
+      "index": 7,
+      "drive_file_id": "1T4ExGf1nRK3ztPLTbPdzqJorLuVzS29H",
+      "name": "Copy of P1121159.JPG",
+      "path": "runpod/qwen-vl/prod-hits/007_Copy_of_P1121159.jpg",
+      "bytes": 64952,
+      "source": "cache"
+    },
+    {
+      "index": 8,
+      "drive_file_id": "1R3sMmLDWDiKWy8SsLTtFBp9BfqibpN_Q",
+      "name": "page53_img01_4095x2993.jpeg",
+      "path": "runpod/qwen-vl/prod-hits/008_page53_img01_4095x2993.jpg",
+      "bytes": 140485,
+      "source": "cache"
+    },
+    {
+      "index": 9,
+      "drive_file_id": "15ik2Y8RIDo1DPDwqtHxFho9F5uoUgLpI",
+      "name": "Copy of Copy of AE8I0225.JPG",
+      "path": "runpod/qwen-vl/prod-hits/009_Copy_of_Copy_of_AE8I0225.jpg",
+      "bytes": 112063,
+      "source": "cache"
+    },
+    {
+      "index": 10,
+      "drive_file_id": "1cP2ALG0Yh41MZAswtn5pRSJ1-xOrPJET",
+      "name": "page40_img02_3565x2926.jpeg",
+      "path": "runpod/qwen-vl/prod-hits/010_page40_img02_3565x2926.jpg",
+      "bytes": 113290,
+      "source": "cache"
+    },
+    {
+      "index": 11,
+      "drive_file_id": "1IP3vUs9j4qgkW5uC_1xf5aZwVDGF0ucX",
+      "name": "P1042024.JPG",
+      "path": "runpod/qwen-vl/prod-hits/011_P1042024.jpg",
+      "bytes": 88549,
+      "source": "cache"
+    },
+    {
+      "index": 12,
+      "drive_file_id": "1ee9uTevCy7g6FDELd1nnbVPGtMK9bdJd",
+      "name": "page20_img02_4096x2731.jpeg",
+      "path": "runpod/qwen-vl/prod-hits/012_page20_img02_4096x2731.jpg",
+      "bytes": 127354,
+      "source": "cache"
+    },
+    {
+      "index": 13,
+      "drive_file_id": "1EKhanvTV5injH4qlzpp854JdDYd5izte",
+      "name": "page05_img06_1080x1350.jpeg",
+      "path": "runpod/qwen-vl/prod-hits/013_page05_img06_1080x1350.jpg",
+      "bytes": 161252,
+      "source": "cache"
+    },
+    {
+      "index": 14,
+      "drive_file_id": "1FF1Th1HyKQ8pmGCTrl9NOw-iTfgBOV6c",
+      "name": "Copy of Copy of P1090126.JPG",
+      "path": "runpod/qwen-vl/prod-hits/014_Copy_of_Copy_of_P1090126.jpg",
+      "bytes": 71610,
+      "source": "cache"
+    },
+    {
+      "index": 15,
+      "drive_file_id": "1sjsHUkL0Pho0hGd-LgdIG0HYlYsI0Syr",
+      "name": "P1041922.JPG",
+      "path": "runpod/qwen-vl/prod-hits/015_P1041922.jpg",
+      "bytes": 98089,
+      "source": "cache"
+    },
+    {
+      "index": 16,
+      "drive_file_id": "1qeBKfWYqvvdgQ7CICMSC9vRg1yjxyQNQ",
+      "name": "P1117562.jpeg",
+      "path": "runpod/qwen-vl/prod-hits/016_P1117562.jpg",
+      "bytes": 91365,
+      "source": "cache"
+    },
+    {
+      "index": 17,
+      "drive_file_id": "1439ouN0A3kAFQqBal-pM_1sGTjXZupTB",
+      "name": "P1022394.JPG",
+      "path": "runpod/qwen-vl/prod-hits/017_P1022394.jpg",
+      "bytes": 118473,
+      "source": "cache"
+    },
+    {
+      "index": 18,
+      "drive_file_id": "1ojL27kjkgCFuA2YFqV-SF7GlcOCSI2en",
+      "name": "page04_img02_1600x1200.jpeg",
+      "path": "runpod/qwen-vl/prod-hits/018_page04_img02_1600x1200.jpg",
+      "bytes": 110370,
+      "source": "cache"
+    },
+    {
+      "index": 19,
+      "drive_file_id": "1yEdOTqJjey8FuX6AOTt6yCGEn2VGEHco",
+      "name": "P1089543.JPG",
+      "path": "runpod/qwen-vl/prod-hits/019_P1089543.jpg",
+      "bytes": 81367,
+      "source": "cache"
+    },
+    {
+      "index": 20,
+      "drive_file_id": "1NlwlB2pnn7PRtNNvnXbkRxPerSFH_ZkX",
+      "name": "P1041875.JPG",
+      "path": "runpod/qwen-vl/prod-hits/020_P1041875.jpg",
+      "bytes": 89218,
+      "source": "cache"
+    },
+    {
+      "index": 21,
+      "drive_file_id": "1HhFWnyjnCTeuoVJ0FV7NpceaOwIMHhHv",
+      "name": "P1124398.JPG",
+      "path": "runpod/qwen-vl/prod-hits/021_P1124398.jpg",
+      "bytes": 101353,
+      "source": "cache"
+    },
+    {
+      "index": 22,
+      "drive_file_id": "10-wdx3GVY4_pOGy_XKKWvh3Xw_lsvZPE",
+      "name": "SCREEN GRABS.00_00_02_13.Still003.jpg",
+      "path": "runpod/qwen-vl/prod-hits/022_SCREEN_GRABS.00_00_02_13.Still003.jpg",
+      "bytes": 67011,
+      "source": "cache"
+    },
+    {
+      "index": 23,
+      "drive_file_id": "1FwPWJZhGZ33Z334674kVvXNq63ZLQwVC",
+      "name": "page17_img04_4096x2731.jpeg",
+      "path": "runpod/qwen-vl/prod-hits/023_page17_img04_4096x2731.jpg",
+      "bytes": 33949,
+      "source": "cache"
+    },
+    {
+      "index": 24,
+      "drive_file_id": "1AXkVNKIDOgf8BLnq2hObg_wkJS0qE0hX",
+      "name": "P1117571.JPG.jpeg",
+      "path": "runpod/qwen-vl/prod-hits/024_P1117571.JPG.jpg",
+      "bytes": 96554,
+      "source": "cache"
+    },
+    {
+      "index": 25,
+      "drive_file_id": "1xupWEZ_u_3U5pU361CH8IHsUMTCBpcbX",
+      "name": "9S0A9133.JPG",
+      "path": "runpod/qwen-vl/prod-hits/025_9S0A9133.jpg",
+      "bytes": 162003,
+      "source": "cache"
+    },
+    {
+      "index": 26,
+      "drive_file_id": "1okZapDMzJII6DwzZP-klwOU5O66EhnH1",
+      "name": "P1028919.JPG",
+      "path": "runpod/qwen-vl/prod-hits/026_P1028919.jpg",
+      "bytes": 186263,
+      "source": "cache"
+    },
+    {
+      "index": 27,
+      "drive_file_id": "1FJjcyowOuvAYUOxFd8WQU_wJ760lH-NK",
+      "name": "Copy of P1057026.JPG",
+      "path": "runpod/qwen-vl/prod-hits/027_Copy_of_P1057026.jpg",
+      "bytes": 86549,
+      "source": "cache"
+    },
+    {
+      "index": 28,
+      "drive_file_id": "1aw-V9MFTtPvaZDYpB-N3qSBqLmQAogjN",
+      "name": "P1123634.JPG",
+      "path": "runpod/qwen-vl/prod-hits/028_P1123634.jpg",
+      "bytes": 134875,
+      "source": "cache"
+    },
+    {
+      "index": 29,
+      "drive_file_id": "1K_EAhgxqDZLIedPdt9UjjhHSjL2Sp2eU",
+      "name": "Copy of P1096514.JPG",
+      "path": "runpod/qwen-vl/prod-hits/029_Copy_of_P1096514.jpg",
+      "bytes": 141771,
+      "source": "cache"
+    },
+    {
+      "index": 30,
+      "drive_file_id": "1HmgIvK2HOaylpNi1_QhT2hjBXanwaiQb",
+      "name": "9S0A8879.JPG",
+      "path": "runpod/qwen-vl/prod-hits/030_9S0A8879.jpg",
+      "bytes": 107409,
+      "source": "cache"
+    },
+    {
+      "index": 31,
+      "drive_file_id": "1m4dTEpQX7TG7nMEC4Azi7q3hFqKqaUUo",
+      "name": "9S0A8883.JPG",
+      "path": "runpod/qwen-vl/prod-hits/031_9S0A8883.jpg",
+      "bytes": 107653,
+      "source": "cache"
+    },
+    {
+      "index": 32,
+      "drive_file_id": "1c5jTfVhBHjqZhGgjE6_xpjIq4Qq-M2OG",
+      "name": "DSC05297.JPG",
+      "path": "runpod/qwen-vl/prod-hits/032_DSC05297.jpg",
+      "bytes": 53791,
+      "source": "cache"
+    },
+    {
+      "index": 33,
+      "drive_file_id": "1r-MnkPp7FQonFwV_2co9_rJB8I0d4hY4",
+      "name": "374A9789.JPG",
+      "path": "runpod/qwen-vl/prod-hits/033_374A9789.jpg",
+      "bytes": 108566,
+      "source": "cache"
+    },
+    {
+      "index": 34,
+      "drive_file_id": "1yCzs3SCEQ-MheKW6pl0YW1uyxOCCKT02",
+      "name": "Copy of 9S0A8996 (1).jpg",
+      "path": "runpod/qwen-vl/prod-hits/034_Copy_of_9S0A8996_1_.jpg",
+      "bytes": 151481,
+      "source": "cache"
+    },
+    {
+      "index": 35,
+      "drive_file_id": "1liEISg-kJRNOiUJrgc9OrHe_wRTQiNp4",
+      "name": "FullSizeRender 6.JPG",
+      "path": "runpod/qwen-vl/prod-hits/035_FullSizeRender_6.jpg",
+      "bytes": 140421,
+      "source": "cache"
+    },
+    {
+      "index": 36,
+      "drive_file_id": "1lKs9NDjnq6--U9av1fPzfmtGDLcUWB8D",
+      "name": "9S0A9134.JPG",
+      "path": "runpod/qwen-vl/prod-hits/036_9S0A9134.jpg",
+      "bytes": 167907,
+      "source": "cache"
+    },
+    {
+      "index": 37,
+      "drive_file_id": "1RgEkaOAb43lcGhTsVtVLwHxlcpHaenkY",
+      "name": "9S0A8886.JPG",
+      "path": "runpod/qwen-vl/prod-hits/037_9S0A8886.jpg",
+      "bytes": 108661,
+      "source": "cache"
+    },
+    {
+      "index": 38,
+      "drive_file_id": "1eeAjTdAtGh5yGZeyqbMQHYZ4eDPZkP_c",
+      "name": "P1022320.JPG",
+      "path": "runpod/qwen-vl/prod-hits/038_P1022320.jpg",
+      "bytes": 83748,
+      "source": "cache"
+    },
+    {
+      "index": 39,
+      "drive_file_id": "1FNe7Y500VggPFA7IWQxOoPCoWLPWC7a3",
+      "name": "P1028914.JPG",
+      "path": "runpod/qwen-vl/prod-hits/039_P1028914.jpg",
+      "bytes": 189091,
+      "source": "cache"
+    },
+    {
+      "index": 40,
+      "drive_file_id": "1OfBBttYfIyYjQUJUWtyF-HHmXlQIZkab",
+      "name": "P1028917.JPG",
+      "path": "runpod/qwen-vl/prod-hits/040_P1028917.jpg",
+      "bytes": 185990,
+      "source": "cache"
+    },
+    {
+      "index": 41,
+      "drive_file_id": "1okSwE2MuZv0KAh_V3NHOVLiLdfFX-bT-",
+      "name": "P1028813.JPG",
+      "path": "runpod/qwen-vl/prod-hits/041_P1028813.jpg",
+      "bytes": 158951,
+      "source": "cache"
+    },
+    {
+      "index": 42,
+      "drive_file_id": "16CEgEFbDtArtr-l8PgTnmtuvpiCiQb5r",
+      "name": "P1028765.JPG",
+      "path": "runpod/qwen-vl/prod-hits/042_P1028765.jpg",
+      "bytes": 160897,
+      "source": "cache"
+    },
+    {
+      "index": 43,
+      "drive_file_id": "1jLd1TXj4JfSL1BhWsahadn8A6rNd6I89",
+      "name": "0H1A8472.JPG",
+      "path": "runpod/qwen-vl/prod-hits/043_0H1A8472.jpg",
+      "bytes": 82434,
+      "source": "cache"
+    },
+    {
+      "index": 44,
+      "drive_file_id": "11z3g9htZi3eTakGIB1L2Cb5pMi35ni_-",
+      "name": "Copy of P1155357.JPG",
+      "path": "runpod/qwen-vl/prod-hits/044_Copy_of_P1155357.jpg",
+      "bytes": 56956,
+      "source": "cache"
+    },
+    {
+      "index": 45,
+      "drive_file_id": "1qFixcOLZwpGQKW8TTvv9NTcuP4cH_zmr",
+      "name": "Copy of P1057043.JPG",
+      "path": "runpod/qwen-vl/prod-hits/045_Copy_of_P1057043.jpg",
+      "bytes": 55483,
+      "source": "cache"
+    },
+    {
+      "index": 46,
+      "drive_file_id": "19sntxPcrnPu1kzYPtGW1Inb30vcWHxHe",
+      "name": "9S0A8710.JPG",
+      "path": "runpod/qwen-vl/prod-hits/046_9S0A8710.jpg",
+      "bytes": 117668,
+      "source": "cache"
+    },
+    {
+      "index": 47,
+      "drive_file_id": "1UnWKRV4T2idUhoAjf9UOE8G8MQtUen3_",
+      "name": "P1028858.JPG",
+      "path": "runpod/qwen-vl/prod-hits/047_P1028858.jpg",
+      "bytes": 167861,
+      "source": "cache"
+    },
+    {
+      "index": 48,
+      "drive_file_id": "1fbBHOfvFligaBzktbcav4lkVt2RN4njE",
+      "name": "P1022249.JPG",
+      "path": "runpod/qwen-vl/prod-hits/048_P1022249.jpg",
+      "bytes": 91294,
+      "source": "cache"
+    },
+    {
+      "index": 49,
+      "drive_file_id": "1JZxqAeleBfdE6bBap06EhyRxUGG31oi-",
+      "name": "_D6A1305.JPG",
+      "path": "runpod/qwen-vl/prod-hits/049__D6A1305.jpg",
+      "bytes": 75756,
+      "source": "cache"
+    },
+    {
+      "index": 50,
+      "drive_file_id": "1bT6BikbzF_N0NW7Z51u4Xjs1UkBOixQD",
+      "name": "IMG_2581.HEIC",
+      "path": "runpod/qwen-vl/prod-hits/050_IMG_2581.jpg",
+      "bytes": 122562,
+      "source": "cache"
+    },
+    {
+      "index": 51,
+      "drive_file_id": "1NfFkN2yOVogBnfiph860WE1Uo7w0PrsD",
+      "name": "0H1A8309.JPG",
+      "path": "runpod/qwen-vl/prod-hits/051_0H1A8309.jpg",
+      "bytes": 48794,
+      "source": "cache"
+    },
+    {
+      "index": 52,
+      "drive_file_id": "1B8TOEwGINLU0_ImnYIjRQcxwOBeNygl-",
+      "name": "0H1A8335.JPG",
+      "path": "runpod/qwen-vl/prod-hits/052_0H1A8335.jpg",
+      "bytes": 82669,
+      "source": "cache"
+    },
+    {
+      "index": 53,
+      "drive_file_id": "1nMHfTAe7S47URDsq2mLfzdqSNFLuL6FZ",
+      "name": "0H1A8336.JPG",
+      "path": "runpod/qwen-vl/prod-hits/053_0H1A8336.jpg",
+      "bytes": 82040,
+      "source": "cache"
+    },
+    {
+      "index": 54,
+      "drive_file_id": "1y_bDu-DA8qkzAXCSy_dWO6cwcIRHRyZa",
+      "name": "0H1A8344.JPG",
+      "path": "runpod/qwen-vl/prod-hits/054_0H1A8344.jpg",
+      "bytes": 87881,
+      "source": "cache"
+    },
+    {
+      "index": 55,
+      "drive_file_id": "1NqBf7NsLQrEHjxlDe-u3G1XtYn-0hKm4",
+      "name": "0H1A8345.JPG",
+      "path": "runpod/qwen-vl/prod-hits/055_0H1A8345.jpg",
+      "bytes": 96819,
+      "source": "cache"
+    },
+    {
+      "index": 56,
+      "drive_file_id": "1W0Fu0nxmrK8-5yUcaKLKWb7nZVEnOXZ8",
+      "name": "0H1A8347.JPG",
+      "path": "runpod/qwen-vl/prod-hits/056_0H1A8347.jpg",
+      "bytes": 73049,
+      "source": "cache"
+    },
+    {
+      "index": 57,
+      "drive_file_id": "1vfHDqqneOS1KlsNNfMc-TIgVMaOgrN93",
+      "name": "0H1A8348.JPG",
+      "path": "runpod/qwen-vl/prod-hits/057_0H1A8348.jpg",
+      "bytes": 74528,
+      "source": "cache"
+    },
+    {
+      "index": 58,
+      "drive_file_id": "1KzXsW1OgTkZ48lZudyQhjLavQg3oeZZY",
+      "name": "0H1A8349.JPG",
+      "path": "runpod/qwen-vl/prod-hits/058_0H1A8349.jpg",
+      "bytes": 69975,
+      "source": "cache"
+    },
+    {
+      "index": 59,
+      "drive_file_id": "1R9UpsZwPVS583XOPI7JVN0ygK1VobXby",
+      "name": "0H1A8357.JPG",
+      "path": "runpod/qwen-vl/prod-hits/059_0H1A8357.jpg",
+      "bytes": 63989,
+      "source": "cache"
+    },
+    {
+      "index": 60,
+      "drive_file_id": "1GR6ZLMgidznBSaCk1T30DLEHSX25XlmP",
+      "name": "0H1A8358.JPG",
+      "path": "runpod/qwen-vl/prod-hits/060_0H1A8358.jpg",
+      "bytes": 49159,
+      "source": "cache"
+    },
+    {
+      "index": 61,
+      "drive_file_id": "1LLPUYUUY1padfUTLngvb_IFbXS-QiQbc",
+      "name": "0H1A8391.JPG",
+      "path": "runpod/qwen-vl/prod-hits/061_0H1A8391.jpg",
+      "bytes": 58461,
+      "source": "cache"
+    },
+    {
+      "index": 62,
+      "drive_file_id": "15Sc3svqZGuZ1bCkRLKo40RAliCBuHRaC",
+      "name": "0H1A8392.JPG",
+      "path": "runpod/qwen-vl/prod-hits/062_0H1A8392.jpg",
+      "bytes": 62104,
+      "source": "cache"
+    },
+    {
+      "index": 63,
+      "drive_file_id": "1gW4P0KvbeItgyasR3IOx2GbXJZmuXWgr",
+      "name": "0H1A8393.JPG",
+      "path": "runpod/qwen-vl/prod-hits/063_0H1A8393.jpg",
+      "bytes": 62476,
+      "source": "cache"
+    },
+    {
+      "index": 64,
+      "drive_file_id": "1RzAxZ1v6i6e7yJqAEiqWhoiP0DJ7eLcf",
+      "name": "0H1A8394.JPG",
+      "path": "runpod/qwen-vl/prod-hits/064_0H1A8394.jpg",
+      "bytes": 56314,
+      "source": "cache"
+    },
+    {
+      "index": 65,
+      "drive_file_id": "1fNASwAVIql7JjXvA4G91qHvWoFMEUJNF",
+      "name": "0H1A8397.JPG",
+      "path": "runpod/qwen-vl/prod-hits/065_0H1A8397.jpg",
+      "bytes": 56780,
+      "source": "cache"
+    },
+    {
+      "index": 66,
+      "drive_file_id": "17YUNaTPYe6RG4xDJt3_ESzK0h7EoWAUd",
+      "name": "0H1A8398.JPG",
+      "path": "runpod/qwen-vl/prod-hits/066_0H1A8398.jpg",
+      "bytes": 67453,
+      "source": "cache"
+    },
+    {
+      "index": 67,
+      "drive_file_id": "1aBdWrfXR7UghpEhy9kzy5tMLPDhBGdkB",
+      "name": "0H1A8400.JPG",
+      "path": "runpod/qwen-vl/prod-hits/067_0H1A8400.jpg",
+      "bytes": 76331,
+      "source": "cache"
+    },
+    {
+      "index": 68,
+      "drive_file_id": "1HWbkSW8Eg6Fu9oU4WzD5d4HLjXNnMhbN",
+      "name": "0H1A8402.JPG",
+      "path": "runpod/qwen-vl/prod-hits/068_0H1A8402.jpg",
+      "bytes": 75680,
+      "source": "cache"
+    },
+    {
+      "index": 69,
+      "drive_file_id": "1Lv7TlzTLjZCwxHB2utP_9bQC6Az5-FSZ",
+      "name": "0H1A8403.JPG",
+      "path": "runpod/qwen-vl/prod-hits/069_0H1A8403.jpg",
+      "bytes": 70715,
+      "source": "cache"
+    },
+    {
+      "index": 70,
+      "drive_file_id": "1MgoQMObbF-dI6ub0tykVHuOvInbDl804",
+      "name": "0H1A8428.JPG",
+      "path": "runpod/qwen-vl/prod-hits/070_0H1A8428.jpg",
+      "bytes": 95013,
+      "source": "cache"
+    },
+    {
+      "index": 71,
+      "drive_file_id": "1wcGHa_xaaKviIv70wqnGdycsblO9eEDz",
+      "name": "0H1A8431.JPG",
+      "path": "runpod/qwen-vl/prod-hits/071_0H1A8431.jpg",
+      "bytes": 77424,
+      "source": "cache"
+    },
+    {
+      "index": 72,
+      "drive_file_id": "13RzLJuJa-0PMnQZXsZUWjbNds42Tibjr",
+      "name": "0H1A8432.JPG",
+      "path": "runpod/qwen-vl/prod-hits/072_0H1A8432.jpg",
+      "bytes": 72701,
+      "source": "cache"
+    },
+    {
+      "index": 73,
+      "drive_file_id": "16s3xhm-cgjcz_YlfBdpEPGtbwu6bY4Mb",
+      "name": "0H1A8433.JPG",
+      "path": "runpod/qwen-vl/prod-hits/073_0H1A8433.jpg",
+      "bytes": 77578,
+      "source": "cache"
+    },
+    {
+      "index": 74,
+      "drive_file_id": "1MJOTQFTyOqw2QVrDQhfoZ5ORAWnQpQyx",
+      "name": "0H1A8434.JPG",
+      "path": "runpod/qwen-vl/prod-hits/074_0H1A8434.jpg",
+      "bytes": 63777,
+      "source": "cache"
+    },
+    {
+      "index": 75,
+      "drive_file_id": "12Dbi7Z9fTkZ7b6VAOerBP5SoE0cisq4c",
+      "name": "4f348782-508f-41ff-8912-cbe7c076afd9 2.JPG",
+      "path": "runpod/qwen-vl/prod-hits/075_4f348782-508f-41ff-8912-cbe7c076afd9_2.jpg",
+      "bytes": 78765,
+      "source": "cache"
+    },
+    {
+      "index": 76,
+      "drive_file_id": "1tZtQfTgL94xxHrz4ddCPhTEPU42r_YKW",
+      "name": "4f348782-508f-41ff-8912-cbe7c076afd9.JPG",
+      "path": "runpod/qwen-vl/prod-hits/076_4f348782-508f-41ff-8912-cbe7c076afd9.jpg",
+      "bytes": 81403,
+      "source": "cache"
+    },
+    {
+      "index": 77,
+      "drive_file_id": "1XnduUYwIHrqq7VcmK-xYxzfcOM6fVEEp",
+      "name": "9S0A9146.JPG",
+      "path": "runpod/qwen-vl/prod-hits/077_9S0A9146.jpg",
+      "bytes": 108341,
+      "source": "cache"
+    },
+    {
+      "index": 78,
+      "drive_file_id": "1-ukQy7Y3XMc2qaV6NkfkIFmPe6GMSRJ_",
+      "name": "9S0A9147.JPG",
+      "path": "runpod/qwen-vl/prod-hits/078_9S0A9147.jpg",
+      "bytes": 91714,
+      "source": "cache"
+    },
+    {
+      "index": 79,
+      "drive_file_id": "1xsTD9rhFzxQKFIJG5VaLT-3p2AxLeCu1",
+      "name": "9S0A9148.JPG",
+      "path": "runpod/qwen-vl/prod-hits/079_9S0A9148.jpg",
+      "bytes": 106488,
+      "source": "cache"
+    },
+    {
+      "index": 80,
+      "drive_file_id": "1MsPtH1XjQo_FW2vPH2xWzz0HilgZaTRu",
+      "name": "9S0A9149.JPG",
+      "path": "runpod/qwen-vl/prod-hits/080_9S0A9149.jpg",
+      "bytes": 104466,
+      "source": "cache"
+    },
+    {
+      "index": 81,
+      "drive_file_id": "1jPHSV7f-qq5lZfgWaJVV_sI-kV_8YaDA",
+      "name": "9S0A9151.JPG",
+      "path": "runpod/qwen-vl/prod-hits/081_9S0A9151.jpg",
+      "bytes": 78541,
+      "source": "cache"
+    },
+    {
+      "index": 82,
+      "drive_file_id": "1xYMTTMj1vTMz7lZ7P0yVTuCQwMtd8HsI",
+      "name": "9S0A9152.JPG",
+      "path": "runpod/qwen-vl/prod-hits/082_9S0A9152.jpg",
+      "bytes": 79056,
+      "source": "cache"
+    },
+    {
+      "index": 83,
+      "drive_file_id": "1OXpXcPguIs4AlFmMxpUs19BjBf136x7J",
+      "name": "9S0A9153.JPG",
+      "path": "runpod/qwen-vl/prod-hits/083_9S0A9153.jpg",
+      "bytes": 79682,
+      "source": "cache"
+    },
+    {
+      "index": 84,
+      "drive_file_id": "1FU4XToGypROtqhFnzKvkIfrK8IYiMe0E",
+      "name": "9S0A9154.JPG",
+      "path": "runpod/qwen-vl/prod-hits/084_9S0A9154.jpg",
+      "bytes": 90373,
+      "source": "cache"
+    },
+    {
+      "index": 85,
+      "drive_file_id": "1G-2s4oQXtT42_LH5fO5VapxAMQtUlIVW",
+      "name": "9S0A9160.JPG",
+      "path": "runpod/qwen-vl/prod-hits/085_9S0A9160.jpg",
+      "bytes": 91506,
+      "source": "cache"
+    },
+    {
+      "index": 86,
+      "drive_file_id": "12VkiT9rolTRnXeKrcpvbHlPPZ4zty70v",
+      "name": "9S0A9161.JPG",
+      "path": "runpod/qwen-vl/prod-hits/086_9S0A9161.jpg",
+      "bytes": 91228,
+      "source": "cache"
+    },
+    {
+      "index": 87,
+      "drive_file_id": "10TBLa-I1O2iDlAEt1yrj3KBgGmPfxJ70",
+      "name": "9S0A9162.JPG",
+      "path": "runpod/qwen-vl/prod-hits/087_9S0A9162.jpg",
+      "bytes": 81447,
+      "source": "cache"
+    },
+    {
+      "index": 88,
+      "drive_file_id": "11vjRREuWhQmmtFQKiRqv-xLMIdWzuhD5",
+      "name": "9S0A9164.JPG",
+      "path": "runpod/qwen-vl/prod-hits/088_9S0A9164.jpg",
+      "bytes": 103459,
+      "source": "cache"
+    },
+    {
+      "index": 89,
+      "drive_file_id": "1MhJt1pKV0F_m1JtzGkfFmBc5696DN1_8",
+      "name": "9S0A9170.JPG",
+      "path": "runpod/qwen-vl/prod-hits/089_9S0A9170.jpg",
+      "bytes": 104771,
+      "source": "cache"
+    },
+    {
+      "index": 90,
+      "drive_file_id": "11XWyauyNrQrZktUJi-LPKRaHLaZ1CnUK",
+      "name": "9S0A9171.JPG",
+      "path": "runpod/qwen-vl/prod-hits/090_9S0A9171.jpg",
+      "bytes": 99575,
+      "source": "cache"
+    },
+    {
+      "index": 91,
+      "drive_file_id": "1uYTgjCJFMzkP6K3fDJT1CRYzSZ_fMlLL",
+      "name": "9S0A9173.JPG",
+      "path": "runpod/qwen-vl/prod-hits/091_9S0A9173.jpg",
+      "bytes": 103573,
+      "source": "cache"
+    },
+    {
+      "index": 92,
+      "drive_file_id": "14uMs9TD3oDcAnjGQOc2i9JMqmOOvKUAM",
+      "name": "9S0A9174.JPG",
+      "path": "runpod/qwen-vl/prod-hits/092_9S0A9174.jpg",
+      "bytes": 95783,
+      "source": "cache"
+    },
+    {
+      "index": 93,
+      "drive_file_id": "19MIbB_BSQ1tptPxnqXk0qu454z3zFcMP",
+      "name": "9S0A9175.JPG",
+      "path": "runpod/qwen-vl/prod-hits/093_9S0A9175.jpg",
+      "bytes": 98178,
+      "source": "cache"
+    },
+    {
+      "index": 94,
+      "drive_file_id": "18IDhc-WNt0sYAYeTPIICPv2FTtTIdQBe",
+      "name": "9S0A9176.JPG",
+      "path": "runpod/qwen-vl/prod-hits/094_9S0A9176.jpg",
+      "bytes": 93230,
+      "source": "cache"
+    },
+    {
+      "index": 95,
+      "drive_file_id": "1oNcqs7pxoZgTHa2BiYeSTWDsvc1spWbU",
+      "name": "9S0A9180.JPG",
+      "path": "runpod/qwen-vl/prod-hits/095_9S0A9180.jpg",
+      "bytes": 117312,
+      "source": "cache"
+    },
+    {
+      "index": 96,
+      "drive_file_id": "15cdmjIP5YXJl8ZS1UnLdYlhQToqQaL04",
+      "name": "9S0A9181.JPG",
+      "path": "runpod/qwen-vl/prod-hits/096_9S0A9181.jpg",
+      "bytes": 116951,
+      "source": "cache"
+    },
+    {
+      "index": 97,
+      "drive_file_id": "1RgZHZVxZrlaiWnGuxM9AQB_4a4UlNgE9",
+      "name": "9S0A9182.JPG",
+      "path": "runpod/qwen-vl/prod-hits/097_9S0A9182.jpg",
+      "bytes": 106242,
+      "source": "cache"
+    },
+    {
+      "index": 98,
+      "drive_file_id": "1pNqPJDg-17_PodVez4o5U-d9sThlY0FB",
+      "name": "9S0A9183.JPG",
+      "path": "runpod/qwen-vl/prod-hits/098_9S0A9183.jpg",
+      "bytes": 116478,
+      "source": "cache"
+    }
+  ]
+}

@@ -205,6 +205,9 @@ class Media(Base):
     identify_labels: Mapped[list["MediaIdentifyLabel"]] = relationship(
         back_populates="media", cascade="all, delete-orphan"
     )
+    ocr_spans: Mapped[list["MediaOcrSpan"]] = relationship(
+        back_populates="media", cascade="all, delete-orphan"
+    )
 
 
 class Person(Base):
@@ -755,6 +758,78 @@ class MediaIdentifyLabel(Base):
     )
 
     media: Mapped[Media] = relationship(back_populates="identify_labels")
+
+
+class OcrJobStatus(str, enum.Enum):
+    PENDING = "pending"
+    PROCESSING = "processing"
+    DONE = "done"
+    ERROR = "error"
+
+
+class OcrJob(Base):
+    """Idle face-worker OCR enrich job. Opt-in via ocr_lane_enabled."""
+
+    __tablename__ = "ocr_jobs"
+    __table_args__ = (
+        UniqueConstraint("drive_file_id", "model_version", name="uq_ocr_job_file_model"),
+        Index("ix_ocr_jobs_status_created", "status", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    drive_file_id: Mapped[str] = mapped_column(
+        ForeignKey("drive_files.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    status: Mapped[OcrJobStatus] = mapped_column(
+        Enum(OcrJobStatus, name="ocr_job_status"),
+        default=OcrJobStatus.PENDING,
+        nullable=False,
+        index=True,
+    )
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    lock_token: Mapped[str | None] = mapped_column(String(96), nullable=True)
+    locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    model_version: Mapped[str] = mapped_column(String(96), nullable=False)
+    scan_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    span_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class MediaOcrSpan(Base):
+    """OCR line/word with pixel box for brand-on-garment geometry."""
+
+    __tablename__ = "media_ocr_spans"
+    __table_args__ = (
+        Index("ix_media_ocr_spans_media_model", "media_id", "model_version"),
+        Index("ix_media_ocr_spans_region", "region"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    media_id: Mapped[int] = mapped_column(
+        ForeignKey("media.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    text: Mapped[str] = mapped_column(String(512), nullable=False)
+    normalized_text: Mapped[str] = mapped_column(String(512), nullable=False, default="")
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    bbox_x: Mapped[float] = mapped_column(Float, nullable=False)
+    bbox_y: Mapped[float] = mapped_column(Float, nullable=False)
+    bbox_width: Mapped[float] = mapped_column(Float, nullable=False)
+    bbox_height: Mapped[float] = mapped_column(Float, nullable=False)
+    region: Mapped[str] = mapped_column(String(32), nullable=False, default="other")
+    near_face_id: Mapped[int | None] = mapped_column(
+        ForeignKey("faces.id", ondelete="SET NULL"), nullable=True
+    )
+    model_version: Mapped[str] = mapped_column(String(96), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    media: Mapped[Media] = relationship(back_populates="ocr_spans")
 
 
 class CarouselItemReference(Base):

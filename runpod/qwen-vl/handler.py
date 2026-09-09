@@ -36,7 +36,7 @@ def _http() -> httpx.AsyncClient:
     return _client
 
 
-def _payload(image_b64: str, prompt: str) -> dict:
+def _payload(image_b64: str, prompt: str, max_tokens: int) -> dict:
     return {
         "model": MODEL,
         "messages": [
@@ -51,7 +51,7 @@ def _payload(image_b64: str, prompt: str) -> dict:
                 ],
             }
         ],
-        "max_tokens": int(os.environ.get("QWEN_MAX_TOKENS", "1536")),
+        "max_tokens": max_tokens,
         "temperature": 0.1,
     }
 
@@ -81,12 +81,12 @@ async def _wait_sglang(timeout_s: float = 1500.0) -> dict:
     raise RuntimeError(f"SGLang not ready after {timeout_s:.0f}s: {last}")
 
 
-async def _identify_image(image_b64: str, prompt: str) -> dict:
+async def _identify_image(image_b64: str, prompt: str, max_tokens: int) -> dict:
     t0 = time.perf_counter()
     async with _gate:
         resp = await _http().post(
             f"{SGLANG}/v1/chat/completions",
-            json=_payload(image_b64, prompt),
+            json=_payload(image_b64, prompt, max_tokens),
         )
     elapsed = time.perf_counter() - t0
     if resp.status_code >= 400:
@@ -116,13 +116,14 @@ async def handler(job: dict) -> dict:
 
     await _wait_sglang()
     prompt = str(inp.get("prompt") or IDENTIFY_AND_CAPTION_PROMPT)
+    max_tokens = int(inp.get("max_tokens") or os.environ.get("QWEN_MAX_TOKENS", "1536"))
     images = inp.get("images")
     if isinstance(images, list) and images:
         async def _one(item: dict, idx: int) -> dict:
             b64 = str((item or {}).get("image_b64") or "").strip()
             if not b64:
                 return {"index": idx, "error": "image_b64 is required", "tags": []}
-            out = await _identify_image(b64, prompt)
+            out = await _identify_image(b64, prompt, max_tokens)
             out["index"] = (item or {}).get("index", idx)
             out["name"] = (item or {}).get("name")
             return out
@@ -133,7 +134,7 @@ async def handler(job: dict) -> dict:
     image_b64 = str(inp.get("image_b64") or "").strip()
     if not image_b64:
         return {"error": "image_b64 is required"}
-    return await _identify_image(image_b64, prompt)
+    return await _identify_image(image_b64, prompt, max_tokens)
 
 
 def _concurrency(_: int) -> int:
