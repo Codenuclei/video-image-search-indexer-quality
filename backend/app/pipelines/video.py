@@ -503,7 +503,7 @@ async def _enrich_video_segments_qwen(
         persist_qwen_result,
     )
     from app.qwen.runpod_serverless import identify_jpeg_runpod, runpod_qwen_configured
-    from app.workers.identify_queue import persist_identify_labels
+    from app.workers.identify_queue import encode_identify_jpeg, persist_identify_labels
 
     if not runpod_qwen_configured(settings):
         return 0
@@ -530,7 +530,15 @@ async def _enrich_video_segments_qwen(
     for segment in candidates:
         try:
             raw = Path(segment.frame_path or "").read_bytes()
-            raw_text = await identify_jpeg_runpod(raw, settings)
+            jpeg = await run_cpu_bound(
+                encode_identify_jpeg,
+                raw,
+                file_name=Path(segment.frame_path or "frame.jpg").name,
+                max_edge=settings.qwen_identify_max_edge,
+                quality=settings.qwen_identify_jpeg_quality,
+                max_bytes=settings.qwen_identify_max_bytes,
+            )
+            raw_text = await identify_jpeg_runpod(jpeg, settings)
             parsed = parse_identify_output(raw_text)
             await persist_qwen_result(
                 session,

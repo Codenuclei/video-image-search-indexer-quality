@@ -48,6 +48,9 @@ def test_video_qwen_writes_segment_caption_and_labels() -> None:
     from app.pipelines.video import _enrich_video_segments_qwen
 
     source = inspect.getsource(_enrich_video_segments_qwen)
+    assert "encode_identify_jpeg" in source
+    assert "max_edge=settings.qwen_identify_max_edge" in source
+    assert "max_bytes=settings.qwen_identify_max_bytes" in source
     assert "persist_qwen_result" in source
     assert "video_segment_id=int(segment.id)" in source
     assert "segment.vlm_description = parsed.caption" in source
