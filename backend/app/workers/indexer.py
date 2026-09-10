@@ -1642,23 +1642,31 @@ class IndexingWorker:
             await asyncio.to_thread(gemini.delete_document, old_document)
             drive_file.gemini_document_name = None
 
-        if is_image_mime(drive_file.mime_type, drive_file.name) and not await file_has_media(session, file_id):
-            await process_image_file(
-                session,
-                drive_file,
-                self._client,
-                self._settings,
-            )
-            if drive_file.status == DriveFileStatus.SKIPPED:
-                return
-            from app.drive.conflicts import is_duplicate_content_complete
+        if is_image_mime(drive_file.mime_type, drive_file.name):
+            if not await file_has_media(session, file_id):
+                await process_image_file(
+                    session,
+                    drive_file,
+                    self._client,
+                    self._settings,
+                )
+                if drive_file.status == DriveFileStatus.SKIPPED:
+                    return
+                from app.drive.conflicts import is_duplicate_content_complete
 
-            # Twin already indexed — keep PROCESSED + twin pointer; do not clear or re-embed.
-            if is_duplicate_content_complete(drive_file):
-                drive_file.status = DriveFileStatus.PROCESSED
-                drive_file.decode_attempts = 0
-                drive_file.last_synced_at = datetime.now(timezone.utc)
-                return
+                # Twin already indexed — keep PROCESSED + twin pointer; do not clear or re-embed.
+                if is_duplicate_content_complete(drive_file):
+                    drive_file.status = DriveFileStatus.PROCESSED
+                    drive_file.decode_attempts = 0
+                    drive_file.last_synced_at = datetime.now(timezone.utc)
+                    return
+            else:
+                # A recovered/migrated Media row is already durable, but it may
+                # predate versioned Qwen enrichment. Preserve media/faces and
+                # enqueue only the missing idempotent caption/label work.
+                from app.workers.identify_queue import enqueue_identify_job
+
+                await enqueue_identify_job(session, file_id)
 
         # Images: process_image_file already wrote faces + Qdrant image/caption vectors.
         # Non-image/non-video: skipped upstream as unsupported_mime.

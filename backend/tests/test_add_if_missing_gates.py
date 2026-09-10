@@ -6,12 +6,19 @@ import inspect
 
 from app.pipelines import image as image_mod
 from app.pipelines import video as video_mod
+from app.workers import indexer as indexer_mod
 
 
 def test_image_pipeline_enqueues_identify_on_new_files():
     src = inspect.getsource(image_mod.process_image_file)
     assert "enqueue_identify_job" in src
     assert src.index("enqueue_identify_job") < src.index("face_jobs_enabled")
+
+
+def test_indexer_enqueues_identify_for_existing_media():
+    src = inspect.getsource(indexer_mod.IndexingWorker._index_non_video_file)
+    existing_media_branch = src.index("else:")
+    assert src.index("enqueue_identify_job", existing_media_branch) > existing_media_branch
 
 
 def test_image_pipeline_gates_clear_existing_media():
