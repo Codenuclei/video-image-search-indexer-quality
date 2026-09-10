@@ -99,6 +99,21 @@ def needs_drive_folder_listing(drive_file: DriveFile) -> bool:
     return not is_youtube_source(drive_file)
 
 
+def cached_drive_folder_listing():
+    """In-process listing for VTT sibling lookup; None when the cache is cold."""
+    from app.drive.file_list_cache import get_file_list_cache
+    from app.drive.schemas import ConnectorFolderListing
+
+    cache = get_file_list_cache()
+    if not cache.is_warm() or cache.folder is None:
+        return None
+    return ConnectorFolderListing(
+        folder=cache.folder,
+        files=list(cache.files),
+        truncated=cache.truncated,
+    )
+
+
 # Background carousel generation drains the captioned backlog a couple of
 # videos at a time; these bound how hard a repeatedly failing video is retried.
 CAROUSEL_MAX_ATTEMPTS = 3
@@ -1044,6 +1059,9 @@ class IndexingWorker:
             self._schedule_video_refill()
             return
         try:
+            listing = None
+            old_document = None
+            need_listing = False
             async with self._session_factory() as session:
                 drive_file = await session.get(DriveFile, file_id)
                 if drive_file is None:
@@ -1053,15 +1071,31 @@ class IndexingWorker:
                     _log_skip(drive_file, "video_too_large")
                     await session.commit()
                     return
-
                 old_document = drive_file.gemini_document_name
-                if old_document:
-                    await asyncio.to_thread(gemini.delete_document, old_document)
-                    drive_file.gemini_document_name = None
+                need_listing = needs_drive_folder_listing(drive_file)
+                # session.get() opens a transaction. Postgres
+                # idle_in_transaction_session_timeout=120s will close it if we
+                # keep that connection across Gemini delete or a Drive tree walk.
+                await session.commit()
 
-                listing = None
-                if needs_drive_folder_listing(drive_file):
+            if old_document:
+                await asyncio.to_thread(gemini.delete_document, old_document)
+            if need_listing:
+                try:
+                    listing = cached_drive_folder_listing()
+                except Exception:  # noqa: BLE001
+                    logger.exception("video_folder_listing_cache_failed file_id=%s", file_id)
+                    listing = None
+                if listing is None:
                     listing = await self._client.list_folder_files()
+
+            async with self._session_factory() as session:
+                drive_file = await session.get(DriveFile, file_id)
+                if drive_file is None:
+                    return
+                file_name = drive_file.name
+                if old_document:
+                    drive_file.gemini_document_name = None
                 result = await process_video_file(
                     session,
                     drive_file,

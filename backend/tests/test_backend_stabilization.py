@@ -15,7 +15,7 @@ from app.pipelines import video as video_mod
 from app.storage import RetryableDiskSpaceError, ensure_disk_space
 from app.video import whisper_engine as whisper_engine_mod
 from app.workers.index_batch import bulk_claim_files
-from app.workers.indexer import IndexingWorker, needs_drive_folder_listing
+from app.workers.indexer import IndexingWorker, cached_drive_folder_listing, needs_drive_folder_listing
 
 
 def test_upload_videos_skip_drive_folder_listing() -> None:
@@ -32,6 +32,115 @@ def test_new_video_creation_uses_module_media_model() -> None:
     source = inspect.getsource(video_mod.process_video_file)
     assert "from app.db.models import Media" not in source
     assert "media = Media(" in source
+
+
+@pytest.mark.asyncio
+async def test_video_job_releases_transaction_before_drive_and_gemini_io() -> None:
+    """Postgres idle_in_transaction_session_timeout=120s closes connections
+    left open across list_folder_files() / Gemini delete. The video job must
+    commit+close that session, then process_video_file on a fresh one.
+    """
+    events: list[str] = []
+    sessions: list[SimpleNamespace] = []
+
+    class FakeSession:
+        def __init__(self) -> None:
+            self.in_transaction = False
+            self.closed = False
+            self.drive_file = SimpleNamespace(
+                id="drive-video-1",
+                name="wa.mp4",
+                mime_type="video/mp4",
+                size=1_000_000,
+                source="drive",
+                gemini_document_name="files/old-doc",
+                status=DriveFileStatus.PROCESSING,
+                error_message=None,
+                last_synced_at=None,
+            )
+
+        async def get(self, *_args, **_kwargs):
+            assert not self.closed
+            self.in_transaction = True
+            events.append("session.get")
+            return self.drive_file
+
+        async def commit(self):
+            self.in_transaction = False
+            events.append("session.commit")
+
+        async def rollback(self):
+            self.in_transaction = False
+
+    @asynccontextmanager
+    async def factory():
+        session = FakeSession()
+        sessions.append(session)
+        events.append("session.open")
+        try:
+            yield session
+        finally:
+            session.closed = True
+            session.in_transaction = False
+            events.append("session.close")
+
+    async def list_folder_files():
+        assert sessions, "listing must happen after the prelude session opens"
+        assert all(not session.in_transaction for session in sessions)
+        assert all(session.closed for session in sessions)
+        events.append("list_folder_files")
+        return SimpleNamespace(files=[], folder=None, truncated=False)
+
+    def delete_document(name: str) -> None:
+        assert all(not session.in_transaction for session in sessions)
+        assert all(session.closed for session in sessions)
+        events.append(f"gemini.delete:{name}")
+
+    async def process_video_file(session, drive_file, *_args, **_kwargs):
+        events.append("process_video_file")
+        assert session is sessions[-1]
+        assert session is not sessions[0]
+        assert not session.closed
+        assert drive_file.gemini_document_name is None
+        return SimpleNamespace(face_job_queued=False, gemini_document_name=None)
+
+    worker = object.__new__(IndexingWorker)
+    worker._session_factory = factory
+    worker._client = SimpleNamespace(list_folder_files=list_folder_files)
+    worker._settings = Settings(face_jobs_enabled=False)
+    worker._video_tasks = {"drive-video-1": MagicMock()}
+    worker._video_started_at = {"drive-video-1": 1.0}
+    worker._schedule_video_refill = MagicMock()
+    worker._start_carousel_task = MagicMock()
+
+    gemini = SimpleNamespace(delete_document=delete_document)
+    lock = AsyncMock()
+
+    with (
+        patch("app.workers.indexer.get_gemini_service", return_value=gemini),
+        patch(
+            "app.db.advisory_locks.try_acquire_advisory_lock",
+            new=AsyncMock(return_value=lock),
+        ),
+        patch("app.workers.indexer.process_video_file", new=process_video_file),
+        patch("app.workers.indexer.cached_drive_folder_listing", return_value=None),
+        patch("app.workers.index_tat.stamp_completed_at", new=AsyncMock()),
+        patch("app.drive.media_cache.unlink_drive_source_cache"),
+    ):
+        await worker._run_video_index_job("drive-video-1")
+
+    assert events.index("session.close") < events.index("gemini.delete:files/old-doc")
+    assert events.index("session.close") < events.index("list_folder_files")
+    assert events.index("list_folder_files") < events.index("process_video_file")
+    assert events.count("session.open") >= 2
+    worker._start_carousel_task.assert_called_once_with("drive-video-1")
+    lock.release.assert_awaited()
+
+
+def test_cached_drive_folder_listing_skips_cold_cache() -> None:
+    cache = SimpleNamespace(is_warm=lambda: False, folder=None, files=[], truncated=False)
+    with patch("app.drive.file_list_cache.get_file_list_cache", return_value=cache):
+        assert cached_drive_folder_listing() is None
 
 
 def test_process_video_file_commits_before_slow_work() -> None:
