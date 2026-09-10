@@ -1,4 +1,4 @@
-"""Secret-gated Range-capable stream of an already-downloaded video cache file."""
+"""Secret-gated Range relay: cached file or live Drive bytes, never a Drive URL."""
 from __future__ import annotations
 
 import time
@@ -7,11 +7,15 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.background import BackgroundTask
 from starlette.responses import StreamingResponse
 
 from app.config import get_settings
 from app.db.models import DriveFile
 from app.db.session import get_db
+from app.dependencies import get_drive_client
+from app.drive.client import DriveConnectorError
+from app.drive.google_client import DriveDirectError
 from app.faces.video_pull import verify_face_video_pull
 from app.video.youtube_cache import video_cache_path
 
@@ -90,6 +94,35 @@ def range_file_response(path: Path, request: Request) -> Response:
     )
 
 
+async def drive_range_response(drive_file_id: str, request: Request) -> Response:
+    """Relay a private Drive range to RunPod without materializing the video.
+
+    Google credentials stay on this host. RunPod only receives a short-lived
+    HMAC URL; the stream is never written to the local cache.
+    """
+    stream = get_drive_client().stream_file_content(
+        drive_file_id,
+        range_header=request.headers.get("range"),
+    )
+    try:
+        upstream = await stream.__aenter__()
+    except (DriveConnectorError, DriveDirectError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)[:200]) from exc
+    headers = {"Accept-Ranges": "bytes"}
+    for name in ("content-range", "content-length", "content-type"):
+        value = upstream.headers.get(name)
+        if value:
+            headers[name] = value
+
+    return StreamingResponse(
+        upstream.aiter_bytes(chunk_size=_CHUNK),
+        status_code=upstream.status_code,
+        media_type=upstream.headers.get("content-type") or "application/octet-stream",
+        headers=headers,
+        background=BackgroundTask(stream.__aexit__, None, None, None),
+    )
+
+
 @router.get("/internal/face-gpu-video/{drive_file_id:path}")
 async def pull_face_gpu_video(
     drive_file_id: str,
@@ -107,10 +140,14 @@ async def pull_face_gpu_video(
     drive_file = await session.get(DriveFile, drive_file_id)
     if drive_file is None:
         raise HTTPException(status_code=404, detail="not found")
-    path = video_cache_path(settings, drive_file)
-    if not path.is_file() or path.stat().st_size <= 0:
-        raise HTTPException(status_code=404, detail="not cached")
     max_bytes = max(1, int(settings.runpod_face_video_max_bytes))
-    if path.stat().st_size > max_bytes:
+    path = video_cache_path(settings, drive_file)
+    if path.is_file() and path.stat().st_size > 0:
+        if path.stat().st_size > max_bytes:
+            raise HTTPException(status_code=413, detail="video too large")
+        return range_file_response(path, request)
+    if (drive_file.source or "drive") != "drive":
+        raise HTTPException(status_code=404, detail="not cached")
+    if drive_file.size and drive_file.size > max_bytes:
         raise HTTPException(status_code=413, detail="video too large")
-    return range_file_response(path, request)
+    return await drive_range_response(drive_file.id, request)

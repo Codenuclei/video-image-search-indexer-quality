@@ -41,6 +41,11 @@ COPY --from=builder /usr/local/bin /usr/local/bin
 
 COPY . .
 
+ARG GIT_SHA=unknown
+ARG IMAGE_DIGEST=unknown
+ENV GIT_SHA=$GIT_SHA
+ENV IMAGE_DIGEST=$IMAGE_DIGEST
+
 RUN mkdir -p data/tmp data/thumbnails data/videos data/frame_thumbs data/backups
 
 ENV PYTHONUNBUFFERED=1

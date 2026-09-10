@@ -1,6 +1,7 @@
 # Search stack for the DigitalOcean search-api droplet.
-# Indexer stays off. Face extraction (if unpaused) calls RunPod serverless
-# buffalo_l — no InsightFace on this box. Does not replace Railway.
+# Build an immutable backend image from do-search-runpod — no host bind mounts.
+# Indexer coordinator is a compose profile (`indexing`) and stays off until
+# cutover approval. RunPod serverless does buffalo_l + Qwen. Does not replace Railway.
 services:
   caddy:
     image: caddy:2-alpine
@@ -36,10 +37,15 @@ services:
     build:
       context: ../../backend
       dockerfile: Dockerfile
+      args:
+        GIT_SHA: ${GIT_SHA:-unknown}
+        IMAGE_DIGEST: ${IMAGE_DIGEST:-unknown}
     restart: unless-stopped
     env_file:
       - backend.env
     environment:
+      GIT_SHA: ${GIT_SHA:-unknown}
+      IMAGE_DIGEST: ${IMAGE_DIGEST:-unknown}
       RUN_INDEXER: "false"
       RUN_FACE_WORKER: "false"
       FACE_JOBS_ENABLED: "true"
@@ -65,15 +71,49 @@ services:
       MKL_NUM_THREADS: "1"
     volumes:
       - backend_data:/app/data
-      - ../../backend/app/db/session.py:/app/app/db/session.py:ro
-      - ../../backend/app/reid/face_thumbs.py:/app/app/reid/face_thumbs.py:ro
-      - ../../backend/app/routers/persons.py:/app/app/routers/persons.py:ro
-      - ../../backend/app/faces/runpod_gpu.py:/app/app/faces/runpod_gpu.py:ro
-      - ../../backend/app/faces/video_pull.py:/app/app/faces/video_pull.py:ro
-      - ../../backend/app/pipelines/video.py:/app/app/pipelines/video.py:ro
-      - ../../backend/app/routers/face_gpu_pull.py:/app/app/routers/face_gpu_pull.py:ro
-      - ../../backend/app/qwen/runpod_serverless.py:/app/app/qwen/runpod_serverless.py:ro
-      - ../../backend/app/workers/identify_queue.py:/app/app/workers/identify_queue.py:ro
+    expose:
+      - "8000"
+    depends_on:
+      - connector
+
+  # Same image as backend. Do not start until Phase 5 approval:
+  #   GIT_SHA=<sha> docker compose --profile indexing up -d indexer
+  # Flip RUN_INDEXER to true only after the canary report is approved.
+  indexer:
+    profiles: ["indexing"]
+    build:
+      context: ../../backend
+      dockerfile: Dockerfile
+      args:
+        GIT_SHA: ${GIT_SHA:-unknown}
+        IMAGE_DIGEST: ${IMAGE_DIGEST:-unknown}
+    restart: unless-stopped
+    env_file:
+      - backend.env
+    environment:
+      GIT_SHA: ${GIT_SHA:-unknown}
+      IMAGE_DIGEST: ${IMAGE_DIGEST:-unknown}
+      RUN_INDEXER: "false"
+      AUTO_INDEX_ENABLED: "false"
+      RUN_FACE_WORKER: "false"
+      FACE_JOBS_ENABLED: "true"
+      RUNPOD_FACE_ENDPOINT_ID: ${RUNPOD_FACE_ENDPOINT_ID:-0zub88paibpsf3}
+      RUNPOD_FACE_GPU_ENABLED: "true"
+      RUNPOD_FACE_WORKERS_MAX: "4"
+      RUNPOD_QWEN_ENDPOINT_ID: "ya97mr5kgtwdi1"
+      RUNPOD_QWEN_WORKERS_MAX: "2"
+      QWEN_IDENTIFY_CONCURRENCY: "2"
+      FACE_WORKER_CONCURRENCY: "4"
+      WHISPER_FALLBACK_ENABLED: "false"
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-https://api.165.245.170.117.sslip.io}
+      WEB_CONCURRENCY: "1"
+      GUNICORN_WORKERS: "1"
+      GUNICORN_TIMEOUT: "3600"
+      OPENBLAS_NUM_THREADS: "1"
+      OMP_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    volumes:
+      - backend_data:/app/data
     expose:
       - "8000"
     depends_on:

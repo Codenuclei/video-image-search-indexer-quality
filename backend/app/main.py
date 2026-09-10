@@ -531,7 +531,7 @@ async def _require_boot_ready(request, call_next):
 
     path = request.url.path
     # /health does its own readiness gating (see handler) — skip the 20s wait.
-    if path == "/health":
+    if path in ("/health", "/version"):
         return await call_next(request)
     # Google Drive push must ACK quickly even during deferred boot.
     if path in ("/api/webhooks/drive", "/webhooks/drive"):
@@ -579,6 +579,14 @@ app.include_router(transcripts.router)
 app.include_router(reid.router)
 app.include_router(help_router.router)
 app.include_router(diagnostics.router)
+
+
+@app.get("/version")
+async def version():
+    """Immutable-release identity. Safe during boot; no secrets."""
+    from app.release import release_info
+
+    return release_info()
 
 
 @app.get("/health")
