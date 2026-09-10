@@ -7,6 +7,7 @@ PATCHes workersMin=1 (and max=1), then scales both back to 0 when idle.
 
 from __future__ import annotations
 
+import argparse
 import os
 import sys
 from pathlib import Path
@@ -51,6 +52,22 @@ def _find_named(items: list[dict], name: str) -> dict | None:
     return None
 
 
+def _args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--template-id",
+        help="Update this exact existing template instead of resolving by name.",
+    )
+    parser.add_argument(
+        "--endpoint-id",
+        help="Update this exact existing endpoint instead of resolving by name.",
+    )
+    args = parser.parse_args()
+    if bool(args.template_id) != bool(args.endpoint_id):
+        parser.error("--template-id and --endpoint-id must be provided together")
+    return args
+
+
 def _template_body() -> dict:
     image = resolve_face_image()
     try:
@@ -78,18 +95,29 @@ def _template_body() -> dict:
 
 
 def main() -> None:
+    args = _args()
     _load_env()
     if not HANDLER.is_file():
         raise SystemExit("Missing runpod/face-buffalo/handler.py")
     headers = _auth()
     body = _template_body()
     with httpx.Client(timeout=60.0) as client:
-        templates = client.get(f"{REST}/templates", headers=headers)
-        templates.raise_for_status()
-        payload = templates.json()
-        if isinstance(payload, dict):
-            payload = payload.get("templates") or payload.get("data") or []
-        existing = _find_named(payload, TEMPLATE_NAME)
+        if args.template_id:
+            template = client.get(f"{REST}/templates/{args.template_id}", headers=headers)
+            template.raise_for_status()
+            existing = template.json()
+            if existing.get("name") != TEMPLATE_NAME:
+                raise SystemExit(
+                    f"Template {args.template_id} is named {existing.get('name')!r}, "
+                    f"expected {TEMPLATE_NAME!r}"
+                )
+        else:
+            templates = client.get(f"{REST}/templates", headers=headers)
+            templates.raise_for_status()
+            payload = templates.json()
+            if isinstance(payload, dict):
+                payload = payload.get("templates") or payload.get("data") or []
+            existing = _find_named(payload, TEMPLATE_NAME)
 
         if existing:
             template_id = existing["id"]
@@ -112,12 +140,22 @@ def main() -> None:
             template_id = created.json()["id"]
             print(f"Created template {template_id}")
 
-        endpoints = client.get(f"{REST}/endpoints", headers=headers)
-        endpoints.raise_for_status()
-        ep_payload = endpoints.json()
-        if isinstance(ep_payload, dict):
-            ep_payload = ep_payload.get("endpoints") or ep_payload.get("data") or []
-        existing_ep = _find_named(ep_payload, ENDPOINT_NAME)
+        if args.endpoint_id:
+            endpoint = client.get(f"{REST}/endpoints/{args.endpoint_id}", headers=headers)
+            endpoint.raise_for_status()
+            existing_ep = endpoint.json()
+            if existing_ep.get("name") != ENDPOINT_NAME:
+                raise SystemExit(
+                    f"Endpoint {args.endpoint_id} is named {existing_ep.get('name')!r}, "
+                    f"expected {ENDPOINT_NAME!r}"
+                )
+        else:
+            endpoints = client.get(f"{REST}/endpoints", headers=headers)
+            endpoints.raise_for_status()
+            ep_payload = endpoints.json()
+            if isinstance(ep_payload, dict):
+                ep_payload = ep_payload.get("endpoints") or ep_payload.get("data") or []
+            existing_ep = _find_named(ep_payload, ENDPOINT_NAME)
         if existing_ep:
             endpoint_id = existing_ep["id"]
             patched = client.patch(
