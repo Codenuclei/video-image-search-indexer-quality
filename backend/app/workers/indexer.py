@@ -425,6 +425,8 @@ class IndexingWorker:
                         select(DriveFile)
                         .where(
                             DriveFile.status == DriveFileStatus.PENDING,
+                            DriveFile.source != "youtube",
+                            ~DriveFile.id.startswith("yt:", autoescape=True),
                             or_(
                                 DriveFile.mime_type.in_(tuple(INDEXABLE_IMAGE_TYPES)),
                                 DriveFile.mime_type.like("image/%"),

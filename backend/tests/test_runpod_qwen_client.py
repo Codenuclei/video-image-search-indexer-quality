@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, patch
 
 from app.config import Settings
 from app.qwen.runpod_serverless import (
+    build_qwen_identify_batch_payload,
     build_qwen_identify_payload,
     payload_contains_drive_url,
     runpod_qwen_configured,
@@ -45,6 +46,16 @@ def test_qwen_payload_is_bytes_not_drive_url() -> None:
 
 def test_qwen_payload_rejects_drive_url_blob() -> None:
     assert payload_contains_drive_url({"image_url": "https://drive.google.com/file/d/x"}) is True
+
+
+def test_qwen_batch_payload_uses_images_array() -> None:
+    payload = build_qwen_identify_batch_payload(
+        [(b"\xff\xd8one", "one"), (b"\xff\xd8two", "two")]
+    )
+    assert len(payload["images"]) == 2
+    assert [row["index"] for row in payload["images"]] == [0, 1]
+    assert all(row["image_b64"] for row in payload["images"])
+    assert payload_contains_drive_url(payload) is False
 
 
 def test_qwen_scale_min_one_under_load() -> None:

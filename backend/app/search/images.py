@@ -458,19 +458,6 @@ async def attach_stored_captions(files: list[SearchResultFile]) -> list[SearchRe
     return enriched
 
 
-async def _refresh_object_jobs_for_captions(drive_file_ids: list[str]) -> None:
-    """Reclassify completed object jobs when richer caption evidence arrives."""
-    if not drive_file_ids:
-        return
-    from app.db.session import get_session_factory
-    from app.workers.object_queue import enqueue_object_job
-
-    async with get_session_factory()() as session:
-        for drive_file_id in drive_file_ids:
-            await enqueue_object_job(session, drive_file_id, force=True)
-        await session.commit()
-
-
 async def index_image_caption(jpeg_bytes: bytes, drive_file_id: str) -> None:
     """Describe image (batched at backfill; single here) and embed caption text."""
     from app.gemini.captions import describe_image_sync
@@ -491,7 +478,6 @@ async def index_image_caption(jpeg_bytes: bytes, drive_file_id: str) -> None:
         vector=vec,
         caption=caption,
     )
-    await _refresh_object_jobs_for_captions([drive_file_id])
     try:
         from app.workers.index_tat import stamp_completed_at_ids
 
@@ -528,7 +514,6 @@ async def index_image_captions_batch(items: list[tuple[str, bytes]]) -> int:
         captioned_ids.append(fid)
         done += 1
     if captioned_ids:
-        await _refresh_object_jobs_for_captions(captioned_ids)
         try:
             from app.workers.index_tat import stamp_completed_at_ids
 
@@ -616,12 +601,4 @@ async def index_image_embeddings_batch(items: list[tuple[str, bytes]]) -> int:
                 len(chunk),
                 exc,
             )
-    if embedded_ids:
-        from app.db.session import get_session_factory
-        from app.workers.object_queue import enqueue_object_job
-
-        async with get_session_factory()() as session:
-            for fid in embedded_ids:
-                await enqueue_object_job(session, fid)
-            await session.commit()
     return done

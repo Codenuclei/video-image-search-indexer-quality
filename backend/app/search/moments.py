@@ -9,7 +9,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.drive.display_name import drive_file_display_name
 from app.config import get_settings
 from app.runtime_settings import get_runtime_settings
-from app.db.models import DriveFile, Face, Media, MediaType, Person, VideoSegment
+from app.db.models import (
+    DriveFile,
+    Face,
+    Media,
+    MediaType,
+    Person,
+    VideoSegment,
+    VideoSegmentLabel,
+)
 from app.gemini.rerank import rerank_moments, rerank_transcript_moments
 from app.gemini.tags import person_names_for_drive_file
 from app.gemini.video_embeddings import embed_text_sync
@@ -37,6 +45,7 @@ async def search_video_moments(
     rerank: bool = True,
     action_query: bool | None = None,
     source: str | None = None,
+    retrieval_policy: str = "default",
 ) -> list[SearchMoment]:
     settings = get_settings()
     if not settings.video_indexing_enabled:
@@ -86,6 +95,10 @@ async def search_video_moments(
         face_hits = []
 
     object_hits = await _object_moments(session, search_text, person_name, folder_path)
+    if retrieval_policy == "testv2":
+        object_hits = await _qwen_segment_moments(
+            session, search_text, person_name, folder_path
+        ) + object_hits
 
     gemini_reranked = False
     if use_rerank and gemini_hits:
@@ -139,6 +152,74 @@ async def search_video_moments(
     if source_filter:
         merged = await _filter_moments_by_source(session, merged, source_filter)
     return merged[:settings.gemini_video_result_limit]
+
+
+async def _qwen_segment_moments(
+    session: AsyncSession,
+    query: str,
+    person_name: str | None,
+    folder_path: str | None,
+) -> list[SearchMoment]:
+    """Return only timestamped, versioned Qwen evidence for /search/testv2."""
+    from app.objects.identify_tags import file_covers_identify_query, parse_identify_query
+
+    parsed_query = parse_identify_query(query)
+    if not parsed_query.lookup_labels:
+        return []
+    stmt = (
+        select(VideoSegmentLabel, VideoSegment, Media, DriveFile)
+        .join(VideoSegment, VideoSegmentLabel.video_segment_id == VideoSegment.id)
+        .join(Media, VideoSegment.media_id == Media.id)
+        .join(DriveFile, Media.drive_file_id == DriveFile.id)
+        .where(Media.type == MediaType.VIDEO)
+    )
+    rows = (await session.execute(stmt)).all()
+    grouped: dict[int, tuple[VideoSegment, DriveFile, list[VideoSegmentLabel]]] = {}
+    for label, segment, _media, drive_file in rows:
+        grouped.setdefault(segment.id, (segment, drive_file, []))[2].append(label)
+
+    moments: list[SearchMoment] = []
+    for segment, drive_file, labels in grouped.values():
+        if folder_path and folder_path.strip() not in {"", "/"}:
+            fp = folder_path.strip().rstrip("/")
+            if not (drive_file.path == fp or drive_file.path.startswith(fp + "/")):
+                continue
+        if not file_covers_identify_query(
+            (label.canonical_label for label in labels),
+            parsed_query,
+        ):
+            continue
+        person_names = await person_names_for_drive_file(session, drive_file.id)
+        if person_name and not any(
+            name.casefold() == person_name.casefold() for name in person_names
+        ):
+            continue
+        best = max(labels, key=lambda label: label.confidence)
+        moments.append(
+            _build_moment(
+                drive_file,
+                timestamp_sec=float(segment.start_sec),
+                end_timestamp_sec=segment.end_sec,
+                match_type="object_exact",
+                snippet=(segment.vlm_description or best.evidence_text or "")[:240] or None,
+                person_names=person_names,
+                score=float(best.confidence),
+            ).model_copy(
+                update={
+                    "matched_objects": [
+                        {
+                            "label": label.canonical_label,
+                            "category": label.category,
+                            "confidence": label.confidence,
+                            "evidence_text": label.evidence_text,
+                            "best_timestamp": float(segment.start_sec),
+                        }
+                        for label in labels
+                    ]
+                }
+            )
+        )
+    return moments
 
 
 async def _filter_moments_by_source(

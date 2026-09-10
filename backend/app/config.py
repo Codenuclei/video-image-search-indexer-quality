@@ -41,6 +41,8 @@ class Settings(BaseSettings):
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     openrouter_model: str = "anthropic/claude-sonnet-4"
     gemini_embedding_model: str = "models/gemini-embedding-2"
+    # DO migration guard: Gemini may embed only; no VLM, rerank, filter, or expansion.
+    gemini_generation_disabled: bool = False
     gemini_file_search_store_display_name: str = "drive-connector-shared"
     gemini_upload_poll_seconds: float = 3.0
     gemini_upload_timeout_seconds: float = 600.0
@@ -114,6 +116,8 @@ class Settings(BaseSettings):
     runpod_face_jpeg_quality: int = 95
     # Hard cap (10GiB). Worker pulls via signed HTTPS Range GET — never JSON/base64.
     runpod_face_video_max_bytes: int = 10 * 1024 * 1024 * 1024
+    runpod_face_video_max_frames: int = 80
+    runpod_face_video_max_response_bytes: int = 48 * 1024 * 1024
     runpod_face_video_pull_ttl_seconds: int = 3600
     # Stop claiming new index downloads when free space on media/video volume is below this.
     index_disk_high_water_bytes: int = 2 * 1024 * 1024 * 1024

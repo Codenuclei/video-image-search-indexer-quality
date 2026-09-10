@@ -760,6 +760,105 @@ class MediaIdentifyLabel(Base):
     media: Mapped[Media] = relationship(back_populates="identify_labels")
 
 
+class QwenEnrichmentJob(Base):
+    """Versioned Qwen caption/object/action work for an image or video moment."""
+
+    __tablename__ = "qwen_enrichment_jobs"
+    __table_args__ = (
+        UniqueConstraint(
+            "target_key",
+            "prompt_version",
+            "model_version",
+            name="uq_qwen_enrichment_target_prompt_model",
+        ),
+        Index("ix_qwen_enrichment_jobs_status_created", "status", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    target_key: Mapped[str] = mapped_column(String(96), nullable=False)
+    media_id: Mapped[int | None] = mapped_column(
+        ForeignKey("media.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    video_segment_id: Mapped[int | None] = mapped_column(
+        ForeignKey("video_segments.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    status: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="pending", server_default="pending", index=True
+    )
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    prompt_version: Mapped[str] = mapped_column(String(96), nullable=False)
+    model_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    raw_response: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    normalized_result: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class QwenCaption(Base):
+    """The one canonical Qwen caption for a versioned image or video target."""
+
+    __tablename__ = "qwen_captions"
+    __table_args__ = (
+        UniqueConstraint(
+            "target_key",
+            "prompt_version",
+            "model_version",
+            name="uq_qwen_caption_target_prompt_model",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    target_key: Mapped[str] = mapped_column(String(96), nullable=False, index=True)
+    media_id: Mapped[int | None] = mapped_column(
+        ForeignKey("media.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    video_segment_id: Mapped[int | None] = mapped_column(
+        ForeignKey("video_segments.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    caption: Mapped[str] = mapped_column(Text, nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(96), nullable=False)
+    model_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class VideoSegmentLabel(Base):
+    """Timestamp-specific Qwen object/action evidence for one video segment."""
+
+    __tablename__ = "video_segment_labels"
+    __table_args__ = (
+        UniqueConstraint(
+            "video_segment_id",
+            "canonical_label",
+            "prompt_version",
+            "model_version",
+            name="uq_video_segment_label_versioned",
+        ),
+        Index("ix_video_segment_labels_label", "canonical_label", "confidence"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    video_segment_id: Mapped[int] = mapped_column(
+        ForeignKey("video_segments.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    canonical_label: Mapped[str] = mapped_column(String(96), nullable=False)
+    category: Mapped[str] = mapped_column(String(48), nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    evidence_text: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    prompt_version: Mapped[str] = mapped_column(String(96), nullable=False)
+    model_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class OcrJobStatus(str, enum.Enum):
     PENDING = "pending"
     PROCESSING = "processing"

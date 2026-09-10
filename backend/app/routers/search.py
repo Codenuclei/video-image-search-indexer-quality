@@ -460,7 +460,11 @@ async def _run_search(
         or person_action
         or combined_person_student
     )
-    use_rerank = rerank and get_runtime_settings().search_rerank_enabled
+    use_rerank = (
+        rerank
+        and get_runtime_settings().search_rerank_enabled
+        and not get_settings().gemini_generation_disabled
+    )
 
     person_focused = bool(
         effective_persons
@@ -515,6 +519,7 @@ async def _run_search(
             rerank=use_rerank,
             action_query=action_query,
             source=source_filter,
+            retrieval_policy=retrieval_policy,
         )
         moments = await _filter_moments_for_context(
             session,
@@ -818,6 +823,7 @@ async def _run_search(
         rerank=use_rerank,
         action_query=action_query,
         source=source_filter,
+        retrieval_policy=retrieval_policy,
     )
     await checkpoint()
     moments = await _filter_moments_for_context(

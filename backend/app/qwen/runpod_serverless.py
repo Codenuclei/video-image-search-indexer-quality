@@ -62,6 +62,31 @@ def build_qwen_identify_payload(
     return payload
 
 
+def build_qwen_identify_batch_payload(
+    images: list[tuple[bytes, str]],
+    *,
+    prompt: str = _DEFAULT_PROMPT,
+    max_tokens: int = 1536,
+) -> dict[str, Any]:
+    if not images:
+        raise RunPodQwenError("images are required")
+    payload = {
+        "images": [
+            {
+                "index": index,
+                "name": name,
+                "image_b64": base64.b64encode(jpeg).decode("ascii"),
+            }
+            for index, (jpeg, name) in enumerate(images)
+        ],
+        "prompt": prompt,
+        "max_tokens": max_tokens,
+    }
+    if payload_contains_drive_url(payload):
+        raise RunPodQwenError("Refusing to send a Drive URL to RunPod Qwen")
+    return payload
+
+
 def serverless_qwen_scale(*, active: bool, workers_max: int = 1) -> dict[str, int]:
     if not active:
         return {"workersMin": 0, "workersMax": 0}
@@ -125,12 +150,29 @@ async def identify_jpeg_runpod(
     jpeg_bytes: bytes,
     settings: Settings | None = None,
 ) -> str:
+    rows = await identify_jpegs_runpod([jpeg_bytes], settings)
+    return rows[0]
+
+
+async def identify_jpegs_runpod(
+    jpeg_images: list[bytes],
+    settings: Settings | None = None,
+) -> list[str]:
     settings = settings or get_settings()
     if not runpod_qwen_configured(settings):
         raise RunPodQwenError("RunPod Qwen GPU is not configured")
-    payload = build_qwen_identify_payload(
-        jpeg_bytes,
-        max_tokens=settings.qwen_identify_max_tokens,
+    if not jpeg_images:
+        return []
+    payload = (
+        build_qwen_identify_payload(
+            jpeg_images[0],
+            max_tokens=settings.qwen_identify_max_tokens,
+        )
+        if len(jpeg_images) == 1
+        else build_qwen_identify_batch_payload(
+            [(jpeg, str(index)) for index, jpeg in enumerate(jpeg_images)],
+            max_tokens=settings.qwen_identify_max_tokens,
+        )
     )
     await set_qwen_workers_max(settings, 1)
     endpoint = settings.runpod_qwen_endpoint_id.strip()
@@ -183,7 +225,21 @@ async def identify_jpeg_runpod(
                 output = data.get("output") or {}
                 if not isinstance(output, dict):
                     raise RunPodQwenError("RunPod Qwen output was not an object")
-                return parse_qwen_identify_output(output)
+                if len(jpeg_images) == 1:
+                    return [parse_qwen_identify_output(output)]
+                results = output.get("results")
+                if not isinstance(results, list) or len(results) != len(jpeg_images):
+                    raise RunPodQwenError(
+                        f"Qwen batch returned {len(results or [])} result(s) "
+                        f"for {len(jpeg_images)} image(s)"
+                    )
+                ordered = sorted(
+                    (row for row in results if isinstance(row, dict)),
+                    key=lambda row: int(row.get("index", 0)),
+                )
+                if len(ordered) != len(jpeg_images):
+                    raise RunPodQwenError("Qwen batch contained invalid result rows")
+                return [parse_qwen_identify_output(row) for row in ordered]
             if status.lower() in {"failed", "cancelled", "timed_out"}:
                 raise RunPodQwenError(f"job {job_id} {status}: {data.get('error') or data}")
             await asyncio.sleep(1.0)

@@ -145,7 +145,7 @@ async def apply_faces_to_prepared_image(
     settings = settings or get_settings()
 
     from app.drive.media_cache import ensure_media_cached, read_cached_bytes
-    from app.faces.runpod_gpu import RunPodFaceError, detect_faces_runpod, runpod_face_configured
+    from app.faces.runpod_gpu import detect_faces_runpod, runpod_face_configured
 
     cache_path = await ensure_media_cached(
         client,
@@ -160,15 +160,12 @@ async def apply_faces_to_prepared_image(
     use_gpu = bool(use_runpod) and runpod_face_configured(settings)
     detections = None
     if use_gpu:
-        try:
-            detections = await detect_faces_runpod(
-                image_bgr,
-                drive_file_id=drive_file.id,
-                settings=settings,
-            )
-        except RunPodFaceError:
-            logger.exception("face_gpu_failed_fallback_cpu file=%s", drive_file.id[:12])
-    if detections is None:
+        detections = await detect_faces_runpod(
+            image_bgr,
+            drive_file_id=drive_file.id,
+            settings=settings,
+        )
+    else:
         engine = engine or get_face_engine()
         detections = await detect_faces_async(engine, image_bgr)
 

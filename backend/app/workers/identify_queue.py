@@ -88,6 +88,7 @@ class _ReadyIdentify:
 class _PersistIdentify:
     item: IdentifyInput
     parsed: object
+    raw_text: str
     gpu_ms: float
     jpeg_kb: float
     started: float
@@ -281,6 +282,17 @@ async def enqueue_identify_job(
             IdentifyJob.model_version == model_version,
         )
     )
+    media_id = await session.scalar(
+        select(Media.id).where(Media.drive_file_id == drive_file_id).limit(1)
+    )
+    if media_id is not None:
+        from app.qwen.persistence import ensure_qwen_job
+
+        await ensure_qwen_job(
+            session,
+            media_id=int(media_id),
+            model_version=get_settings().qwen_identify_model,
+        )
     if existing is not None:
         if force and existing.status in (IdentifyJobStatus.DONE, IdentifyJobStatus.ERROR):
             existing.status = IdentifyJobStatus.PENDING
@@ -840,6 +852,15 @@ async def process_identify_job(
         gpu_ms = (time.monotonic() - gpu_started) * 1000
         parsed = parse_identify_output(text_out)
         async with session_factory() as session:
+            from app.qwen.persistence import persist_qwen_result
+
+            await persist_qwen_result(
+                session,
+                parsed=parsed,
+                raw_text=text_out,
+                model_version=settings.qwen_identify_model,
+                media_id=item.media_id,
+            )
             label_count = await persist_identify_labels(session, item.media_id, parsed)
             await session.commit()
         if parsed.caption:
@@ -1175,44 +1196,68 @@ class IdentifyWorkerLoop:
             ready = await ready_q.get()
             if ready is None:
                 return
+            batch = [ready]
+            from app.qwen.runpod_serverless import (
+                identify_jpegs_runpod,
+                runpod_qwen_configured,
+            )
+
+            if runpod_qwen_configured(settings):
+                while len(batch) < 8:
+                    try:
+                        extra = ready_q.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
+                    if extra is None:
+                        break
+                    batch.append(extra)
             self._sync_queue_metrics()
-            _METRICS["gpu_in_flight"] = int(_METRICS["gpu_in_flight"] or 0) + 1
+            _METRICS["gpu_in_flight"] = int(_METRICS["gpu_in_flight"] or 0) + len(batch)
             _publish_metrics()
-            parsed = None
-            gpu_ms = 0.0
-            jpeg_kb = round(len(ready.jpeg_bytes) / 1024.0, 1)
             try:
                 gpu_started = time.monotonic()
-                text_out = await _post_identify(http, ready.jpeg_bytes, settings)
+                if runpod_qwen_configured(settings):
+                    text_outputs = await identify_jpegs_runpod(
+                        [item.jpeg_bytes for item in batch],
+                        settings,
+                    )
+                else:
+                    text_outputs = [
+                        await _post_identify(http, item.jpeg_bytes, settings)
+                        for item in batch
+                    ]
                 gpu_ms = (time.monotonic() - gpu_started) * 1000
                 _METRICS["last_gpu_ms"] = round(gpu_ms, 1)
-                _METRICS["last_jpeg_kb"] = jpeg_kb
-                parsed = parse_identify_output(text_out)
+                for item, text_out in zip(batch, text_outputs, strict=True):
+                    jpeg_kb = round(len(item.jpeg_bytes) / 1024.0, 1)
+                    _METRICS["last_jpeg_kb"] = jpeg_kb
+                    await persist_q.put(
+                        _PersistIdentify(
+                            item=item.item,
+                            parsed=parse_identify_output(text_out),
+                            raw_text=text_out,
+                            gpu_ms=gpu_ms / len(batch),
+                            jpeg_kb=jpeg_kb,
+                            started=item.started,
+                        )
+                    )
             except asyncio.CancelledError:
-                await release_identify_job(self._session_factory, ready.item.job_id)
+                for item in batch:
+                    await release_identify_job(self._session_factory, item.item.job_id)
                 raise
             except Exception as exc:  # noqa: BLE001
-                logger.exception("identify_gpu_failed id=%s", ready.item.job_id)
-                await fail_identify_job(self._session_factory, ready.item.job_id, exc)
-            finally:
-                _METRICS["gpu_in_flight"] = max(0, int(_METRICS["gpu_in_flight"] or 0) - 1)
-                _publish_metrics()
-            if parsed is None:
-                continue
-            try:
-                await persist_q.put(
-                    _PersistIdentify(
-                        item=ready.item,
-                        parsed=parsed,
-                        gpu_ms=gpu_ms,
-                        jpeg_kb=jpeg_kb,
-                        started=ready.started,
-                    )
+                logger.exception(
+                    "identify_gpu_batch_failed ids=%s",
+                    [item.item.job_id for item in batch],
                 )
-                self._sync_queue_metrics()
-            except asyncio.CancelledError:
-                await release_identify_job(self._session_factory, ready.item.job_id)
-                raise
+                for item in batch:
+                    await fail_identify_job(self._session_factory, item.item.job_id, exc)
+            finally:
+                _METRICS["gpu_in_flight"] = max(
+                    0, int(_METRICS["gpu_in_flight"] or 0) - len(batch)
+                )
+                _publish_metrics()
+            self._sync_queue_metrics()
 
     async def _persist_worker(self) -> None:
         persist_q = self._persist_q
@@ -1226,9 +1271,27 @@ class IdentifyWorkerLoop:
             try:
                 persist_started = time.monotonic()
                 async with self._session_factory() as session:
+                    from app.qwen.persistence import persist_qwen_result
+
+                    await persist_qwen_result(
+                        session,
+                        parsed=item.parsed,
+                        raw_text=item.raw_text,
+                        model_version=get_settings().qwen_identify_model,
+                        media_id=item.item.media_id,
+                    )
                     label_count = await persist_identify_labels(
                         session, item.item.media_id, item.parsed
                     )
+                    await session.commit()
+                from app.search.images import index_image_caption_texts
+
+                embedded = await index_image_caption_texts(
+                    [(item.item.drive_file_id, item.parsed.caption)]
+                )
+                if embedded != 1:
+                    raise RuntimeError("canonical Qwen caption was not embedded")
+                async with self._session_factory() as session:
                     await _mark_job(
                         session,
                         item.item.job_id,

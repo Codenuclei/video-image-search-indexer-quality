@@ -9,6 +9,8 @@ def is_transient_network_error(exc: BaseException) -> bool:
     disconnect while downloading — especially large videos. Same class of
     flake as ConnectError / TimeoutException.
     """
+    if bool(getattr(exc, "retryable", False)):
+        return True
     try:
         import httpx
 

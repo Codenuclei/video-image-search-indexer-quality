@@ -25,7 +25,17 @@ _MAX_BATCH_BYTES = 6 * 1024 * 1024
 
 
 class RunPodFaceError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, retryable: bool = True) -> None:
+        super().__init__(message)
+        self.retryable = retryable
+
+
+def _raise_face_output_error(output: dict[str, Any]) -> None:
+    if output.get("error"):
+        raise RunPodFaceError(
+            str(output.get("error")),
+            retryable=bool(output.get("retryable", True)),
+        )
 
 
 def runpod_face_configured(settings: Settings | None = None) -> bool:
@@ -112,8 +122,7 @@ def parse_face_output(output: dict[str, Any]) -> list[DetectedFace]:
 
 
 def parse_face_output_images(output: dict[str, Any]) -> list[list[DetectedFace]]:
-    if output.get("error"):
-        raise RunPodFaceError(str(output.get("error")))
+    _raise_face_output_error(output)
     images = output.get("images")
     rows: list[dict[str, Any]]
     if isinstance(images, list) and images:
@@ -215,12 +224,20 @@ def build_face_video_payload(
     video_suffix: str = ".mp4",
     video_max_bytes: int = 10 * 1024 * 1024 * 1024,
     extract_only: bool = False,
+    return_jpegs: bool = False,
     max_width: int = 960,
+    max_frames: int = 80,
+    max_response_bytes: int = 48 * 1024 * 1024,
 ) -> dict[str, Any]:
     if not (video_url or "").strip():
         raise RunPodFaceError("video_url is required")
     if not timestamps:
         raise RunPodFaceError("timestamps are required")
+    if len(timestamps) > max(1, int(max_frames)):
+        raise RunPodFaceError(
+            f"timestamps exceed max_frames={max_frames}",
+            retryable=False,
+        )
     payload: dict[str, Any] = {
         "drive_file_id": drive_file_id,
         "video_url": video_url.strip(),
@@ -228,10 +245,14 @@ def build_face_video_payload(
         "video_max_bytes": int(video_max_bytes),
         "timestamps": [round(float(t), 3) for t in timestamps],
         "min_detection_confidence": min_confidence,
+        "max_frames": int(max_frames),
+        "max_response_bytes": int(max_response_bytes),
+        "require_nvdec": True,
     }
+    if extract_only or return_jpegs:
+        payload["return_jpegs"] = True
     if extract_only:
         payload["extract_only"] = True
-        payload["return_jpegs"] = True
         payload["max_width"] = int(max_width or 960)
     return payload
 
@@ -458,8 +479,7 @@ async def detect_faces_runpod_video(
         video_max_bytes=max_bytes,
     )
     output = await _run_face_job(payload, settings)
-    if output.get("error"):
-        raise RunPodFaceError(str(output.get("error")))
+    _raise_face_output_error(output)
     rows: list[tuple[float, list[DetectedFace], int, int]] = []
     for frame in output.get("frames") or []:
         if not isinstance(frame, dict):
@@ -494,6 +514,82 @@ async def detect_faces_runpod_video(
         output.get("providers"),
     )
     return rows
+
+
+async def analyze_video_runpod(
+    video_path: str,
+    timestamps: list[float],
+    dest_dir: str | Path,
+    *,
+    drive_file_id: str,
+    settings: Settings | None = None,
+) -> tuple[dict[float, str], list[tuple[float, list[DetectedFace], int, int]]]:
+    """One RunPod job downloads once, NVDEC-decodes, detects faces, and returns JPEG evidence."""
+    settings = settings or get_settings()
+    if not runpod_face_configured(settings):
+        raise RunPodFaceError("RunPod face GPU is not configured")
+    path = Path(video_path)
+    if not path.is_file():
+        raise RunPodFaceError(f"cached video missing: {path}")
+    max_bytes = max(1, int(settings.runpod_face_video_max_bytes))
+    if path.stat().st_size > max_bytes:
+        raise RunPodFaceError(f"video exceeds runpod_face_video_max_bytes={max_bytes}")
+    video_url = signed_face_video_pull_url(drive_file_id, settings)
+    payload = build_face_video_payload(
+        timestamps,
+        video_url=video_url,
+        drive_file_id=drive_file_id,
+        min_confidence=settings.min_detection_confidence,
+        video_suffix=path.suffix or ".mp4",
+        video_max_bytes=max_bytes,
+        return_jpegs=True,
+        max_frames=settings.runpod_face_video_max_frames,
+        max_response_bytes=settings.runpod_face_video_max_response_bytes,
+    )
+    output = await _run_face_job(payload, settings)
+    _raise_face_output_error(output)
+    if output.get("ffmpeg") != "nvdec":
+        raise RunPodFaceError(f"RunPod video did not use NVDEC: {output.get('ffmpeg')}")
+
+    out_dir = Path(dest_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    frame_paths: dict[float, str] = {}
+    face_rows: list[tuple[float, list[DetectedFace], int, int]] = []
+    response_bytes = 0
+    for frame in output.get("frames") or []:
+        if not isinstance(frame, dict) or frame.get("error"):
+            raise RunPodFaceError(str((frame or {}).get("error") or "invalid video frame"))
+        ts = round(float(frame.get("timestamp") or 0.0), 3)
+        encoded = str(frame.get("jpeg_b64") or "")
+        if not encoded:
+            raise RunPodFaceError(f"RunPod frame {ts:.3f} missing JPEG evidence")
+        jpeg = base64.b64decode(encoded)
+        response_bytes += len(jpeg)
+        if response_bytes > settings.runpod_face_video_max_response_bytes:
+            raise RunPodFaceError("RunPod video JPEG response exceeded configured cap")
+        dest = out_dir / f"{ts:.3f}.jpg"
+        dest.write_bytes(jpeg)
+        frame_paths[ts] = str(dest)
+        faces = [
+            parsed
+            for item in (frame.get("faces") or [])
+            if isinstance(item, dict)
+            for parsed in [_face_from_dict(item)]
+            if parsed is not None
+        ]
+        face_rows.append(
+            (
+                ts,
+                faces,
+                int(frame.get("width") or 0),
+                int(frame.get("height") or 0),
+            )
+        )
+    if len(frame_paths) != len({round(float(ts), 3) for ts in timestamps}):
+        raise RunPodFaceError(
+            f"RunPod returned {len(frame_paths)}/{len(timestamps)} video frames"
+        )
+    return frame_paths, face_rows
 
 
 async def extract_frames_runpod(
@@ -531,32 +627,31 @@ async def extract_frames_runpod(
     out_dir.mkdir(parents=True, exist_ok=True)
     written: dict[float, str] = {}
     ts_all = [round(float(t), 3) for t in timestamps]
-    chunk = 40
-    for i in range(0, len(ts_all), chunk):
-        batch = ts_all[i : i + chunk]
-        payload = build_face_video_payload(
-            batch,
-            video_url=video_url,
-            drive_file_id=drive_file_id,
-            min_confidence=settings.min_detection_confidence,
-            video_suffix=path.suffix or ".mp4",
-            video_max_bytes=max_bytes,
-            extract_only=True,
-            max_width=960,
-        )
-        output = await _run_face_job(payload, settings)
-        if output.get("error"):
-            raise RunPodFaceError(str(output.get("error")))
-        for frame in output.get("frames") or []:
-            if not isinstance(frame, dict) or frame.get("error"):
-                continue
-            raw_b64 = frame.get("jpeg_b64")
-            if not raw_b64:
-                continue
-            ts = round(float(frame.get("timestamp") or 0.0), 3)
-            dest = out_dir / f"{ts:.3f}.jpg"
-            dest.write_bytes(base64.b64decode(str(raw_b64)))
-            written[ts] = str(dest)
+    payload = build_face_video_payload(
+        ts_all,
+        video_url=video_url,
+        drive_file_id=drive_file_id,
+        min_confidence=settings.min_detection_confidence,
+        video_suffix=path.suffix or ".mp4",
+        video_max_bytes=max_bytes,
+        extract_only=True,
+        max_width=960,
+        max_frames=settings.runpod_face_video_max_frames,
+        max_response_bytes=settings.runpod_face_video_max_response_bytes,
+    )
+    output = await _run_face_job(payload, settings)
+    if output.get("error"):
+        raise RunPodFaceError(str(output.get("error")))
+    for frame in output.get("frames") or []:
+        if not isinstance(frame, dict) or frame.get("error"):
+            continue
+        raw_b64 = frame.get("jpeg_b64")
+        if not raw_b64:
+            continue
+        ts = round(float(frame.get("timestamp") or 0.0), 3)
+        dest = out_dir / f"{ts:.3f}.jpg"
+        dest.write_bytes(base64.b64decode(str(raw_b64)))
+        written[ts] = str(dest)
     logger.info(
         "face_gpu_extract file=%s frames=%d/%d",
         drive_file_id[:12],

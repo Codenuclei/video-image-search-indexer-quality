@@ -30,6 +30,8 @@ MODEL_NAME = "buffalo_l"
 DET_SIZE = (640, 640)
 MIN_CONFIDENCE = 0.5
 DEFAULT_VIDEO_MAX_BYTES = 10 * 1024 * 1024 * 1024
+DEFAULT_VIDEO_MAX_FRAMES = 80
+DEFAULT_RESPONSE_MAX_BYTES = 48 * 1024 * 1024
 DOWNLOAD_PARTS = 8
 DOWNLOAD_CHUNK = 8 * 1024 * 1024
 RANGE_MIN_BYTES = 256 * 1024
@@ -92,6 +94,7 @@ def extract_frame_ffmpeg(
     output_path: str,
     *,
     max_width: int = 0,
+    require_nvdec: bool = False,
 ) -> str:
     """NVDEC first (``-hwaccel cuda``), then software ffmpeg on this worker.
 
@@ -125,6 +128,9 @@ def extract_frame_ffmpeg(
     proc = subprocess.run(nvdec, capture_output=True, timeout=120)
     if proc.returncode == 0 and Path(output_path).is_file() and Path(output_path).stat().st_size > 0:
         return "nvdec"
+    if require_nvdec:
+        err = (proc.stderr or b"").decode("utf-8", errors="replace")[:300]
+        raise RuntimeError(f"NVDEC extract failed at {ss}s: {err}")
     cpu = [
         "ffmpeg",
         "-y",
@@ -363,10 +369,17 @@ def _process_video(inp: dict, min_confidence: float) -> dict:
     if not isinstance(timestamps, list) or not timestamps:
         return {"error": "timestamps[] is required"}
     ts_list = sorted({round(float(t), 3) for t in timestamps})
+    max_frames = max(1, int(inp.get("max_frames") or DEFAULT_VIDEO_MAX_FRAMES))
+    if len(ts_list) > max_frames:
+        return {"error": f"timestamps exceed max_frames={max_frames}", "retryable": False}
     extract_only = bool(inp.get("extract_only"))
     return_jpegs = bool(inp.get("return_jpegs") or extract_only)
+    require_nvdec = bool(inp.get("require_nvdec"))
     max_width = int(inp.get("max_width") or 0)
     max_bytes = int(inp.get("video_max_bytes") or DEFAULT_VIDEO_MAX_BYTES)
+    max_response_bytes = max(
+        1, int(inp.get("max_response_bytes") or DEFAULT_RESPONSE_MAX_BYTES)
+    )
     tmpdir = tempfile.mkdtemp(prefix="dfi-rface-video-")
     try:
         suffix = str(inp.get("video_suffix") or ".mp4")
@@ -393,7 +406,11 @@ def _process_video(inp: dict, min_confidence: float) -> dict:
         def _one(ts: float) -> tuple[float, str, str]:
             out = os.path.join(tmpdir, f"{ts:.3f}.jpg")
             decoder = extract_frame_ffmpeg(
-                video_path, ts, out, max_width=max_width if extract_only else 0
+                video_path,
+                ts,
+                out,
+                max_width=max_width if extract_only else 0,
+                require_nvdec=require_nvdec,
             )
             return ts, out, decoder
 
@@ -403,10 +420,18 @@ def _process_video(inp: dict, min_confidence: float) -> dict:
         decode_ms = (time.perf_counter() - t0) * 1000.0
         t1 = time.perf_counter()
         frames = []
+        response_bytes = 0
         for ts, jpeg_path, decoder in extracted:
             row: dict = {"timestamp": ts, "decoder": decoder}
             if return_jpegs and Path(jpeg_path).is_file():
-                row["jpeg_b64"] = base64.b64encode(Path(jpeg_path).read_bytes()).decode("ascii")
+                jpeg = Path(jpeg_path).read_bytes()
+                response_bytes += len(jpeg)
+                if response_bytes > max_response_bytes:
+                    return {
+                        "error": f"JPEG evidence exceeds max_response_bytes={max_response_bytes}",
+                        "retryable": False,
+                    }
+                row["jpeg_b64"] = base64.b64encode(jpeg).decode("ascii")
             if extract_only:
                 frames.append(row)
                 continue

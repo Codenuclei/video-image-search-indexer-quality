@@ -306,13 +306,13 @@ def test_video_pipeline_uses_runpod_batch() -> None:
     assert "detect_faces_runpod_video" in src
     assert "extract_frame_at" in src  # CPU fallback only
     assert "unlink_drive_source_cache" in src
-    assert "RunPodFaceError" in src
+    assert "fallback_cpu" not in src
     inline = inspect.getsource(video_mod.process_video_file)
     assert "detect_faces_runpod_batch" in inline
     extract = inspect.getsource(video_mod._extract_index_frames)
-    assert "extract_frames_runpod" in extract
+    assert "analyze_video_runpod" in extract
     assert "extract_frame_at" in extract
-    assert "RunPodFaceError" in extract
+    assert "fallback_cpu" not in extract
 
 
 def test_extract_frames_payload_is_signed_pull_not_drive() -> None:
@@ -368,7 +368,7 @@ def test_api_leader_starts_face_loop_alongside_identify() -> None:
     assert "OcrWorkerLoop" in src
     assert "runpod_face_configured" in src
     assert "not settings_now.run_indexer" in src
-    assert "ObjectWorkerLoop(yield_to_faces=False)" in src
+    assert "ObjectWorkerLoop" not in src
 
 
 def test_identify_and_object_ignore_global_ingest_pause() -> None:
@@ -400,7 +400,33 @@ def test_image_pipeline_uses_gpu_when_configured() -> None:
     src = inspect.getsource(image_mod.apply_faces_to_prepared_image)
     assert "detect_faces_runpod" in src
     assert "use_runpod" in src
-    assert "RunPodFaceError" in src
+    assert "fallback_cpu" not in src
+    assert src.index("detect_faces_runpod") < src.index("get_face_engine")
+
+
+def test_video_analysis_is_one_bounded_job_with_face_and_jpeg_evidence() -> None:
+    from app.faces import runpod_gpu as gpu
+    import inspect
+
+    src = inspect.getsource(gpu.analyze_video_runpod)
+    assert src.count("_run_face_job(") == 1
+    assert "return_jpegs=True" in src
+    assert "runpod_face_video_max_frames" in src
+    assert "runpod_face_video_max_response_bytes" in src
+    assert "output.get(\"ffmpeg\") != \"nvdec\"" in src
+
+
+def test_runpod_errors_are_explicitly_retryable() -> None:
+    from app.faces.runpod_gpu import RunPodFaceError
+    from app.workers.index_errors import is_transient_network_error
+
+    assert is_transient_network_error(RunPodFaceError("endpoint unavailable")) is True
+    assert (
+        is_transient_network_error(
+            RunPodFaceError("response cap exceeded", retryable=False)
+        )
+        is False
+    )
 
 
 @patch("app.faces.runpod_gpu.set_face_workers_max", new_callable=AsyncMock)

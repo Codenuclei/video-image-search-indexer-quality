@@ -273,7 +273,7 @@ async def apply_faces_to_prepared_video(
 ) -> Media:
     """Download video on the API; GPU worker does ffmpeg + buffalo_l when configured."""
     settings = settings or get_settings()
-    from app.faces.runpod_gpu import RunPodFaceError, detect_faces_runpod_video, runpod_face_configured
+    from app.faces.runpod_gpu import detect_faces_runpod_video, runpod_face_configured
     from app.drive.media_cache import unlink_drive_source_cache
 
     use_gpu = bool(use_runpod) and runpod_face_configured(settings)
@@ -311,29 +311,25 @@ async def apply_faces_to_prepared_video(
     tracker = LocalIdentityTracker(settings.media_dedup_similarity_threshold)
     try:
         if use_gpu:
-            try:
-                gpu_frames = await detect_faces_runpod_video(
-                    cache_path,
-                    timestamps,
-                    drive_file_id=drive_file.id,
-                    settings=settings,
+            gpu_frames = await detect_faces_runpod_video(
+                cache_path,
+                timestamps,
+                drive_file_id=drive_file.id,
+                settings=settings,
+            )
+            for ts, detections, width, height in gpu_frames:
+                size = (width, height) if width > 0 and height > 0 else (1, 1)
+                await _detect_faces_on_frame(
+                    session,
+                    media,
+                    None,
+                    ts,
+                    None,
+                    settings,
+                    tracker,
+                    detections=detections,
+                    frame_size=size,
                 )
-                for ts, detections, width, height in gpu_frames:
-                    size = (width, height) if width > 0 and height > 0 else (1, 1)
-                    await _detect_faces_on_frame(
-                        session,
-                        media,
-                        None,
-                        ts,
-                        None,
-                        settings,
-                        tracker,
-                        detections=detections,
-                        frame_size=size,
-                    )
-            except RunPodFaceError:
-                logger.exception("face_gpu_video_failed_fallback_cpu file=%s", drive_file.id[:12])
-                use_gpu = False
         if not use_gpu:
             engine = engine or get_face_engine()
             extracted: list[tuple[float, np.ndarray]] = []
@@ -450,30 +446,30 @@ async def _extract_index_frames(
     frames_dir: Path,
     drive_file: DriveFile,
     settings: Settings,
-) -> dict[float, str]:
-    """Prefer RunPod NVDEC; CPU ffmpeg fills any timestamps the GPU missed."""
-    from app.faces.runpod_gpu import RunPodFaceError, extract_frames_runpod, runpod_face_configured
+) -> tuple[
+    dict[float, str],
+    list[tuple[float, list[DetectedFace], int, int]] | None,
+]:
+    """Run one bounded RunPod video analysis, or local ffmpeg when GPU is unconfigured."""
+    from app.faces.runpod_gpu import analyze_video_runpod, runpod_face_configured
 
     frame_paths: dict[float, str] = {}
     frames_dir.mkdir(parents=True, exist_ok=True)
     if runpod_face_configured(settings):
-        try:
-            frame_paths = await extract_frames_runpod(
-                dest,
-                sample_times,
-                frames_dir,
-                drive_file_id=drive_file.id,
-                settings=settings,
-            )
-            logger.info(
-                "video_gpu_extract file=%s frames=%d/%d",
-                drive_file.id[:12],
-                len(frame_paths),
-                len(sample_times),
-            )
-        except RunPodFaceError:
-            logger.exception("video_gpu_extract_failed_fallback_cpu file=%s", drive_file.id[:12])
-            frame_paths = {}
+        frame_paths, face_rows = await analyze_video_runpod(
+            dest,
+            sample_times,
+            frames_dir,
+            drive_file_id=drive_file.id,
+            settings=settings,
+        )
+        logger.info(
+            "video_gpu_analyze file=%s frames=%d/%d",
+            drive_file.id[:12],
+            len(frame_paths),
+            len(sample_times),
+        )
+        return frame_paths, face_rows
 
     for ts in sample_times:
         key = round(float(ts), 3)
@@ -490,7 +486,7 @@ async def _extract_index_frames(
         finally:
             if os.path.exists(partial_frame):
                 os.remove(partial_frame)
-    return frame_paths
+    return frame_paths, None
 
 
 async def _enrich_video_segments_qwen(
@@ -501,6 +497,11 @@ async def _enrich_video_segments_qwen(
 ) -> int:
     """Persist Qwen captions plus object/action evidence for sampled moments."""
     from app.objects.identify_tags import parse_identify_output
+    from app.qwen.persistence import (
+        ensure_qwen_job,
+        mark_qwen_job_failed,
+        persist_qwen_result,
+    )
     from app.qwen.runpod_serverless import identify_jpeg_runpod, runpod_qwen_configured
     from app.workers.identify_queue import persist_identify_labels
 
@@ -516,11 +517,28 @@ async def _enrich_video_segments_qwen(
         step = (len(candidates) - 1) / max(1, limit - 1)
         candidates = [candidates[round(index * step)] for index in range(limit)]
 
+    model_version = settings.qwen_identify_model
+    for segment in candidates:
+        await ensure_qwen_job(
+            session,
+            video_segment_id=int(segment.id),
+            model_version=model_version,
+        )
+    await session.commit()
+
     completed = 0
     for segment in candidates:
         try:
             raw = Path(segment.frame_path or "").read_bytes()
-            parsed = parse_identify_output(await identify_jpeg_runpod(raw, settings))
+            raw_text = await identify_jpeg_runpod(raw, settings)
+            parsed = parse_identify_output(raw_text)
+            await persist_qwen_result(
+                session,
+                parsed=parsed,
+                raw_text=raw_text,
+                model_version=model_version,
+                video_segment_id=int(segment.id),
+            )
             segment.vlm_description = parsed.caption or None
             await persist_identify_labels(
                 session,
@@ -530,13 +548,21 @@ async def _enrich_video_segments_qwen(
                 replace=False,
             )
             completed += 1
-        except Exception:  # noqa: BLE001
+            await session.commit()
+        except Exception as exc:  # noqa: BLE001
+            await session.rollback()
+            await mark_qwen_job_failed(
+                session,
+                error=exc,
+                model_version=model_version,
+                video_segment_id=int(segment.id),
+            )
+            await session.commit()
             logger.exception(
                 "video_qwen_enrich_failed media=%s timestamp=%.3f",
                 media.id,
                 float(segment.start_sec),
             )
-    await session.commit()
     return completed
 
 
@@ -698,15 +724,35 @@ async def process_video_file(
         settings.video_max_sample_frames,
         [c.start_sec for c in cues],
     )
+    from app.faces.runpod_gpu import runpod_face_configured
+
+    if runpod_face_configured(settings) and len(sample_times) > settings.runpod_face_video_max_frames:
+        limit = max(1, settings.runpod_face_video_max_frames)
+        step = (len(sample_times) - 1) / max(1, limit - 1)
+        sample_times = [sample_times[round(index * step)] for index in range(limit)]
 
     frames_dir = _frames_dir(settings, drive_file.id)
     tracker = LocalIdentityTracker(settings.media_dedup_similarity_threshold)
     # GPU NVDEC when configured; CPU ffmpeg fills gaps. Never hold a DB txn.
-    frame_paths = await _extract_index_frames(
+    frame_paths, gpu_face_rows = await _extract_index_frames(
         dest, sample_times, frames_dir, drive_file, settings
     )
 
-    if not settings.face_jobs_enabled:
+    if gpu_face_rows is not None:
+        for ts, detections, width, height in gpu_face_rows:
+            await _detect_faces_on_frame(
+                session,
+                media,
+                None,
+                ts,
+                None,
+                settings,
+                tracker,
+                detections=detections,
+                frame_size=(max(1, width), max(1, height)),
+            )
+        await session.commit()
+    elif not settings.face_jobs_enabled:
         from app.faces.runpod_gpu import RunPodFaceError, detect_faces_runpod_batch, runpod_face_configured
 
         extracted = []
@@ -826,16 +872,11 @@ async def process_video_file(
         )
 
     face_job_queued = False
-    if settings.face_jobs_enabled:
+    if settings.face_jobs_enabled and gpu_face_rows is None:
         from app.workers.face_queue import enqueue_face_job
 
         await enqueue_face_job(session, drive_file.id)
         face_job_queued = True
-
-    # Independent addon lane: queue after sampled vectors/text are durable.
-    from app.workers.object_queue import enqueue_object_job
-
-    await enqueue_object_job(session, drive_file.id)
 
     logger.info(
         "Indexed video %s: %d segments, %d frames, %d faces (local Qdrant RAG)%s",
