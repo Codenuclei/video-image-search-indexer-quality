@@ -68,12 +68,14 @@ def _args() -> argparse.Namespace:
     return args
 
 
-def _template_body() -> dict:
+def _template_body(existing_registry_auth_id: str = "") -> dict:
     image = resolve_face_image()
     try:
         auth_id = require_registry_auth(image)
     except ValueError as exc:
-        raise SystemExit(str(exc)) from exc
+        auth_id = existing_registry_auth_id
+        if not auth_id:
+            raise SystemExit(str(exc)) from exc
     return {
         "imageName": image,
         "containerDiskInGb": 40,
@@ -100,7 +102,6 @@ def main() -> None:
     if not HANDLER.is_file():
         raise SystemExit("Missing runpod/face-buffalo/handler.py")
     headers = _auth()
-    body = _template_body()
     with httpx.Client(timeout=60.0) as client:
         if args.template_id:
             template = client.get(f"{REST}/templates/{args.template_id}", headers=headers)
@@ -119,6 +120,9 @@ def main() -> None:
                 payload = payload.get("templates") or payload.get("data") or []
             existing = _find_named(payload, TEMPLATE_NAME)
 
+        body = _template_body(
+            str((existing or {}).get("containerRegistryAuthId") or "")
+        )
         if existing:
             template_id = existing["id"]
             updated = client.patch(
