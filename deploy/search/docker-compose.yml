@@ -105,6 +105,7 @@ services:
       IMAGE_DIGEST: ${IMAGE_DIGEST:-unknown}
       RUN_INDEXER: "true"
       AUTO_INDEX_ENABLED: "false"
+      VIDEO_INDEXING_ENABLED: "true"
       RUN_FACE_WORKER: "false"
       FACE_JOBS_ENABLED: "true"
       RUNPOD_FACE_ENDPOINT_ID: ${RUNPOD_FACE_ENDPOINT_ID:-0zub88paibpsf3}
