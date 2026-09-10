@@ -64,6 +64,47 @@ def test_qwen_scale_min_one_under_load() -> None:
     assert serverless_qwen_scale(active=False, workers_max=2) == {"workersMin": 0, "workersMax": 0}
 
 
+def test_qwen_scale_retries_transient_control_plane_400() -> None:
+    from app.qwen import runpod_serverless as qwen
+
+    qwen._scaled = None
+    attempts = {"count": 0}
+
+    class _Resp:
+        text = "endpoint changing state"
+
+        def __init__(self, status_code: int) -> None:
+            self.status_code = status_code
+
+    class _Client:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def patch(self, url: str, headers: dict, json: dict):
+            attempts["count"] += 1
+            return _Resp(400 if attempts["count"] == 1 else 200)
+
+    settings = Settings(
+        _env_file=None,  # type: ignore[call-arg]
+        runpod_api_key="rp_test",
+        runpod_qwen_endpoint_id="ya97mr5kgtwdi1",
+        runpod_qwen_workers_max=1,
+    )
+    with (
+        patch("app.qwen.runpod_serverless.httpx.AsyncClient", _Client),
+        patch("app.qwen.runpod_serverless.asyncio.sleep", new_callable=AsyncMock),
+    ):
+        asyncio.run(qwen.set_qwen_workers_max(settings, 1))
+    qwen._scaled = None
+    assert attempts["count"] == 2
+
+
 def test_parse_qwen_identify_output_prefers_raw_text() -> None:
     text = parse_qwen_identify_output({"raw_text": "OBJECTS\ncoffee cup | mug\n", "tags": []})
     assert "coffee cup" in text

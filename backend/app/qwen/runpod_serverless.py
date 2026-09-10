@@ -113,13 +113,31 @@ async def set_qwen_workers_max(settings: Settings, workers_max: int) -> None:
         "User-Agent": "Mozilla/5.0",
     }
     async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.patch(
-            f"{_REST}/endpoints/{endpoint}",
-            headers=headers,
-            json=desired,
-        )
+        resp = None
+        for attempt in range(6):
+            resp = await client.patch(
+                f"{_REST}/endpoints/{endpoint}",
+                headers=headers,
+                json=desired,
+            )
+            if resp.status_code < 400:
+                break
+            # RunPod's control plane intermittently returns 400/409 while a
+            # serverless endpoint changes state. A later PATCH succeeds.
+            if resp.status_code not in (400, 409, 429) and resp.status_code < 500:
+                break
+            logger.warning(
+                "qwen endpoint scale retry %s/6 status=%s desired=%s",
+                attempt + 1,
+                resp.status_code,
+                desired,
+            )
+            await asyncio.sleep(float(attempt + 1))
+    assert resp is not None
     if resp.status_code >= 400:
-        raise RunPodQwenError(f"scale serverless workers={desired} failed {resp.status_code}")
+        raise RunPodQwenError(
+            f"scale serverless workers={desired} failed {resp.status_code}: {resp.text[:200]}"
+        )
     _scaled = scaled
     logger.info(
         "qwen_gpu_serverless min=%s max=%s endpoint=%s",
