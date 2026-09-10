@@ -47,7 +47,9 @@ services:
       GIT_SHA: ${GIT_SHA:-unknown}
       IMAGE_DIGEST: ${IMAGE_DIGEST:-unknown}
       RUN_INDEXER: "false"
-      RUN_FACE_WORKER: "false"
+      # Dedicated indexer owns the shared background-leader lock. The API keeps
+      # the RunPod face queue without competing for indexer leadership.
+      RUN_FACE_WORKER: "true"
       FACE_JOBS_ENABLED: "true"
       AUTO_INDEX_ENABLED: "false"
       RUNPOD_FACE_ENDPOINT_ID: ${RUNPOD_FACE_ENDPOINT_ID:-0zub88paibpsf3}
