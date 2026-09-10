@@ -171,3 +171,53 @@ REST scale (browser User-Agent if Cloudflare 1010):
 
 - Load: `PATCH /v1/endpoints/0zub88paibpsf3` `{"workersMin":1,"workersMax":1}`
 - Idle: `{"workersMin":0,"workersMax":0}`
+
+## 10 Sep 2026 — migration implementation parity release
+
+Release commit: `39a736314cd5af50e011c0ee8472e9211eacc65f`
+
+- Added additive `qwen_enrichment_jobs`, `qwen_captions`, and
+  `video_segment_labels` schema plus Alembic revision `0002_qwen_enrichment`.
+  Qwen raw output, normalized object/action labels, and exactly one canonical
+  caption per target/prompt/model version are durable. Canonical caption text
+  is embedded through Gemini Embedding 2; Gemini does not generate the caption.
+- Qwen image requests use the RunPod `images[]` batch contract. Video Qwen
+  evidence is attached to the exact `VideoSegment`; `/search/testv2` reads the
+  timestamped evidence while production `/search` remains on its existing path.
+- Removed all new `ObjectWorkerLoop` startup and `enqueue_object_job` scheduling.
+  Historical object tables, rows, and worker implementation remain untouched.
+- RunPod video processing is now one bounded job per video: one signed source
+  pull, NVDEC extraction, buffalo_l faces, and returned JPEG evidence. The
+  client and handler enforce 80-frame and 48 MiB JPEG-response caps. A configured
+  RunPod failure is retryable and never falls back to host InsightFace.
+- New YouTube rows are excluded from video claims. External VTT remains
+  supported; DO keeps `WHISPER_FALLBACK_ENABLED=false`.
+- DO enables `GEMINI_GENERATION_DISABLED=true`, disables Gemini caption
+  backfill/filter/query expansion, and retains `models/gemini-embedding-2`.
+
+Focused local verification: `79 passed, 3 skipped`. A broader selection reached
+`81 passed, 3 skipped`; its three errors were only database fixtures failing to
+connect to the absent local PostgreSQL test port `55432`.
+
+DigitalOcean parity evidence:
+
+- Local, GitHub, droplet checkout, and `/version` all report
+  `39a736314cd5af50e011c0ee8472e9211eacc65f`.
+- Immutable backend image:
+  `sha256:1543d33a2b6d2bfd51f7eba3c09ef133d8e953a24216a77652742883af9a3015`.
+- Face worker image:
+  `sha256:b1ee5515acec86c57c27a3d69ef81c98b0f73a2819def5fd7eb4e02a6a55de70`,
+  and RunPod template `z0jpvc1ebf` is pinned to the release-SHA tag.
+- Backend mounts only the named Docker volume at `/app/data`; no host bind
+  mounts. `RUN_INDEXER=false`, `AUTO_INDEX_ENABLED=false`, and all identify,
+  object, and backfill runtime lane flags are false pending cutover approval.
+- `/health` is 200; `/search?q=coffee&rerank=false` remains 71 files.
+- Durable schema is live. Existing image migration created 146 versioned Qwen
+  jobs and 146 canonical captions before lanes were paused; no video segment
+  labels exist yet because no new video indexing canary has been authorized.
+
+Readiness: mission-critical migration code is present on DO. Engineering is
+approximately 96% complete. Approval/cutover validation is approximately 75%
+complete: start with one image and one video canary when approved, specifically
+validating the changed one-job video response/failure caps and terminal source
+cleanup before enabling general indexing. Carousel migration remains deferred.
