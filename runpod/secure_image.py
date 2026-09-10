@@ -10,9 +10,7 @@ import os
 DEFAULT_QWEN_IMAGE = (
     "ghcr.io/codenuclei/video-image-search-indexer-quality/dfi-qwen3-vl-sglang:gpu"
 )
-DEFAULT_FACE_IMAGE = (
-    "ghcr.io/codenuclei/video-image-search-indexer-quality/dfi-face-buffalo:gpu"
-)
+DEFAULT_FACE_IMAGE = "ghcr.io/codenuclei/dfi-face-buffalo:gpu"
 
 
 def is_docker_hub_image(image: str) -> bool:

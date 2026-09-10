@@ -1,7 +1,7 @@
 # Bake handler + buffalo_l so RunPod workers pull GHCR, not Docker Hub.
 # Build/push once:
-#   docker build -t ghcr.io/codenuclei/video-image-search-indexer-quality/dfi-face-buffalo:gpu runpod/face-buffalo
-#   docker push ghcr.io/codenuclei/video-image-search-indexer-quality/dfi-face-buffalo:gpu
+#   docker build -t ghcr.io/codenuclei/dfi-face-buffalo:gpu runpod/face-buffalo
+#   docker push ghcr.io/codenuclei/dfi-face-buffalo:gpu
 #
 # The FROM below is only used on the build machine. Workers never hit docker.io.
 
