@@ -4,6 +4,7 @@ gunicorn==23.0.0
 pydantic==2.13.4
 pydantic-settings==2.14.2
 sqlalchemy[asyncio]==2.0.51
+alembic==1.16.5
 asyncpg==0.31.0
 pgvector==0.4.1
 psycopg[binary]==3.3.4
