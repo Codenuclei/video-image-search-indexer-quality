@@ -1921,7 +1921,13 @@ class IndexingWorker:
         existing = await session.get(DriveFile, entry.id)
         inferred_mime = infer_image_mime(entry.mime_type, entry.name)
         entry_path = normalize_file_path(entry.path or "/")
-        paused = is_file_indexing_paused(entry_path, paused_paths or [])
+        paused_paths = paused_paths or []
+        paused = is_file_indexing_paused(entry_path, paused_paths)
+        # Global ``/`` pause is a claim gate only. Do not rewrite PENDING → SKIPPED
+        # or a Drive sync during pause empties the whole queue.
+        skip_pause = is_file_indexing_paused(
+            entry_path, [p for p in paused_paths if p != "/"]
+        )
         hash_info = hash_from_connector_entry(entry)
         algo = hash_info[0] if hash_info else None
         digest = hash_info[1] if hash_info else None
@@ -1933,7 +1939,7 @@ class IndexingWorker:
             return False
 
         if existing is None:
-            if paused:
+            if skip_pause:
                 status = DriveFileStatus.SKIPPED
                 error_message = f"{INDEXING_PAUSED_PREFIX} indexing stopped for parent folder"
             elif is_video_mime(inferred_mime or entry.mime_type) and is_video_too_large(
@@ -1968,7 +1974,7 @@ class IndexingWorker:
             else:
                 if error_message and error_message.startswith("video_too_large"):
                     _log_skip(drive_file, "video_too_large")
-                elif not paused:
+                elif not skip_pause:
                     skip_key = await apply_dedupe_on_upsert(
                         session, drive_file, algo=algo, digest=digest
                     )
@@ -2010,7 +2016,7 @@ class IndexingWorker:
             existing.error_message = video_too_large_message(existing.size)
             _log_skip(existing, "video_too_large")
             return True
-        if paused and existing.status in (DriveFileStatus.PENDING, DriveFileStatus.ERROR):
+        if skip_pause and existing.status in (DriveFileStatus.PENDING, DriveFileStatus.ERROR):
             existing.status = DriveFileStatus.SKIPPED
             existing.error_message = f"{INDEXING_PAUSED_PREFIX} indexing stopped for parent folder"
         elif not paused and restored and not (changed or hash_changed):

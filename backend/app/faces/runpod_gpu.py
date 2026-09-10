@@ -214,12 +214,14 @@ def build_face_video_payload(
     min_confidence: float = 0.5,
     video_suffix: str = ".mp4",
     video_max_bytes: int = 10 * 1024 * 1024 * 1024,
+    extract_only: bool = False,
+    max_width: int = 960,
 ) -> dict[str, Any]:
     if not (video_url or "").strip():
         raise RunPodFaceError("video_url is required")
     if not timestamps:
         raise RunPodFaceError("timestamps are required")
-    return {
+    payload: dict[str, Any] = {
         "drive_file_id": drive_file_id,
         "video_url": video_url.strip(),
         "video_suffix": video_suffix or ".mp4",
@@ -227,6 +229,11 @@ def build_face_video_payload(
         "timestamps": [round(float(t), 3) for t in timestamps],
         "min_detection_confidence": min_confidence,
     }
+    if extract_only:
+        payload["extract_only"] = True
+        payload["return_jpegs"] = True
+        payload["max_width"] = int(max_width or 960)
+    return payload
 
 
 def payload_contains_drive_url(payload: dict[str, Any]) -> bool:
@@ -234,21 +241,25 @@ def payload_contains_drive_url(payload: dict[str, Any]) -> bool:
     return "drive.google.com" in blob or "googleapis.com/drive" in blob
 
 
-def serverless_worker_scale(*, active: bool) -> dict[str, int]:
-    """Serverless endpoint size: one worker under load, scale to zero when idle.
+def serverless_worker_scale(*, active: bool, workers_max: int = 1) -> dict[str, int]:
+    """Serverless endpoint size under load, scale to zero when idle.
 
-    Never uses a dedicated pod. ``workersMin=1`` keeps a worker while jobs run;
-    idle sets min and max to 0 so RunPod can autoscale off.
+    Never uses a dedicated pod. ``workersMin=1`` keeps at least one worker
+    while jobs run; ``workersMax`` is clamped to 1–8. Idle sets both to 0.
     """
-    if active:
-        return {"workersMin": 1, "workersMax": 1}
-    return {"workersMin": 0, "workersMax": 0}
+    if not active:
+        return {"workersMin": 0, "workersMax": 0}
+    n = max(1, min(8, int(workers_max)))
+    return {"workersMin": 1, "workersMax": n}
 
 
 async def set_face_workers_max(settings: Settings, workers_max: int) -> None:
     """Scale the face **serverless** endpoint. ``workers_max>0`` means load."""
     global _scaled
-    desired = serverless_worker_scale(active=workers_max > 0)
+    desired = serverless_worker_scale(
+        active=workers_max > 0,
+        workers_max=int(getattr(settings, "runpod_face_workers_max", 1) or 1),
+    )
     scaled = (desired["workersMin"], desired["workersMax"])
     if _scaled == scaled:
         return
@@ -256,7 +267,11 @@ async def set_face_workers_max(settings: Settings, workers_max: int) -> None:
     key = (settings.runpod_api_key or "").strip()
     if not endpoint or not key:
         return
-    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+    headers = {
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+        "User-Agent": "Mozilla/5.0",
+    }
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.patch(
             f"{_REST}/endpoints/{endpoint}",
@@ -302,13 +317,22 @@ async def _run_face_job(payload: dict[str, Any], settings: Settings) -> dict[str
         "Authorization": f"Bearer {settings.runpod_api_key.strip()}",
         "Content-Type": "application/json",
     }
-    timeout = httpx.Timeout(settings.runpod_face_timeout_seconds, connect=30.0)
+    timeout_s = float(getattr(settings, "runpod_face_timeout_seconds", 3600.0) or 3600.0)
+    timeout = httpx.Timeout(timeout_s, connect=30.0)
     async with httpx.AsyncClient(timeout=timeout) as client:
-        submit = await client.post(
-            f"{_RUN}/{endpoint}/run",
-            headers=headers,
-            json={"input": payload},
-        )
+        submit = None
+        for attempt in range(8):
+            await set_face_workers_max(settings, 1)
+            submit = await client.post(
+                f"{_RUN}/{endpoint}/run",
+                headers=headers,
+                json={"input": payload},
+            )
+            if submit.status_code != 409:
+                break
+            logger.warning("face endpoint paused; retry %s", attempt + 1)
+            await asyncio.sleep(2.0 * (attempt + 1))
+        assert submit is not None
         if submit.status_code >= 400:
             raise RunPodFaceError(f"run HTTP {submit.status_code}: {submit.text[:300]}")
         body = submit.json()
@@ -316,7 +340,7 @@ async def _run_face_job(payload: dict[str, Any], settings: Settings) -> dict[str
         if not job_id:
             raise RunPodFaceError(f"run missing id: {body}")
         status_url = f"{_RUN}/{endpoint}/status/{job_id}"
-        deadline = time.monotonic() + settings.runpod_face_timeout_seconds
+        deadline = time.monotonic() + timeout_s
         status = ""
         while time.monotonic() < deadline:
             status_resp = await client.get(status_url, headers=headers)
@@ -470,3 +494,73 @@ async def detect_faces_runpod_video(
         output.get("providers"),
     )
     return rows
+
+
+async def extract_frames_runpod(
+    video_path: str,
+    timestamps: list[float],
+    dest_dir: str | Path,
+    *,
+    drive_file_id: str = "",
+    settings: Settings | None = None,
+) -> dict[float, str]:
+    """NVDEC extract on the face GPU worker. Returns timestamp → jpeg path.
+
+    Signed Range GET only. Never Drive URLs, never the Qwen endpoint. Does not
+    run buffalo_l (``extract_only``) so indexing frames do not steal face detect.
+    """
+    settings = settings or get_settings()
+    if not runpod_face_configured(settings):
+        raise RunPodFaceError("RunPod face GPU is not configured")
+    if not timestamps:
+        return {}
+    path = Path(video_path)
+    if not path.is_file():
+        raise RunPodFaceError(f"cached video missing: {path}")
+    size = int(path.stat().st_size)
+    max_bytes = max(1, int(settings.runpod_face_video_max_bytes))
+    if size > max_bytes:
+        raise RunPodFaceError(
+            f"video {size} bytes exceeds runpod_face_video_max_bytes={max_bytes}"
+        )
+    try:
+        video_url = signed_face_video_pull_url(drive_file_id, settings)
+    except ValueError as exc:
+        raise RunPodFaceError(str(exc)) from exc
+    out_dir = Path(dest_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    written: dict[float, str] = {}
+    ts_all = [round(float(t), 3) for t in timestamps]
+    chunk = 40
+    for i in range(0, len(ts_all), chunk):
+        batch = ts_all[i : i + chunk]
+        payload = build_face_video_payload(
+            batch,
+            video_url=video_url,
+            drive_file_id=drive_file_id,
+            min_confidence=settings.min_detection_confidence,
+            video_suffix=path.suffix or ".mp4",
+            video_max_bytes=max_bytes,
+            extract_only=True,
+            max_width=960,
+        )
+        output = await _run_face_job(payload, settings)
+        if output.get("error"):
+            raise RunPodFaceError(str(output.get("error")))
+        for frame in output.get("frames") or []:
+            if not isinstance(frame, dict) or frame.get("error"):
+                continue
+            raw_b64 = frame.get("jpeg_b64")
+            if not raw_b64:
+                continue
+            ts = round(float(frame.get("timestamp") or 0.0), 3)
+            dest = out_dir / f"{ts:.3f}.jpg"
+            dest.write_bytes(base64.b64decode(str(raw_b64)))
+            written[ts] = str(dest)
+    logger.info(
+        "face_gpu_extract file=%s frames=%d/%d",
+        drive_file_id[:12],
+        len(written),
+        len(ts_all),
+    )
+    return written

@@ -85,6 +85,8 @@ def normalize_error_bucket(error_message: str | None) -> str:
         return "drive_not_connected"
     if "deadlock" in lower:
         return "deadlock"
+    if "database error during indexing" in lower or "connection is closed" in lower:
+        return "database"
     if "timeout" in lower or "timed out" in lower:
         return "timeout"
     if "429" in lower or "resource exhausted" in lower or "quota" in lower:

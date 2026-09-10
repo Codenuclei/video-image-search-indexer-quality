@@ -92,6 +92,9 @@ def test_handler_ffmpeg_video_path_cleans_tmp() -> None:
     assert "download_http_file" in text
     assert "video_url" in text
     assert "refusing Drive URL" in text
+    assert "extract_only" in text
+    assert "jpeg_b64" in text
+    assert "if extract_only:" in text
 
 
 def test_download_http_file_parallel_ranges(tmp_path) -> None:

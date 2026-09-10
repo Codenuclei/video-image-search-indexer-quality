@@ -444,6 +444,102 @@ async def _embed_video_frames_parallel(
     await asyncio.gather(*(_one(ts, path) for ts, path in frame_paths.items()))
 
 
+async def _extract_index_frames(
+    dest: str,
+    sample_times: list[float],
+    frames_dir: Path,
+    drive_file: DriveFile,
+    settings: Settings,
+) -> dict[float, str]:
+    """Prefer RunPod NVDEC; CPU ffmpeg fills any timestamps the GPU missed."""
+    from app.faces.runpod_gpu import RunPodFaceError, extract_frames_runpod, runpod_face_configured
+
+    frame_paths: dict[float, str] = {}
+    frames_dir.mkdir(parents=True, exist_ok=True)
+    if runpod_face_configured(settings):
+        try:
+            frame_paths = await extract_frames_runpod(
+                dest,
+                sample_times,
+                frames_dir,
+                drive_file_id=drive_file.id,
+                settings=settings,
+            )
+            logger.info(
+                "video_gpu_extract file=%s frames=%d/%d",
+                drive_file.id[:12],
+                len(frame_paths),
+                len(sample_times),
+            )
+        except RunPodFaceError:
+            logger.exception("video_gpu_extract_failed_fallback_cpu file=%s", drive_file.id[:12])
+            frame_paths = {}
+
+    for ts in sample_times:
+        key = round(float(ts), 3)
+        if key in frame_paths:
+            continue
+        frame_path = str(frames_dir / f"{key:.3f}.jpg")
+        partial_frame = str(frames_dir / f"{key:.3f}.partial.jpg")
+        ensure_disk_space(frame_path)
+        try:
+            ok = await run_cpu_bound(extract_frame_at, dest, ts, partial_frame)
+            if ok:
+                os.replace(partial_frame, frame_path)
+                frame_paths[key] = frame_path
+        finally:
+            if os.path.exists(partial_frame):
+                os.remove(partial_frame)
+    return frame_paths
+
+
+async def _enrich_video_segments_qwen(
+    session: AsyncSession,
+    media: Media,
+    segments: list[VideoSegment],
+    settings: Settings,
+) -> int:
+    """Persist Qwen captions plus object/action evidence for sampled moments."""
+    from app.objects.identify_tags import parse_identify_output
+    from app.qwen.runpod_serverless import identify_jpeg_runpod, runpod_qwen_configured
+    from app.workers.identify_queue import persist_identify_labels
+
+    if not runpod_qwen_configured(settings):
+        return 0
+    candidates = [
+        segment
+        for segment in sorted(segments, key=lambda item: item.start_sec)
+        if segment.frame_path and os.path.isfile(segment.frame_path)
+    ]
+    limit = max(1, int(settings.video_max_qwen_frames))
+    if len(candidates) > limit:
+        step = (len(candidates) - 1) / max(1, limit - 1)
+        candidates = [candidates[round(index * step)] for index in range(limit)]
+
+    completed = 0
+    for segment in candidates:
+        try:
+            raw = Path(segment.frame_path or "").read_bytes()
+            parsed = parse_identify_output(await identify_jpeg_runpod(raw, settings))
+            segment.vlm_description = parsed.caption or None
+            await persist_identify_labels(
+                session,
+                media.id,
+                parsed,
+                best_timestamp=float(segment.start_sec),
+                replace=False,
+            )
+            completed += 1
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "video_qwen_enrich_failed media=%s timestamp=%.3f",
+                media.id,
+                float(segment.start_sec),
+            )
+    await session.commit()
+    return completed
+
+
 async def process_video_file(
     session: AsyncSession,
     drive_file: DriveFile,
@@ -605,23 +701,10 @@ async def process_video_file(
 
     frames_dir = _frames_dir(settings, drive_file.id)
     tracker = LocalIdentityTracker(settings.media_dedup_similarity_threshold)
-    frame_paths: dict[float, str] = {}
-
-    # Extract frames first (CPU / disk only) so we never hold a DB txn over ffmpeg.
-    for ts in sample_times:
-        frame_path = str(frames_dir / f"{ts:.3f}.jpg")
-        partial_frame = str(frames_dir / f"{ts:.3f}.partial.jpg")
-        ensure_disk_space(frame_path)
-        try:
-            ok = await run_cpu_bound(extract_frame_at, dest, ts, partial_frame)
-            if ok:
-                os.replace(partial_frame, frame_path)
-        finally:
-            if os.path.exists(partial_frame):
-                os.remove(partial_frame)
-        if not ok:
-            continue
-        frame_paths[ts] = frame_path
+    # GPU NVDEC when configured; CPU ffmpeg fills gaps. Never hold a DB txn.
+    frame_paths = await _extract_index_frames(
+        dest, sample_times, frames_dir, drive_file, settings
+    )
 
     if not settings.face_jobs_enabled:
         from app.faces.runpod_gpu import RunPodFaceError, detect_faces_runpod_batch, runpod_face_configured
@@ -715,7 +798,12 @@ async def process_video_file(
         ).scalars().all()
     )
 
-    if settings.video_vlm_enrich and (settings.gemini_api_key or settings.qwen_vlm_enabled):
+    from app.qwen.runpod_serverless import runpod_qwen_configured
+
+    if settings.video_vlm_enrich and runpod_qwen_configured(settings):
+        await _enrich_video_segments_qwen(session, media, segments, settings)
+    elif settings.video_vlm_enrich and (settings.gemini_api_key or settings.qwen_vlm_enabled):
+        # Legacy non-DO path. DO config always selects RunPod Qwen above.
         for seg in segments:
             if not seg.frame_path or os.path.isfile(seg.frame_path) is False:
                 continue

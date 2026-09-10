@@ -53,6 +53,15 @@ async def load_paused_folder_paths(session: AsyncSession) -> list[str]:
     return [normalize_folder_path(p) for p in rows]
 
 
+async def lane_paused_folder_paths(session: AsyncSession) -> list[str]:
+    """Folder pauses that apply to caption / object / identify / face lanes.
+
+    A global ``/`` pause stops Drive image+video ingest only. Enrichment lanes
+    keep running so ``/search`` and ``/search/testv2`` can fill in parallel.
+    """
+    return [path for path in await load_paused_folder_paths(session) if path != "/"]
+
+
 async def set_folder_pause_flag(
     session: AsyncSession,
     folder_path: str,

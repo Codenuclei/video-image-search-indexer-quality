@@ -25,13 +25,9 @@ async def index_control_watch_loop(
             async with worker._session_factory() as session:
                 paused = await global_indexing_is_paused(session)
                 if paused:
+                    # Stop image/video ingest only. Caption, object, and identify
+                    # lanes keep running on maintenance-tick / their own loops.
                     total_cancelled += await worker.cancel_all_indexing_tasks()
-                    current = asyncio.current_task()
-                    for task in asyncio.all_tasks():
-                        if task is current or task.done():
-                            continue
-                        if task.get_name() in {"maintenance-tick", "startup-maintenance"}:
-                            task.cancel()
                 state = await session.get(IndexControlState, 1)
                 if state is None:
                     state = IndexControlState(id=1)

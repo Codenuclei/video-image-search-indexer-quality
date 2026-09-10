@@ -316,6 +316,14 @@ async def lifespan(app: FastAPI):
                 identify_loop.ensure_started()
                 app.state.identify_worker_loop = identify_loop
                 logger.info("Identify Qwen worker loop started on dfi-backend leader")
+                from app.workers.object_queue import ObjectWorkerLoop
+
+                object_loop = ObjectWorkerLoop(yield_to_faces=False)
+                object_loop.ensure_started()
+                app.state.object_worker_loop = object_loop
+                logger.info(
+                    "Object side-lane started on dfi-backend leader (parallel with identify)"
+                )
                 from app.workers.ocr_queue import OcrWorkerLoop
 
                 ocr_loop = OcrWorkerLoop()

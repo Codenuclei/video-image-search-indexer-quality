@@ -91,6 +91,12 @@ def maintenance_status() -> dict[str, object]:
 
 async def count_missing_captions() -> int:
     settings = get_settings()
+    from app.qwen.runpod_serverless import runpod_qwen_configured
+
+    # Qwen is the caption source when the serverless endpoint is configured.
+    # The identify queue owns its backfill; never create a duplicate Gemini VLM caption.
+    if runpod_qwen_configured(settings):
+        return 0
     if not settings.image_caption_enabled or not settings.gemini_api_key:
         return 0
     missing, invalid = await caption_recaption_ids()
@@ -113,6 +119,11 @@ async def run_caption_backfill(worker: IndexingWorker, *, max_batches: int | Non
     global _caption_running, _last_caption_run_at, _last_caption_done, _last_invalid_captions_removed
 
     settings = get_settings()
+    from app.qwen.runpod_serverless import runpod_qwen_configured
+
+    if runpod_qwen_configured(settings):
+        logger.info("Caption backfill skipped: RunPod Qwen owns caption generation")
+        return 0
     if not settings.image_caption_enabled or not settings.gemini_api_key:
         return 0
 
@@ -572,9 +583,7 @@ async def maintenance_tick(worker: IndexingWorker) -> None:
 
     session_factory = get_session_factory()
     async with session_factory() as session:
-        if await global_indexing_is_paused(session):
-            logger.info("Maintenance skipped: global indexing pause is active")
-            return
+        ingest_paused = await global_indexing_is_paused(session)
         from app.db.app_settings_store import refresh_runtime_settings_from_db
 
         runtime = await refresh_runtime_settings_from_db(session)
@@ -593,12 +602,17 @@ async def maintenance_tick(worker: IndexingWorker) -> None:
             produced = await produce_identify_backfill(session, limit=1000)
             if int(produced.get("enqueued", 0)):
                 logger.info("Identify backfill enqueued=%s", produced["enqueued"])
-        saved = await restore_archived_when_index_complete(session)
-        if saved:
-            await session.commit()
+        if not ingest_paused:
+            saved = await restore_archived_when_index_complete(session)
+            if saved:
+                await session.commit()
+                logger.info(
+                    "Maintenance: restored %d archived file(s) that already qualify as PROCESSED",
+                    saved,
+                )
+        elif ingest_paused:
             logger.info(
-                "Maintenance: restored %d archived file(s) that already qualify as PROCESSED",
-                saved,
+                "Ingest paused — caption/object/identify lanes still run"
             )
 
     settings = get_settings()

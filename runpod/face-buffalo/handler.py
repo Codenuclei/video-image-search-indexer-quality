@@ -86,13 +86,23 @@ def _ffmpeg_hwaccels() -> list[str]:
     return names
 
 
-def extract_frame_ffmpeg(video_path: str, timestamp_sec: float, output_path: str) -> str:
+def extract_frame_ffmpeg(
+    video_path: str,
+    timestamp_sec: float,
+    output_path: str,
+    *,
+    max_width: int = 0,
+) -> str:
     """NVDEC first (``-hwaccel cuda``), then software ffmpeg on this worker.
 
     Same seek as CPU ``extract_frame_at`` (``-ss`` before ``-i``). Returns ``nvdec`` or ``cpu``.
+    ``max_width`` scales the JPEG for index-time extracts (smaller RunPod payload).
     """
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     ss = f"{float(timestamp_sec):.3f}"
+    scale: list[str] = []
+    if max_width and int(max_width) > 0:
+        scale = ["-vf", f"scale='min({int(max_width)},iw)':-2"]
     nvdec = [
         "ffmpeg",
         "-y",
@@ -105,6 +115,7 @@ def extract_frame_ffmpeg(video_path: str, timestamp_sec: float, output_path: str
         ss,
         "-i",
         video_path,
+        *scale,
         "-frames:v",
         "1",
         "-q:v",
@@ -124,6 +135,7 @@ def extract_frame_ffmpeg(video_path: str, timestamp_sec: float, output_path: str
         ss,
         "-i",
         video_path,
+        *scale,
         "-frames:v",
         "1",
         "-q:v",
@@ -351,6 +363,9 @@ def _process_video(inp: dict, min_confidence: float) -> dict:
     if not isinstance(timestamps, list) or not timestamps:
         return {"error": "timestamps[] is required"}
     ts_list = sorted({round(float(t), 3) for t in timestamps})
+    extract_only = bool(inp.get("extract_only"))
+    return_jpegs = bool(inp.get("return_jpegs") or extract_only)
+    max_width = int(inp.get("max_width") or 0)
     max_bytes = int(inp.get("video_max_bytes") or DEFAULT_VIDEO_MAX_BYTES)
     tmpdir = tempfile.mkdtemp(prefix="dfi-rface-video-")
     try:
@@ -377,7 +392,9 @@ def _process_video(inp: dict, min_confidence: float) -> dict:
 
         def _one(ts: float) -> tuple[float, str, str]:
             out = os.path.join(tmpdir, f"{ts:.3f}.jpg")
-            decoder = extract_frame_ffmpeg(video_path, ts, out)
+            decoder = extract_frame_ffmpeg(
+                video_path, ts, out, max_width=max_width if extract_only else 0
+            )
             return ts, out, decoder
 
         workers = min(8, max(1, len(ts_list)))
@@ -387,23 +404,29 @@ def _process_video(inp: dict, min_confidence: float) -> dict:
         t1 = time.perf_counter()
         frames = []
         for ts, jpeg_path, decoder in extracted:
+            row: dict = {"timestamp": ts, "decoder": decoder}
+            if return_jpegs and Path(jpeg_path).is_file():
+                row["jpeg_b64"] = base64.b64encode(Path(jpeg_path).read_bytes()).decode("ascii")
+            if extract_only:
+                frames.append(row)
+                continue
             image = cv2.imread(jpeg_path)
             if image is None:
-                frames.append({"timestamp": ts, "error": "jpeg decode failed", "decoder": decoder})
+                row["error"] = "jpeg decode failed"
+                frames.append(row)
                 continue
             h, w = image.shape[:2]
             faces = _detect_bgr(image, min_confidence)
-            frames.append(
+            row.update(
                 {
-                    "timestamp": ts,
                     "width": int(w),
                     "height": int(h),
-                    "decoder": decoder,
                     "faces": faces,
                     "face_count": len(faces),
                 }
             )
-        detect_ms = (time.perf_counter() - t1) * 1000.0
+            frames.append(row)
+        detect_ms = 0.0 if extract_only else (time.perf_counter() - t1) * 1000.0
         decoders = [row.get("decoder") for row in frames if row.get("decoder")]
         if decoders and all(d == "nvdec" for d in decoders):
             ffmpeg_mode = "nvdec"

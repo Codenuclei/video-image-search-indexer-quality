@@ -538,6 +538,33 @@ async def index_image_captions_batch(items: list[tuple[str, bytes]]) -> int:
     return done
 
 
+async def index_image_caption_texts(items: list[tuple[str, str]]) -> int:
+    """Embed already-generated captions without calling Gemini vision.
+
+    Qwen is the sole caption generator. Gemini Embedding 2 is used only to
+    vectorize the Qwen text before its upsert into the existing caption index.
+    """
+    from app.qdrant.image_captions import is_valid_caption, upsert_caption_sync
+
+    settings = get_settings()
+    if not settings.gemini_api_key or not items:
+        return 0
+
+    done = 0
+    for drive_file_id, caption in items:
+        if not is_valid_caption(caption):
+            continue
+        vec = await asyncio.to_thread(embed_text_sync, caption)
+        await asyncio.to_thread(
+            upsert_caption_sync,
+            drive_file_id=drive_file_id,
+            vector=vec,
+            caption=caption,
+        )
+        done += 1
+    return done
+
+
 async def index_image_embedding(jpeg_bytes: bytes, drive_file_id: str) -> None:
     """Embed a Drive image and upsert to Qdrant (single-image path)."""
     await index_image_embeddings_batch([(drive_file_id, jpeg_bytes)])

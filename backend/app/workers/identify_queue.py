@@ -435,15 +435,18 @@ async def persist_identify_labels(
     parsed,
     *,
     model_version: str = QWEN_IDENTIFY_MODEL_VERSION,
+    best_timestamp: float | None = None,
+    replace: bool = True,
 ) -> int:
-    """Replace this media's Qwen identify rows only."""
+    """Persist Qwen labels, optionally preserving timestamped video evidence."""
     model_version = str(model_version or QWEN_IDENTIFY_MODEL_VERSION)[:96]
-    await session.execute(
-        delete(MediaIdentifyLabel).where(
-            MediaIdentifyLabel.media_id == media_id,
-            MediaIdentifyLabel.model_version == model_version,
+    if replace:
+        await session.execute(
+            delete(MediaIdentifyLabel).where(
+                MediaIdentifyLabel.media_id == media_id,
+                MediaIdentifyLabel.model_version == model_version,
+            )
         )
-    )
     now = datetime.now(timezone.utc)
     rows = persist_rows(parsed)
     if not rows:
@@ -462,7 +465,7 @@ async def persist_identify_labels(
                 "confidence": float(row["confidence"]),
                 "evidence_source": str(row["evidence_source"] or "qwen_identify")[:32],
                 "evidence_text": (str(evidence)[:240] if evidence else None),
-                "best_timestamp": None,
+                "best_timestamp": best_timestamp,
                 "hit_count": int(row.get("hit_count", 1) or 1),
                 "model_version": str(model_version or QWEN_IDENTIFY_MODEL_VERSION)[:96],
                 "updated_at": now,
@@ -479,6 +482,7 @@ async def persist_identify_labels(
                 "category": stmt.excluded.category,
                 "evidence_source": stmt.excluded.evidence_source,
                 "evidence_text": stmt.excluded.evidence_text,
+                "best_timestamp": stmt.excluded.best_timestamp,
                 "hit_count": stmt.excluded.hit_count,
                 "updated_at": now,
             },
@@ -629,14 +633,9 @@ async def produce_identify_backfill(
     dry_run: bool = False,
 ) -> dict[str, int | bool]:
     """Enqueue processed images missing a done/pending identify job."""
-    from app.drive.indexing_pause import (
-        global_indexing_is_paused,
-        load_paused_folder_paths,
-    )
+    from app.drive.indexing_pause import lane_paused_folder_paths
 
-    if await global_indexing_is_paused(session):
-        return {"paused": True, "eligible": 0, "enqueued": 0}
-    paused_paths = await load_paused_folder_paths(session)
+    paused_paths = await lane_paused_folder_paths(session)
     query = (
         select(DriveFile.id)
         .join(Media, Media.drive_file_id == DriveFile.id)
@@ -720,6 +719,10 @@ async def _post_identify(
     jpeg_bytes: bytes,
     settings: Settings,
 ) -> str:
+    from app.qwen.runpod_serverless import identify_jpeg_runpod, runpod_qwen_configured
+
+    if runpod_qwen_configured(settings):
+        return await identify_jpeg_runpod(jpeg_bytes, settings)
     payload = build_identify_payload(
         jpeg_bytes,
         model=settings.qwen_identify_model or settings.qwen_vlm_model,
@@ -728,6 +731,8 @@ async def _post_identify(
     base = sglang_base_url(settings)
     if not base:
         raise RuntimeError("qwen identify base URL is not configured")
+    if "proxy.runpod.net" in base:
+        raise RuntimeError("refusing dedicated RunPod proxy; set RUNPOD_QWEN_ENDPOINT_ID")
     url = f"{base}/v1/chat/completions"
     resp = await client.post(url, json=payload, headers={"Authorization": "Bearer EMPTY"})
     resp.raise_for_status()
@@ -752,11 +757,7 @@ async def process_identify_job(
     """Download one original, send as a photo, persist isolated labels, delete JPEG."""
     from app.db.app_settings_store import refresh_runtime_settings_from_db
     from app.dependencies import get_drive_client
-    from app.drive.indexing_pause import (
-        file_under_folder,
-        global_indexing_is_paused,
-        load_paused_folder_paths,
-    )
+    from app.drive.indexing_pause import file_under_folder, lane_paused_folder_paths
     from app.pipelines.common import download_to_memory
 
     settings = get_settings()
@@ -768,7 +769,7 @@ async def process_identify_job(
             await release_identify_job(session_factory, job_id)
             return
         runtime = await refresh_runtime_settings_from_db(session)
-        if not runtime.identify_lane_enabled or await global_indexing_is_paused(session):
+        if not runtime.identify_lane_enabled:
             await session.rollback()
             await release_identify_job(session_factory, job_id)
             return
@@ -783,7 +784,7 @@ async def process_identify_job(
             await session.commit()
             _METRICS["errors"] = int(_METRICS["errors"]) + 1
             return
-        paused_paths = await load_paused_folder_paths(session)
+        paused_paths = await lane_paused_folder_paths(session)
         if any(file_under_folder(item.path, paused) for paused in paused_paths):
             await session.rollback()
             await release_identify_job(session_factory, job_id)
@@ -840,6 +841,12 @@ async def process_identify_job(
         parsed = parse_identify_output(text_out)
         async with session_factory() as session:
             label_count = await persist_identify_labels(session, item.media_id, parsed)
+            await session.commit()
+        if parsed.caption:
+            from app.search.images import index_image_caption_texts
+
+            await index_image_caption_texts([(item.drive_file_id, parsed.caption)])
+        async with session_factory() as session:
             await _mark_job(
                 session,
                 job_id,
@@ -916,6 +923,7 @@ class IdentifyWorkerLoop:
         self._ready_q: asyncio.Queue[_ReadyIdentify | None] | None = None
         self._persist_q: asyncio.Queue[_PersistIdentify | None] | None = None
         self._paused_paths: list[str] = []
+        self._qwen_idle_ticks = 0
 
     def ensure_started(self) -> None:
         if self._task is None:
@@ -956,6 +964,10 @@ class IdentifyWorkerLoop:
         wipe_identify_working_dir(working_dir)
         fetch_n = max(1, settings.qwen_identify_fetch_concurrency)
         gpu_n = max(1, settings.qwen_identify_concurrency)
+        from app.qwen.runpod_serverless import runpod_qwen_configured
+
+        if runpod_qwen_configured(settings):
+            gpu_n = min(8, gpu_n)
         persist_n = max(1, settings.qwen_identify_persist_concurrency)
         prefetch = max(gpu_n, settings.qwen_identify_prefetch)
         decode_sem = asyncio.Semaphore(min(16, fetch_n))
@@ -1017,10 +1029,7 @@ class IdentifyWorkerLoop:
 
     async def _claim_tick(self) -> None:
         from app.db.app_settings_store import refresh_runtime_settings_from_db
-        from app.drive.indexing_pause import (
-            global_indexing_is_paused,
-            load_paused_folder_paths,
-        )
+        from app.drive.indexing_pause import lane_paused_folder_paths
 
         settings = get_settings()
         fetch_q = self._fetch_q
@@ -1033,11 +1042,7 @@ class IdentifyWorkerLoop:
                 await session.rollback()
                 await asyncio.sleep(5)
                 return
-            if await global_indexing_is_paused(session):
-                await session.rollback()
-                await asyncio.sleep(5)
-                return
-            self._paused_paths = await load_paused_folder_paths(session)
+            self._paused_paths = await lane_paused_folder_paths(session)
             free = fetch_q.maxsize - fetch_q.qsize()
             if free <= 0:
                 await session.rollback()
@@ -1069,14 +1074,25 @@ class IdentifyWorkerLoop:
                 or int(_METRICS["persist_queue"] or 0)
             )
             if busy:
+                self._qwen_idle_ticks = 0
                 await asyncio.sleep(0.2)
             else:
                 _METRICS["last_starved_at"] = datetime.now(timezone.utc).isoformat()
+                from app.qwen.runpod_serverless import runpod_qwen_configured, set_qwen_workers_max
+
+                self._qwen_idle_ticks += 1
+                if self._qwen_idle_ticks >= 45 and runpod_qwen_configured(settings):
+                    try:
+                        await set_qwen_workers_max(settings, 0)
+                    except Exception:  # noqa: BLE001
+                        logger.warning("qwen_gpu_scale_zero_failed", exc_info=True)
+                    self._qwen_idle_ticks = 0
                 await asyncio.sleep(2)
             return
 
         for item in items:
             await fetch_q.put(item)
+        self._qwen_idle_ticks = 0
         self._sync_queue_metrics()
 
     async def _fetch_worker(self, decode_sem: asyncio.Semaphore) -> None:

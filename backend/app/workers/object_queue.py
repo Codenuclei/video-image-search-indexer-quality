@@ -477,14 +477,9 @@ async def produce_object_backfill(
     dry_run: bool = False,
 ) -> dict[str, int | bool]:
     """Count/enqueue only media missing the current model, respecting pauses."""
-    from app.drive.indexing_pause import (
-        global_indexing_is_paused,
-        load_paused_folder_paths,
-    )
+    from app.drive.indexing_pause import lane_paused_folder_paths
 
-    if await global_indexing_is_paused(session):
-        return {"paused": True, "eligible": 0, "enqueued": 0}
-    paused_paths = await load_paused_folder_paths(session)
+    paused_paths = await lane_paused_folder_paths(session)
     query = (
         select(DriveFile.id)
         .join(Media, Media.drive_file_id == DriveFile.id)
@@ -575,11 +570,14 @@ class ObjectWorkerLoop:
     def __init__(
         self,
         session_factory: async_sessionmaker[AsyncSession] | None = None,
+        *,
+        yield_to_faces: bool = True,
     ) -> None:
         self._session_factory = session_factory or get_session_factory()
         self._stop = asyncio.Event()
         self._task: asyncio.Task | None = None
         self._token = uuid.uuid4().hex
+        self._yield_to_faces = yield_to_faces
 
     def ensure_started(self) -> None:
         if self._task is None:
@@ -605,7 +603,7 @@ class ObjectWorkerLoop:
                         await session.rollback()
                         await asyncio.sleep(5)
                         continue
-                    if await face_work_pending(session):
+                    if self._yield_to_faces and await face_work_pending(session):
                         _METRICS["last_starved_at"] = datetime.now(timezone.utc).isoformat()
                         face_priority_checks += 1
                         if face_priority_checks < runtime.object_face_priority_ratio:

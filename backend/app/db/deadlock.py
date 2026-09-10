@@ -43,6 +43,22 @@ def is_aborted_transaction_error(exc: BaseException) -> bool:
     return False
 
 
+def is_closed_connection_error(exc: BaseException) -> bool:
+    """True when asyncpg/SQLAlchemy dropped the connection mid-statement."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        name = type(current).__name__
+        msg = str(current).lower()
+        if "connection is closed" in msg:
+            return True
+        if name == "InterfaceError" and "closed" in msg:
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
 def is_pool_timeout_error(exc: BaseException) -> bool:
     """True when SQLAlchemy QueuePool is exhausted (too many concurrent DB checkouts)."""
     seen: set[int] = set()
@@ -60,11 +76,12 @@ def is_pool_timeout_error(exc: BaseException) -> bool:
 
 
 def is_transient_db_error(exc: BaseException) -> bool:
-    """Deadlocks / aborted-txn / pool exhaustion — safe to re-queue as PENDING."""
+    """Deadlocks / aborted-txn / pool exhaustion / closed conn — re-queue PENDING."""
     return (
         is_deadlock_error(exc)
         or is_aborted_transaction_error(exc)
         or is_pool_timeout_error(exc)
+        or is_closed_connection_error(exc)
     )
 
 

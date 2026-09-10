@@ -330,7 +330,8 @@ class FaceWorkerLoop:
         from app.faces.runpod_gpu import runpod_face_configured
 
         if runpod_face_configured(self._settings):
-            n = min(16, max(4, n))
+            # Drive download overlaps RunPod; local InsightFace is not the cap.
+            n = min(32, n)
         else:
             n = min(4, n)
         for i in range(n):
@@ -359,22 +360,18 @@ class FaceWorkerLoop:
         idle_ticks = 0
         while not self._stop.is_set():
             try:
-                from app.drive.indexing_pause import global_indexing_is_paused
                 from app.faces.runpod_gpu import runpod_face_configured, set_face_workers_max
 
-                paused = False
                 jobs: list = []
                 async with self._session_factory() as session:
-                    paused = await global_indexing_is_paused(session)
-                    if not paused:
-                        jobs = await claim_face_jobs(
-                            session,
-                            limit=1,
-                            lease_seconds=settings.face_job_lease_seconds,
-                            worker_token=f"{self._token}:{slot}",
-                        )
-                        await session.commit()
-                if paused or not jobs:
+                    jobs = await claim_face_jobs(
+                        session,
+                        limit=1,
+                        lease_seconds=settings.face_job_lease_seconds,
+                        worker_token=f"{self._token}:{slot}",
+                    )
+                    await session.commit()
+                if not jobs:
                     idle_ticks += 1
                     if slot == 0 and idle_ticks >= 180 and runpod_face_configured(settings):
                         try:

@@ -46,9 +46,15 @@ services:
       AUTO_INDEX_ENABLED: "false"
       RUNPOD_FACE_ENDPOINT_ID: ${RUNPOD_FACE_ENDPOINT_ID:-0zub88paibpsf3}
       RUNPOD_FACE_GPU_ENABLED: "true"
+      RUNPOD_FACE_WORKERS_MAX: "4"
       RUNPOD_FACE_MAX_EDGE: "0"
       RUNPOD_FACE_JPEG_QUALITY: "95"
       RUNPOD_FACE_VIDEO_MAX_BYTES: "10737418240"
+      RUNPOD_QWEN_ENDPOINT_ID: "ya97mr5kgtwdi1"
+      RUNPOD_QWEN_WORKERS_MAX: "2"
+      QWEN_IDENTIFY_CONCURRENCY: "2"
+      FACE_WORKER_CONCURRENCY: "4"
+      WHISPER_FALLBACK_ENABLED: "false"
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-https://api.165.245.170.117.sslip.io}
       FACE_JOB_LEASE_SECONDS: "3600"
       GUNICORN_TIMEOUT: "3600"
@@ -62,6 +68,12 @@ services:
       - ../../backend/app/db/session.py:/app/app/db/session.py:ro
       - ../../backend/app/reid/face_thumbs.py:/app/app/reid/face_thumbs.py:ro
       - ../../backend/app/routers/persons.py:/app/app/routers/persons.py:ro
+      - ../../backend/app/faces/runpod_gpu.py:/app/app/faces/runpod_gpu.py:ro
+      - ../../backend/app/faces/video_pull.py:/app/app/faces/video_pull.py:ro
+      - ../../backend/app/pipelines/video.py:/app/app/pipelines/video.py:ro
+      - ../../backend/app/routers/face_gpu_pull.py:/app/app/routers/face_gpu_pull.py:ro
+      - ../../backend/app/qwen/runpod_serverless.py:/app/app/qwen/runpod_serverless.py:ro
+      - ../../backend/app/workers/identify_queue.py:/app/app/workers/identify_queue.py:ro
     expose:
       - "8000"
     depends_on:

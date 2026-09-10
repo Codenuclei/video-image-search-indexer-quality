@@ -9,6 +9,7 @@ from app.drive.indexing_pause import (
     CORRUPT_SKIPPED_PREFIX,
     INDEXING_PAUSED_PREFIX,
     is_file_indexing_paused,
+    lane_paused_folder_paths,
     pause_folder_indexing,
     resume_folder_indexing,
     set_folder_pause_flag,
@@ -17,8 +18,8 @@ from app.drive.indexing_pause import (
 
 
 @pytest.mark.asyncio
-async def test_pause_and_resume_folder(session):
-    session.add(
+async def test_pause_and_resume_folder(db_session):
+    db_session.add(
         DriveFile(
             id="f1",
             name="photo.jpg",
@@ -27,7 +28,7 @@ async def test_pause_and_resume_folder(session):
             status=DriveFileStatus.PENDING,
         )
     )
-    session.add(
+    db_session.add(
         DriveFile(
             id="f2",
             name="other.jpg",
@@ -36,29 +37,29 @@ async def test_pause_and_resume_folder(session):
             status=DriveFileStatus.PENDING,
         )
     )
-    await session.flush()
+    await db_session.flush()
 
-    stopped = await pause_folder_indexing(session, "/UG iPhone Data")
+    stopped = await pause_folder_indexing(db_session, "/UG iPhone Data")
     assert stopped == 1
 
-    f1 = await session.get(DriveFile, "f1")
-    f2 = await session.get(DriveFile, "f2")
+    f1 = await db_session.get(DriveFile, "f1")
+    f2 = await db_session.get(DriveFile, "f2")
     assert f1.status == DriveFileStatus.SKIPPED
     assert f1.error_message.startswith(INDEXING_PAUSED_PREFIX)
     assert f2.status == DriveFileStatus.PENDING
     assert is_file_indexing_paused(f1.path, ["/UG iPhone Data"])
     assert not is_file_indexing_paused(f2.path, ["/UG iPhone Data"])
 
-    resumed = await resume_folder_indexing(session, "/UG iPhone Data")
+    resumed = await resume_folder_indexing(db_session, "/UG iPhone Data")
     assert resumed == 1
-    await session.refresh(f1)
+    await db_session.refresh(f1)
     assert f1.status == DriveFileStatus.PENDING
     assert f1.error_message is None
 
 
 @pytest.mark.asyncio
-async def test_global_pause_flag_never_mutates_drive_files(session):
-    session.add(
+async def test_global_pause_flag_never_mutates_drive_files(db_session):
+    db_session.add(
         DriveFile(
             id="keep-processing",
             name="keep.jpg",
@@ -68,22 +69,22 @@ async def test_global_pause_flag_never_mutates_drive_files(session):
             error_message="existing state",
         )
     )
-    await session.flush()
+    await db_session.flush()
 
-    assert await set_folder_pause_flag(session, "/", paused=True)
-    row = await session.get(DriveFile, "keep-processing")
+    assert await set_folder_pause_flag(db_session, "/", paused=True)
+    row = await db_session.get(DriveFile, "keep-processing")
     assert row.status == DriveFileStatus.PROCESSING
     assert row.error_message == "existing state"
 
-    assert await set_folder_pause_flag(session, "/", paused=False)
-    await session.refresh(row)
+    assert await set_folder_pause_flag(db_session, "/", paused=False)
+    await db_session.refresh(row)
     assert row.status == DriveFileStatus.PROCESSING
     assert row.error_message == "existing state"
 
 
 @pytest.mark.asyncio
-async def test_skip_corrupt_only_decode_failures(session):
-    session.add(
+async def test_skip_corrupt_only_decode_failures(db_session):
+    db_session.add(
         DriveFile(
             id="bad",
             name="broken.cr3",
@@ -94,7 +95,7 @@ async def test_skip_corrupt_only_decode_failures(session):
             decode_attempts=1,
         )
     )
-    session.add(
+    db_session.add(
         DriveFile(
             id="good",
             name="fine.cr3",
@@ -104,16 +105,34 @@ async def test_skip_corrupt_only_decode_failures(session):
             decode_attempts=0,
         )
     )
-    await session.flush()
+    await db_session.flush()
 
-    skipped = await skip_corrupt_files(session)
+    skipped = await skip_corrupt_files(db_session)
     assert skipped == 1
 
-    bad = await session.get(DriveFile, "bad")
-    good = await session.get(DriveFile, "good")
+    bad = await db_session.get(DriveFile, "bad")
+    good = await db_session.get(DriveFile, "good")
     assert bad.status == DriveFileStatus.SKIPPED
     assert bad.error_message.startswith(CORRUPT_SKIPPED_PREFIX)
     assert good.status == DriveFileStatus.PENDING
 
-    pause_rows = (await session.execute(select(IndexingFolderPause))).scalars().all()
+    pause_rows = (await db_session.execute(select(IndexingFolderPause))).scalars().all()
     assert pause_rows == []
+
+
+def test_lane_paused_folder_paths_drops_root() -> None:
+    import inspect
+
+    src = inspect.getsource(lane_paused_folder_paths)
+    assert 'path != "/"' in src
+
+
+def test_global_pause_does_not_skip_existing_pending_on_upsert() -> None:
+    import inspect
+
+    from app.workers import indexer as idx
+
+    src = inspect.getsource(idx.IndexingWorker._upsert_drive_file)
+    assert 'p != "/"' in src
+    assert "skip_pause" in src
+    assert "INDEXING_PAUSED_PREFIX" in src

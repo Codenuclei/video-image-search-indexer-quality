@@ -92,17 +92,23 @@ class Settings(BaseSettings):
     # Pair with RUN_FACE_WORKER=true on volume-less dfi-face-worker replicas.
     face_jobs_enabled: bool = False
     # Face-only consumer (dfi-face-worker): claim face_jobs via SKIP LOCKED.
-    # Keep WEB_CONCURRENCY=1 and FACE_WORKER_CONCURRENCY=1 (sequential InsightFace lock).
+    # CPU InsightFace stays sequential per replica. RunPod GPU can raise this
+    # (downloads overlap inference; throttle is Drive, not local CPU).
     run_face_worker: bool = False
     face_worker_concurrency: int = 1
     face_job_lease_seconds: int = 3600
     face_job_max_attempts: int = 3
     # RunPod **serverless** buffalo_l (dfi-face-buffalo). Never a dedicated pod.
-    # workersMin=1 while jobs run, then both min/max autoscale to 0 when idle.
+    # Under load: workersMin=1, workersMax=runpod_face_workers_max (1–8).
+    # Idle: both min and max autoscale to 0.
     runpod_api_key: str = ""
     runpod_face_endpoint_id: str = "0zub88paibpsf3"
     runpod_qwen_endpoint_id: str = ""
+    # Qwen identify serverless (dfi-qwen-vl). Never a dedicated pod / proxy.runpod.net.
+    runpod_qwen_workers_max: int = 1
+    runpod_qwen_timeout_seconds: float = 1800.0
     runpod_face_gpu_enabled: bool = True
+    runpod_face_workers_max: int = 1
     runpod_face_timeout_seconds: float = 3600.0
     runpod_face_max_edge: int = 0  # 0 = full resolution (same pixels as CPU FaceEngine)
     runpod_face_jpeg_quality: int = 95
@@ -200,6 +206,9 @@ class Settings(BaseSettings):
     media_cache_dir: str = "./data/media_cache"
     video_frame_interval_seconds: float = 1.0
     video_max_sample_frames: int = 300
+    # Qwen creates one durable caption/object/action record per selected frame.
+    # Keep this far below visual-vector sampling so serverless work is bounded.
+    video_max_qwen_frames: int = 12
     video_max_gemini_frames: int = 12
     video_vlm_enrich: bool = True
     # Max videos at once. InsightFace/CPU lock → diminishing returns above ~3–4;
