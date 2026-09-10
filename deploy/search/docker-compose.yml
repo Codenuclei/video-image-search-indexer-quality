@@ -82,9 +82,9 @@ services:
     depends_on:
       - connector
 
-  # Same image as backend. Do not start until Phase 5 approval:
+  # Same image as backend. Starts only with the explicit `indexing` profile:
   #   GIT_SHA=<sha> docker compose --profile indexing up -d indexer
-  # Flip RUN_INDEXER to true only after the canary report is approved.
+  # Auto-index admission remains controlled by app_settings/global pause.
   indexer:
     profiles: ["indexing"]
     build:
@@ -99,7 +99,7 @@ services:
     environment:
       GIT_SHA: ${GIT_SHA:-unknown}
       IMAGE_DIGEST: ${IMAGE_DIGEST:-unknown}
-      RUN_INDEXER: "false"
+      RUN_INDEXER: "true"
       AUTO_INDEX_ENABLED: "false"
       RUN_FACE_WORKER: "false"
       FACE_JOBS_ENABLED: "true"
