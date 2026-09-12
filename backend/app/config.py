@@ -196,9 +196,30 @@ class Settings(BaseSettings):
     video_vlm_enrich: bool = False
     # One hour-long ingest at a time (Whisper + ffmpeg). Do not clone search's parallel image load.
     video_index_max_parallel: int = 1
+    # Studio mode: download + transcript timestamps only; defer frame/face work to
+    # /pipeline/select-images (quote windows). Never assume Drive caption sidecars.
+    # Default on for the pruned Carousel Studio backend branch.
+    video_transcript_first_enabled: bool = True
     # Local ASR fallback when YouTube/Drive captions are missing (carousel needs text).
     whisper_model_size: str = "base"
     whisper_fallback_enabled: bool = True
+
+    # RunPod Serverless — Studio Whisper transcription + ArcFace quote faces.
+    # Keep Studio credentials isolated from the search stack when possible.
+    runpod_api_key: str = ""
+    runpod_whisper_endpoint_id: str = ""
+    runpod_whisper_enabled: bool = False
+    runpod_whisper_model_size: str = "base"
+    runpod_whisper_timeout_seconds: float = 900.0
+    runpod_whisper_poll_seconds: float = 2.0
+    runpod_face_endpoint_id: str = ""
+    runpod_face_gpu_enabled: bool = False
+    runpod_face_timeout_seconds: float = 180.0
+    runpod_face_poll_seconds: float = 1.5
+    runpod_face_jpeg_quality: int = 90
+    runpod_face_max_edge: int = 1280
+    # Hard cap quote-window frames scanned at Choose images.
+    select_images_quote_frame_cap: int = 24
 
     # Gemini API client-side concurrency (tune to your tier; see ai.google.dev rate limits).
     # Embedding 2: allow ~20 concurrent batchEmbedContents (batch=5 → ~50 img/s).

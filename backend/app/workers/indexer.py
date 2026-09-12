@@ -1052,7 +1052,12 @@ class IndexingWorker:
                     drive_file.gemini_document_name = None
 
                 listing = None
-                if needs_drive_folder_listing(drive_file):
+                # Transcript-first Studio mode never looks up Drive caption sidecars —
+                # skip the recursive tree walk that was holding sessions open for minutes.
+                if (
+                    not self._settings.video_transcript_first_enabled
+                    and needs_drive_folder_listing(drive_file)
+                ):
                     listing = await self._client.list_folder_files()
                 result = await process_video_file(
                     session,

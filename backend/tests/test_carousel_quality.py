@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock
+
 import pytest
 
 from app.routers import carousel_script
@@ -405,8 +407,9 @@ def test_snap_slides_clears_preview_when_cache_missing(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_select_images_timeout_is_504_not_500(monkeypatch) -> None:
-    from fastapi import HTTPException
+async def test_select_images_timeout_returns_preparing_not_500(monkeypatch, tmp_path) -> None:
+    """Interactive timeout should queue visual prep instead of a hard 500."""
+    from types import SimpleNamespace
 
     from app.routers.carousel_script import CarouselSelectImagesBody
 
@@ -422,13 +425,20 @@ async def test_select_images_timeout_is_504_not_500(monkeypatch) -> None:
     monkeypatch.setattr(carousel_script, "_claim_carousel", fake_claim)
     monkeypatch.setattr(carousel_script, "_release_carousel", fake_release)
     monkeypatch.setattr(carousel_script, "_carousel_pipeline_select_images_impl", boom)
+    monkeypatch.setattr(
+        carousel_script,
+        "get_settings",
+        lambda: SimpleNamespace(thumbnail_dir=str(tmp_path)),
+    )
 
     body = CarouselSelectImagesBody(drive_file_id="vid", carousels=[{"slides": [_slide("Hi", 1.0)]}])
-    with pytest.raises(HTTPException) as exc:
-        await carousel_script.carousel_pipeline_select_images(
-            body, session=object(), request_id="test-trace"
-        )
-    assert exc.value.status_code == 504
+    out = await carousel_script.carousel_pipeline_select_images(
+        body, session=object(), request_id="test-trace"
+    )
+    assert out["status"] == "preparing"
+    assert out["preparing"] is True
+    assert out["images_ready"] is False
+    assert out.get("job_id")
 
 
 @pytest.mark.asyncio
@@ -437,7 +447,6 @@ async def test_select_images_uses_studio_llm_pack(tmp_path, monkeypatch) -> None
 
     from app.routers.carousel_script import CarouselSelectImagesBody
 
-    seen: dict[str, object] = {}
     frames = tmp_path / "video" / "video-1"
     frames.mkdir(parents=True)
     (frames / "1.500.jpg").write_bytes(b"jpeg")
@@ -445,24 +454,29 @@ async def test_select_images_uses_studio_llm_pack(tmp_path, monkeypatch) -> None
     async def fake_refs(*_a, **_k):
         return []
 
-    async def fake_polish(slides, session, **kwargs):
-        seen.update(kwargs)
+    async def fake_quote(slides, **kwargs):
+        out = []
         for slide in slides:
-            # Simulate a rewrite that must not survive select-images.
-            slide["hook_line"] = "RAW SNAPPED TRANSCRIPT DUMP"
-            slide["transcript_text"] = "RAW SNAPPED TRANSCRIPT DUMP"
-            slide["frame_ts"] = 1.5
-            slide["preview_url"] = "/media/video/video-1/frame?ts=1.500&cache_only=1"
-            slide["frame_candidate_items"] = [
+            item = dict(slide)
+            item["hook_line"] = "RAW SNAPPED TRANSCRIPT DUMP"
+            item["transcript_text"] = "RAW SNAPPED TRANSCRIPT DUMP"
+            item["frame_ts"] = None
+            item["preview_url"] = None
+            item["frame_candidate_items"] = [
                 {
                     "frame_ts": 1.5,
                     "preview_url": "/media/video/video-1/frame?ts=1.500&cache_only=1&ar=4x5",
                     "recommended": True,
                     "selected": False,
-                    "recommendation_source": "local",
+                    "recommendation_source": "identity",
                 }
             ]
-        return slides
+            item["frame_source"] = "identity"
+            out.append(item)
+        return out, {"algorithm": "quote_windows", "slides": len(out)}
+
+    async def fake_persist(*_a, **_k):
+        return SimpleNamespace(id=9)
 
     monkeypatch.setattr(
         carousel_script,
@@ -478,20 +492,27 @@ async def test_select_images_uses_studio_llm_pack(tmp_path, monkeypatch) -> None
             "claude_model": "",
         },
     )
-
-    async def fake_persist(*_a, **_k):
-        return SimpleNamespace(id=9)
-
     monkeypatch.setattr(carousel_script, "_load_attached_references", fake_refs)
-    monkeypatch.setattr(carousel_script, "_polish_outline_frames", fake_polish)
     monkeypatch.setattr(carousel_script, "_persist_carousel_artifact", fake_persist)
     monkeypatch.setattr(carousel_script, "_attach_layout_panels", lambda *_a, **_k: None)
     monkeypatch.setattr(
         carousel_script,
         "get_settings",
-        lambda: SimpleNamespace(thumbnail_dir=str(tmp_path)),
+        lambda: SimpleNamespace(
+            thumbnail_dir=str(tmp_path),
+            select_images_quote_frame_cap=24,
+        ),
     )
     monkeypatch.setattr(carousel_script, "carousel_llm_cache_id", lambda *_a, **_k: "local")
+    monkeypatch.setattr(
+        "app.search.carousel_quote_identity.apply_quote_identity_selection_to_slides",
+        fake_quote,
+    )
+    monkeypatch.setattr(
+        carousel_script,
+        "_ensure_outline_frame_bytes",
+        AsyncMock(return_value=b"jpeg"),
+    )
 
     crafted = "Your first customers come from warm network intros."
     body = CarouselSelectImagesBody(
@@ -501,6 +522,7 @@ async def test_select_images_uses_studio_llm_pack(tmp_path, monkeypatch) -> None
                 "slides": [
                     {
                         **_slide(crafted, 1.0),
+                        "end_timestamp_sec": 2.0,
                         "original_text": "your first customers come from your warm network",
                         "copy_crafted": True,
                     }
@@ -509,21 +531,14 @@ async def test_select_images_uses_studio_llm_pack(tmp_path, monkeypatch) -> None
         ],
     )
     out = await carousel_script._carousel_pipeline_select_images_impl(
-        body, session=object(), trace_id="test-trace"
+        body, session=SimpleNamespace(get=AsyncMock(return_value=None)), trace_id="test-trace"
     )
-    assert seen.get("prefer_local") is True
-    assert seen.get("max_rank_batches") == 2
-    assert seen.get("allow_extracts") is False
-    assert seen.get("trace_id") == "test-trace"
-    assert seen.get("cached_frame_index")
-    assert seen.get("llm_pack", {}).get("provider") == "openrouter"
     assert out["images_ready"] is True
-    assert out["slides"][0]["preview_url"]
-    assert "ts=1.500" in out["slides"][0]["preview_url"]
     assert out["slides"][0]["transcript_text"] == crafted
     assert out["slides"][0]["hook_line"] == crafted
     assert out["transcript_guard"]["preserved_copy"] is True
     assert out["transcript_guard"]["snapped"] == 0
+    assert out["identity"]["algorithm"] == "quote_windows"
 
 
 @pytest.mark.asyncio
@@ -532,57 +547,79 @@ async def test_select_images_allows_extracts_when_cache_cold(tmp_path, monkeypat
 
     from app.routers.carousel_script import CarouselSelectImagesBody
 
-    seen: dict[str, object] = {}
+    extracted: list[float] = []
 
     async def fake_refs(*_a, **_k):
         return []
 
-    async def fake_polish(slides, session, **kwargs):
-        seen["allow_extracts"] = kwargs.get("allow_extracts")
-        seen["prefer_local"] = kwargs.get("prefer_local")
+    async def fake_ensure(drive_file_id, ts, session, settings, *, exact_only=False):
+        extracted.append(float(ts))
+        path = tmp_path / "video" / drive_file_id
+        path.mkdir(parents=True, exist_ok=True)
+        (path / f"{ts:.3f}.jpg").write_bytes(b"jpeg")
+        return b"jpeg"
+
+    async def fake_quote(slides, **kwargs):
+        out = []
         for slide in slides:
-            slide["frame_ts"] = None
-            slide["preview_url"] = None
-            slide["frame_candidate_items"] = []
-        return slides
+            item = dict(slide)
+            item["preview_url"] = None
+            item["frame_ts"] = None
+            item["frame_candidate_items"] = [
+                {
+                    "frame_ts": float(slide.get("timestamp_sec") or 0),
+                    "preview_url": "/media/x",
+                    "recommended": True,
+                    "selected": False,
+                }
+            ]
+            out.append(item)
+        return out, {"algorithm": "quote_windows", "frames_scanned": len(extracted)}
 
     async def fake_persist(*_a, **_k):
-        return SimpleNamespace(id=11)
+        return SimpleNamespace(id=3)
 
-    monkeypatch.setattr(
-        carousel_script,
-        "resolve_carousel_llm",
-        lambda *_a, **_k: {
-            "provider": "openrouter",
-            "openrouter_api_key": "or",
-            "openrouter_model": "anthropic/claude-sonnet-4",
-            "openrouter_base_url": "https://openrouter.ai/api/v1",
-            "api_key": "",
-            "model": "",
-            "claude_api_key": "",
-            "claude_model": "",
-        },
-    )
     monkeypatch.setattr(carousel_script, "_load_attached_references", fake_refs)
-    monkeypatch.setattr(carousel_script, "_polish_outline_frames", fake_polish)
+    monkeypatch.setattr(carousel_script, "_ensure_outline_frame_bytes", fake_ensure)
     monkeypatch.setattr(carousel_script, "_persist_carousel_artifact", fake_persist)
     monkeypatch.setattr(carousel_script, "_attach_layout_panels", lambda *_a, **_k: None)
     monkeypatch.setattr(
         carousel_script,
         "get_settings",
-        lambda: SimpleNamespace(thumbnail_dir=str(tmp_path)),
+        lambda: SimpleNamespace(
+            thumbnail_dir=str(tmp_path),
+            select_images_quote_frame_cap=24,
+        ),
     )
     monkeypatch.setattr(carousel_script, "carousel_llm_cache_id", lambda *_a, **_k: "local")
+    monkeypatch.setattr(
+        carousel_script,
+        "resolve_carousel_llm",
+        lambda *_a, **_k: {"provider": "local"},
+    )
+    monkeypatch.setattr(
+        "app.search.carousel_quote_identity.apply_quote_identity_selection_to_slides",
+        fake_quote,
+    )
 
     body = CarouselSelectImagesBody(
         drive_file_id="cold-vid",
-        carousels=[{"slides": [_slide("Cold cache needs extracts", 10.0)]}],
+        carousels=[
+            {
+                "slides": [
+                    {**_slide("One", 10.0), "end_timestamp_sec": 12.0},
+                    {**_slide("Two", 20.0), "end_timestamp_sec": 22.0},
+                ]
+            }
+        ],
     )
     out = await carousel_script._carousel_pipeline_select_images_impl(
-        body, session=object(), trace_id="cold-trace"
+        body,
+        session=SimpleNamespace(get=AsyncMock(return_value=None)),
+        trace_id="cold",
     )
-    assert seen.get("prefer_local") is True
-    assert seen.get("allow_extracts") is True
     assert out["images_ready"] is True
-    assert out["slides"][0]["preview_url"] is None
-    assert out["slides"][0]["frame_candidate_items"] == []
+    # start/mid/end for two slides → up to 6 unique seeds extracted
+    assert len(extracted) >= 3
+    assert len(extracted) <= 24
+    assert out["identity"]["algorithm"] == "quote_windows"

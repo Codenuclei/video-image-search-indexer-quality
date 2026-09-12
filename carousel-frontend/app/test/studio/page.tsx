@@ -354,6 +354,7 @@ function TestStudioInner() {
   const [hooksLoading, setHooksLoading] = useState(false);
   const [copyLoading, setCopyLoading] = useState(false);
   const [imagesLoading, setImagesLoading] = useState(false);
+  const [visualPrepNote, setVisualPrepNote] = useState<string | null>(null);
   const [, setError] = useState<string | null>(null);
 
   const [uploading, setUploading] = useState(false);
@@ -1248,14 +1249,32 @@ function TestStudioInner() {
     if (!selected || !carousels.length || imagesLoading) return;
     const cfg = opts?.runConfig ?? runConfig;
     setImagesLoading(true);
+    setVisualPrepNote("Preparing quote-window faces…");
     setError(null);
     try {
-      const selectedImgs = await testApi.selectImages({
-        drive_file_id: selected.id,
-        carousels,
-        force: Boolean(opts?.force),
-        run_config: cfg,
-      });
+      const selectedImgs = await testApi.pollSelectImages(
+        {
+          drive_file_id: selected.id,
+          carousels,
+          force: Boolean(opts?.force),
+          run_config: cfg,
+        },
+        {
+          onStatus: (status) => {
+            if (status === "preparing") {
+              setVisualPrepNote("RunPod is preparing faces for your quote windows…");
+            } else if (status === "ready") {
+              setVisualPrepNote(null);
+            } else if (status === "error") {
+              setVisualPrepNote("Face preparation failed — using text/fallback frames.");
+            }
+          },
+        }
+      );
+      if (selectedImgs.preparing) {
+        setVisualPrepNote("Still preparing images — keep this tab open.");
+        return;
+      }
       const withImages = deferStudioImageSelection(
         preserveTestCarouselCopy(
           carousels,
@@ -1285,8 +1304,10 @@ function TestStudioInner() {
       );
       setCarouselLayout("single_1");
       setImageStage(selectedImgs.cache_hit ? "cache" : "generated");
+      setVisualPrepNote(null);
       raisePhase(5);
     } catch (e) {
+      setVisualPrepNote(null);
       setError(formatApiError(e, "We couldn’t select images. Please try again."));
     } finally {
       setImagesLoading(false);
@@ -1998,7 +2019,7 @@ function TestStudioInner() {
               data-testid="test-select-images"
             >
               {imagesLoading ? (
-                "Selecting images…"
+                visualPrepNote || "Selecting images…"
               ) : (
                 <>
                   Select images
@@ -2007,6 +2028,11 @@ function TestStudioInner() {
               )}
             </button>
           </div>
+          {visualPrepNote && imagesLoading && (
+            <p className="mt-2 text-xs text-amber-700" data-testid="test-visual-prep-note">
+              {visualPrepNote}
+            </p>
+          )}
         </section>
       )}
 
@@ -2020,10 +2046,15 @@ function TestStudioInner() {
             <StageBadge state={imageStage} />
           </h2>
           <p className="mt-2 text-sm text-slate-500">
-            Slides start text-only. Open Choose image to pick from the identity directory
-            (recommended speaker, same person, other people, group panels). The Best match
-            badge is guidance only — selection stays yours.
+            Slides start text-only. Faces are recognized only inside each quote window
+            (not the full video). Open Choose image to pick speaker event photos or
+            quote-window frames. The Best match badge is guidance only — selection stays yours.
           </p>
+          {visualPrepNote && (
+            <p className="mt-2 text-xs text-amber-700" data-testid="test-visual-prep-note">
+              {visualPrepNote}
+            </p>
+          )}
 
           <div className="test-ig-stack mt-6" data-testid="carousel-image-preview">
             {displayCarousels.length === 0 ? (

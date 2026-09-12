@@ -4712,6 +4712,104 @@ async def _carousel_pipeline_generate_impl(
     return result
 
 
+async def _run_select_images_visual_prep(
+    *,
+    job_id: str,
+    body: CarouselSelectImagesBody,
+) -> None:
+    """Background Choose-images runner after interactive timeout / cold start."""
+    from app.search.carousel_visual_prep import clear_running, mark_running, write_job
+
+    settings = get_settings()
+    thumb = str(settings.thumbnail_dir)
+    drive_file_id = body.drive_file_id.strip()
+    if not mark_running(job_id):
+        return
+    write_job(thumb, drive_file_id, job_id=job_id, status="preparing")
+    try:
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            result = await _carousel_pipeline_select_images_impl(
+                body,
+                session,
+                trace_id=f"prep:{job_id[:12]}",
+                allow_async_fallback=False,
+            )
+        write_job(
+            thumb,
+            drive_file_id,
+            job_id=job_id,
+            status="ready",
+            payload=result,
+            error=None,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("visual prep failed job=%s drive=%s", job_id, drive_file_id)
+        write_job(
+            thumb,
+            drive_file_id,
+            job_id=job_id,
+            status="error",
+            error=str(exc)[:400],
+        )
+    finally:
+        clear_running(job_id)
+
+
+@router.get("/pipeline/select-images/status")
+async def carousel_pipeline_select_images_status(
+    drive_file_id: str,
+    job_id: str | None = None,
+) -> dict[str, Any]:
+    """Poll Choose-images visual preparation (preparing / ready / error)."""
+    from app.search.carousel_visual_prep import read_job, _jobs_dir
+    import json as _json
+
+    settings = get_settings()
+    thumb = str(settings.thumbnail_dir)
+    fid = (drive_file_id or "").strip()
+    if not fid:
+        raise HTTPException(status_code=400, detail="drive_file_id is required")
+    if job_id:
+        data = read_job(thumb, fid, job_id.strip())
+        if data is None:
+            raise HTTPException(status_code=404, detail="job not found")
+        out: dict[str, Any] = {
+            "drive_file_id": fid,
+            "job_id": data.get("job_id"),
+            "status": data.get("status") or "preparing",
+            "preparing": (data.get("status") or "") == "preparing",
+            "images_ready": (data.get("status") or "") == "ready",
+            "error": data.get("error"),
+        }
+        if data.get("status") == "ready" and isinstance(data.get("result"), dict):
+            out.update(data["result"])
+            out["status"] = "ready"
+            out["images_ready"] = True
+            out["preparing"] = False
+        return out
+    root = _jobs_dir(thumb, fid)
+    if root.is_dir():
+        for path in sorted(root.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+            if ".partial." in path.name:
+                continue
+            try:
+                data = _json.loads(path.read_text(encoding="utf-8"))
+            except Exception:  # noqa: BLE001
+                continue
+            jid = str(data.get("job_id") or "").strip()
+            if jid:
+                return await carousel_pipeline_select_images_status(
+                    drive_file_id=fid, job_id=jid
+                )
+    return {
+        "drive_file_id": fid,
+        "status": "idle",
+        "preparing": False,
+        "images_ready": False,
+    }
+
+
 @router.post("/pipeline/quality-check")
 async def carousel_pipeline_quality_check(
     body: CarouselQualityCheckBody,
@@ -4824,6 +4922,39 @@ async def carousel_pipeline_select_images(
             round((time.monotonic() - started) * 1000),
             _SELECT_IMAGES_REQUEST_TIMEOUT_SEC,
         )
+        # Prefer async visual prep over a hard 504 so Studio can poll.
+        try:
+            from app.search.carousel_visual_prep import slides_fingerprint, write_job
+
+            flat_slides: list[dict] = []
+            for car in body.carousels or []:
+                if isinstance(car, dict):
+                    for s in car.get("slides") or []:
+                        if isinstance(s, dict):
+                            flat_slides.append(s)
+            fp = slides_fingerprint(flat_slides)
+            job = write_job(
+                str(get_settings().thumbnail_dir),
+                drive_file_id,
+                status="preparing",
+                request_body={"slides_fingerprint": fp, "body": body.model_dump()},
+            )
+            asyncio.create_task(
+                _run_select_images_visual_prep(job_id=str(job["job_id"]), body=body),
+                name=f"visual-prep:{str(job['job_id'])[:12]}",
+            )
+            return {
+                "source": "select_images",
+                "drive_file_id": drive_file_id,
+                "status": "preparing",
+                "preparing": True,
+                "images_ready": False,
+                "job_id": job["job_id"],
+                "message": "Image selection is still preparing. Poll visual-prep status.",
+                "carousels": list(body.carousels or []),
+            }
+        except Exception:  # noqa: BLE001
+            logger.exception("select-images visual prep enqueue failed")
         raise HTTPException(
             status_code=504,
             detail="Image selection took too long. Retry — local frames will be used.",
@@ -4894,6 +5025,7 @@ async def _carousel_pipeline_select_images_impl(
     session: AsyncSession = Depends(get_db),
     *,
     trace_id: str = "-",
+    allow_async_fallback: bool = True,
 ) -> dict[str, Any]:
     """Final image selection pass after the user reviewed/edited slide transcripts."""
     drive_file_id = body.drive_file_id.strip()
@@ -5000,72 +5132,127 @@ async def _carousel_pipeline_select_images_impl(
         if (r.get("ref_kind") or "").strip().lower() == "copy" and (r.get("copy_text") or "").strip()
     ]
     stage_started = time.monotonic()
-    total_cached_frames = sum(
-        len(index.timestamps) for index in cached_frame_index.values()
+    from app.search.carousel_quote_identity import (
+        apply_quote_identity_selection_to_slides,
+        quote_catalog_path,
+        quote_intervals_from_slides,
+        quote_window_sample_timestamps,
     )
-    # Interactive select prefers cache-only speed, but a cold thumbnail volume
-    # (frames=0) must still extract a few stills or Step 5 has nothing to pick.
-    allow_extracts = total_cached_frames == 0
+    from app.search.carousel_visual_prep import (
+        latest_job_for_fingerprint,
+        slides_fingerprint,
+        write_job,
+    )
+    import json as _json
+
+    intervals = quote_intervals_from_slides(all_slides)
+    seed_ts = quote_window_sample_timestamps(
+        intervals,
+        cap=int(getattr(settings, "select_images_quote_frame_cap", 24) or 24),
+    )
+    allow_extracts = True
     logger.info(
-        "select-images trace=%s event=frame_polish_start drive=%s slides=%d prefer_local=true allow_extracts=%s cached_frames=%d llm=%s mode=identity",
+        "select-images trace=%s event=frame_polish_start drive=%s slides=%d quote_samples=%d llm=%s mode=quote_identity",
         trace_id,
         drive_file_id,
         len(all_slides),
-        allow_extracts,
-        total_cached_frames,
+        len(seed_ts),
         carousel_llm_cache_id(llm_pack),
     )
-    # Seed a sparse cache when the volume is empty so the identity catalog
-    # has frames to scan (quote midpoints + heuristic samples).
-    if allow_extracts:
-        seed_ts: list[float] = []
-        for slide in all_slides:
-            try:
-                start = float(slide.get("timestamp_sec") or 0)
-                end = float(slide.get("end_timestamp_sec") or start)
-            except (TypeError, ValueError):
-                continue
-            mid = round(start + max(0.0, end - start) * 0.5, 3)
-            seed_ts.extend([round(start, 3), mid, round(end, 3)])
-        unique_seeds: list[float] = []
-        seen_seed: set[float] = set()
-        for ts in seed_ts:
-            if ts in seen_seed:
-                continue
-            seen_seed.add(ts)
-            unique_seeds.append(ts)
-        for ts in unique_seeds[:24]:
-            try:
-                await _ensure_outline_frame_bytes(
-                    drive_file_id, ts, session, settings, exact_only=True
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.debug(
-                    "select-images seed extract failed %s@%.3f: %s",
-                    drive_file_id,
-                    ts,
-                    exc,
-                )
-        cached_frame_index = await asyncio.to_thread(
-            index_cached_video_frames,
-            str(settings.thumbnail_dir),
-            {
-                str(slide.get("drive_file_id") or "").strip()
-                for slide in all_slides
-                if str(slide.get("drive_file_id") or "").strip()
-            },
-        )
-
-    from app.search.carousel_identity_catalog import apply_identity_selection_to_slides
-
-    selected_slides, identity_summary = await asyncio.to_thread(
-        apply_identity_selection_to_slides,
-        all_slides,
-        thumbnail_dir=str(settings.thumbnail_dir),
-        drive_file_id=drive_file_id,
-        force_catalog=bool(getattr(body, "force", False)),
-        prefer_hdr=True,
+    # Always extract only hard-capped quote-window timestamps (start/mid/end).
+    for ts in seed_ts:
+        try:
+            await _ensure_outline_frame_bytes(
+                drive_file_id, ts, session, settings, exact_only=True
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "select-images quote extract failed %s@%.3f: %s",
+                drive_file_id,
+                ts,
+                exc,
+            )
+    cached_frame_index = await asyncio.to_thread(
+        index_cached_video_frames,
+        str(settings.thumbnail_dir),
+        {
+            str(slide.get("drive_file_id") or "").strip()
+            for slide in all_slides
+            if str(slide.get("drive_file_id") or "").strip()
+        },
     )
+
+    async def _extract_frame(fid: str, ts: float):
+        try:
+            await _ensure_outline_frame_bytes(
+                fid, ts, session, settings, exact_only=True
+            )
+            from app.search.carousel_frame_select import cached_frame_path
+
+            path = cached_frame_path(str(settings.thumbnail_dir), fid, ts)
+            return path if path.is_file() else None
+        except Exception:  # noqa: BLE001
+            return None
+
+    try:
+        selected_slides, identity_summary = await asyncio.wait_for(
+            apply_quote_identity_selection_to_slides(
+                all_slides,
+                thumbnail_dir=str(settings.thumbnail_dir),
+                drive_file_id=drive_file_id,
+                settings=settings,
+                force_catalog=bool(getattr(body, "force", False)),
+                prefer_hdr=True,
+                extract_frame=_extract_frame,
+            ),
+            timeout=_SELECT_IMAGES_TIMEOUT_SEC,
+        )
+    except (asyncio.TimeoutError, TimeoutError):
+        if not allow_async_fallback:
+            raise
+        fp = slides_fingerprint(all_slides)
+        existing = latest_job_for_fingerprint(
+            str(settings.thumbnail_dir), drive_file_id, fp
+        )
+        if existing and existing.get("status") == "ready" and existing.get("result"):
+            return existing["result"]
+        job = write_job(
+            str(settings.thumbnail_dir),
+            drive_file_id,
+            status="preparing",
+            request_body={
+                "slides_fingerprint": fp,
+                "body": body.model_dump(),
+            },
+            job_id=(existing or {}).get("job_id") if existing else None,
+        )
+        asyncio.create_task(
+            _run_select_images_visual_prep(
+                job_id=str(job["job_id"]),
+                body=body,
+            ),
+            name=f"visual-prep:{str(job['job_id'])[:12]}",
+        )
+        logger.warning(
+            "select-images trace=%s event=visual_prep_queued drive=%s job=%s",
+            trace_id,
+            drive_file_id,
+            job["job_id"],
+        )
+        return {
+            "source": "select_images",
+            "drive_file_id": drive_file_id,
+            "status": "preparing",
+            "preparing": True,
+            "images_ready": False,
+            "job_id": job["job_id"],
+            "message": "Preparing quote-window faces via RunPod. Poll visual-prep status.",
+            "carousels": polished,
+            "carousel_count": len(polished),
+            "identity": {"algorithm": "quote_windows", "status": "preparing"},
+            "event_photos": {"linked": False, "matched_slides": 0},
+        }
+
     event_photo_summary: dict[str, Any] = {
         "algorithm": "event-photo-v1",
         "linked": False,
@@ -5074,21 +5261,22 @@ async def _carousel_pipeline_select_images_impl(
     event_photo_link = await session.get(CarouselEventPhotoFolder, drive_file_id)
     if event_photo_link is not None:
         from app.search.carousel_event_photos import apply_event_photo_matches
-        from app.search.carousel_identity_catalog import load_or_build_identity_catalog
 
-        identity_catalog = await asyncio.to_thread(
-            load_or_build_identity_catalog,
-            thumbnail_dir=str(settings.thumbnail_dir),
-            drive_file_id=drive_file_id,
-            force=False,
-        )
-        selected_slides, event_photo_summary = await apply_event_photo_matches(
-            session,
-            selected_slides,
-            folder_id=event_photo_link.folder_id,
-            catalog=identity_catalog,
-            settings=settings,
-        )
+        identity_catalog: dict[str, Any] = {}
+        qpath = quote_catalog_path(str(settings.thumbnail_dir), drive_file_id)
+        if qpath.is_file():
+            try:
+                identity_catalog = _json.loads(qpath.read_text(encoding="utf-8"))
+            except Exception:  # noqa: BLE001
+                identity_catalog = {}
+        if identity_catalog.get("identities"):
+            selected_slides, event_photo_summary = await apply_event_photo_matches(
+                session,
+                selected_slides,
+                folder_id=event_photo_link.folder_id,
+                catalog=identity_catalog,
+                settings=settings,
+            )
         event_photo_summary["linked"] = True
     # Fallback: if identity catalog found nothing usable, keep the previous
     # span-local polish path so Step 5 still has options on sparse videos.
@@ -5117,8 +5305,6 @@ async def _carousel_pipeline_select_images_impl(
             trace_id=trace_id,
             cached_frame_index=cached_frame_index,
         )
-        allow_extracts = True
-        # Clear auto-applied previews so studio stays text-first.
         for slide in selected_slides:
             items = slide.get("frame_candidate_items")
             frame_ts = slide.get("frame_ts")
@@ -5137,11 +5323,12 @@ async def _carousel_pipeline_select_images_impl(
                         )
             slide["preview_url"] = None
             slide["frame_ts"] = None
-            identity_summary = {
-                "algorithm": "identity-fallback-local",
-                "modes": {"fallback": len(selected_slides)},
-                "slides": len(selected_slides),
-            }
+        identity_summary = {
+            "algorithm": "identity-fallback-local",
+            "modes": {"fallback": len(selected_slides)},
+            "slides": len(selected_slides),
+        }
+
     if allow_extracts:
         # Extracts wrote new JPEGs; refresh the index so snap/canonical URLs hit.
         cached_frame_index = await asyncio.to_thread(

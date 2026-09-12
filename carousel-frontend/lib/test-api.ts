@@ -250,6 +250,11 @@ export type TestGenerate = {
   copy_source?: string | null;
   cache_hit?: boolean;
   generated?: boolean;
+  status?: string;
+  preparing?: boolean;
+  job_id?: string | null;
+  message?: string | null;
+  error?: string | null;
   layouts?: {
     single_1?: TestLayoutBundle;
     split_2?: TestLayoutBundle;
@@ -549,12 +554,60 @@ export const testApi = {
   }) =>
     api<TestGenerate>("/search/carousel/pipeline/select-images", {
       method: "POST",
+      // RunPod cold-start can exceed the interactive budget; the client polls
+      // visual-prep status when the backend returns preparing.
+      timeoutMs: 90_000,
       body: JSON.stringify({
         ...body,
         llm_provider: body.run_config?.provider,
         llm_model: body.run_config?.model,
       }),
     }),
+  selectImagesStatus: (opts: { drive_file_id: string; job_id?: string | null }) => {
+    const params = new URLSearchParams({
+      drive_file_id: opts.drive_file_id,
+    });
+    if (opts.job_id) params.set("job_id", opts.job_id);
+    return api<TestGenerate>(`/search/carousel/pipeline/select-images/status?${params}`, {
+      timeoutMs: 30_000,
+      silent: true,
+    });
+  },
+  pollSelectImages: async (
+    body: {
+      drive_file_id: string;
+      carousels: TestCarousel[];
+      force?: boolean;
+      run_config?: CarouselRunConfig;
+    },
+    opts?: { onStatus?: (status: string) => void; maxWaitMs?: number }
+  ): Promise<TestGenerate> => {
+    const first = await testApi.selectImages(body);
+    if (!first.preparing && first.status !== "preparing") {
+      return first;
+    }
+    const maxWait = opts?.maxWaitMs ?? 10 * 60_000;
+    const started = Date.now();
+    let jobId = first.job_id || null;
+    opts?.onStatus?.("preparing");
+    while (Date.now() - started < maxWait) {
+      await new Promise((r) => setTimeout(r, 2500));
+      const st = await testApi.selectImagesStatus({
+        drive_file_id: body.drive_file_id,
+        job_id: jobId,
+      });
+      jobId = st.job_id || jobId;
+      const status = String(st.status || (st.preparing ? "preparing" : "idle"));
+      opts?.onStatus?.(status);
+      if (status === "ready" || st.images_ready) {
+        return { ...st, images_ready: true, preparing: false, status: "ready" };
+      }
+      if (status === "error") {
+        throw new Error(st.error || st.message || "Image preparation failed");
+      }
+    }
+    throw new Error("Image preparation timed out. Try again in a moment.");
+  },
   regenerateSlide: (body: {
     drive_file_id: string;
     carousel_id?: string;

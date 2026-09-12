@@ -156,7 +156,22 @@ async def apply_faces_to_prepared_image(
     image_bgr = await run_cpu_bound(decode_image_bgr, raw_bytes, file_name=drive_file.name)
 
     img_h, img_w = image_bgr.shape[:2]
-    detections = await detect_faces_async(engine, image_bgr)
+    detections = []
+    from app.faces.runpod_face import detect_faces_runpod_frames, runpod_face_configured
+
+    if runpod_face_configured(settings):
+        try:
+            runpod_results = await detect_faces_runpod_frames([(0.0, image_bgr)], settings)
+            if runpod_results:
+                detections = list(runpod_results[0].faces)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "RunPod face detect failed for %s: %s; falling back to local",
+                drive_file.id,
+                exc,
+            )
+    if not detections:
+        detections = await detect_faces_async(engine, image_bgr)
 
     # Download and inference above intentionally run before the first query so
     # face workers do not hold a Postgres connection during Drive/CPU work.

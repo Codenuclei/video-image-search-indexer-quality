@@ -259,7 +259,7 @@ async function handle(req: NextRequest, ctx: Ctx) {
     });
   }
 
-  if (path === "search/carousel/pipeline/select-images" && method === "POST") {
+    if (path === "search/carousel/pipeline/select-images" && method === "POST") {
     const body = await readBody(req);
     const driveFileId = String(body.drive_file_id || MOCK_VIDEO.id);
     const carouselsIn = Array.isArray(body.carousels) ? body.carousels : [];
@@ -283,6 +283,8 @@ async function handle(req: NextRequest, ctx: Ctx) {
         ...mockGenerate(driveFileId, [], []),
         carousels,
         images_ready: true,
+        status: "ready",
+        preparing: false,
         cache_hit: false,
         generated: true,
         layouts: {
@@ -293,8 +295,22 @@ async function handle(req: NextRequest, ctx: Ctx) {
     }
     return json({
       ...mockGenerate(driveFileId, [], []),
-      cache_hit: false,
-      generated: true,
+      images_ready: true,
+      status: "ready",
+      preparing: false,
+    });
+  }
+
+  if (path === "search/carousel/pipeline/select-images/status" && method === "GET") {
+    const url = new URL(req.url);
+    const driveFileId = url.searchParams.get("drive_file_id") || MOCK_VIDEO.id;
+    return json({
+      drive_file_id: driveFileId,
+      job_id: url.searchParams.get("job_id") || "mock-job",
+      status: "ready",
+      preparing: false,
+      images_ready: true,
+      carousels: mockGenerate(driveFileId, [], []).carousels,
     });
   }
 

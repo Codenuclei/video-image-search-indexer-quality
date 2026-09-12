@@ -79,6 +79,7 @@ async def test_video_pipeline_caches_for_fennec(db_session, tmp_path):
         video_cache_dir=str(cache_dir),
         video_vlm_enrich=False,
         gemini_api_key="",
+        video_transcript_first_enabled=False,
     )
     client = _LocalFileDriveClient(video_path)
 

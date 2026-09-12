@@ -166,7 +166,11 @@ async def _whisper_cues_for_video(
     *,
     drive_file_id: str | None = None,
 ) -> list[VttCue]:
-    """Local ASR when captions are missing — required for carousel captioned listing."""
+    """ASR when captions are missing — required for carousel captioned listing.
+
+    Prefers RunPod faster-whisper when configured; falls back to local CPU Whisper.
+    """
+    from app.video.runpod_whisper import RunPodWhisperError, runpod_whisper_configured, transcribe_wav_runpod
     from app.video.whisper_engine import transcribe_audio_async
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -187,7 +191,30 @@ async def _whisper_cues_for_video(
 
         hb = asyncio.create_task(_heartbeat_loop(), name=f"whisper-hb:{drive_file_id or 'none'}")
         try:
-            segments = await transcribe_audio_async(wav_path, settings)
+            segments = []
+            if runpod_whisper_configured(settings):
+                try:
+                    segments = await transcribe_wav_runpod(wav_path, settings)
+                    if segments:
+                        logger.info(
+                            "RunPod Whisper produced %d segment(s) for %s",
+                            len(segments),
+                            (drive_file_id or video_path)[:48],
+                        )
+                except RunPodWhisperError as exc:
+                    logger.warning(
+                        "RunPod Whisper failed for %s: %s; falling back to local",
+                        (drive_file_id or "")[:12],
+                        exc,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "RunPod Whisper error for %s: %s; falling back to local",
+                        (drive_file_id or "")[:12],
+                        exc,
+                    )
+            if not segments:
+                segments = await transcribe_audio_async(wav_path, settings)
         finally:
             hb.cancel()
             try:
@@ -516,37 +543,105 @@ async def process_video_file(
     # Do not hold the media INSERT txn open across whisper / ffmpeg / VLM.
     await session.commit()
 
-    cues = await _load_vtt_cues(client, drive_file, dest, listing)
-    if not cues:
-        from app.video.youtube_transcript import fetch_youtube_captions, youtube_id_from_filename
-
-        yt_id = youtube_id_from_filename(drive_file.name)
-        if yt_id:
-            try:
-                cues = await fetch_youtube_captions(yt_id)
-                if cues:
-                    logger.info(
-                        "Loaded %d YouTube caption cues for %s (%s)",
-                        len(cues),
-                        drive_file.name,
-                        yt_id,
-                    )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("YouTube caption fetch failed for %s: %s", drive_file.name, exc)
-
-    if not cues and settings.whisper_fallback_enabled:
+    transcript_first = bool(settings.video_transcript_first_enabled)
+    cues: list[VttCue] = []
+    if transcript_first:
+        # Studio assumes no Drive caption sidecars — skip VTT/YouTube caption lookup
+        # and go straight to ASR (RunPod Whisper preferred). listing is ignored.
+        _ = listing
         try:
             cues = await _whisper_cues_for_video(dest, settings, drive_file_id=drive_file.id)
             if cues:
                 logger.info(
-                    "Whisper fallback produced %d cue(s) for %s",
+                    "Transcript-first ASR produced %d cue(s) for %s",
                     len(cues),
                     drive_file.name,
                 )
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Whisper fallback failed for %s: %s", drive_file.name, exc)
+            logger.warning("Transcript-first ASR failed for %s: %s", drive_file.name, exc)
+        if not cues:
+            # Never mark the video ready without transcript rows — leave retryable.
+            await session.delete(media)
+            await session.commit()
+            raise RuntimeError(
+                f"transcript_first_no_cues:{drive_file.id}: ASR returned no segments"
+            )
+    else:
+        cues = await _load_vtt_cues(client, drive_file, dest, listing)
+        if not cues:
+            from app.video.youtube_transcript import fetch_youtube_captions, youtube_id_from_filename
+
+            yt_id = youtube_id_from_filename(drive_file.name)
+            if yt_id:
+                try:
+                    cues = await fetch_youtube_captions(yt_id)
+                    if cues:
+                        logger.info(
+                            "Loaded %d YouTube caption cues for %s (%s)",
+                            len(cues),
+                            drive_file.name,
+                            yt_id,
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("YouTube caption fetch failed for %s: %s", drive_file.name, exc)
+
+        if not cues and settings.whisper_fallback_enabled:
+            try:
+                cues = await _whisper_cues_for_video(dest, settings, drive_file_id=drive_file.id)
+                if cues:
+                    logger.info(
+                        "Whisper fallback produced %d cue(s) for %s",
+                        len(cues),
+                        drive_file.name,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Whisper fallback failed for %s: %s", drive_file.name, exc)
 
     duration = probe.duration_seconds or 0.0
+    if transcript_first:
+        # Persist text segments only — defer frames/faces/vectors to Choose images.
+        from app.search.english_text import cues_need_english
+
+        transcript_lang = (
+            "en"
+            if cues and not cues_need_english((c.start_sec, c.end_sec, c.text) for c in cues)
+            else None
+        )
+        for cue in cues:
+            session.add(
+                VideoSegment(
+                    media_id=media.id,
+                    start_sec=cue.start_sec,
+                    end_sec=cue.end_sec,
+                    text=cue.text,
+                    language=transcript_lang,
+                    frame_path=None,
+                )
+            )
+        await session.flush()
+        await session.commit()
+        segments = list(
+            (
+                await session.execute(select(VideoSegment).where(VideoSegment.media_id == media.id))
+            ).scalars().all()
+        )
+        if settings.gemini_api_key:
+            await _index_transcripts_local(
+                drive_file_id=drive_file.id,
+                segments=list(segments),
+                settings=settings,
+            )
+        logger.info(
+            "Indexed video %s transcript-first: %d segments, 0 frames, 0 faces",
+            drive_file.name,
+            len(segments),
+        )
+        return VideoIndexResult(
+            media=media,
+            gemini_document_name=None,
+            face_job_queued=False,
+        )
+
     sample_times = _merge_sample_times(
         duration,
         settings.video_frame_interval_seconds,
