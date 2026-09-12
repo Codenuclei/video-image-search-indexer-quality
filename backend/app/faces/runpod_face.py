@@ -84,7 +84,8 @@ async def detect_faces_runpod_frames(
     encoded = [
         {
             "frame_ts": float(ts),
-            "image_base64": _encode_jpeg_b64(image, settings),
+            "drive_file_id": f"studio-quote:{float(ts):.3f}",
+            "image_b64": _encode_jpeg_b64(image, settings),
         }
         for ts, image in frames
         if image is not None and getattr(image, "size", 0)
@@ -92,7 +93,20 @@ async def detect_faces_runpod_frames(
     if not encoded:
         return []
 
-    payload = {"input": {"frames": encoded, "task": "detect_faces"}}
+    # Existing stateless buffalo_l handler contract. Result images preserve
+    # request order, which maps each detection row back to its quote timestamp.
+    payload = {
+        "input": {
+            "images": [
+                {
+                    "drive_file_id": item["drive_file_id"],
+                    "image_b64": item["image_b64"],
+                }
+                for item in encoded
+            ],
+            "min_detection_confidence": settings.min_detection_confidence,
+        }
+    }
     run_url = f"https://api.runpod.ai/v2/{endpoint}/run"
     status_base = f"https://api.runpod.ai/v2/{endpoint}/status"
     timeout = httpx.Timeout(60.0, read=settings.runpod_face_timeout_seconds)
@@ -136,7 +150,12 @@ def _results_from_output(
 ) -> list[FrameFaceResult]:
     rows: list[Any]
     if isinstance(output, dict):
-        rows = list(output.get("frames") or output.get("results") or [])
+        rows = list(
+            output.get("images")
+            or output.get("frames")
+            or output.get("results")
+            or []
+        )
     elif isinstance(output, list):
         rows = output
     else:

@@ -29,7 +29,7 @@ jobs:
           context: deploy/runpod-whisper
           push: true
           tags: |
-            ghcr.io/codenuclei/video-image-search-indexer-quality/dfi-face-buffalo:whisper
-            ghcr.io/codenuclei/video-image-search-indexer-quality/dfi-face-buffalo:whisper-${{ github.sha }}
+            ghcr.io/codenuclei/video-image-search-indexer-quality/dfi-carousel-whisper:latest
+            ghcr.io/codenuclei/video-image-search-indexer-quality/dfi-carousel-whisper:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
