@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -432,8 +432,11 @@ async def test_select_images_timeout_returns_preparing_not_500(monkeypatch, tmp_
     )
 
     body = CarouselSelectImagesBody(drive_file_id="vid", carousels=[{"slides": [_slide("Hi", 1.0)]}])
+    session = AsyncMock()
+    session.get.return_value = None
+    session.add = MagicMock()
     out = await carousel_script.carousel_pipeline_select_images(
-        body, session=object(), request_id="test-trace"
+        body, session=session, request_id="test-trace"
     )
     assert out["status"] == "preparing"
     assert out["preparing"] is True

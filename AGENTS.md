@@ -62,6 +62,10 @@ railway up --service dfi-carousel --detach -y
 
 Studio proxies to `https://dfi-carousel-backend-production.up.railway.app` (`API_PROXY_TARGET`). Search remains on `dfi-backend`.
 
+### DigitalOcean (Carousel migration artifacts only)
+
+Do **not** treat DigitalOcean as the search stack. Carousel uses **two** App Platform apps (one service each — a single app cannot give both services path `/`): [`.do/backend.yaml`](.do/backend.yaml) and [`.do/frontend.yaml`](.do/frontend.yaml), plus Droplet Postgres/Qdrant under [`deploy/digitalocean/`](deploy/digitalocean/). Both specs share the same `vpc.id` / `REPLACE_WITH_VPC_UUID`. Railway deploy commands above stay authoritative for production until cutover. See [`deploy/digitalocean/README.md`](deploy/digitalocean/README.md).
+
 ### Correct commands
 
 Always `cd` into the service directory first (matches `scripts/auto-deploy.sh`). Do **not** use `--path-as-root`.

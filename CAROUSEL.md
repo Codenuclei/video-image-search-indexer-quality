@@ -52,3 +52,22 @@ cd backend && railway up --service dfi-carousel-backend --detach -y
 ```
 
 Google Cloud: add authorized redirect URI `https://dfi-carousel-backend-production.up.railway.app/auth/google/callback` (keep search’s `dfi-backend` callback). API key referrer: `https://dfi-carousel-production.up.railway.app/*`.
+
+## DigitalOcean (migration target)
+
+Carousel-only App Platform + Droplet data plane artifacts live under [`.do/backend.yaml`](.do/backend.yaml), [`.do/frontend.yaml`](.do/frontend.yaml), and [`deploy/digitalocean/`](deploy/digitalocean/). Two App Platform apps are required (each owns `/` on its hostname). Railway remains the production Studio stack until cutover.
+
+- Backend app: `carousel-backend` (port 8000, `WEB_CONCURRENCY=1`) from branch `pruned-craousel`
+- Frontend app: `carousel-frontend` (port 3002); `API_PROXY_TARGET` / `NEXT_PUBLIC_BACKEND_URL` = backend **public** URL (no cross-app `PRIVATE_URL`)
+- Both apps: same `REPLACE_WITH_VPC_UUID` for Droplet Postgres/Qdrant
+- GPU ASR / faces: RunPod (`RUNPOD_*` on the backend app only)
+- Ops: [`deploy/digitalocean/README.md`](deploy/digitalocean/README.md) — provision via `doctl`, backup/restore, preflight
+
+```bash
+./deploy/digitalocean/scripts/preflight.sh
+# After VPC + Droplet exist (does not run here):
+# doctl apps spec validate .do/backend.yaml
+# doctl apps spec validate .do/frontend.yaml
+# doctl apps create --spec .do/backend.yaml
+# doctl apps create --spec .do/frontend.yaml
+```

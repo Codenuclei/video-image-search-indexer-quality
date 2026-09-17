@@ -1,0 +1,75 @@
+# DigitalOcean App Platform — Carousel Studio UI only (branch pruned-craousel).
+# Pair with .do/backend.yaml as a second App Platform app (one service each).
+# Search stack stays on Railway/main.
+#
+# Why two apps: a single app with two services both claiming path prefix `/` fails
+# `doctl apps spec validate`. Separate apps each own `/` on their own hostname.
+#
+# VPC: use the SAME UUID as .do/backend.yaml and the Postgres/Qdrant Droplet.
+#   doctl vpcs list
+#   doctl apps create --spec .do/frontend.yaml
+# Or enable VPC in the control panel after create.
+# VPC and dedicated egress IPs cannot be enabled at the same time.
+#
+# Cross-app URLs: App Platform bindables do not resolve across apps. Set
+# API_PROXY_TARGET and NEXT_PUBLIC_BACKEND_URL to the backend app's public
+# https origin (or custom API domain) after the backend app is live. Do not
+# attempt private inter-app component URLs between these two apps.
+
+name: dfi-carousel-frontend
+region: nyc
+
+# Uncomment after the VPC UUID is known (identical value in .do/backend.yaml):
+# vpc:
+#   id: REPLACE_WITH_VPC_UUID
+
+alerts:
+  - rule: DEPLOYMENT_FAILED
+  - rule: DOMAIN_FAILED
+
+services:
+  - name: carousel-frontend
+    github:
+      repo: Codenuclei/video-image-search-indexer-quality
+      branch: pruned-craousel
+      deploy_on_push: false
+    dockerfile_path: Dockerfile
+    source_dir: carousel-frontend
+    http_port: 3002
+    instance_count: 1
+    instance_size_slug: apps-s-1vcpu-1gb
+    health_check:
+      http_path: /
+      initial_delay_seconds: 20
+      period_seconds: 10
+      timeout_seconds: 5
+      success_threshold: 1
+      failure_threshold: 6
+      port: 3002
+    envs:
+      - key: NEXT_PUBLIC_API_URL
+        scope: RUN_AND_BUILD_TIME
+        type: GENERAL
+        value: /api/proxy
+      # Public backend origin only (no cross-app private bindable). Update after backend deploy.
+      - key: API_PROXY_TARGET
+        scope: RUN_AND_BUILD_TIME
+        type: GENERAL
+        value: https://REPLACE_BACKEND_PUBLIC_URL
+      # Baked into the Next.js client at Docker build time.
+      - key: NEXT_PUBLIC_BACKEND_URL
+        scope: BUILD_TIME
+        type: GENERAL
+        value: https://REPLACE_BACKEND_PUBLIC_URL
+      - key: NEXT_PUBLIC_TEST_USE_REAL_API
+        scope: RUN_AND_BUILD_TIME
+        type: GENERAL
+        value: "1"
+      - key: PORT
+        scope: RUN_TIME
+        type: GENERAL
+        value: "3002"
+      - key: HOSTNAME
+        scope: RUN_TIME
+        type: GENERAL
+        value: "0.0.0.0"

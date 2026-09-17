@@ -1,0 +1,6 @@
+.env
+.env.*
+!.env.example
+*.preflight.tmp
+__pycache__/
+.pytest_cache/

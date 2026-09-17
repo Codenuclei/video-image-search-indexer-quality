@@ -267,6 +267,10 @@ export type CarouselOutlineResponse = {
   message?: string;
   cache_hit?: boolean;
   generated?: boolean;
+  status?: string;
+  job_id?: string | null;
+  preparing?: boolean;
+  error?: string;
   carousels?: CarouselGeneratedItem[];
   carousel_count?: number;
   images_ready?: boolean;
@@ -524,6 +528,9 @@ export type CarouselPipelineExtractResponse = {
   generated?: boolean;
   message?: string;
   warning?: string;
+  status?: string;
+  job_id?: string | null;
+  error?: string;
   transcript_meta?: {
     cue_count_total?: number;
     theme_count?: number;
@@ -816,7 +823,7 @@ export const apiClient = {
     }
     throw new Error("Theme generation is taking longer than expected. Please try again.");
   },
-  carouselPipelineExtract: (body: {
+  carouselPipelineExtract: async (body: {
     drive_file_id: string;
     theme_id?: string;
     title?: string;
@@ -834,17 +841,34 @@ export const apiClient = {
     force?: boolean;
     generate?: boolean;
     include_hooks?: boolean;
-  }) =>
-    api<CarouselPipelineExtractResponse>("/search/carousel/pipeline/extract", {
+  }) => {
+    const first = await api<CarouselPipelineExtractResponse>("/search/carousel/pipeline/extract", {
       method: "POST",
       body: JSON.stringify({
         ...body,
         // Studio extracts topics first; hooks come after topic selection.
         include_hooks: body.include_hooks ?? false,
       }),
-      timeoutMs: body.force || body.generate ? 900_000 : 90_000,
-    }),
-  carouselPipelineExtractHooks: (body: {
+      timeoutMs: body.force || body.generate ? 90_000 : 90_000,
+    });
+    if (first.status !== "running" || !first.job_id) return first;
+    const started = Date.now();
+    while (Date.now() - started < 10 * 60_000) {
+      await new Promise((r) => setTimeout(r, 2500));
+      const st = await api<CarouselPipelineExtractResponse>(
+        `/search/carousel/pipeline/extract/status?job_id=${encodeURIComponent(String(first.job_id))}`,
+        { timeoutMs: 30_000, silent: true }
+      );
+      if (st.status === "ready" || (st.topics?.length ?? 0) > 0 || (st.hooks?.length ?? 0) > 0) {
+        return { ...st, status: "ready" };
+      }
+      if (st.status === "error") {
+        throw new Error(st.error || st.message || "Extract failed");
+      }
+    }
+    throw new Error("Extract timed out. Try again in a moment.");
+  },
+  carouselPipelineExtractHooks: async (body: {
     drive_file_id: string;
     themes?: {
       theme_id?: string;
@@ -868,8 +892,8 @@ export const apiClient = {
     max_hooks?: number;
     force?: boolean;
     generate?: boolean;
-  }) =>
-    api<CarouselPipelineExtractResponse>("/search/carousel/pipeline/extract/hooks", {
+  }) => {
+    const first = await api<CarouselPipelineExtractResponse>("/search/carousel/pipeline/extract/hooks", {
       method: "POST",
       body: JSON.stringify({
         ...body,
@@ -877,8 +901,25 @@ export const apiClient = {
         max_hooks: body.max_hooks ?? 4,
         generate: body.generate ?? true,
       }),
-      timeoutMs: 180_000,
-    }),
+      timeoutMs: 90_000,
+    });
+    if (first.status !== "running" || !first.job_id) return first;
+    const started = Date.now();
+    while (Date.now() - started < 10 * 60_000) {
+      await new Promise((r) => setTimeout(r, 2500));
+      const st = await api<CarouselPipelineExtractResponse>(
+        `/search/carousel/pipeline/extract/hooks/status?job_id=${encodeURIComponent(String(first.job_id))}`,
+        { timeoutMs: 30_000, silent: true }
+      );
+      if (st.status === "ready" || (st.hooks?.length ?? 0) >= 2) {
+        return { ...st, status: "ready" };
+      }
+      if (st.status === "error") {
+        throw new Error(st.error || st.message || "Hook generation failed");
+      }
+    }
+    throw new Error("Hook generation timed out. Try again in a moment.");
+  },
   carouselPipelineIntent: (body: {
     theme_title?: string;
     theme_summary?: string;
@@ -896,15 +937,33 @@ export const apiClient = {
         timeoutMs: 120_000,
       }
     ),
-  carouselPipelineGenerate: (body: CarouselGenerateRequest) =>
-    api<CarouselOutlineResponse & { cache_hit?: boolean; generated?: boolean; message?: string }>(
-      "/search/carousel/pipeline/generate",
-      {
-        method: "POST",
-        body: JSON.stringify({ ...body, select_images: Boolean(body.select_images) }),
-        timeoutMs: body.force || body.generate ? 900_000 : 90_000,
+  carouselPipelineGenerate: async (body: CarouselGenerateRequest) => {
+    const first = await api<
+      CarouselOutlineResponse & { cache_hit?: boolean; generated?: boolean; message?: string }
+    >("/search/carousel/pipeline/generate", {
+      method: "POST",
+      body: JSON.stringify({ ...body, select_images: Boolean(body.select_images) }),
+      timeoutMs: 90_000,
+    });
+    if (first.status !== "running" || !first.job_id) return first;
+    const started = Date.now();
+    while (Date.now() - started < 10 * 60_000) {
+      await new Promise((r) => setTimeout(r, 2500));
+      const st = await api<
+        CarouselOutlineResponse & { cache_hit?: boolean; generated?: boolean; message?: string }
+      >(
+        `/search/carousel/pipeline/generate/status?job_id=${encodeURIComponent(String(first.job_id))}`,
+        { timeoutMs: 30_000, silent: true }
+      );
+      if (st.status === "ready" || (st.carousels?.length ?? 0) > 0) {
+        return { ...st, status: "ready" };
       }
-    ),
+      if (st.status === "error") {
+        throw new Error(st.error || st.message || "Generate failed");
+      }
+    }
+    throw new Error("Carousel generate timed out. Try again in a moment.");
+  },
   carouselFeedbackList: (driveFileId: string, targetKind?: "theme" | "hook") => {
     const qs = new URLSearchParams({ drive_file_id: driveFileId });
     if (targetKind) qs.set("target_kind", targetKind);
@@ -1036,17 +1095,40 @@ export const apiClient = {
       clearTimeout(timer);
     }
   },
-  carouselPipelineSelectImages: (body: {
+  carouselPipelineSelectImages: async (body: {
     drive_file_id: string;
     carousels: CarouselGeneratedItem[];
     llm_provider?: string;
     llm_model?: string;
-  }) =>
-    api<CarouselOutlineResponse>("/search/carousel/pipeline/select-images", {
+  }) => {
+    const first = await api<CarouselOutlineResponse>("/search/carousel/pipeline/select-images", {
       method: "POST",
       body: JSON.stringify(body),
-      timeoutMs: 900_000,
-    }),
+      timeoutMs: 90_000,
+    });
+    if (!first.preparing && first.status !== "preparing") {
+      return first;
+    }
+    let jobId = first.job_id || null;
+    const started = Date.now();
+    while (Date.now() - started < 10 * 60_000) {
+      await new Promise((r) => setTimeout(r, 2500));
+      const params = new URLSearchParams({ drive_file_id: body.drive_file_id });
+      if (jobId) params.set("job_id", String(jobId));
+      const st = await api<CarouselOutlineResponse>(
+        `/search/carousel/pipeline/select-images/status?${params}`,
+        { timeoutMs: 30_000, silent: true }
+      );
+      jobId = st.job_id || jobId;
+      if (st.status === "ready" || st.images_ready) {
+        return { ...st, images_ready: true, preparing: false, status: "ready" };
+      }
+      if (st.status === "error") {
+        throw new Error(st.error || st.message || "Image preparation failed");
+      }
+    }
+    throw new Error("Image preparation timed out. Try again in a moment.");
+  },
   carouselQualityCheck: (body: {
     drive_file_id: string;
     carousels: CarouselGeneratedItem[];

@@ -1,0 +1,82 @@
+# Carousel Studio data plane for a DigitalOcean Droplet (same VPC as App Platform).
+# Postgres 16 + pgvector and pinned Qdrant — private bind only.
+#
+# Usage (on the Droplet):
+#   cp .env.example .env   # generate POSTGRES_PASSWORD
+#   docker compose --env-file .env up -d
+#
+# Security:
+# - Ports bind to DROPLET_BIND_ADDR (default 127.0.0.1). For VPC access set
+#   DROPLET_BIND_ADDR to the Droplet private IP (10.x / 192.168.x).
+# - Do NOT publish 5432/6333 on the public interface. Use a DigitalOcean Cloud
+#   Firewall allowing those ports only from the VPC CIDR (or App Platform VPC).
+# - Restart unless-stopped; named volumes for durability.
+
+name: dfi-carousel-data
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-carousel}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-carousel}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - carousel_pg_data:/var/lib/postgresql/data
+    ports:
+      - "${DROPLET_BIND_ADDR:-127.0.0.1}:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - carousel_data
+    command:
+      - postgres
+      - -c
+      - listen_addresses=*
+      - -c
+      - max_connections=100
+      - -c
+      - shared_buffers=256MB
+
+  qdrant:
+    # Pin for reproducible restores; bump intentionally after testing.
+    image: qdrant/qdrant:v1.19.1
+    restart: unless-stopped
+    environment:
+      QDRANT__SERVICE__HTTP_PORT: "6333"
+      QDRANT__SERVICE__GRPC_PORT: "6334"
+      QDRANT__STORAGE__STORAGE_PATH: /qdrant/storage
+      QDRANT__STORAGE__SNAPSHOTS_PATH: /qdrant/snapshots
+    volumes:
+      - carousel_qdrant_storage:/qdrant/storage
+      - carousel_qdrant_snapshots:/qdrant/snapshots
+    ports:
+      # REST only for App Platform clients; keep gRPC private/unexposed.
+      - "${DROPLET_BIND_ADDR:-127.0.0.1}:6333:6333"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "bash -c 'exec 3<>/dev/tcp/127.0.0.1/6333 && printf \"GET /readyz HTTP/1.0\\r\\n\\r\\n\" >&3 && timeout 2 cat <&3 | grep -qiE \"ok|ready\"'",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - carousel_data
+
+volumes:
+  carousel_pg_data:
+  carousel_qdrant_storage:
+  carousel_qdrant_snapshots:
+
+networks:
+  carousel_data:
+    driver: bridge

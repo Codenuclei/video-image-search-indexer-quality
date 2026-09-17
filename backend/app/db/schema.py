@@ -179,6 +179,54 @@ async def ensure_schema(engine: AsyncEngine) -> None:
             "CREATE INDEX ix_carousel_event_photo_folders_folder_id "
             "ON carousel_event_photo_folders (folder_id)",
         )
+        # Durable Studio jobs (visual prep / extract / generate). Required before the
+        # warm-DB shortcut so App Platform boots never skip this table.
+        await conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS carousel_studio_jobs (
+                    id VARCHAR(64) NOT NULL PRIMARY KEY,
+                    kind VARCHAR(32) NOT NULL,
+                    drive_file_id VARCHAR(128) NOT NULL,
+                    status VARCHAR(24) NOT NULL DEFAULT 'preparing',
+                    slides_fingerprint VARCHAR(64),
+                    request JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    result JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    error TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                )
+                """
+            )
+        )
+        await _ensure_index(
+            conn,
+            "ix_carousel_studio_jobs_kind",
+            "CREATE INDEX ix_carousel_studio_jobs_kind ON carousel_studio_jobs (kind)",
+        )
+        await _ensure_index(
+            conn,
+            "ix_carousel_studio_jobs_drive_file_id",
+            "CREATE INDEX ix_carousel_studio_jobs_drive_file_id "
+            "ON carousel_studio_jobs (drive_file_id)",
+        )
+        await _ensure_index(
+            conn,
+            "ix_carousel_studio_jobs_status",
+            "CREATE INDEX ix_carousel_studio_jobs_status ON carousel_studio_jobs (status)",
+        )
+        await _ensure_index(
+            conn,
+            "ix_carousel_studio_jobs_drive_kind_created",
+            "CREATE INDEX ix_carousel_studio_jobs_drive_kind_created "
+            "ON carousel_studio_jobs (drive_file_id, kind, created_at)",
+        )
+        await _ensure_index(
+            conn,
+            "ix_carousel_studio_jobs_drive_fingerprint",
+            "CREATE INDEX ix_carousel_studio_jobs_drive_fingerprint "
+            "ON carousel_studio_jobs (drive_file_id, slides_fingerprint)",
+        )
         for column, ddl in (
             ("folder_name", "ALTER TABLE carousel_event_photo_folders ADD COLUMN folder_name VARCHAR"),
             (

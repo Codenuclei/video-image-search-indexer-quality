@@ -130,6 +130,10 @@ export type TestExtract = {
   cache_hit?: boolean;
   message?: string;
   warning?: string;
+  status?: string;
+  job_id?: string | null;
+  error?: string | null;
+  generated?: boolean;
 };
 
 export type TestSlidePanel = {
@@ -385,33 +389,63 @@ export const testApi = {
       }),
       }
     ),
-  themes: (
+  themes: async (
     driveFileId: string,
     opts?: { force?: boolean; generate?: boolean; runConfig?: CarouselRunConfig }
-  ) =>
-    api<{
+  ) => {
+    type ThemesRes = {
       themes: TestTheme[];
       cache_hit?: boolean;
       generated?: boolean;
       save_id?: number | null;
+      job_id?: number | null;
+      status?: string;
       warning?: string;
       message?: string;
-    }>(
-      "/search/carousel/pipeline/themes",
-      {
-        method: "POST",
-        body: JSON.stringify({
-          drive_file_id: driveFileId,
-          generate: opts?.generate !== false,
-          force: Boolean(opts?.force),
-          llm_provider: opts?.runConfig?.provider,
-          llm_model: opts?.runConfig?.model,
-        }),
-        // Themes runs 5+ sequential OpenRouter hops (~3 min observed).
-        timeoutMs: 600_000,
+      error?: string;
+      phase?: string;
+    };
+    // Prefer durable themes jobs (survives App Platform 100s HTTP cap).
+    const start = await api<ThemesRes>("/search/carousel/pipeline/themes/jobs", {
+      method: "POST",
+      body: JSON.stringify({
+        drive_file_id: driveFileId,
+        generate: opts?.generate !== false,
+        force: Boolean(opts?.force),
+        llm_provider: opts?.runConfig?.provider,
+        llm_model: opts?.runConfig?.model,
+      }),
+      timeoutMs: 60_000,
+    });
+    if (
+      start.status === "ready" ||
+      (start.themes?.length ?? 0) > 0 ||
+      start.status === "cache_miss" ||
+      start.status === "error" ||
+      start.error
+    ) {
+      return start;
+    }
+    const jobId = start.job_id ?? start.save_id;
+    if (!jobId) return start;
+    const maxWait = 10 * 60_000;
+    const started = Date.now();
+    while (Date.now() - started < maxWait) {
+      await new Promise((r) => setTimeout(r, 1500));
+      const status = await api<ThemesRes>(
+        `/search/carousel/pipeline/themes/jobs/${encodeURIComponent(String(jobId))}`,
+        { timeoutMs: 30_000, silent: true }
+      );
+      if (status.status === "ready" || (status.themes?.length ?? 0) > 0) {
+        return status;
       }
-    ),
-  extract: (
+      if (status.status === "error" || status.error) {
+        return status;
+      }
+    }
+    throw new Error("Theme generation timed out. Try again in a moment.");
+  },
+  extract: async (
     driveFileId: string,
     themes: TestTheme[],
     opts?: {
@@ -422,18 +456,16 @@ export const testApi = {
       timeoutMs?: number;
       silent?: boolean;
     }
-  ) =>
-    api<TestExtract>("/search/carousel/pipeline/extract", {
+  ) => {
+    const first = await api<TestExtract>("/search/carousel/pipeline/extract", {
       method: "POST",
-      timeoutMs: opts?.timeoutMs ?? 600_000,
+      // Initiate under App Platform 100s; durable job + poll if still running.
+      timeoutMs: opts?.timeoutMs ?? 90_000,
       silent: opts?.silent,
       body: JSON.stringify({
         drive_file_id: driveFileId,
-        // Live-generate on miss; same video+themes+LLM config may cache-hit.
-        // Different provider/model cache keys force a fresh run.
         generate: opts?.generate !== false,
         force: Boolean(opts?.force),
-        // Test studio matches production: topics first, hooks after selection.
         include_hooks: opts?.include_hooks ?? false,
         llm_provider: opts?.runConfig?.provider,
         llm_model: opts?.runConfig?.model,
@@ -445,8 +477,28 @@ export const testApi = {
           summary: t.summary,
         })),
       }),
-    }),
-  extractHooks: (
+    });
+    if (first.status !== "running" || !first.job_id) {
+      return first;
+    }
+    const maxWait = 10 * 60_000;
+    const started = Date.now();
+    while (Date.now() - started < maxWait) {
+      await new Promise((r) => setTimeout(r, 2500));
+      const st = await api<TestExtract>(
+        `/search/carousel/pipeline/extract/status?job_id=${encodeURIComponent(String(first.job_id))}`,
+        { timeoutMs: 30_000, silent: true }
+      );
+      if (st.status === "ready" || (st.topics?.length ?? 0) > 0 || (st.hooks?.length ?? 0) > 0) {
+        return { ...st, status: "ready" };
+      }
+      if (st.status === "error") {
+        throw new Error(st.error || st.message || "Extract failed");
+      }
+    }
+    throw new Error("Extract timed out. Try again in a moment.");
+  },
+  extractHooks: async (
     driveFileId: string,
     body: {
       themes: TestTheme[];
@@ -463,10 +515,10 @@ export const testApi = {
       force?: boolean;
       runConfig?: CarouselRunConfig;
     }
-  ) =>
-    api<TestExtract>("/search/carousel/pipeline/extract/hooks", {
+  ) => {
+    const first = await api<TestExtract>("/search/carousel/pipeline/extract/hooks", {
       method: "POST",
-      timeoutMs: 180_000,
+      timeoutMs: 90_000,
       body: JSON.stringify({
         drive_file_id: driveFileId,
         generate: true,
@@ -484,7 +536,27 @@ export const testApi = {
         })),
         topics: body.topics,
       }),
-    }),
+    });
+    if (first.status !== "running" || !first.job_id) {
+      return first;
+    }
+    const maxWait = 10 * 60_000;
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < maxWait) {
+      await new Promise((r) => setTimeout(r, 2500));
+      const st = await api<TestExtract>(
+        `/search/carousel/pipeline/extract/hooks/status?job_id=${encodeURIComponent(String(first.job_id))}`,
+        { timeoutMs: 30_000, silent: true }
+      );
+      if (st.status === "ready" || (st.hooks?.length ?? 0) >= 2) {
+        return { ...st, status: "ready" };
+      }
+      if (st.status === "error") {
+        throw new Error(st.error || st.message || "Hook generation failed");
+      }
+    }
+    throw new Error("Hook generation timed out. Try again in a moment.");
+  },
   intent: (hooks: string[], topics: string[], runConfig?: CarouselRunConfig) =>
     api<{ intent?: string | null; intent_score?: number | null }>(
       "/search/carousel/pipeline/intent",
@@ -498,7 +570,7 @@ export const testApi = {
         }),
       }
     ),
-  generate: (body: {
+  generate: async (body: {
     drive_file_id: string;
     hooks: {
       id?: string;
@@ -520,13 +592,14 @@ export const testApi = {
     }[];
     themes: TestTheme[];
     intent?: string | null;
-    /** Text = text-first (edit copy before frames). Default false. */
+    /** False = text-first (edit copy before frames). Default false. */
     select_images?: boolean;
     force?: boolean;
     run_config?: CarouselRunConfig;
-  }) =>
-    api<TestGenerate>("/search/carousel/pipeline/generate", {
+  }) => {
+    const first = await api<TestGenerate>("/search/carousel/pipeline/generate", {
       method: "POST",
+      timeoutMs: 90_000,
       body: JSON.stringify({
         drive_file_id: body.drive_file_id,
         hooks: body.hooks,
@@ -544,7 +617,27 @@ export const testApi = {
         min_slides: 6,
         max_slides: 10,
       }),
-    }),
+    });
+    if (first.status !== "running" || !first.job_id) {
+      return first;
+    }
+    const maxWait = 10 * 60_000;
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < maxWait) {
+      await new Promise((r) => setTimeout(r, 2500));
+      const st = await api<TestGenerate>(
+        `/search/carousel/pipeline/generate/status?job_id=${encodeURIComponent(String(first.job_id))}`,
+        { timeoutMs: 30_000, silent: true }
+      );
+      if (st.status === "ready" || (st.carousels?.length ?? 0) > 0) {
+        return { ...st, status: "ready" };
+      }
+      if (st.status === "error") {
+        throw new Error(st.error || st.message || "Generate failed");
+      }
+    }
+    throw new Error("Carousel generate timed out. Try again in a moment.");
+  },
   /** Attach ranked frames after generate (same as production "Select & filter images"). */
   selectImages: (body: {
     drive_file_id: string;

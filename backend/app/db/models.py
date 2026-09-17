@@ -552,6 +552,45 @@ class CarouselGenerationSave(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class CarouselStudioJob(Base):
+    """Durable Studio background jobs (visual prep / extract / generate).
+
+    Survives App Platform restarts and ephemeral local disk. Polling clients use
+    ``id`` as ``job_id``. Themes still use ``CarouselGenerationSave`` (status
+    processing/ready/error); transcripts use DriveFile error_message markers.
+    """
+
+    __tablename__ = "carousel_studio_jobs"
+    __table_args__ = (
+        Index(
+            "ix_carousel_studio_jobs_drive_kind_created",
+            "drive_file_id",
+            "kind",
+            "created_at",
+        ),
+        Index(
+            "ix_carousel_studio_jobs_drive_fingerprint",
+            "drive_file_id",
+            "slides_fingerprint",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    # visual_prep | extract | extract_hooks | generate
+    kind: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    drive_file_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    # preparing | running | ready | error
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="preparing", index=True)
+    slides_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    request: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    result: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class CarouselItemFeedback(Base):
     """Per-theme / per-hook thumbs + short comment from Carousel Studio."""
 

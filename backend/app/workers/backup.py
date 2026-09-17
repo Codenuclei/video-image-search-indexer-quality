@@ -144,6 +144,7 @@ def backup_qdrant(dest_dir: Path) -> dict[str, object]:
         settings.qdrant_collection,
         settings.qdrant_images_collection,
         settings.qdrant_image_captions_collection,
+        settings.qdrant_video_transcripts_collection,
     ]
     results: list[dict[str, object]] = []
     for name in collection_names:

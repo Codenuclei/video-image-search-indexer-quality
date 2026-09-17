@@ -1,0 +1,203 @@
+# DigitalOcean App Platform — Carousel Studio API only (branch pruned-craousel).
+# Pair with .do/frontend.yaml as a second App Platform app (one service each).
+# Search stack (dfi-backend / dfi-frontend / dfi-face-worker) stays on Railway/main.
+#
+# Why two apps: a single app with two services both claiming path prefix `/` fails
+# `doctl apps spec validate`. Separate apps each own `/` on their own hostname.
+#
+# VPC: use the SAME UUID as .do/frontend.yaml and the Postgres/Qdrant Droplet.
+# Create the VPC first, then uncomment and set:
+#   doctl vpcs list
+#   doctl apps create --spec .do/backend.yaml
+#   doctl apps update <backend-app-id> --spec .do/backend.yaml
+# Or enable VPC in the control panel (Settings → Networking → VPC) after create.
+# VPC and dedicated egress IPs cannot be enabled at the same time.
+#
+# Secrets: type: SECRET placeholders — encrypt real values via doctl/control panel.
+
+name: dfi-carousel-backend
+region: nyc
+
+# Uncomment after the VPC UUID is known (identical value in .do/frontend.yaml):
+# vpc:
+#   id: REPLACE_WITH_VPC_UUID
+
+alerts:
+  - rule: DEPLOYMENT_FAILED
+  - rule: DOMAIN_FAILED
+
+services:
+  - name: carousel-backend
+    github:
+      repo: Codenuclei/video-image-search-indexer-quality
+      branch: pruned-craousel
+      deploy_on_push: false
+    dockerfile_path: Dockerfile
+    source_dir: backend
+    http_port: 8000
+    instance_count: 1
+    # Size for Whisper fallback + InsightFace; raise if CPU-bound.
+    instance_size_slug: apps-s-2vcpu-4gb
+    health_check:
+      http_path: /health
+      initial_delay_seconds: 30
+      period_seconds: 10
+      timeout_seconds: 5
+      success_threshold: 1
+      failure_threshold: 6
+      port: 8000
+    envs:
+      # --- process model (Carousel Studio: one Gunicorn worker) ---
+      - key: WEB_CONCURRENCY
+        scope: RUN_TIME
+        type: GENERAL
+        value: "1"
+      - key: GUNICORN_WORKERS
+        scope: RUN_TIME
+        type: GENERAL
+        value: "1"
+      - key: GUNICORN_TIMEOUT
+        scope: RUN_TIME
+        type: GENERAL
+        value: "3600"
+      - key: GUNICORN_GRACEFUL_TIMEOUT
+        scope: RUN_TIME
+        type: GENERAL
+        value: "120"
+      - key: OPENBLAS_NUM_THREADS
+        scope: RUN_TIME
+        type: GENERAL
+        value: "1"
+      - key: OMP_NUM_THREADS
+        scope: RUN_TIME
+        type: GENERAL
+        value: "1"
+      - key: VIDEO_INDEX_MAX_PARALLEL
+        scope: RUN_TIME
+        type: GENERAL
+        value: "1"
+      - key: VIDEO_TRANSCRIPT_FIRST_ENABLED
+        scope: RUN_TIME
+        type: GENERAL
+        value: "true"
+      - key: RUN_INDEXER
+        scope: RUN_TIME
+        type: GENERAL
+        value: "true"
+      - key: FACE_JOBS_ENABLED
+        scope: RUN_TIME
+        type: GENERAL
+        value: "false"
+      - key: RUN_FACE_WORKER
+        scope: RUN_TIME
+        type: GENERAL
+        value: "false"
+      - key: AUTO_INDEX_ENABLED
+        scope: RUN_TIME
+        type: GENERAL
+        value: "false"
+
+      # --- data plane (Droplet private IPs; replace after provision) ---
+      - key: DATABASE_URL
+        scope: RUN_TIME
+        type: SECRET
+        value: postgresql+asyncpg://carousel:REPLACE_ME@REPLACE_DROPLET_PRIVATE_IP:5432/carousel
+      - key: QDRANT_URL
+        scope: RUN_TIME
+        type: GENERAL
+        value: http://REPLACE_DROPLET_PRIVATE_IP:6333
+      - key: QDRANT_COLLECTION
+        scope: RUN_TIME
+        type: GENERAL
+        value: dfi_video_frames
+      - key: QDRANT_IMAGES_COLLECTION
+        scope: RUN_TIME
+        type: GENERAL
+        value: dfi_images
+      - key: QDRANT_IMAGE_CAPTIONS_COLLECTION
+        scope: RUN_TIME
+        type: GENERAL
+        value: dfi_image_captions
+      - key: QDRANT_VIDEO_TRANSCRIPTS_COLLECTION
+        scope: RUN_TIME
+        type: GENERAL
+        value: dfi_video_transcripts
+
+      # --- OAuth / frontend origins (cross-app: no bindables to the frontend app) ---
+      - key: CAROUSEL_FRONTEND_URL
+        scope: RUN_TIME
+        type: GENERAL
+        value: https://REPLACE_FRONTEND_PUBLIC_URL
+      - key: ALLOWED_ORIGINS
+        scope: RUN_TIME
+        type: GENERAL
+        value: https://REPLACE_FRONTEND_PUBLIC_URL
+      - key: CAROUSEL_GOOGLE_REDIRECT_URI
+        scope: RUN_TIME
+        type: GENERAL
+        value: ${_self.PUBLIC_URL}/auth/google/callback
+      - key: PUBLIC_BASE_URL
+        scope: RUN_TIME
+        type: GENERAL
+        value: ${_self.PUBLIC_URL}
+
+      - key: CAROUSEL_GOOGLE_CLIENT_ID
+        scope: RUN_TIME
+        type: SECRET
+        value: REPLACE_ME
+      - key: CAROUSEL_GOOGLE_CLIENT_SECRET
+        scope: RUN_TIME
+        type: SECRET
+        value: REPLACE_ME
+      - key: CAROUSEL_GOOGLE_API_KEY
+        scope: RUN_TIME
+        type: SECRET
+        value: REPLACE_ME
+
+      # --- LLM / copy ---
+      - key: GEMINI_API_KEY
+        scope: RUN_TIME
+        type: SECRET
+        value: REPLACE_ME
+      - key: ANTHROPIC_API_KEY
+        scope: RUN_TIME
+        type: SECRET
+        value: REPLACE_ME
+      - key: OPENROUTER_API_KEY
+        scope: RUN_TIME
+        type: SECRET
+        value: REPLACE_ME
+
+      # --- RunPod (Whisper + ArcFace); keep isolated from search ---
+      - key: RUNPOD_API_KEY
+        scope: RUN_TIME
+        type: SECRET
+        value: REPLACE_ME
+      - key: RUNPOD_WHISPER_ENABLED
+        scope: RUN_TIME
+        type: GENERAL
+        value: "true"
+      - key: RUNPOD_WHISPER_ENDPOINT_ID
+        scope: RUN_TIME
+        type: SECRET
+        value: REPLACE_ME
+      - key: RUNPOD_WHISPER_MODEL_SIZE
+        scope: RUN_TIME
+        type: GENERAL
+        value: base
+      - key: RUNPOD_WHISPER_TIMEOUT_SECONDS
+        scope: RUN_TIME
+        type: GENERAL
+        value: "900"
+      - key: RUNPOD_FACE_GPU_ENABLED
+        scope: RUN_TIME
+        type: GENERAL
+        value: "true"
+      - key: RUNPOD_FACE_ENDPOINT_ID
+        scope: RUN_TIME
+        type: SECRET
+        value: REPLACE_ME
+      - key: RUNPOD_FACE_TIMEOUT_SECONDS
+        scope: RUN_TIME
+        type: GENERAL
+        value: "180"

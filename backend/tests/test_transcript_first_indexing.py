@@ -8,7 +8,7 @@ from app.search.carousel_quote_identity import (
     quote_intervals_from_slides,
     quote_window_sample_timestamps,
 )
-from app.search.carousel_visual_prep import read_job, slides_fingerprint, write_job
+from app.search.carousel_visual_prep import slides_fingerprint
 from app.pipelines import video as video_mod
 from app.workers import indexer as indexer_mod
 from app.workers.indexer import needs_drive_folder_listing
@@ -54,29 +54,6 @@ def test_quote_intervals_swap_inverted_bounds() -> None:
     assert quote_intervals_from_slides(
         [{"timestamp_sec": 5, "end_timestamp_sec": 3}]
     ) == [(3.0, 5.0)]
-
-
-def test_visual_prep_job_roundtrip(tmp_path) -> None:
-    data = write_job(
-        str(tmp_path),
-        "vid-1",
-        status="preparing",
-        request_body={"slides_fingerprint": "abc"},
-    )
-    loaded = read_job(str(tmp_path), "vid-1", data["job_id"])
-    assert loaded is not None
-    assert loaded["status"] == "preparing"
-    write_job(
-        str(tmp_path),
-        "vid-1",
-        job_id=data["job_id"],
-        status="ready",
-        payload={"images_ready": True},
-    )
-    ready = read_job(str(tmp_path), "vid-1", data["job_id"])
-    assert ready["status"] == "ready"
-    assert ready["result"]["images_ready"] is True
-
 
 def test_slides_fingerprint_stable() -> None:
     slides = [

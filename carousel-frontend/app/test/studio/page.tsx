@@ -431,6 +431,7 @@ function TestStudioInner() {
       topics: (extract.topics ?? []).filter((t) => !t.is_subtopic && !t.parent_topic_id),
       topic_tree: extract.topic_tree as CarouselPipelineExtractResponse["topic_tree"],
       save_id: extract.save_id,
+      error: extract.error ?? undefined,
     };
   }, [extract]);
 
@@ -1015,7 +1016,8 @@ function TestStudioInner() {
             generate: true,
             include_hooks: false,
             runConfig: cfg,
-            timeoutMs: 600_000,
+            // Initiate under App Platform 100s; client polls durable job if needed.
+            timeoutMs: 90_000,
             silent: attempt > 0,
           });
           break;

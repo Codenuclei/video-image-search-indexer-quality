@@ -86,6 +86,8 @@ _EXTRACT_TIMEOUT_SEC = 900.0
 # generate still uses Gemini when the caller asks.
 _SELECT_IMAGES_TIMEOUT_SEC = 60.0
 _SELECT_IMAGES_REQUEST_TIMEOUT_SEC = 75.0
+# DigitalOcean App Platform hard-caps HTTP at 100s; leave headroom for proxy buffering.
+_STUDIO_HTTP_BUDGET_SEC = 75.0
 _SELECT_IMAGES_RANK_BATCHES = 3
 _SELECT_IMAGES_FACE_WINDOW_SEC = 8.0
 router = APIRouter(prefix="/search/carousel", tags=["carousel-script"])
@@ -2506,6 +2508,104 @@ async def carousel_pipeline_themes_job_status(
 # NOTE: sync themes route is defined above; async job routes sit after it.
 
 
+async def _run_extract_studio_job(*, job_id: str, body: PipelineExtractRequest) -> None:
+    """Background extract after the interactive HTTP budget is exceeded."""
+    from app.search.carousel_studio_jobs import (
+        KIND_EXTRACT,
+        STATUS_ERROR,
+        STATUS_READY,
+        STATUS_RUNNING,
+        clear_running,
+        mark_running,
+        write_job,
+    )
+
+    if not mark_running(job_id):
+        return
+    session_factory = get_session_factory()
+    drive_file_id = body.drive_file_id.strip()
+    try:
+        async with session_factory() as session:
+            await write_job(
+                session,
+                kind=KIND_EXTRACT,
+                drive_file_id=drive_file_id,
+                status=STATUS_RUNNING,
+                job_id=job_id,
+            )
+        # Reuse the same serialization as the sync route.
+        async with _EXTRACT_LOCK:
+            async with advisory_lock(
+                LOCK_CAROUSEL_EXTRACT, name="carousel_extract", blocking=True
+            ) as got:
+                if not got:
+                    raise RuntimeError("Extract lock unavailable")
+                async with session_factory() as session:
+                    # Synthetic request: background work is not client-bound.
+                    class _Req:
+                        async def is_disconnected(self) -> bool:
+                            return False
+
+                    result = await _carousel_pipeline_extract_impl(body, session, _Req())
+                    await write_job(
+                        session,
+                        kind=KIND_EXTRACT,
+                        drive_file_id=drive_file_id,
+                        status=STATUS_READY,
+                        job_id=job_id,
+                        payload=result,
+                        error=None,
+                    )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("extract studio job failed job=%s", job_id)
+        try:
+            async with session_factory() as session:
+                await write_job(
+                    session,
+                    kind=KIND_EXTRACT,
+                    drive_file_id=drive_file_id,
+                    status=STATUS_ERROR,
+                    job_id=job_id,
+                    error=str(exc)[:400],
+                )
+        except Exception:  # noqa: BLE001
+            logger.exception("failed to mark extract job error job=%s", job_id)
+    finally:
+        clear_running(job_id)
+
+
+async def _enqueue_extract_job(
+    session: AsyncSession, body: PipelineExtractRequest
+) -> dict[str, Any]:
+    from app.search.carousel_studio_jobs import KIND_EXTRACT, STATUS_RUNNING, write_job
+
+    drive_file_id = body.drive_file_id.strip()
+    job = await write_job(
+        session,
+        kind=KIND_EXTRACT,
+        drive_file_id=drive_file_id,
+        status=STATUS_RUNNING,
+        request_body={"body": body.model_dump()},
+    )
+    asyncio.create_task(
+        _run_extract_studio_job(job_id=str(job["job_id"]), body=body),
+        name=f"extract-job:{str(job['job_id'])[:12]}",
+    )
+    return {
+        "source": "job",
+        "status": "running",
+        "job_id": job["job_id"],
+        "drive_file_id": drive_file_id,
+        "hooks": [],
+        "topics": [],
+        "topic_tree": [],
+        "previews": [],
+        "cache_hit": False,
+        "generated": False,
+        "message": "Extract is still running. Poll extract status.",
+    }
+
+
 @router.post("/pipeline/extract")
 async def carousel_pipeline_extract(
     body: PipelineExtractRequest,
@@ -2519,6 +2619,9 @@ async def carousel_pipeline_extract(
 
     Cache-first: without ``force``/``generate``, return a matching save or an empty miss.
     Never silently call Gemini on an ambiguous Continue/Extract click.
+
+    Live generate attempts finish inside ``_STUDIO_HTTP_BUDGET_SEC`` when possible;
+    otherwise a durable job is queued and clients poll ``GET .../extract/status``.
     """
     from app.search.carousel_trace import carousel_log, set_drive_file_id
 
@@ -2556,7 +2659,269 @@ async def carousel_pipeline_extract(
                 )
             if await request.is_disconnected():
                 raise HTTPException(status_code=400, detail="Client disconnected before extract started")
-            return await _carousel_pipeline_extract_impl(body, session, request)
+            try:
+                return await asyncio.wait_for(
+                    _carousel_pipeline_extract_impl(body, session, request),
+                    timeout=_STUDIO_HTTP_BUDGET_SEC,
+                )
+            except (asyncio.TimeoutError, TimeoutError):
+                logger.warning(
+                    "extract exceeded HTTP budget (%.0fs); enqueueing durable job",
+                    _STUDIO_HTTP_BUDGET_SEC,
+                )
+    # Lock released — enqueue durable continuation outside the lock.
+    return await _enqueue_extract_job(session, body)
+
+
+@router.get("/pipeline/extract/status")
+async def carousel_pipeline_extract_status(
+    job_id: str,
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Poll a durable extract job started after the HTTP budget elapsed."""
+    from app.search.carousel_studio_jobs import (
+        KIND_EXTRACT,
+        is_running,
+        read_job,
+    )
+
+    jid = (job_id or "").strip()
+    if not jid:
+        raise HTTPException(status_code=400, detail="job_id is required")
+    data = await read_job(session, jid, kind=KIND_EXTRACT)
+    if data is None:
+        raise HTTPException(status_code=404, detail="Extract job not found")
+    status = (data.get("status") or "").strip()
+    if status in {"running", "preparing"} and not is_running(jid):
+        req = data.get("request") or {}
+        raw = req.get("body")
+        if isinstance(raw, dict):
+            try:
+                body = PipelineExtractRequest.model_validate(raw)
+                asyncio.create_task(
+                    _run_extract_studio_job(job_id=jid, body=body),
+                    name=f"extract-resume:{jid[:12]}",
+                )
+            except Exception:  # noqa: BLE001
+                logger.warning("extract resume failed to parse body job=%s", jid)
+    if status == "ready" and isinstance(data.get("result"), dict):
+        out = dict(data["result"])
+        out["status"] = "ready"
+        out["job_id"] = jid
+        return out
+    if status == "error":
+        return {
+            "source": "job",
+            "status": "error",
+            "job_id": jid,
+            "drive_file_id": data.get("drive_file_id"),
+            "hooks": [],
+            "topics": [],
+            "topic_tree": [],
+            "error": data.get("error") or "Extract failed",
+            "message": data.get("error") or "Extract failed",
+        }
+    return {
+        "source": "job",
+        "status": "running",
+        "job_id": jid,
+        "drive_file_id": data.get("drive_file_id"),
+        "hooks": [],
+        "topics": [],
+        "topic_tree": [],
+        "message": "Extract still running…",
+    }
+
+
+async def _run_extract_hooks_studio_job(
+    *,
+    job_id: str,
+    body: PipelineExtractHooksRequest,
+) -> None:
+    from app.search.carousel_studio_jobs import (
+        KIND_EXTRACT_HOOKS,
+        STATUS_ERROR,
+        STATUS_READY,
+        STATUS_RUNNING,
+        clear_running,
+        mark_running,
+        write_job,
+    )
+
+    if not mark_running(job_id):
+        return
+    session_factory = get_session_factory()
+    drive_file_id = body.drive_file_id.strip()
+    try:
+        async with session_factory() as session:
+            await write_job(
+                session,
+                kind=KIND_EXTRACT_HOOKS,
+                drive_file_id=drive_file_id,
+                status=STATUS_RUNNING,
+                job_id=job_id,
+            )
+        async with _EXTRACT_LOCK:
+            async with advisory_lock(
+                LOCK_CAROUSEL_EXTRACT, name="carousel_extract", blocking=True
+            ) as got:
+                if not got:
+                    raise RuntimeError("Extract lock unavailable")
+                async with session_factory() as session:
+                    result = await _carousel_pipeline_extract_hooks_impl(body, session)
+                    await write_job(
+                        session,
+                        kind=KIND_EXTRACT_HOOKS,
+                        drive_file_id=drive_file_id,
+                        status=STATUS_READY,
+                        job_id=job_id,
+                        payload=result,
+                        error=None,
+                    )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("extract hooks studio job failed job=%s", job_id)
+        try:
+            async with session_factory() as session:
+                await write_job(
+                    session,
+                    kind=KIND_EXTRACT_HOOKS,
+                    drive_file_id=drive_file_id,
+                    status=STATUS_ERROR,
+                    job_id=job_id,
+                    error=str(exc)[:400],
+                )
+        except Exception:  # noqa: BLE001
+            logger.exception("failed to mark extract hooks error job=%s", job_id)
+    finally:
+        clear_running(job_id)
+
+
+async def _carousel_pipeline_extract_hooks_impl(
+    body: PipelineExtractHooksRequest,
+    session: AsyncSession,
+) -> dict[str, Any]:
+    """Shared hooks craft used by sync route and durable background jobs."""
+    drive_file, cues = await _load_video_cues(session, body.drive_file_id.strip())
+    english_cues = await _maybe_load_english_cues(drive_file, cues)
+    slices = list(body.themes or [])
+    theme_titles = [s.title for s in slices if (s.title or "").strip()]
+    combined_title = (
+        " → ".join(theme_titles[:4]) if theme_titles else "Selected topics"
+    )
+    combined_summary = " ".join(
+        (s.summary or "").strip() for s in slices if (s.summary or "").strip()
+    )[:800]
+    llm = resolve_carousel_llm(body.llm_provider, body.llm_model)
+    selected = [
+        {
+            "id": t.id or f"topic_{i + 1}",
+            "text": t.text,
+            "start_sec": float(t.start_sec or 0),
+            "end_sec": t.end_sec,
+            "explanation": t.explanation or t.summary or "",
+            "theme_id": t.theme_id,
+            "time_ranges": [
+                {"start_sec": r.start_sec, "end_sec": r.end_sec}
+                for r in (t.time_ranges or [])
+            ],
+        }
+        for i, t in enumerate(body.topics)
+    ]
+    crafted = await craft_hooks_for_selected_topics_async(
+        cues,
+        selected_topics=selected,
+        theme_title=combined_title,
+        theme_summary=combined_summary,
+        min_hooks=int(body.min_hooks or 2),
+        max_hooks=int(body.max_hooks or 4),
+        api_key=llm["api_key"],
+        model=llm["model"],
+        claude_api_key=llm["claude_api_key"],
+        claude_model=llm["claude_model"],
+        provider=llm["provider"],
+        openrouter_api_key=llm["openrouter_api_key"],
+        openrouter_model=llm["openrouter_model"],
+        openrouter_base_url=llm["openrouter_base_url"],
+        english_cues=english_cues,
+    )
+    hooks = list(crafted.get("hooks") or [])
+    if len(hooks) < 2:
+        raise HTTPException(
+            status_code=502,
+            detail="Could not craft at least 2 hooks for the selected topics. Try different topics.",
+        )
+    topic_tree = list(crafted.get("topic_tree") or [])
+    topics = list(crafted.get("topics") or selected)
+    return {
+        "drive_file_id": drive_file.id,
+        "hooks": hooks,
+        "topics": topics,
+        "topic_tree": topic_tree,
+        "previews": [],
+        "verbatim": False,
+        "hooks_contextual": True,
+        "topics_generated": False,
+        "hooks_english": True,
+        "topics_english": True,
+        "any_translated": False,
+        "cache_hit": False,
+        "generated": True,
+        "min_hooks": int(body.min_hooks or 2),
+        "max_hooks": int(body.max_hooks or 4),
+        "message": f"{len(hooks)} hooks ready — pick the ones you want on slides.",
+    }
+
+
+@router.get("/pipeline/extract/hooks/status")
+async def carousel_pipeline_extract_hooks_status(
+    job_id: str,
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    from app.search.carousel_studio_jobs import KIND_EXTRACT_HOOKS, is_running, read_job
+
+    jid = (job_id or "").strip()
+    if not jid:
+        raise HTTPException(status_code=400, detail="job_id is required")
+    data = await read_job(session, jid, kind=KIND_EXTRACT_HOOKS)
+    if data is None:
+        raise HTTPException(status_code=404, detail="Hook job not found")
+    status = (data.get("status") or "").strip()
+    if status in {"running", "preparing"} and not is_running(jid):
+        raw = (data.get("request") or {}).get("body")
+        if isinstance(raw, dict):
+            try:
+                body = PipelineExtractHooksRequest.model_validate(raw)
+                asyncio.create_task(
+                    _run_extract_hooks_studio_job(job_id=jid, body=body),
+                    name=f"extract-hooks-resume:{jid[:12]}",
+                )
+            except Exception:  # noqa: BLE001
+                logger.warning("extract hooks resume parse failed job=%s", jid)
+    if status == "ready" and isinstance(data.get("result"), dict):
+        out = dict(data["result"])
+        out["status"] = "ready"
+        out["job_id"] = jid
+        return out
+    if status == "error":
+        return {
+            "source": "job",
+            "status": "error",
+            "job_id": jid,
+            "drive_file_id": data.get("drive_file_id"),
+            "hooks": [],
+            "topics": [],
+            "error": data.get("error") or "Hook generation failed",
+            "message": data.get("error") or "Hook generation failed",
+        }
+    return {
+        "source": "job",
+        "status": "running",
+        "job_id": jid,
+        "drive_file_id": data.get("drive_file_id"),
+        "hooks": [],
+        "topics": [],
+        "message": "Hook generation still running…",
+    }
 
 
 @router.post("/pipeline/extract/hooks")
@@ -2645,13 +3010,43 @@ async def carousel_pipeline_extract_hooks(
                         openrouter_base_url=llm["openrouter_base_url"],
                         english_cues=english_cues,
                     ),
-                    timeout=min(_EXTRACT_TIMEOUT_SEC, 180.0),
+                    timeout=_STUDIO_HTTP_BUDGET_SEC,
                 )
-            except asyncio.TimeoutError as exc:
-                raise HTTPException(
-                    status_code=504,
-                    detail="Hook generation timed out. Please retry.",
-                ) from exc
+            except (asyncio.TimeoutError, TimeoutError):
+                logger.warning(
+                    "extract/hooks exceeded HTTP budget (%.0fs); enqueueing durable job",
+                    _STUDIO_HTTP_BUDGET_SEC,
+                )
+                from app.search.carousel_studio_jobs import (
+                    KIND_EXTRACT_HOOKS,
+                    STATUS_RUNNING,
+                    write_job,
+                )
+
+                drive_id = body.drive_file_id.strip()
+                job = await write_job(
+                    session,
+                    kind=KIND_EXTRACT_HOOKS,
+                    drive_file_id=drive_id,
+                    status=STATUS_RUNNING,
+                    request_body={"body": body.model_dump()},
+                )
+                asyncio.create_task(
+                    _run_extract_hooks_studio_job(job_id=str(job["job_id"]), body=body),
+                    name=f"extract-hooks:{str(job['job_id'])[:12]}",
+                )
+                return {
+                    "source": "job",
+                    "status": "running",
+                    "job_id": job["job_id"],
+                    "drive_file_id": drive_id,
+                    "hooks": [],
+                    "topics": [],
+                    "topic_tree": [],
+                    "cache_hit": False,
+                    "generated": False,
+                    "message": "Hook generation is still running. Poll extract/hooks status.",
+                }
 
             hooks = list(crafted.get("hooks") or [])
             if len(hooks) < 2:
@@ -4056,6 +4451,117 @@ async def match_carousel_cues(body: CueMatchRequest) -> dict[str, Any]:
     }
 
 
+async def _run_generate_studio_job(*, job_id: str, body: CarouselGenerateRequest) -> None:
+    from app.search.carousel_studio_jobs import (
+        KIND_GENERATE,
+        STATUS_ERROR,
+        STATUS_READY,
+        STATUS_RUNNING,
+        clear_running,
+        mark_running,
+        write_job,
+    )
+
+    if not mark_running(job_id):
+        return
+    session_factory = get_session_factory()
+    drive_file_id = body.drive_file_id.strip()
+    try:
+        async with session_factory() as session:
+            await write_job(
+                session,
+                kind=KIND_GENERATE,
+                drive_file_id=drive_file_id,
+                status=STATUS_RUNNING,
+                job_id=job_id,
+            )
+            token = await _claim_carousel(session, drive_file_id)
+            try:
+                result = await _carousel_pipeline_generate_impl(body, session)
+                await write_job(
+                    session,
+                    kind=KIND_GENERATE,
+                    drive_file_id=drive_file_id,
+                    status=STATUS_READY,
+                    job_id=job_id,
+                    payload=result,
+                    error=None,
+                )
+            finally:
+                await _release_carousel(session, drive_file_id, token)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("generate studio job failed job=%s", job_id)
+        try:
+            async with session_factory() as session:
+                await write_job(
+                    session,
+                    kind=KIND_GENERATE,
+                    drive_file_id=drive_file_id,
+                    status=STATUS_ERROR,
+                    job_id=job_id,
+                    error=str(exc)[:400],
+                )
+        except Exception:  # noqa: BLE001
+            logger.exception("failed to mark generate job error job=%s", job_id)
+    finally:
+        clear_running(job_id)
+
+
+@router.get("/pipeline/generate/status")
+async def carousel_pipeline_generate_status(
+    job_id: str,
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    from app.search.carousel_studio_jobs import KIND_GENERATE, is_running, read_job
+
+    jid = (job_id or "").strip()
+    if not jid:
+        raise HTTPException(status_code=400, detail="job_id is required")
+    data = await read_job(session, jid, kind=KIND_GENERATE)
+    if data is None:
+        raise HTTPException(status_code=404, detail="Generate job not found")
+    status = (data.get("status") or "").strip()
+    if status in {"running", "preparing"} and not is_running(jid):
+        raw = (data.get("request") or {}).get("body")
+        if isinstance(raw, dict):
+            try:
+                body = CarouselGenerateRequest.model_validate(raw)
+                asyncio.create_task(
+                    _run_generate_studio_job(job_id=jid, body=body),
+                    name=f"generate-resume:{jid[:12]}",
+                )
+            except Exception:  # noqa: BLE001
+                logger.warning("generate resume parse failed job=%s", jid)
+    if status == "ready" and isinstance(data.get("result"), dict):
+        out = dict(data["result"])
+        out["status"] = "ready"
+        out["job_id"] = jid
+        return out
+    if status == "error":
+        return {
+            "source": "job",
+            "status": "error",
+            "job_id": jid,
+            "drive_file_id": data.get("drive_file_id"),
+            "carousels": [],
+            "error": data.get("error") or "Generate failed",
+            "message": data.get("error") or "Generate failed",
+        }
+    return {
+        "source": "job",
+        "status": "running",
+        "job_id": jid,
+        "drive_file_id": data.get("drive_file_id"),
+        "title": "",
+        "slide_count": 0,
+        "hooks": [],
+        "topics": [],
+        "slides": [],
+        "carousels": [],
+        "message": "Carousel generate still running…",
+    }
+
+
 @router.post("/pipeline/generate")
 async def carousel_pipeline_generate(
     body: CarouselGenerateRequest,
@@ -4080,7 +4586,48 @@ async def carousel_pipeline_generate(
     drive_file_id = body.drive_file_id.strip()
     token = await _claim_carousel(session, drive_file_id)
     try:
-        return await _carousel_pipeline_generate_impl(body, session)
+        return await asyncio.wait_for(
+            _carousel_pipeline_generate_impl(body, session),
+            timeout=_STUDIO_HTTP_BUDGET_SEC,
+        )
+    except (asyncio.TimeoutError, TimeoutError):
+        logger.warning(
+            "generate exceeded HTTP budget (%.0fs); enqueueing durable job",
+            _STUDIO_HTTP_BUDGET_SEC,
+        )
+        from app.search.carousel_studio_jobs import KIND_GENERATE, STATUS_RUNNING, write_job
+
+        try:
+            await session.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        async with get_session_factory()() as job_session:
+            job = await write_job(
+                job_session,
+                kind=KIND_GENERATE,
+                drive_file_id=drive_file_id,
+                status=STATUS_RUNNING,
+                request_body={"body": body.model_dump()},
+            )
+        asyncio.create_task(
+            _run_generate_studio_job(job_id=str(job["job_id"]), body=body),
+            name=f"generate-job:{str(job['job_id'])[:12]}",
+        )
+        return {
+            "source": "job",
+            "status": "running",
+            "job_id": job["job_id"],
+            "drive_file_id": drive_file_id,
+            "title": "",
+            "slide_count": 0,
+            "hooks": [],
+            "topics": [],
+            "slides": [],
+            "carousels": [],
+            "cache_hit": False,
+            "generated": False,
+            "message": "Carousel generate is still running. Poll generate status.",
+        }
     finally:
         await _release_carousel(session, drive_file_id, token)
 
@@ -4720,94 +5267,115 @@ async def _run_select_images_visual_prep(
     """Background Choose-images runner after interactive timeout / cold start."""
     from app.search.carousel_visual_prep import clear_running, mark_running, write_job
 
-    settings = get_settings()
-    thumb = str(settings.thumbnail_dir)
     drive_file_id = body.drive_file_id.strip()
     if not mark_running(job_id):
         return
-    write_job(thumb, drive_file_id, job_id=job_id, status="preparing")
+    session_factory = get_session_factory()
     try:
-        session_factory = get_session_factory()
         async with session_factory() as session:
+            await write_job(session, drive_file_id, job_id=job_id, status="preparing")
             result = await _carousel_pipeline_select_images_impl(
                 body,
                 session,
                 trace_id=f"prep:{job_id[:12]}",
                 allow_async_fallback=False,
             )
-        write_job(
-            thumb,
-            drive_file_id,
-            job_id=job_id,
-            status="ready",
-            payload=result,
-            error=None,
-        )
+            await write_job(
+                session,
+                drive_file_id,
+                job_id=job_id,
+                status="ready",
+                payload=result,
+                error=None,
+            )
     except Exception as exc:  # noqa: BLE001
         logger.exception("visual prep failed job=%s drive=%s", job_id, drive_file_id)
-        write_job(
-            thumb,
-            drive_file_id,
-            job_id=job_id,
-            status="error",
-            error=str(exc)[:400],
-        )
+        try:
+            async with session_factory() as session:
+                await write_job(
+                    session,
+                    drive_file_id,
+                    job_id=job_id,
+                    status="error",
+                    error=str(exc)[:400],
+                )
+        except Exception:  # noqa: BLE001
+            logger.exception("failed to mark visual prep error job=%s", job_id)
     finally:
         clear_running(job_id)
+
+
+async def _maybe_resume_visual_prep_job(data: dict[str, Any]) -> None:
+    """Re-kick a preparing job whose worker died after a process restart."""
+    from app.search.carousel_visual_prep import is_running
+
+    job_id = str(data.get("job_id") or "").strip()
+    if not job_id or data.get("status") != "preparing":
+        return
+    if is_running(job_id):
+        return
+    req = data.get("request") or {}
+    raw_body = req.get("body")
+    if not isinstance(raw_body, dict):
+        return
+    try:
+        body = CarouselSelectImagesBody.model_validate(raw_body)
+    except Exception:  # noqa: BLE001
+        logger.warning("visual prep resume: invalid stored body job=%s", job_id)
+        return
+    asyncio.create_task(
+        _run_select_images_visual_prep(job_id=job_id, body=body),
+        name=f"visual-prep-resume:{job_id[:12]}",
+    )
 
 
 @router.get("/pipeline/select-images/status")
 async def carousel_pipeline_select_images_status(
     drive_file_id: str,
     job_id: str | None = None,
+    session: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     """Poll Choose-images visual preparation (preparing / ready / error)."""
-    from app.search.carousel_visual_prep import read_job, _jobs_dir
-    import json as _json
+    from app.search.carousel_visual_prep import read_job
+    from app.search.carousel_studio_jobs import KIND_VISUAL_PREP, latest_job
 
-    settings = get_settings()
-    thumb = str(settings.thumbnail_dir)
     fid = (drive_file_id or "").strip()
     if not fid:
         raise HTTPException(status_code=400, detail="drive_file_id is required")
+    data = None
     if job_id:
-        data = read_job(thumb, fid, job_id.strip())
+        data = await read_job(session, fid, job_id.strip())
         if data is None:
             raise HTTPException(status_code=404, detail="job not found")
-        out: dict[str, Any] = {
+    else:
+        data = await latest_job(session, drive_file_id=fid, kind=KIND_VISUAL_PREP)
+    if data is None:
+        return {
             "drive_file_id": fid,
-            "job_id": data.get("job_id"),
-            "status": data.get("status") or "preparing",
-            "preparing": (data.get("status") or "") == "preparing",
-            "images_ready": (data.get("status") or "") == "ready",
-            "error": data.get("error"),
+            "status": "idle",
+            "preparing": False,
+            "images_ready": False,
         }
-        if data.get("status") == "ready" and isinstance(data.get("result"), dict):
-            out.update(data["result"])
-            out["status"] = "ready"
-            out["images_ready"] = True
-            out["preparing"] = False
-        return out
-    root = _jobs_dir(thumb, fid)
-    if root.is_dir():
-        for path in sorted(root.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
-            if ".partial." in path.name:
-                continue
-            try:
-                data = _json.loads(path.read_text(encoding="utf-8"))
-            except Exception:  # noqa: BLE001
-                continue
-            jid = str(data.get("job_id") or "").strip()
-            if jid:
-                return await carousel_pipeline_select_images_status(
-                    drive_file_id=fid, job_id=jid
-                )
-    return {
+    await _maybe_resume_visual_prep_job(data)
+    # Re-read after possible resume so status stays current.
+    if job_id or data.get("job_id"):
+        refreshed = await read_job(session, fid, str(data.get("job_id") or job_id))
+        if refreshed is not None:
+            data = refreshed
+    out: dict[str, Any] = {
         "drive_file_id": fid,
-        "status": "idle",
-        "preparing": False,
-        "images_ready": False,
+        "job_id": data.get("job_id"),
+        "status": data.get("status") or "preparing",
+        "preparing": (data.get("status") or "") == "preparing",
+        "images_ready": (data.get("status") or "") == "ready",
+        "error": data.get("error"),
     }
+    if data.get("status") == "ready" and isinstance(data.get("result"), dict):
+        out.update(data["result"])
+        out["status"] = "ready"
+        out["images_ready"] = True
+        out["preparing"] = False
+    return out
 
 
 @router.post("/pipeline/quality-check")
@@ -4933,8 +5501,8 @@ async def carousel_pipeline_select_images(
                         if isinstance(s, dict):
                             flat_slides.append(s)
             fp = slides_fingerprint(flat_slides)
-            job = write_job(
-                str(get_settings().thumbnail_dir),
+            job = await write_job(
+                session,
                 drive_file_id,
                 status="preparing",
                 request_body={"slides_fingerprint": fp, "body": body.model_dump()},
@@ -5211,13 +5779,11 @@ async def _carousel_pipeline_select_images_impl(
         if not allow_async_fallback:
             raise
         fp = slides_fingerprint(all_slides)
-        existing = latest_job_for_fingerprint(
-            str(settings.thumbnail_dir), drive_file_id, fp
-        )
+        existing = await latest_job_for_fingerprint(session, drive_file_id, fp)
         if existing and existing.get("status") == "ready" and existing.get("result"):
             return existing["result"]
-        job = write_job(
-            str(settings.thumbnail_dir),
+        job = await write_job(
+            session,
             drive_file_id,
             status="preparing",
             request_body={
