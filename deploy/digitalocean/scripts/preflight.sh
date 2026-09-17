@@ -172,10 +172,10 @@ fi
 
 echo "==> Compose invariants"
 COMPOSE="${DO_DIR}/docker-compose.yml"
-if grep -q 'pgvector/pgvector:pg16' "${COMPOSE}"; then
-  ok "Postgres pgvector:pg16"
+if grep -q 'pgvector/pgvector:pg17' "${COMPOSE}"; then
+  ok "Postgres pgvector:pg17"
 else
-  fail "expected pgvector/pgvector:pg16"
+  fail "expected pgvector/pgvector:pg17"
 fi
 if grep -Eq 'qdrant/qdrant:v[0-9]' "${COMPOSE}"; then
   ok "Qdrant image pinned"

@@ -9,8 +9,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt \
-    && pip install --no-cache-dir --force-reinstall --no-binary rawpy "rawpy>=0.22.0"
+RUN pip install --no-cache-dir --timeout 300 --retries 10 -r requirements.txt \
+    && pip install --no-cache-dir --timeout 300 --retries 10 \
+        --force-reinstall --no-binary rawpy "rawpy>=0.22.0"
 
 
 FROM python:3.12-slim-bookworm

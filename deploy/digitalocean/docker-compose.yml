@@ -1,5 +1,5 @@
 # Carousel Studio data plane for a DigitalOcean Droplet (same VPC as App Platform).
-# Postgres 16 + pgvector and pinned Qdrant — private bind only.
+# Postgres 17 + pgvector and pinned Qdrant — private bind only.
 #
 # Usage (on the Droplet):
 #   cp .env.example .env   # generate POSTGRES_PASSWORD
@@ -16,7 +16,7 @@ name: dfi-carousel-data
 
 services:
   postgres:
-    image: pgvector/pgvector:pg16
+    image: pgvector/pgvector:pg17
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-carousel}

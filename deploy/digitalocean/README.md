@@ -6,7 +6,7 @@ Deploy **only** Carousel Studio from branch `pruned-craousel`:
 |---|---|---|
 | `carousel-backend` | App Platform app (`.do/backend.yaml`) | `backend/` |
 | `carousel-frontend` | App Platform app (`.do/frontend.yaml`) | `carousel-frontend/` |
-| PostgreSQL 16 + pgvector, Qdrant | Droplet compose (`docker-compose.yml`) | same VPC as **both** apps |
+| PostgreSQL 17 + pgvector, Qdrant | Droplet compose (`docker-compose.yml`) | same VPC as **both** apps |
 | Whisper + ArcFace | RunPod Serverless | `deploy/runpod-whisper/` |
 
 Two App Platform apps are required: a single app with two services both claiming path prefix `/` fails `doctl apps spec validate`. Each app has exactly one service and owns `/` on its own hostname.

@@ -114,7 +114,7 @@ def test_shared_vpc_placeholder(backend_yaml: str, frontend_yaml: str):
 
 
 def test_compose_private_pinned_stack(compose_yaml: str):
-    assert "pgvector/pgvector:pg16" in compose_yaml
+    assert "pgvector/pgvector:pg17" in compose_yaml
     assert re.search(r"qdrant/qdrant:v\d+\.\d+\.\d+", compose_yaml)
     assert "DROPLET_BIND_ADDR" in compose_yaml
     assert "restart: unless-stopped" in compose_yaml
