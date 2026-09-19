@@ -4,134 +4,95 @@ Deploy **only** Carousel Studio from branch `pruned-craousel`:
 
 | Layer | Where | Source |
 |---|---|---|
-| `carousel-backend` | App Platform app (`.do/backend.yaml`) | `backend/` |
-| `carousel-frontend` | App Platform app (`.do/frontend.yaml`) | `carousel-frontend/` |
-| PostgreSQL 17 + pgvector, Qdrant | Droplet compose (`docker-compose.yml`) | same VPC as **both** apps |
+| `carousel-frontend` | App Platform (`.do/frontend.yaml`) | `carousel-frontend/` |
+| `carousel-backend` | `dfi-carousel-data` Droplet compose | immutable DOCR `backend/` image |
+| PostgreSQL 17 + pgvector, Qdrant | same Droplet compose | named volumes |
+| HTTPS | Caddy on the Droplet | `Caddyfile` |
 | Whisper + ArcFace | RunPod Serverless | `deploy/runpod-whisper/` |
 
-Two App Platform apps are required: a single app with two services both claiming path prefix `/` fails `doctl apps spec validate`. Each app has exactly one service and owns `/` on its own hostname.
-
-Search services (`dfi-backend` / `dfi-frontend` / `dfi-face-worker`) and Railway Studio remain untouched. Do not point these specs at `main`.
+The backend moved off App Platform because its ephemeral filesystem cannot hold
+30–50GB Drive videos. Its durable cache is
+`/opt/dfi-carousel/backend-data` on the 160GB Droplet. Search services remain
+separate and must not use this stack.
 
 ## Architecture
 
 ```
 Internet
    │
-   ├─ App Platform app dfi-carousel-frontend (:3002)
-   │         API_PROXY_TARGET = https://<backend-public>
+   ├─ App Platform dfi-carousel-frontend (:3002)
+   │         API_PROXY_TARGET = https://api-carousel.mastersunion.org
    │
-   └─ App Platform app dfi-carousel-backend (:8000)
-              │ VPC (private) — same REPLACE_WITH_VPC_UUID on both apps
-              ├─ Droplet Postgres :5432 (pgvector)
-              └─ Droplet Qdrant   :6333
-              │
-              └─ RunPod (Whisper / ArcFace) over public HTTPS
+   └─ api-carousel.mastersunion.org
+             │ Caddy :443
+             └─ Droplet backend :8000
+                    ├─ Postgres :5432 (Docker network)
+                    ├─ Qdrant   :6333 (Docker network)
+                    ├─ /opt/dfi-carousel/backend-data
+                    └─ RunPod (Whisper / ArcFace) over HTTPS
 ```
 
-## 1. Provision Droplet data plane (manual)
+## 1. Droplet stack
 
-This repo does **not** create cloud resources. Suggested sequence:
-
-```bash
-# Create VPC + Droplet in the same region as the apps (e.g. nyc1 / nyc)
-doctl vpcs create --name dfi-carousel-vpc --region nyc1
-doctl compute droplet create dfi-carousel-data \
-  --region nyc1 --size s-2vcpu-4gb --image docker-20-04 \
-  --vpc-uuid <vpc-uuid> --wait
-
-# Cloud Firewall: allow 5432/6333 only from the VPC CIDR (not 0.0.0.0/0).
-# SSH from your admin IP only.
-```
-
-On the Droplet:
+The production Droplet is `dfi-carousel-data` in BLR1. Copy this directory to
+`/opt/dfi-carousel`, create `.env`, and start the stack:
 
 ```bash
-git clone -b pruned-craousel \
-  https://github.com/Codenuclei/video-image-search-indexer-quality.git
-cd video-image-search-indexer-quality/deploy/digitalocean
+cd /opt/dfi-carousel
 cp .env.example .env
 chmod 600 .env
-# Set POSTGRES_PASSWORD=$(openssl rand -base64 32)
-# Set DROPLET_BIND_ADDR=<droplet private IP>  # required for App Platform VPC clients
+# Fill Postgres, Google, AI, and RunPod secrets.
+# Set CAROUSEL_BACKEND_IMAGE to an immutable DOCR tag.
 docker compose --env-file .env up -d
 docker compose ps
 ```
 
-Confirm `pg_isready` and `curl -sf http://$DROPLET_BIND_ADDR:6333/readyz`.
+Deploy a new backend image after refreshing `/root/.docker/config.json` with a
+read/write DOCR login:
 
-## 2. App Platform (two apps)
+```bash
+./scripts/deploy-backend.sh <git-sha>
+```
+
+DNS must contain `api-carousel.mastersunion.org A 139.59.35.242`. The firewall
+allows public TCP 80/443, restricted admin SSH, and keeps 5432/6333 private.
+
+## 2. Build and publish
 
 ```bash
 # From repo root on branch pruned-craousel
-# Publish immutable amd64 images to DOCR. Build the frontend only after the
-# backend public URL is known so Next.js bakes the correct origin.
 export IMAGE_TAG="$(git rev-parse --short HEAD)"
 doctl registry login --expiry-seconds 3600
 docker buildx build --platform linux/amd64 \
   -t "registry.digitalocean.com/mu-pitch-studio/dfi-carousel-backend:${IMAGE_TAG}" \
   --push backend
 
-# Validate locally (requires doctl auth):
-doctl apps spec validate .do/backend.yaml
-doctl apps spec validate .do/frontend.yaml
-
-# Edit both specs before create:
-#  - Both: REPLACE_IMAGE_TAG → $IMAGE_TAG
-#  - .do/backend.yaml: DATABASE_URL / QDRANT_URL → Droplet private IP + password
-#  - .do/backend.yaml: SECRET REPLACE_ME values → real keys (or Encrypt in UI)
-#  - .do/backend.yaml: REPLACE_BACKEND_PUBLIC_URL after backend is live
-#  - .do/backend.yaml: CAROUSEL_FRONTEND_URL / ALLOWED_ORIGINS after frontend is live
-#  - .do/frontend.yaml: API_PROXY_TARGET + NEXT_PUBLIC_BACKEND_URL → backend public https
-#  - Both: uncomment vpc.id with the SAME VPC UUID (doctl vpcs list)
-#
-# VPC note: create apps first if needed, then enable VPC via control panel or:
-#   doctl apps update <backend-app-id> --spec .do/backend.yaml
-#   doctl apps update <frontend-app-id> --spec .do/frontend.yaml
-# VPC and dedicated egress IPs cannot both be enabled.
-
-doctl apps create --spec .do/backend.yaml
-
 docker buildx build --platform linux/amd64 \
-  --build-arg API_PROXY_TARGET=https://REPLACE_BACKEND_PUBLIC_URL \
+  --build-arg API_PROXY_TARGET=https://api-carousel.mastersunion.org \
   --build-arg NEXT_PUBLIC_API_URL=/api/proxy \
-  --build-arg NEXT_PUBLIC_BACKEND_URL=https://REPLACE_BACKEND_PUBLIC_URL \
+  --build-arg NEXT_PUBLIC_BACKEND_URL=https://api-carousel.mastersunion.org \
   -t "registry.digitalocean.com/mu-pitch-studio/dfi-carousel-frontend:${IMAGE_TAG}" \
   --push carousel-frontend
 
-doctl apps create --spec .do/frontend.yaml
+doctl apps spec validate .do/frontend.yaml
 ```
 
-Env `type` enums must be uppercase `GENERAL` / `SECRET` (validated by doctl).
-The current DigitalOcean account deploys from DOCR because its App Platform
-GitHub integration is not authenticated. On Apple Silicon, build the amd64
-frontend on an amd64 runner if QEMU exits with signal 11.
+On Apple Silicon, build amd64 images on the amd64 Droplet if QEMU is unstable.
 
-### Cross-app URLs (no PRIVATE_URL)
-
-Bindables do **not** resolve across App Platform apps. After backend is live:
-
-1. Set frontend `API_PROXY_TARGET` and `NEXT_PUBLIC_BACKEND_URL` to the backend public https origin (or custom API domain).
-2. Redeploy the frontend app so the Docker build bakes `NEXT_PUBLIC_BACKEND_URL`.
-3. Set backend `CAROUSEL_FRONTEND_URL` / `ALLOWED_ORIGINS` to the frontend public https origin.
-
-There is no `${…PRIVATE_URL}` link between these two apps; the UI talks to the API over the public backend URL (same pattern as Railway).
-
-### OAuth / domains
+### OAuth
 
 Register Google redirect URI:
 
-`https://<carousel-backend-public>/auth/google/callback`
+`https://api-carousel.mastersunion.org/auth/google/callback`
 
 API key HTTP referrer:
 
-`https://<carousel-frontend-public>/*`
-
-Keep the Railway Studio redirect URI until cutover is confirmed.
+`https://dfi-carousel-frontend-e9k4e.ondigitalocean.app/*`
 
 ## 3. RunPod
 
-See [`deploy/runpod-whisper/README.md`](../runpod-whisper/README.md). Set on the **backend** app only:
+See [`deploy/runpod-whisper/README.md`](../runpod-whisper/README.md). Set in the
+Droplet backend `.env` only:
 
 - `RUNPOD_API_KEY`
 - `RUNPOD_WHISPER_ENABLED=true` + `RUNPOD_WHISPER_ENDPOINT_ID`
@@ -165,9 +126,11 @@ chmod +x deploy/digitalocean/scripts/*.sh
 backend/.venv/bin/python -m pytest deploy/digitalocean/tests/test_artifacts.py -q
 ```
 
-## 6. App Platform request limit
+## 6. Frontend proxy request limit
 
-App Platform hard-caps HTTP requests at **100 seconds** and container filesystems are **ephemeral**. Studio long work must not depend on holding one HTTP socket or on local disk job files.
+The frontend's App Platform proxy hard-caps HTTP requests at **100 seconds**.
+Studio long work must not depend on holding one HTTP socket. Backend job and
+video state now lives durably on the Droplet.
 
 ### Durable job map (`async-jobs`)
 
@@ -179,17 +142,16 @@ App Platform hard-caps HTTP requests at **100 seconds** and container filesystem
 | Generate | `carousel_studio_jobs` (kind `generate`) | `POST .../pipeline/generate` (≤~75s or `status=running`) | `GET .../pipeline/generate/status?job_id=` |
 | Select images / visual prep | `carousel_studio_jobs` (kind `visual_prep`) | `POST .../pipeline/select-images` (≤~75s or `status=preparing`) | `GET .../pipeline/select-images/status?drive_file_id=&job_id=` |
 
-Interactive HTTP budget is `_STUDIO_HTTP_BUDGET_SEC` / `_SELECT_IMAGES_REQUEST_TIMEOUT_SEC` (75s) so responses return before the 100s platform kill. `/test/studio` polls via `carousel-frontend/lib/test-api.ts` (`themes`, `extract`, `extractHooks`, `generate`, `pollSelectImages`). Keep `WEB_CONCURRENCY=1` on the backend app.
+Interactive HTTP budget is `_STUDIO_HTTP_BUDGET_SEC` / `_SELECT_IMAGES_REQUEST_TIMEOUT_SEC` (75s) so responses return before the 100s frontend proxy kill. `/test/studio` polls via `carousel-frontend/lib/test-api.ts` (`themes`, `extract`, `extractHooks`, `generate`, `pollSelectImages`). Keep `WEB_CONCURRENCY=1` on the Droplet backend.
 
 **Remaining timeout risks:** sync `POST /pipeline/themes` (prefer `/themes/jobs`), `POST /pipeline/prerun` (multi-video warm), and any client that ignores `status=running|preparing` and does not poll. Background workers are in-process (`asyncio.create_task` / `BackgroundTasks`); status rows survive restart and status polls re-kick idle jobs when request bodies were stored.
 
 ## Rollback
 
-Leave Railway `dfi-carousel` / `dfi-carousel-backend` / `Postgres-WEBK` / `dfi-carousel-qdrant` running until DigitalOcean backups and production behavior are verified. DNS / OAuth cutover is a later stage.
+Keep the previous App Platform backend image/spec only until the Droplet backend,
+OAuth, and large-video indexing are verified. Do not deploy or modify Railway.
 
 ## Out of scope for these artifacts
 
-- Creating Droplets, VPCs, Spaces, or App Platform apps
-- Migrating Railway data
-- DNS cutover
+- Creating new Droplets, VPCs, Spaces, or App Platform apps
 - Committing secrets

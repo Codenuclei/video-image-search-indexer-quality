@@ -10,14 +10,8 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[3]
 DO = REPO / "deploy" / "digitalocean"
-BACKEND = REPO / ".do" / "backend.yaml"
 FRONTEND = REPO / ".do" / "frontend.yaml"
 OBSOLETE_APP = REPO / ".do" / "app.yaml"
-
-
-@pytest.fixture(scope="module")
-def backend_yaml() -> str:
-    return BACKEND.read_text(encoding="utf-8")
 
 
 @pytest.fixture(scope="module")
@@ -32,21 +26,22 @@ def compose_yaml() -> str:
 
 def test_required_files_exist():
     for path in (
-        BACKEND,
         FRONTEND,
         DO / "docker-compose.yml",
+        DO / "Caddyfile",
         DO / ".env.example",
         DO / "README.md",
         DO / "scripts" / "backup.sh",
         DO / "scripts" / "restore.sh",
         DO / "scripts" / "preflight.sh",
+        DO / "scripts" / "deploy-backend.sh",
     ):
         assert path.is_file(), path
     assert not OBSOLETE_APP.exists(), "obsolete .do/app.yaml must be removed"
 
 
 def test_scripts_bash_syntax():
-    for name in ("backup.sh", "restore.sh", "preflight.sh"):
+    for name in ("backup.sh", "restore.sh", "preflight.sh", "deploy-backend.sh"):
         script = DO / "scripts" / name
         proc = subprocess.run(
             ["bash", "-n", str(script)],
@@ -61,31 +56,12 @@ def _service_names(text: str) -> list[str]:
     return re.findall(r"^\s+-\s+name:\s+(\S+)\s*$", text, flags=re.M)
 
 
-def test_backend_spec_single_service(backend_yaml: str):
-    assert "registry_type: DOCR" in backend_yaml
-    assert "repository: dfi-carousel-backend" in backend_yaml
-    assert "tag: REPLACE_IMAGE_TAG" in backend_yaml
-    assert "http_port: 8000" in backend_yaml
-    assert "http_path: /health" in backend_yaml
-    assert "dfi_video_transcripts" in backend_yaml
-    assert "RUNPOD_API_KEY" in backend_yaml
-    assert "WEB_CONCURRENCY" in backend_yaml
-    assert re.search(r"WEB_CONCURRENCY[\s\S]*?value:\s*\"1\"", backend_yaml)
-    assert "REPLACE_WITH_VPC_UUID" in backend_yaml
-    assert "REPLACE_FRONTEND_PUBLIC_URL" in backend_yaml
-    names = _service_names(backend_yaml)
-    assert names == ["carousel-backend"], names
-    assert "carousel-frontend" not in backend_yaml
-    for banned in ("dfi-backend", "dfi-frontend", "dfi-face-worker"):
-        assert f"name: {banned}" not in backend_yaml
-
-
 def test_frontend_spec_single_service(frontend_yaml: str):
     assert "registry_type: DOCR" in frontend_yaml
     assert "repository: dfi-carousel-frontend" in frontend_yaml
     assert "tag: REPLACE_IMAGE_TAG" in frontend_yaml
     assert "http_port: 3002" in frontend_yaml
-    assert "REPLACE_BACKEND_PUBLIC_URL" in frontend_yaml
+    assert "https://api-carousel.mastersunion.org" in frontend_yaml
     assert "API_PROXY_TARGET" in frontend_yaml
     assert "NEXT_PUBLIC_BACKEND_URL" in frontend_yaml
     assert "REPLACE_WITH_VPC_UUID" in frontend_yaml
@@ -97,22 +73,13 @@ def test_frontend_spec_single_service(frontend_yaml: str):
         assert f"name: {banned}" not in frontend_yaml
 
 
-def test_env_types_uppercase(backend_yaml: str, frontend_yaml: str):
-    for label, text in (("backend", backend_yaml), ("frontend", frontend_yaml)):
-        types = re.findall(r"^\s+type:\s+(\S+)\s*$", text, flags=re.M)
-        assert types, f"{label}: no type: fields"
-        assert all(t in {"GENERAL", "SECRET"} for t in types), (label, types)
-        assert "type: general" not in text
-        assert "type: secret" not in text
-    assert "type: SECRET" in backend_yaml
-    assert "REPLACE_ME" in backend_yaml
-    assert "EV[1:" not in backend_yaml
+def test_env_types_uppercase(frontend_yaml: str):
+    types = re.findall(r"^\s+type:\s+(\S+)\s*$", frontend_yaml, flags=re.M)
+    assert types, "frontend: no type: fields"
+    assert all(t in {"GENERAL", "SECRET"} for t in types)
+    assert "type: general" not in frontend_yaml
+    assert "type: secret" not in frontend_yaml
     assert "EV[1:" not in frontend_yaml
-
-
-def test_shared_vpc_placeholder(backend_yaml: str, frontend_yaml: str):
-    assert "REPLACE_WITH_VPC_UUID" in backend_yaml
-    assert "REPLACE_WITH_VPC_UUID" in frontend_yaml
 
 
 def test_compose_private_pinned_stack(compose_yaml: str):
@@ -120,9 +87,20 @@ def test_compose_private_pinned_stack(compose_yaml: str):
     assert re.search(r"qdrant/qdrant:v\d+\.\d+\.\d+", compose_yaml)
     assert "DROPLET_BIND_ADDR" in compose_yaml
     assert "restart: unless-stopped" in compose_yaml
-    assert compose_yaml.count("healthcheck:") >= 2
+    assert compose_yaml.count("healthcheck:") >= 3
     assert "carousel_pg_data" in compose_yaml
     assert "carousel_qdrant_storage" in compose_yaml
+    assert "carousel-backend:" in compose_yaml
+    assert "caddy:" in compose_yaml
+    assert "CAROUSEL_BACKEND_IMAGE" in compose_yaml
+    assert "/opt/dfi-carousel/backend-data" in compose_yaml
+    assert ":/app/data" in compose_yaml
+
+
+def test_caddy_routes_public_backend_domain():
+    caddy = (DO / "Caddyfile").read_text(encoding="utf-8")
+    assert "api-carousel.mastersunion.org" in caddy
+    assert "reverse_proxy carousel-backend:8000" in caddy
 
 
 def test_backup_script_covers_all_collections():

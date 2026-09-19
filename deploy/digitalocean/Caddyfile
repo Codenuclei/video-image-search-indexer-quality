@@ -1,0 +1,16 @@
+{$CAROUSEL_BACKEND_DOMAIN:api-carousel.mastersunion.org} {
+	encode zstd gzip
+
+	reverse_proxy carousel-backend:8000 {
+		transport http {
+			response_header_timeout 3600s
+			read_timeout 3600s
+			write_timeout 3600s
+		}
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}

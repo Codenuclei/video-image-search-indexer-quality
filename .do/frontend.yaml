@@ -11,10 +11,8 @@
 # Or enable VPC in the control panel after create.
 # VPC and dedicated egress IPs cannot be enabled at the same time.
 #
-# Cross-app URLs: App Platform bindables do not resolve across apps. Set
-# API_PROXY_TARGET and NEXT_PUBLIC_BACKEND_URL to the backend app's public
-# https origin (or custom API domain) after the backend app is live. Do not
-# attempt private inter-app component URLs between these two apps.
+# The Carousel backend runs on the BLR1 data Droplet behind Caddy at
+# api-carousel.mastersunion.org. App Platform hosts only this frontend.
 
 name: dfi-carousel-frontend
 region: nyc
@@ -51,16 +49,16 @@ services:
         scope: RUN_AND_BUILD_TIME
         type: GENERAL
         value: /api/proxy
-      # Public backend origin only (no cross-app private bindable). Update after backend deploy.
+      # Public Droplet backend origin (Caddy TLS).
       - key: API_PROXY_TARGET
         scope: RUN_AND_BUILD_TIME
         type: GENERAL
-        value: https://REPLACE_BACKEND_PUBLIC_URL
+        value: https://api-carousel.mastersunion.org
       # Baked into the Next.js client at Docker build time.
       - key: NEXT_PUBLIC_BACKEND_URL
         scope: BUILD_TIME
         type: GENERAL
-        value: https://REPLACE_BACKEND_PUBLIC_URL
+        value: https://api-carousel.mastersunion.org
       - key: NEXT_PUBLIC_TEST_USE_REAL_API
         scope: RUN_AND_BUILD_TIME
         type: GENERAL

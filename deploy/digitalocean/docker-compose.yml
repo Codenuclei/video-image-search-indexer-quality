@@ -1,5 +1,5 @@
-# Carousel Studio data plane for a DigitalOcean Droplet (same VPC as App Platform).
-# Postgres 17 + pgvector and pinned Qdrant — private bind only.
+# Carousel Studio stack for the DigitalOcean Droplet.
+# Public traffic terminates at Caddy; backend, Postgres, and Qdrant stay private.
 #
 # Usage (on the Droplet):
 #   cp .env.example .env   # generate POSTGRES_PASSWORD
@@ -15,6 +15,74 @@
 name: dfi-carousel-data
 
 services:
+  caddy:
+    image: caddy:2.10.2-alpine
+    restart: unless-stopped
+    depends_on:
+      carousel-backend:
+        condition: service_healthy
+    environment:
+      CAROUSEL_BACKEND_DOMAIN: ${CAROUSEL_BACKEND_DOMAIN:-api-carousel.mastersunion.org}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - carousel_caddy_data:/data
+      - carousel_caddy_config:/config
+    networks:
+      - carousel_data
+
+  carousel-backend:
+    image: ${CAROUSEL_BACKEND_IMAGE:?set CAROUSEL_BACKEND_IMAGE to an immutable DOCR tag}
+    restart: unless-stopped
+    env_file:
+      - ${BACKEND_ENV_FILE:-.env}
+    environment:
+      PORT: "8000"
+      WEB_CONCURRENCY: "1"
+      GUNICORN_WORKERS: "1"
+      GUNICORN_TIMEOUT: "3600"
+      GUNICORN_GRACEFUL_TIMEOUT: "120"
+      OPENBLAS_NUM_THREADS: "1"
+      OMP_NUM_THREADS: "1"
+      VIDEO_INDEX_MAX_PARALLEL: "1"
+      VIDEO_TRANSCRIPT_FIRST_ENABLED: "true"
+      RUN_INDEXER: "true"
+      FACE_JOBS_ENABLED: "false"
+      RUN_FACE_WORKER: "false"
+      AUTO_INDEX_ENABLED: "false"
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-carousel}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-carousel}
+      QDRANT_URL: http://qdrant:6333
+      VIDEO_CACHE_DIR: /app/data/videos
+      MEDIA_CACHE_DIR: /app/data/media_cache
+      TEMP_DIR: /app/data/tmp
+      THUMBNAIL_DIR: /app/data/thumbnails
+      FENNEC_VIDEO_CACHE_DIR: /app/data/fennec-media
+      BACKUP_DIR: /app/data/backups
+    volumes:
+      - ${BACKEND_DATA_DIR:-/opt/dfi-carousel/backend-data}:/app/data
+    expose:
+      - "8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)\"",
+        ]
+      interval: 15s
+      timeout: 10s
+      retries: 12
+      start_period: 45s
+    networks:
+      - carousel_data
+
   postgres:
     image: pgvector/pgvector:pg17
     restart: unless-stopped
@@ -76,6 +144,8 @@ volumes:
   carousel_pg_data:
   carousel_qdrant_storage:
   carousel_qdrant_snapshots:
+  carousel_caddy_data:
+  carousel_caddy_config:
 
 networks:
   carousel_data:
