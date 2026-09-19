@@ -20,7 +20,7 @@ import {
   type DriveSession,
   type IndexedFolder,
 } from "@/lib/drive-api";
-import { driveFileOpenUrl, driveFolderPath } from "@/lib/drive-path";
+import { driveFileOpenUrl, driveFileStatusLabel, driveFolderPath } from "@/lib/drive-path";
 import { formatApiError } from "@/lib/api";
 import { toastApiError } from "@/lib/toast-api-error";
 import { ModalOverlay } from "@/components/modal";
@@ -76,19 +76,6 @@ type IndexProgressRow = {
   message?: string;
 };
 
-const statusLabel: Record<string, string> = {
-  pending: "Waiting to index",
-  processing: "Indexing…",
-  processed: "Ready",
-  error: "Couldn’t index",
-  skipped: "Skipped",
-};
-
-function friendlyDriveFileStatus(status: string): string {
-  const key = (status || "").trim().toLowerCase();
-  return statusLabel[key] || "In library";
-}
-
 function friendlyDriveIndexError(raw: string | null | undefined): string {
   const text = (raw || "").trim().toLowerCase();
   if (text.includes("not_found") || text.includes("not found")) {
@@ -96,6 +83,9 @@ function friendlyDriveIndexError(raw: string | null | undefined): string {
   }
   if (text.includes("not_a_video") || text.includes("not a video")) {
     return "One of the selected files isn’t a video.";
+  }
+  if (text.includes("video_too_large") || text.includes("exceeds")) {
+    return "One of the selected videos is still over the 50GB indexing limit.";
   }
   if (text.includes("drive") && (text.includes("reconnect") || text.includes("oauth") || text.includes("disconnect"))) {
     return "Reconnect Google Drive to index videos that aren’t already processed.";
@@ -695,8 +685,8 @@ export function DriveFolderPanel({
     setSelectedIds(new Set());
   }
 
-  async function indexSelected() {
-    const ids = Array.from(selectedIds);
+  async function indexSelected(explicitIds?: string[]) {
+    const ids = explicitIds?.length ? explicitIds : Array.from(selectedIds);
     if (!ids.length) return;
     const selectedFiles = ids
       .map((id) => modalVideos.find((v) => v.id === id) || videos.find((v) => v.id === id))
@@ -1291,7 +1281,7 @@ export function DriveFolderPanel({
                     : "Permanent indexed library"}
                 {" · "}
                 {guided
-                  ? "Already indexed videos become available immediately. New videos are queued for transcription."
+                  ? "Select videos, then Queue selected. Already indexed ones are ready immediately; others start transcription."
                   : session?.connected
                     ? "Check videos to priority-index. Whole-folder index is not run from here."
                     : "Already-processed videos can be used offline. Reconnect Drive to index new ones."}
@@ -1433,9 +1423,18 @@ export function DriveFolderPanel({
                               statusTone[v.status] || "text-slate-500"
                             }`}
                           >
-                            {friendlyDriveFileStatus(v.status)}
+                            {driveFileStatusLabel(v.status, v.error_message)}
                           </span>
                         </span>
+                        <button
+                          type="button"
+                          className="studio-btn studio-btn-primary shrink-0 px-2.5 py-1 text-xs"
+                          disabled={modalIndexing}
+                          onClick={() => void indexSelected([v.id])}
+                          data-testid={`${testIdPrefix}-index-this-${v.id}`}
+                        >
+                          Index this
+                        </button>
                       </li>
                     );
                   })}
@@ -1458,21 +1457,17 @@ export function DriveFolderPanel({
               className="studio-btn studio-btn-primary"
               disabled={modalIndexing || selectedIds.size === 0}
               onClick={() => void indexSelected()}
-              data-testid={`${testIdPrefix}-index-selected`}
+              data-testid={`${testIdPrefix}-queue-selected`}
             >
               {modalIndexing ? (
                 <>
                   <Loader2 size={14} className="animate-spin" />
-                  {guided ? "Submitting…" : session?.connected ? "Indexing…" : "Selecting…"}
+                  Queuing…
                 </>
               ) : (
                 <>
                   <CheckSquare size={14} />
-                  {guided
-                    ? `Index selected videos (${selectedIds.size})`
-                    : session?.connected
-                      ? `Index selected (${selectedIds.size})`
-                      : `Use selected (${selectedIds.size})`}
+                  {`Queue selected (${selectedIds.size})`}
                 </>
               )}
             </button>

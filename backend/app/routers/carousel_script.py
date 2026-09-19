@@ -1285,6 +1285,11 @@ async def prioritize_drive_videos_for_carousel(
     video that is not cached locally does require a connected Drive session.
     """
     from app.db.models import DriveUser
+    from app.drive.video_limits import (
+        VIDEO_MAX_INDEX_GIB,
+        is_video_too_large,
+        video_too_large_message,
+    )
     from app.video.youtube_cache import video_cache_path
     from app.video.youtube_registry import is_youtube_source
 
@@ -1312,6 +1317,26 @@ async def prioritize_drive_videos_for_carousel(
                     "ok": False,
                     "name": drive_file.name,
                     "error": "not_a_video",
+                }
+            )
+            continue
+        if is_video_too_large(drive_file.size):
+            items.append(
+                {
+                    "drive_file_id": fid,
+                    "ok": False,
+                    "name": drive_file.name,
+                    "status": (
+                        drive_file.status.value
+                        if hasattr(drive_file.status, "value")
+                        else str(drive_file.status)
+                    ),
+                    "queued": False,
+                    "error": "video_too_large",
+                    "message": (
+                        video_too_large_message(drive_file.size)
+                        or f"Video exceeds {VIDEO_MAX_INDEX_GIB}GB indexing limit"
+                    ),
                 }
             )
             continue

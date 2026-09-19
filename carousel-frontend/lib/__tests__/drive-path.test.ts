@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { driveFileOpenUrl, driveFolderPath } from "../drive-path";
+import { driveFileOpenUrl, driveFileStatusLabel, driveFolderPath } from "../drive-path";
 
 describe("driveFolderPath", () => {
   it("strips the file name from a nested path", () => {
@@ -21,5 +21,13 @@ describe("driveFileOpenUrl", () => {
     expect(driveFileOpenUrl("1abcXYZ")).toBe(
       "https://drive.google.com/file/d/1abcXYZ/view"
     );
+  });
+});
+
+describe("driveFileStatusLabel", () => {
+  it("includes oversized skip reason", () => {
+    expect(
+      driveFileStatusLabel("skipped", "video_too_large: exceeds 10GB (size=1)")
+    ).toBe("Skipped · over 10GB");
   });
 });
