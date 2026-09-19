@@ -1303,8 +1303,50 @@ async def prioritize_drive_videos_for_carousel(
     drive_connected = drive_user is not None
     settings = get_settings()
 
+    # Validate tokens before queueing live downloads — revoked refresh tokens
+    # previously left session.connected=true while indexing failed silently.
+    if drive_connected:
+        from app.db.session import get_session_factory
+        from app.drive.google_client import (
+            DriveAuthExpiredError,
+            DriveDirectClient,
+            DriveDirectError,
+        )
+
+        try:
+            await DriveDirectClient(
+                session_factory=get_session_factory(),
+                settings=settings,
+            )._get_access_token()
+        except DriveAuthExpiredError as exc:
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "error": "drive_auth_expired",
+                    "message": str(exc),
+                },
+            ) from exc
+        except DriveDirectError as exc:
+            msg = str(exc).lower()
+            if "reconnect" in msg or "no google drive" in msg:
+                raise HTTPException(
+                    status_code=401,
+                    detail={
+                        "error": "drive_auth_expired",
+                        "message": str(exc),
+                    },
+                ) from exc
+            # Non-auth Drive errors: keep going; per-file index will surface them.
+            logger.warning("Drive auth probe warning before prioritize: %s", exc)
+
     items: list[dict[str, Any]] = []
     queued_ids: list[str] = []
+    # Re-check after possible session clear during auth probe.
+    await session.expire_all()
+    drive_user = (
+        await session.execute(select(DriveUser).limit(1))
+    ).scalar_one_or_none()
+    drive_connected = drive_user is not None
     for fid in ids[:40]:
         drive_file = await session.get(DriveFile, fid)
         if drive_file is None:

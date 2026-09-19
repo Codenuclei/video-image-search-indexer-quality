@@ -78,6 +78,14 @@ type IndexProgressRow = {
 
 function friendlyDriveIndexError(raw: string | null | undefined): string {
   const text = (raw || "").trim().toLowerCase();
+  if (
+    text.includes("drive_auth_expired") ||
+    text.includes("invalid_grant") ||
+    text.includes("revoked") ||
+    (text.includes("token") && text.includes("expired"))
+  ) {
+    return "Google Drive authorization expired. Reconnect Google Drive, then try again.";
+  }
   if (text.includes("not_found") || text.includes("not found")) {
     return "One of those videos isn’t in the library anymore. Refresh the list and try again.";
   }
@@ -91,6 +99,17 @@ function friendlyDriveIndexError(raw: string | null | undefined): string {
     return "Reconnect Google Drive to index videos that aren’t already processed.";
   }
   return formatApiError(raw, "Could not index the selected videos. Please try again.");
+}
+
+function isDriveAuthExpiredError(raw: string | null | undefined): boolean {
+  const text = (raw || "").trim().toLowerCase();
+  return (
+    text.includes("drive_auth_expired") ||
+    text.includes("invalid_grant") ||
+    text.includes("revoked") ||
+    (text.includes("token") && text.includes("expired")) ||
+    (text.includes("reconnect google drive") && text.includes("authoriz"))
+  );
 }
 
 const statusTone: Record<string, string> = {
@@ -721,6 +740,11 @@ export function DriveFolderPanel({
         const msg = friendlyDriveIndexError(first);
         setModalError(msg);
         toastApiError(msg);
+        if (isDriveAuthExpiredError(String(first || ""))) {
+          await load();
+          setModalOpen(false);
+          setNote("Google Drive disconnected — reconnect to index new videos.");
+        }
         return;
       }
       const byId = new Map((res.items ?? []).map((it) => [it.drive_file_id, it]));
@@ -796,11 +820,17 @@ export function DriveFolderPanel({
       }
       void load().then(() => onLibraryChanged?.());
     } catch (e) {
+      const raw = e instanceof Error ? e.message : String(e || "");
       const msg = friendlyDriveIndexError(
-        e instanceof Error ? e.message : "Could not index the selected videos. Please try again."
+        raw || "Could not index the selected videos. Please try again."
       );
       setModalError(msg);
       setError(msg);
+      if (isDriveAuthExpiredError(raw)) {
+        await load();
+        setModalOpen(false);
+        setNote("Google Drive disconnected — reconnect to index new videos.");
+      }
     } finally {
       setModalIndexing(false);
     }
@@ -1255,7 +1285,7 @@ export function DriveFolderPanel({
       <ModalOverlay
         open={modalOpen}
         onClose={closeSelectModal}
-        contentClassName="max-w-[min(96vw,36rem)]"
+        contentClassName="max-w-[min(98vw,72rem)]"
       >
         <div
           className="carousel-studio drive-select-modal rounded-2xl border border-slate-200 shadow-xl"
@@ -1263,7 +1293,7 @@ export function DriveFolderPanel({
           aria-modal="true"
           aria-labelledby={`${testIdPrefix}-select-title`}
           data-testid={`${testIdPrefix}-select-modal`}
-          style={{ minHeight: "22rem" }}
+          style={{ minHeight: "44rem" }}
         >
           <div className="drive-select-modal__chrome drive-select-modal__header flex items-start justify-between gap-3 px-4 py-3 sm:px-5">
             <div className="min-w-0">
@@ -1372,7 +1402,7 @@ export function DriveFolderPanel({
               </span>
             </div>
 
-            <div className="studio-scroll-fade drive-select-modal__list max-h-[min(50vh,22rem)] overflow-y-auto rounded-xl border border-slate-200">
+            <div className="studio-scroll-fade drive-select-modal__list max-h-[min(80vh,44rem)] overflow-y-auto rounded-xl border border-slate-200">
               {modalLoading ? (
                 <p className="flex items-center justify-center gap-2 px-3 py-10 text-sm text-slate-500">
                   <Loader2 size={16} className="animate-spin" />

@@ -251,16 +251,33 @@ async def get_drive_token(
     now = datetime.now(tz=timezone.utc)
     if user.token_expiry is None or user.token_expiry - timedelta(minutes=5) <= now:
         if not user.refresh_token:
+            from app.drive.google_client import clear_drive_user_session
+
+            await clear_drive_user_session(session, reason="missing_refresh_token")
             raise HTTPException(
                 status_code=401,
                 detail="Token expired — please reconnect Google Drive.",
             )
-        new_token, new_expiry = await asyncio.to_thread(
-            _do_token_refresh,
-            user.refresh_token,
-            creds.client_id,
-            creds.client_secret,
-        )
+        from app.drive.google_client import _is_invalid_grant, clear_drive_user_session
+
+        try:
+            new_token, new_expiry = await asyncio.to_thread(
+                _do_token_refresh,
+                user.refresh_token,
+                creds.client_id,
+                creds.client_secret,
+            )
+        except Exception as exc:
+            if _is_invalid_grant(exc):
+                await clear_drive_user_session(session, reason="invalid_grant")
+                raise HTTPException(
+                    status_code=401,
+                    detail="Google Drive authorization was revoked or expired. Please reconnect.",
+                ) from exc
+            raise HTTPException(
+                status_code=401,
+                detail=f"Could not refresh Google Drive token: {exc}",
+            ) from exc
         user.access_token = new_token
         user.token_expiry = new_expiry
         await session.commit()

@@ -42,6 +42,17 @@ class DriveDirectError(RuntimeError):
     """Raised when a Drive API call fails."""
 
 
+class DriveAuthExpiredError(DriveDirectError):
+    """Refresh token revoked/expired — session was cleared; reconnect required."""
+
+    error_code = "drive_auth_expired"
+
+
+def _is_invalid_grant(exc: BaseException) -> bool:
+    text = str(exc).lower()
+    return "invalid_grant" in text or "token has been expired or revoked" in text
+
+
 def _do_token_refresh(refresh_token: str, client_id: str, client_secret: str) -> tuple[str, datetime | None]:
     """Synchronous token refresh — run in a thread."""
     from google.auth.transport.requests import Request
@@ -57,6 +68,28 @@ def _do_token_refresh(refresh_token: str, client_id: str, client_secret: str) ->
     creds.refresh(Request())
     expiry = creds.expiry.replace(tzinfo=timezone.utc) if creds.expiry else None
     return creds.token, expiry  # type: ignore[return-value]
+
+
+async def clear_drive_user_session(
+    session: "AsyncSession",
+    *,
+    reason: str,
+) -> bool:
+    """Delete stored DriveUser so /api/session reports disconnected."""
+    from app.db.models import DriveUser
+
+    user = (await session.execute(select(DriveUser).limit(1))).scalar_one_or_none()
+    if user is None:
+        return False
+    email = user.email
+    await session.delete(user)
+    await session.commit()
+    logger.warning(
+        "Drive session cleared (%s) for %s — user must reconnect Google Drive",
+        reason,
+        email,
+    )
+    return True
 
 
 class DriveDirectClient:
@@ -97,18 +130,29 @@ class DriveDirectClient:
 
             if needs_refresh:
                 if not user.refresh_token:
-                    raise DriveDirectError(
-                        "Access token expired and no refresh token is stored. "
-                        "Please reconnect Google Drive."
+                    await clear_drive_user_session(session, reason="missing_refresh_token")
+                    raise DriveAuthExpiredError(
+                        "Google Drive session expired. Please reconnect Google Drive."
                     )
                 logger.info("Refreshing Drive access token for %s", user.email)
                 creds = carousel_google(self._settings)
-                new_token, new_expiry = await asyncio.to_thread(
-                    _do_token_refresh,
-                    user.refresh_token,
-                    creds.client_id,
-                    creds.client_secret,
-                )
+                try:
+                    new_token, new_expiry = await asyncio.to_thread(
+                        _do_token_refresh,
+                        user.refresh_token,
+                        creds.client_id,
+                        creds.client_secret,
+                    )
+                except Exception as exc:
+                    if _is_invalid_grant(exc):
+                        await clear_drive_user_session(session, reason="invalid_grant")
+                        raise DriveAuthExpiredError(
+                            "Google Drive authorization was revoked or expired. "
+                            "Please reconnect Google Drive."
+                        ) from exc
+                    raise DriveDirectError(
+                        f"Could not refresh Google Drive token: {exc}"
+                    ) from exc
                 user.access_token = new_token
                 user.token_expiry = new_expiry
                 await session.commit()
