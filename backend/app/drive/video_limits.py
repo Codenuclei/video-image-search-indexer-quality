@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 # Videos larger than this are marked SKIPPED with reason ``video_too_large``.
-VIDEO_MAX_INDEX_BYTES = 10 * 1024 * 1024 * 1024  # 10 GiB
+VIDEO_MAX_INDEX_GIB = 50
+VIDEO_MAX_INDEX_BYTES = VIDEO_MAX_INDEX_GIB * 1024 * 1024 * 1024  # 50 GiB
 VIDEO_TOO_LARGE_PREFIX = "video_too_large"
 
 
@@ -13,7 +14,7 @@ def is_video_too_large(size: int | None) -> bool:
 
 def video_too_large_message(size: int | None) -> str:
     n = int(size or 0)
-    return f"{VIDEO_TOO_LARGE_PREFIX}: exceeds 10GB (size={n})"
+    return f"{VIDEO_TOO_LARGE_PREFIX}: exceeds {VIDEO_MAX_INDEX_GIB}GB (size={n})"
 
 
 def apply_video_too_large_skip(drive_file) -> bool:

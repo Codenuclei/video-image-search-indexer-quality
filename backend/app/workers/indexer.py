@@ -2090,6 +2090,16 @@ class IndexingWorker:
             existing.error_message = video_too_large_message(existing.size)
             _log_skip(existing, "video_too_large")
             return True
+        # Cap raised: reclaim prior video_too_large skips that now fit.
+        if (
+            not paused
+            and existing.status == DriveFileStatus.SKIPPED
+            and (existing.error_message or "").startswith("video_too_large")
+            and is_video_mime(existing.mime_type)
+            and not is_video_too_large(existing.size)
+        ):
+            existing.status = DriveFileStatus.PENDING
+            existing.error_message = None
         if paused and existing.status in (DriveFileStatus.PENDING, DriveFileStatus.ERROR):
             existing.status = DriveFileStatus.SKIPPED
             existing.error_message = f"{INDEXING_PAUSED_PREFIX} indexing stopped for parent folder"

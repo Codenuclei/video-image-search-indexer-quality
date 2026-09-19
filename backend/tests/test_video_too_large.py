@@ -1,4 +1,4 @@
-"""Tests for video size skip (>10GB → SKIPPED, never PROCESSED)."""
+"""Tests for video size skip (>50GB → SKIPPED, never PROCESSED)."""
 
 from __future__ import annotations
 

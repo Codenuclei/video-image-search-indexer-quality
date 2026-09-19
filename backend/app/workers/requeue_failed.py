@@ -30,7 +30,6 @@ NON_RETRYABLE_REASONS = frozenset({
     "folder_marker",
     "duplicate_content",
     "name_conflict",
-    "video_too_large",
 })
 
 # ERROR buckets that must not be blindly retried (need ops / conflict UI).
@@ -39,7 +38,6 @@ NON_RETRYABLE_ERROR_BUCKETS = frozenset({
     "folder_marker",
     "duplicate_content",
     "name_conflict",
-    "video_too_large",
 })
 
 
@@ -102,6 +100,8 @@ def normalize_error_bucket(error_message: str | None) -> str:
 
 
 def _is_permanent_skip(drive_file: DriveFile) -> bool:
+    from app.drive.video_limits import is_video_too_large
+
     msg = drive_file.error_message or ""
     if is_indexing_paused_message(msg):
         return True
@@ -111,7 +111,8 @@ def _is_permanent_skip(drive_file: DriveFile) -> bool:
         return True
     if msg.startswith("name_conflict"):
         return True
-    if msg.startswith("video_too_large"):
+    # Oversized skips stay permanent only while still over the current cap.
+    if msg.startswith("video_too_large") and is_video_too_large(drive_file.size):
         return True
     return False
 
@@ -229,11 +230,6 @@ async def requeue_skipped_by_reason(
                 "Same filename as another file with different content. "
                 "Use Replace or Skip on the dashboard conflict."
             )
-        elif key == "video_too_large":
-            message = (
-                "Videos larger than 10GB are skipped and cannot be indexed. "
-                "Split or compress the file if you need it searchable."
-            )
         else:
             message = "Folder markers are structural and cannot be retried."
         return {
@@ -309,6 +305,9 @@ async def requeue_skipped_by_reason(
         if requeued >= limit:
             break
         if is_file_indexing_paused(drive_file.path, paused_paths):
+            ineligible += 1
+            continue
+        if _is_permanent_skip(drive_file):
             ineligible += 1
             continue
         if not is_indexable_mime(drive_file.mime_type, drive_file.name):
