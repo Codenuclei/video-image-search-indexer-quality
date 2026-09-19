@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Script from "next/script";
 import {
   CheckSquare,
+  ChevronDown,
   FolderOpen,
   HardDrive,
   ListVideo,
@@ -22,6 +23,13 @@ import {
 import { formatApiError } from "@/lib/api";
 import { toastApiError } from "@/lib/toast-api-error";
 import { ModalOverlay } from "@/components/modal";
+import { pollVideoTranscriptStatus } from "@/lib/transcript-ensure";
+import {
+  guidedFolderSaveNote,
+  guidedIndexSummaryNote,
+  guidedPrimaryAction,
+  guidedProgressLabel,
+} from "@/lib/guided-drive";
 
 declare global {
   interface Window {
@@ -49,6 +57,22 @@ type Props = {
   onLibraryChanged?: () => void;
   className?: string;
   testIdPrefix?: string;
+  /**
+   * Opt-in guided presentation: one primary action, Manage Drive disclosure,
+   * and live indexing progress. Used by /test/studio; /carousel stays legacy.
+   */
+  guided?: boolean;
+};
+
+type IndexProgressRow = {
+  id: string;
+  name: string;
+  mime_type: string;
+  status: string;
+  has_captions?: boolean;
+  cue_count?: number;
+  queued?: boolean;
+  message?: string;
 };
 
 const statusLabel: Record<string, string> = {
@@ -101,6 +125,7 @@ export function DriveFolderPanel({
   onLibraryChanged,
   className = "",
   testIdPrefix = "drive",
+  guided = false,
 }: Props) {
   const api: DriveApi = useMemo(() => createDriveApi(apiBase), [apiBase]);
   const [session, setSession] = useState<DriveSession | null>(null);
@@ -113,8 +138,13 @@ export function DriveFolderPanel({
   const [busy, setBusy] = useState(false);
   const [pickerBusy, setPickerBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
-  const [, setError] = useState<string | null>(null);
-  const [, setModalError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [modalError, setModalError] = useState<string | null>(null);
+  const [manageOpen, setManageOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [indexProgress, setIndexProgress] = useState<IndexProgressRow[]>([]);
+  const indexProgressRef = useRef<IndexProgressRow[]>([]);
+  indexProgressRef.current = indexProgress;
 
   const [modalOpen, setModalOpen] = useState(false);
   const [modalVideos, setModalVideos] = useState<DriveLibraryFile[]>([]);
@@ -122,6 +152,23 @@ export function DriveFolderPanel({
   const [modalIndexing, setModalIndexing] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [filterQuery, setFilterQuery] = useState("");
+
+  const primary = useMemo(() => guidedPrimaryAction(session), [session]);
+  const historyFolders = useMemo(() => {
+    const activeId = session?.selected_folder?.id;
+    const list = indexedFolders.slice(0, 12);
+    if (!guided || !activeId) return list;
+    return list.filter((f) => f.id !== activeId);
+  }, [guided, indexedFolders, session?.selected_folder?.id]);
+  const progressInflightKey = useMemo(
+    () =>
+      indexProgress
+        .filter((row) => guidedProgressLabel(row).inflight)
+        .map((row) => row.id)
+        .sort()
+        .join(","),
+    [indexProgress]
+  );
 
   const loadVideosFromDrive = useCallback(async (): Promise<DriveLibraryFile[]> => {
     const existing = driveVideoJobs.get(apiBase);
@@ -206,6 +253,55 @@ export function DriveFolderPanel({
       window.history.replaceState({}, "", url.pathname + url.search);
     }
   }, [api, load, onLibraryChanged]);
+
+  // Guided mode: poll transcript status for queued/in-flight index rows.
+  useEffect(() => {
+    if (!guided || !progressInflightKey) return;
+    let cancelled = false;
+    const tick = async () => {
+      const inflight = indexProgressRef.current.filter((row) => guidedProgressLabel(row).inflight);
+      for (const row of inflight) {
+        if (cancelled) return;
+        try {
+          const st = await pollVideoTranscriptStatus(apiBase, row.id);
+          if (cancelled || st.status === "not_found") continue;
+          const fileStatus = (st.file_status || row.status || "pending").toLowerCase();
+          const cueCount = st.cue_count ?? row.cue_count ?? 0;
+          const hasCaptions = Boolean(st.has_captions || cueCount > 0);
+          const nextStatus = st.status === "failed" ? "error" : fileStatus || row.status;
+          const patch: IndexProgressRow = {
+            ...row,
+            status: nextStatus,
+            has_captions: hasCaptions,
+            cue_count: cueCount,
+            queued: false,
+            name: st.name || row.name,
+            message: st.message || row.message,
+          };
+          setIndexProgress((prev) =>
+            prev.map((item) => (item.id === row.id ? patch : item))
+          );
+          onVideoReady?.({
+            id: patch.id,
+            name: patch.name,
+            mime_type: patch.mime_type,
+            status: patch.status,
+            has_captions: patch.has_captions,
+            cue_count: patch.cue_count,
+            message: patch.message,
+          });
+        } catch {
+          // Keep last known status; the next tick retries.
+        }
+      }
+    };
+    void tick();
+    const timer = window.setInterval(() => void tick(), 2500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [guided, progressInflightKey, apiBase, onVideoReady]);
 
   function dismissGooglePickerShell() {
     document.querySelectorAll(".picker-dialog, .picker-dialog-bg").forEach((el) => {
@@ -386,10 +482,12 @@ export function DriveFolderPanel({
           }
           setBusy(true);
           try {
-            await api.saveDriveFolder(doc.id, doc.name);
+            const saved = await api.saveDriveFolder(doc.id, doc.name);
             await api.syncDriveFiles().catch(() => {});
             invalidateDriveVideoJob(apiBase);
-            setNote(`Folder “${doc.name}” selected — syncing videos…`);
+            setNote(
+              guidedFolderSaveNote(doc.name, Boolean(saved.reused_existing_index))
+            );
             await load();
             onLibraryChanged?.();
           } catch (e) {
@@ -483,10 +581,10 @@ export function DriveFolderPanel({
     setBusy(true);
     setError(null);
     try {
-            await api.saveDriveFolder(folder.id, folder.name);
-            await api.syncDriveFiles().catch(() => {});
-            invalidateDriveVideoJob(apiBase);
-      setNote(`Using folder “${folder.name}”.`);
+      const saved = await api.saveDriveFolder(folder.id, folder.name);
+      await api.syncDriveFiles().catch(() => {});
+      invalidateDriveVideoJob(apiBase);
+      setNote(guidedFolderSaveNote(folder.name, Boolean(saved.reused_existing_index)));
       await load();
       onLibraryChanged?.();
     } catch (e) {
@@ -627,7 +725,7 @@ export function DriveFolderPanel({
         !session?.connected && needsIndex.length > 0 ? needsIndex.length : 0;
       const res = await api.prioritizeDriveVideos(requestIds);
       const failed = (res.items ?? []).filter((it) => it.ok === false);
-      if (failed.length) {
+      if (failed.length && !(res.items ?? []).some((it) => it.ok !== false)) {
         const first = failed[0]?.error || failed[0]?.message || res.message;
         const msg = friendlyDriveIndexError(first);
         setModalError(msg);
@@ -635,10 +733,12 @@ export function DriveFolderPanel({
         return;
       }
       const byId = new Map((res.items ?? []).map((it) => [it.drive_file_id, it]));
+      const progressRows: IndexProgressRow[] = [];
       for (const id of requestIds) {
         const file = selectedFiles.find((v) => v.id === id);
         if (!file) continue;
         const item = byId.get(id);
+        if (item?.ok === false) continue;
         const cueCount = item?.cue_count;
         const hasCaptions =
           typeof item?.has_captions === "boolean"
@@ -646,28 +746,63 @@ export function DriveFolderPanel({
             : typeof cueCount === "number"
               ? cueCount > 0
               : file.status === "processed";
-        onVideoReady?.({
+        const status = item?.status || file.status;
+        const queued = Boolean(item?.queued) || status !== "processed" || !hasCaptions;
+        const row: IndexProgressRow = {
           id: file.id,
           name: file.name,
           mime_type: file.mime_type || "video/mp4",
-          status: item?.status || file.status,
+          status,
           has_captions: hasCaptions,
           cue_count: typeof cueCount === "number" ? cueCount : undefined,
+          queued,
           message: item?.message,
+        };
+        progressRows.push(row);
+        onVideoReady?.({
+          id: row.id,
+          name: row.name,
+          mime_type: row.mime_type,
+          status: row.status,
+          has_captions: row.has_captions,
+          cue_count: row.cue_count,
+          message: row.message,
         });
       }
-      const n = requestIds.length;
-      const successNote =
-        n === 1 ? "1 video indexed successfully." : `${n} videos indexed successfully.`;
+      const successNote = guided
+        ? guidedIndexSummaryNote({
+            requestCount: requestIds.length,
+            items: (res.items ?? []).map((it) => ({
+              drive_file_id: it.drive_file_id,
+              name: it.name,
+              status: it.status,
+              queued: it.queued,
+              has_captions: it.has_captions,
+              cue_count: it.cue_count,
+              ok: it.ok,
+            })),
+            skippedNeedsIndex,
+          })
+        : (() => {
+            const n = requestIds.length;
+            const base =
+              n === 1 ? "1 video indexed successfully." : `${n} videos indexed successfully.`;
+            return skippedNeedsIndex
+              ? `${base} Skipped ${skippedNeedsIndex} not-yet-indexed video(s) — reconnect Drive to index those.`
+              : base;
+          })();
       setError(null);
       setModalError(null);
       setSelectedIds(new Set());
-      setModalOpen(false);
-      setNote(
-        skippedNeedsIndex
-          ? `${successNote} Skipped ${skippedNeedsIndex} not-yet-indexed video(s) — reconnect Drive to index those.`
-          : successNote
-      );
+      setNote(successNote);
+      if (guided) {
+        setIndexProgress(progressRows);
+        // Keep the modal open when work was only queued so progress stays visible.
+        const stillWorking = progressRows.some((row) => guidedProgressLabel(row).inflight);
+        if (!stillWorking) setModalOpen(false);
+      } else {
+        setModalOpen(false);
+      }
       void load().then(() => onLibraryChanged?.());
     } catch (e) {
       const msg = friendlyDriveIndexError(
@@ -680,208 +815,450 @@ export function DriveFolderPanel({
     }
   }
 
+  const reconnectHref = api.googleAuthUrl(oauthReturnTo);
+
+  const manageDriveBlock = (
+    <div className="mt-3 border-t border-slate-200/80 pt-3">
+      <button
+        type="button"
+        className="flex w-full items-center justify-between gap-2 text-left text-xs font-medium uppercase tracking-wide text-slate-500"
+        onClick={() => setManageOpen((open) => !open)}
+        data-testid={`${testIdPrefix}-manage-toggle`}
+        aria-expanded={manageOpen}
+      >
+        Manage Drive
+        <ChevronDown
+          size={14}
+          className={`shrink-0 transition-transform ${manageOpen ? "rotate-180" : ""}`}
+        />
+      </button>
+      {manageOpen ? (
+        <div className="mt-2 space-y-2 rounded-lg border border-slate-200/70 bg-white/70 p-2.5">
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              className="studio-btn studio-btn-ghost"
+              disabled={pickerBusy || busy || !session?.connected}
+              onClick={() => void openPicker()}
+              data-testid={`${testIdPrefix}-change-folder`}
+            >
+              {busy && !pickerBusy ? (
+                <Loader2 size={14} className="animate-spin" />
+              ) : (
+                <FolderOpen size={14} />
+              )}
+              {session?.selected_folder ? "Change folder" : "Choose folder"}
+            </button>
+            <button
+              type="button"
+              className="studio-btn studio-btn-ghost"
+              disabled={busy || !session?.connected}
+              onClick={() => void syncNow()}
+              title="Sync latest files from the connected folder"
+              data-testid={`${testIdPrefix}-sync`}
+            >
+              <RefreshCw size={14} className={busy ? "animate-spin" : undefined} />
+              Sync now
+            </button>
+            <a
+              className="studio-btn studio-btn-ghost inline-flex items-center gap-1.5 no-underline"
+              href={reconnectHref}
+              data-testid={`${testIdPrefix}-reconnect`}
+              title="Re-authorize Google Drive access"
+            >
+              <HardDrive size={14} />
+              Reconnect account
+            </a>
+            <button
+              type="button"
+              className="studio-btn studio-btn-ghost"
+              disabled={busy || !session?.connected}
+              onClick={() => void disconnectDrive()}
+              data-testid={`${testIdPrefix}-disconnect`}
+            >
+              Disconnect
+            </button>
+          </div>
+          {session?.connected ? (
+            <label className="flex cursor-pointer items-start gap-2.5 text-sm">
+              <input
+                type="checkbox"
+                checked={followShortcuts}
+                onChange={(e) => void toggleShortcuts(e.target.checked)}
+                className="mt-0.5 h-4 w-4 shrink-0 rounded border-slate-300"
+                data-testid={`${testIdPrefix}-shortcuts`}
+              />
+              <span>
+                <span className="text-slate-800">Pull folder shortcuts</span>
+                <span className="mt-0.5 block text-xs text-slate-500">
+                  Include files inside shortcut folders (not only physical subfolders).
+                </span>
+              </span>
+            </label>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+
+  const historyBlock = historyFolders.length > 0 && (
+    <div className="mt-3 border-t border-slate-200/80 pt-3">
+      {guided ? (
+        <button
+          type="button"
+          className="flex w-full items-center justify-between gap-2 text-left text-xs font-medium uppercase tracking-wide text-slate-500"
+          onClick={() => setHistoryOpen((open) => !open)}
+          data-testid={`${testIdPrefix}-history-toggle`}
+          aria-expanded={historyOpen}
+        >
+          Switch to a previously indexed folder
+          <ChevronDown
+            size={14}
+            className={`shrink-0 transition-transform ${historyOpen ? "rotate-180" : ""}`}
+          />
+        </button>
+      ) : (
+        <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+          Previously indexed folders
+        </p>
+      )}
+      {(!guided || historyOpen) && (
+        <ul className="studio-scroll-fade mt-2 max-h-36 space-y-1.5 overflow-y-auto">
+          {historyFolders.map((f) => (
+            <li
+              key={f.id}
+              className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200/70 bg-white/70 px-2.5 py-1.5"
+            >
+              <div className="min-w-0">
+                <p className="truncate text-sm text-slate-800">
+                  {f.name}
+                  {!guided && f.is_active ? (
+                    <span className="ml-1.5 text-[11px] font-medium text-emerald-700">
+                      Active
+                    </span>
+                  ) : null}
+                </p>
+                <p className="truncate text-[11px] text-slate-500">
+                  {f.last_file_count != null ? `${f.last_file_count} files · ` : ""}
+                  {f.drive_user_email || ""}
+                </p>
+              </div>
+              <div className="flex shrink-0 gap-2">
+                <a
+                  href={f.drive_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-[11px] font-medium text-blue-600 underline-offset-2 hover:underline"
+                >
+                  Open
+                </a>
+                {session?.connected && !f.is_active && (
+                  <button
+                    type="button"
+                    className="text-[11px] font-medium text-slate-800 underline-offset-2 hover:underline"
+                    disabled={busy}
+                    onClick={() => void useIndexedFolder(f)}
+                  >
+                    Use
+                  </button>
+                )}
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+
+  const progressBlock =
+    guided && indexProgress.length > 0 ? (
+      <div
+        className="mt-3 border-t border-slate-200/80 pt-3"
+        data-testid={`${testIdPrefix}-index-progress`}
+      >
+        <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+          Indexing progress
+        </p>
+        <ul className="mt-2 space-y-1.5">
+          {indexProgress.map((row) => {
+            const progress = guidedProgressLabel(row);
+            return (
+              <li
+                key={row.id}
+                className="flex items-center justify-between gap-2 rounded-lg border border-slate-200/70 bg-white/80 px-2.5 py-1.5"
+              >
+                <span className="min-w-0 truncate text-sm text-slate-800">{row.name}</span>
+                <span className={`shrink-0 text-[11px] font-medium ${progress.tone}`}>
+                  {progress.inflight ? (
+                    <span className="inline-flex items-center gap-1">
+                      <Loader2 size={12} className="animate-spin" />
+                      {progress.label}
+                    </span>
+                  ) : (
+                    progress.label
+                  )}
+                </span>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+    ) : null;
+
+  const statusBanners = (
+    <>
+      {error ? (
+        <p
+          className="mt-2 rounded-lg border border-red-200 bg-red-50 px-2.5 py-2 text-xs text-red-700"
+          role="alert"
+          data-testid={`${testIdPrefix}-error`}
+        >
+          {error}
+        </p>
+      ) : null}
+      {note ? (
+        <p
+          className={`mt-2 text-xs ${
+            note.toLowerCase().includes("ready") || note.toLowerCase().includes("queued")
+              ? "font-medium text-emerald-700"
+              : note.includes("indexed successfully")
+                ? "font-medium text-emerald-700"
+                : "text-slate-500"
+          }`}
+          role="status"
+          data-testid={`${testIdPrefix}-note`}
+        >
+          {note}
+        </p>
+      ) : null}
+    </>
+  );
+
   return (
     <div
       className={`rounded-xl border border-slate-200 bg-slate-50/80 p-3 sm:p-4 ${className}`}
       data-testid={`${testIdPrefix}-folder-panel`}
+      data-guided={guided ? "true" : "false"}
     >
       <Script src="https://apis.google.com/js/api.js" strategy="afterInteractive" />
 
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="flex items-center gap-1.5 text-sm font-medium text-slate-900">
-            <HardDrive size={14} />
-            Google Drive folder
-          </p>
-          {session?.connected ? (
-            <p className="mt-0.5 text-xs text-slate-500">
-              {busy && !pickerBusy
-                ? "Saving connected folder and syncing…"
-                : `${session.email}${
-                    session.selected_folder
-                      ? ` · Folder: ${session.selected_folder.name}`
-                      : " · No folder selected yet"
-                  }`}
-            </p>
-          ) : (
-            <p className="mt-0.5 text-xs text-slate-500">
-              Drive disconnected — indexed library videos stay available. Reconnect only to sync or
-              pull new Drive files.
-            </p>
-          )}
-        </div>
-        <div className="flex flex-wrap gap-2">
-          {session?.connected ? (
-            <>
-              <button
-                type="button"
-                className="studio-btn studio-btn-ghost"
-                disabled={pickerBusy || busy}
-                onClick={() => void openPicker()}
-                data-testid={`${testIdPrefix}-change-folder`}
-              >
-                {busy && !pickerBusy ? (
-                  <Loader2 size={14} className="animate-spin" />
-                ) : (
-                  <FolderOpen size={14} />
-                )}
-                {busy && !pickerBusy ? (
-                  "Switching folder…"
-                ) : pickerBusy ? (
-                  "Opening…"
-                ) : session.selected_folder ? (
-                  "Change folder"
-                ) : (
-                  "Choose folder"
-                )}
-              </button>
-              <button
-                type="button"
-                className="studio-btn studio-btn-ghost"
-                disabled={busy}
-                onClick={() => void syncNow()}
-                title="Sync latest files from the connected folder"
-              >
-                <RefreshCw size={14} className={busy ? "animate-spin" : undefined} />
-                Sync
-              </button>
-              <a
-                className="studio-btn studio-btn-ghost inline-flex items-center gap-1.5 no-underline"
-                href={api.googleAuthUrl(oauthReturnTo)}
-                data-testid={`${testIdPrefix}-provide`}
-                title="Re-authorize Google Drive access (same OAuth as Connect)"
-              >
-                <HardDrive size={14} />
-                Provide
-              </a>
-              <button
-                type="button"
-                className="studio-btn studio-btn-ghost"
-                disabled={busy}
-                onClick={() => void disconnectDrive()}
-                data-testid={`${testIdPrefix}-disconnect`}
-              >
-                Disconnect
-              </button>
-            </>
-          ) : (
-            <a
-              className="studio-btn studio-btn-ghost inline-flex items-center gap-1.5 no-underline"
-              href={api.googleAuthUrl(oauthReturnTo)}
-              data-testid={`${testIdPrefix}-connect`}
-            >
-              <HardDrive size={14} />
-              Connect Google Drive
-            </a>
-          )}
-        </div>
-      </div>
-
-      {session?.connected && (
-        <label className="mt-3 flex cursor-pointer items-start gap-2.5 border-t border-slate-200/80 pt-3 text-sm">
-          <input
-            type="checkbox"
-            checked={followShortcuts}
-            onChange={(e) => void toggleShortcuts(e.target.checked)}
-            className="mt-0.5 h-4 w-4 shrink-0 rounded border-slate-300"
-            data-testid={`${testIdPrefix}-shortcuts`}
-          />
-          <span>
-            <span className="text-slate-800">Pull folder shortcuts</span>
-            <span className="mt-0.5 block text-xs text-slate-500">
-              Include files inside shortcut folders (not only physical subfolders).
-            </span>
-          </span>
-        </label>
-      )}
-
-      {indexedFolders.length > 0 && (
-        <div className="mt-3 border-t border-slate-200/80 pt-3">
-          <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
-            Previously indexed folders
-          </p>
-          <ul className="studio-scroll-fade mt-2 max-h-36 space-y-1.5 overflow-y-auto">
-            {indexedFolders.slice(0, 12).map((f) => (
-              <li
-                key={f.id}
-                className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200/70 bg-white/70 px-2.5 py-1.5"
-              >
-                <div className="min-w-0">
-                  <p className="truncate text-sm text-slate-800">
-                    {f.name}
-                    {f.is_active ? (
-                      <span className="ml-1.5 text-[11px] font-medium text-emerald-700">
-                        Active
-                      </span>
-                    ) : null}
-                  </p>
-                  <p className="truncate text-[11px] text-slate-500">
-                    {f.last_file_count != null ? `${f.last_file_count} files · ` : ""}
-                    {f.drive_user_email || ""}
-                  </p>
-                </div>
-                <div className="flex shrink-0 gap-2">
-                  <a
-                    href={f.drive_url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-[11px] font-medium text-blue-600 underline-offset-2 hover:underline"
-                  >
-                    Open
-                  </a>
-                  {session?.connected && !f.is_active && (
-                    <button
-                      type="button"
-                      className="text-[11px] font-medium text-slate-800 underline-offset-2 hover:underline"
-                      disabled={busy}
-                      onClick={() => void useIndexedFolder(f)}
-                    >
-                      Use
-                    </button>
-                  )}
-                </div>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      {/* Library browse/select is never gated on Drive OAuth. */}
-      <div className="mt-3 border-t border-slate-200/80 pt-3">
-          <div className="flex flex-wrap items-center justify-between gap-2">
+      {guided ? (
+        <>
+          <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="min-w-0">
-              <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
-                {session?.connected ? "Index specific videos" : "Indexed library"}
+              <p className="flex items-center gap-1.5 text-sm font-medium text-slate-900">
+                <HardDrive size={14} />
+                Google Drive
               </p>
-              <p className="mt-0.5 text-xs text-slate-500">
-                {session?.connected
-                  ? "Browse indexed Drive videos and choose only the ones you need — does not index the whole folder."
-                  : "Browse and select already-indexed Drive videos without reconnecting."}
-                {videoTotalHint ? ` ${videoTotalHint} video(s) in library.` : ""}
-              </p>
+              {session?.connected ? (
+                <p className="mt-0.5 text-xs text-slate-500">
+                  Connected as {session.email || "Google account"}
+                  {session.selected_folder
+                    ? ` · Active folder: ${session.selected_folder.name}`
+                    : " · No folder selected yet"}
+                </p>
+              ) : (
+                <p className="mt-0.5 text-xs text-slate-500">
+                  Connect Drive to choose a folder, then pick videos to index. Already-indexed
+                  library videos stay available while disconnected.
+                </p>
+              )}
             </div>
-            <button
-              type="button"
-              className="studio-btn studio-btn-primary shrink-0"
-              disabled={busy}
-              onClick={() => void openSelectModal()}
-              data-testid={`${testIdPrefix}-select-videos`}
-            >
-              <ListVideo size={14} />
-              {session?.connected ? "Select videos from Drive" : "Select indexed videos"}
-            </button>
+            <div className="flex shrink-0 flex-wrap gap-2">
+              {primary.kind === "connect" ? (
+                <>
+                  <a
+                    className="studio-btn studio-btn-primary inline-flex items-center gap-1.5 no-underline"
+                    href={reconnectHref}
+                    data-testid={`${testIdPrefix}-connect`}
+                  >
+                    <HardDrive size={14} />
+                    {primary.label}
+                  </a>
+                  <button
+                    type="button"
+                    className="studio-btn studio-btn-ghost"
+                    disabled={busy}
+                    onClick={() => void openSelectModal()}
+                    data-testid={`${testIdPrefix}-select-videos`}
+                    title="Browse already-indexed library videos"
+                  >
+                    <ListVideo size={14} />
+                    Browse indexed videos
+                  </button>
+                </>
+              ) : primary.kind === "choose_folder" ? (
+                <button
+                  type="button"
+                  className="studio-btn studio-btn-primary"
+                  disabled={pickerBusy || busy}
+                  onClick={() => void openPicker()}
+                  data-testid={`${testIdPrefix}-primary-choose-folder`}
+                >
+                  {pickerBusy || busy ? (
+                    <Loader2 size={14} className="animate-spin" />
+                  ) : (
+                    <FolderOpen size={14} />
+                  )}
+                  {primary.label}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="studio-btn studio-btn-primary"
+                  disabled={busy}
+                  onClick={() => void openSelectModal()}
+                  data-testid={`${testIdPrefix}-select-videos`}
+                >
+                  <ListVideo size={14} />
+                  {primary.label}
+                </button>
+              )}
+            </div>
           </div>
-        </div>
+          {manageDriveBlock}
+          {historyBlock}
+          {progressBlock}
+          {statusBanners}
+        </>
+      ) : (
+        <>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="flex items-center gap-1.5 text-sm font-medium text-slate-900">
+                <HardDrive size={14} />
+                Google Drive folder
+              </p>
+              {session?.connected ? (
+                <p className="mt-0.5 text-xs text-slate-500">
+                  {busy && !pickerBusy
+                    ? "Saving connected folder and syncing…"
+                    : `${session.email}${
+                        session.selected_folder
+                          ? ` · Folder: ${session.selected_folder.name}`
+                          : " · No folder selected yet"
+                      }`}
+                </p>
+              ) : (
+                <p className="mt-0.5 text-xs text-slate-500">
+                  Drive disconnected — indexed library videos stay available. Reconnect only to sync
+                  or pull new Drive files.
+                </p>
+              )}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {session?.connected ? (
+                <>
+                  <button
+                    type="button"
+                    className="studio-btn studio-btn-ghost"
+                    disabled={pickerBusy || busy}
+                    onClick={() => void openPicker()}
+                    data-testid={`${testIdPrefix}-change-folder`}
+                  >
+                    {busy && !pickerBusy ? (
+                      <Loader2 size={14} className="animate-spin" />
+                    ) : (
+                      <FolderOpen size={14} />
+                    )}
+                    {busy && !pickerBusy
+                      ? "Switching folder…"
+                      : pickerBusy
+                        ? "Opening…"
+                        : session.selected_folder
+                          ? "Change folder"
+                          : "Choose folder"}
+                  </button>
+                  <button
+                    type="button"
+                    className="studio-btn studio-btn-ghost"
+                    disabled={busy}
+                    onClick={() => void syncNow()}
+                    title="Sync latest files from the connected folder"
+                  >
+                    <RefreshCw size={14} className={busy ? "animate-spin" : undefined} />
+                    Sync
+                  </button>
+                  <a
+                    className="studio-btn studio-btn-ghost inline-flex items-center gap-1.5 no-underline"
+                    href={reconnectHref}
+                    data-testid={`${testIdPrefix}-provide`}
+                    title="Re-authorize Google Drive access (same OAuth as Connect)"
+                  >
+                    <HardDrive size={14} />
+                    Provide
+                  </a>
+                  <button
+                    type="button"
+                    className="studio-btn studio-btn-ghost"
+                    disabled={busy}
+                    onClick={() => void disconnectDrive()}
+                    data-testid={`${testIdPrefix}-disconnect`}
+                  >
+                    Disconnect
+                  </button>
+                </>
+              ) : (
+                <a
+                  className="studio-btn studio-btn-ghost inline-flex items-center gap-1.5 no-underline"
+                  href={reconnectHref}
+                  data-testid={`${testIdPrefix}-connect`}
+                >
+                  <HardDrive size={14} />
+                  Connect Google Drive
+                </a>
+              )}
+            </div>
+          </div>
 
-      {note && (
-        <p
-          className={`mt-2 text-xs ${
-            note.includes("indexed successfully") ? "font-medium text-emerald-700" : "text-slate-500"
-          }`}
-          role="status"
-        >
-          {note}
-        </p>
+          {session?.connected && (
+            <label className="mt-3 flex cursor-pointer items-start gap-2.5 border-t border-slate-200/80 pt-3 text-sm">
+              <input
+                type="checkbox"
+                checked={followShortcuts}
+                onChange={(e) => void toggleShortcuts(e.target.checked)}
+                className="mt-0.5 h-4 w-4 shrink-0 rounded border-slate-300"
+                data-testid={`${testIdPrefix}-shortcuts`}
+              />
+              <span>
+                <span className="text-slate-800">Pull folder shortcuts</span>
+                <span className="mt-0.5 block text-xs text-slate-500">
+                  Include files inside shortcut folders (not only physical subfolders).
+                </span>
+              </span>
+            </label>
+          )}
+
+          {historyBlock}
+
+          <div className="mt-3 border-t border-slate-200/80 pt-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="min-w-0">
+                <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                  {session?.connected ? "Index specific videos" : "Indexed library"}
+                </p>
+                <p className="mt-0.5 text-xs text-slate-500">
+                  {session?.connected
+                    ? "Browse indexed Drive videos and choose only the ones you need — does not index the whole folder."
+                    : "Browse and select already-indexed Drive videos without reconnecting."}
+                  {videoTotalHint ? ` ${videoTotalHint} video(s) in library.` : ""}
+                </p>
+              </div>
+              <button
+                type="button"
+                className="studio-btn studio-btn-primary shrink-0"
+                disabled={busy}
+                onClick={() => void openSelectModal()}
+                data-testid={`${testIdPrefix}-select-videos`}
+              >
+                <ListVideo size={14} />
+                {session?.connected ? "Select videos from Drive" : "Select indexed videos"}
+              </button>
+            </div>
+          </div>
+
+          {statusBanners}
+        </>
       )}
 
       <ModalOverlay
@@ -903,7 +1280,7 @@ export function DriveFolderPanel({
                 id={`${testIdPrefix}-select-title`}
                 className="text-base font-semibold text-slate-900"
               >
-                {session?.connected ? "Select videos from Drive" : "Select indexed videos"}
+                {guided ? "Choose videos to index" : session?.connected ? "Select videos from Drive" : "Select indexed videos"}
               </h2>
               <p className="mt-0.5 text-xs text-slate-500">
                 {session?.selected_folder?.name
@@ -912,9 +1289,11 @@ export function DriveFolderPanel({
                     ? "Connected folder"
                     : "Permanent indexed library"}
                 {" · "}
-                {session?.connected
-                  ? "Check videos to priority-index. Whole-folder index is not run from here."
-                  : "Already-processed videos can be used offline. Reconnect Drive to index new ones."}
+                {guided
+                  ? "Already indexed videos become available immediately. New videos are queued for transcription."
+                  : session?.connected
+                    ? "Check videos to priority-index. Whole-folder index is not run from here."
+                    : "Already-processed videos can be used offline. Reconnect Drive to index new ones."}
               </p>
             </div>
             <button
@@ -929,6 +1308,39 @@ export function DriveFolderPanel({
           </div>
 
           <div className="drive-select-modal__body space-y-3 px-4 py-3 sm:px-5">
+            {modalError ? (
+              <p
+                className="rounded-lg border border-red-200 bg-red-50 px-2.5 py-2 text-xs text-red-700"
+                role="alert"
+                data-testid={`${testIdPrefix}-modal-error`}
+              >
+                {modalError}
+              </p>
+            ) : null}
+            {guided && indexProgress.length > 0 ? (
+              <div
+                className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2"
+                data-testid={`${testIdPrefix}-modal-progress`}
+              >
+                <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                  Submitted this round
+                </p>
+                <ul className="mt-1.5 space-y-1">
+                  {indexProgress.map((row) => {
+                    const progress = guidedProgressLabel(row);
+                    return (
+                      <li
+                        key={row.id}
+                        className="flex items-center justify-between gap-2 text-xs"
+                      >
+                        <span className="truncate text-slate-800">{row.name}</span>
+                        <span className={progress.tone}>{progress.label}</span>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            ) : null}
             <div className="relative">
               <Search
                 size={14}
@@ -1027,7 +1439,7 @@ export function DriveFolderPanel({
               onClick={closeSelectModal}
               disabled={modalIndexing}
             >
-              Cancel
+              {guided && indexProgress.length > 0 ? "Done" : "Cancel"}
             </button>
             <button
               type="button"
@@ -1039,14 +1451,16 @@ export function DriveFolderPanel({
               {modalIndexing ? (
                 <>
                   <Loader2 size={14} className="animate-spin" />
-                  {session?.connected ? "Indexing…" : "Selecting…"}
+                  {guided ? "Submitting…" : session?.connected ? "Indexing…" : "Selecting…"}
                 </>
               ) : (
                 <>
                   <CheckSquare size={14} />
-                  {session?.connected
-                    ? `Index selected (${selectedIds.size})`
-                    : `Use selected (${selectedIds.size})`}
+                  {guided
+                    ? `Index selected videos (${selectedIds.size})`
+                    : session?.connected
+                      ? `Index selected (${selectedIds.size})`
+                      : `Use selected (${selectedIds.size})`}
                 </>
               )}
             </button>

@@ -572,13 +572,23 @@ async function handle(req: NextRequest, ctx: Ctx) {
 
   // Drive / media stubs — return opaque placeholders
   if (path === "api/session" && method === "GET") {
-    return json({ connected: false });
+    // Deterministic disconnected state for guided Drive UX demos.
+    return json({
+      connected: false,
+      email: null,
+      selected_folder: null,
+    });
   }
   if (path === "api/drive-token" && method === "GET") {
     return json({ accessToken: "mock", apiKey: "", appId: null }, 401);
   }
   if (path === "api/save-folder" && method === "POST") {
-    return json({ ok: true, folder: { id: "mock-folder", name: "Mock Folder" } });
+    return json({
+      ok: true,
+      folder: { id: "mock-folder", name: "Mock Folder" },
+      reused_existing_index: true,
+      requeued: 0,
+    });
   }
   if (path === "api/logout" && method === "POST") {
     return json({ ok: true });
@@ -587,17 +597,131 @@ async function handle(req: NextRequest, ctx: Ctx) {
     return json({ ok: true, scheduled: true });
   }
   if (path === "index/folders" && method === "GET") {
-    return json({ folders: [], total: 0 });
+    return json({
+      folders: [
+        {
+          id: "mock-folder",
+          name: "Mock Folder",
+          drive_url: "https://drive.google.com/drive/folders/mock-folder",
+          drive_user_email: "demo@example.com",
+          is_active: false,
+          last_file_count: 2,
+        },
+      ],
+      total: 1,
+    });
   }
   if (path === "drive/files/page" && method === "GET") {
-    return json({ items: [], total: 0, offset: 0, limit: 60 });
+    return json({
+      items: [
+        {
+          id: "mock-ready-video",
+          name: "Ready talk.mp4",
+          mime_type: "video/mp4",
+          path: "Mock Folder/Ready talk.mp4",
+          status: "processed",
+          size: 1024,
+          source: "drive",
+        },
+        {
+          id: "mock-queued-video",
+          name: "Needs index.mp4",
+          mime_type: "video/mp4",
+          path: "Mock Folder/Needs index.mp4",
+          status: "pending",
+          size: 2048,
+          source: "drive",
+        },
+      ],
+      total: 2,
+      offset: 0,
+      limit: 60,
+    });
   }
   if (path === "search/carousel/prioritize" && method === "POST") {
+    const body = await readBody(req);
+    const ids = Array.isArray(body.drive_file_ids) ? (body.drive_file_ids as string[]) : [];
+    const items = ids.map((id: string) => {
+      if (id === "mock-ready-video") {
+        return {
+          drive_file_id: id,
+          ok: true,
+          name: "Ready talk.mp4",
+          status: "processed",
+          queued: false,
+          has_captions: true,
+          cue_count: 8,
+          message: "Already indexed.",
+        };
+      }
+      if (id === "mock-failed-video") {
+        return {
+          drive_file_id: id,
+          ok: false,
+          name: "Broken.mp4",
+          status: "error",
+          queued: false,
+          error: "not_a_video",
+          message: "Not a video.",
+        };
+      }
+      return {
+        drive_file_id: id,
+        ok: true,
+        name: "Needs index.mp4",
+        status: "pending",
+        queued: true,
+        has_captions: false,
+        cue_count: 0,
+        message: "Queued for indexing.",
+      };
+    });
     return json({
       ok: true,
-      queued: 0,
+      queued: items.filter((it: { queued?: boolean }) => it.queued).length,
       message: "Mock prioritize (test API).",
-      items: [],
+      items,
+    });
+  }
+  if (
+    path.startsWith("search/carousel/videos/") &&
+    path.endsWith("/transcript-status") &&
+    method === "GET"
+  ) {
+    const id = path.split("/")[3] || "mock";
+    if (id === "mock-ready-video") {
+      return json({
+        ok: true,
+        status: "ready",
+        file_status: "processed",
+        cue_count: 8,
+        has_captions: true,
+        phase: "ready",
+        name: "Ready talk.mp4",
+        message: "Transcript ready.",
+      });
+    }
+    if (id === "mock-failed-video") {
+      return json({
+        ok: false,
+        status: "failed",
+        file_status: "error",
+        cue_count: 0,
+        has_captions: false,
+        phase: "failed",
+        name: "Broken.mp4",
+        message: "Indexing failed.",
+      });
+    }
+    return json({
+      ok: true,
+      status: "running",
+      file_status: "processing",
+      cue_count: 0,
+      has_captions: false,
+      phase: "whisper",
+      name: "Needs index.mp4",
+      message: "Transcribing…",
     });
   }
 

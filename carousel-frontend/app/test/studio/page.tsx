@@ -1496,9 +1496,51 @@ function TestStudioInner() {
           Choose a video
         </h2>
         <p className="mt-2 text-sm text-slate-500">
-          Upload a local video, select from the indexed library (available while Drive is
-          disconnected), or pick an indexed captioned video.
+          Connect Drive, choose a folder, then pick videos to index. Already-indexed library videos
+          stay available while Drive is disconnected.
         </p>
+
+        <DriveFolderPanel
+          className="mt-4"
+          apiBase={API_BASE}
+          testIdPrefix="test-drive"
+          guided
+          onLibraryChanged={() => {
+            void loadVideos({ silent: true });
+          }}
+          onVideoReady={(v) => {
+            const cueCount = v.cue_count ?? 0;
+            const hasCaptions = Boolean(v.has_captions ?? cueCount > 0);
+            const asVideo: TestVideo = {
+              id: v.id,
+              name: v.name,
+              mime_type: v.mime_type || "video/mp4",
+              path: null,
+              size: null,
+              status: v.status,
+              has_captions: hasCaptions,
+              cue_count: cueCount,
+            };
+            setSelected(asVideo);
+            stagedUploadsRef.current = prependUniqueById([asVideo], stagedUploadsRef.current);
+            setVideos((prev) => prependUniqueById([asVideo], prev));
+            setError(null);
+            if (v.status === "processed" && !hasCaptions) {
+              setUploadNote(
+                `“${v.name}” is indexed — getting transcripts from the video…`
+              );
+              void ensureTranscriptForVideo(asVideo);
+            } else if (studioVideoStatus(asVideo).inflight) {
+              setUploadNote(`“${v.name}” queued — indexing in progress.`);
+            } else {
+              setUploadNote(
+                v.status === "processed"
+                  ? `Using Drive video “${v.name}” (${cueCount} cues).`
+                  : `Pulling “${v.name}” — indexing at max priority.`
+              );
+            }
+          }}
+        />
 
         <div className="mt-4 flex flex-wrap items-center gap-2">
           <input
@@ -1549,45 +1591,6 @@ function TestStudioInner() {
             </p>
           )}
         </div>
-
-        <DriveFolderPanel
-          className="mt-4"
-          apiBase={API_BASE}
-          testIdPrefix="test-drive"
-          onLibraryChanged={() => {
-            void loadVideos({ silent: true });
-          }}
-          onVideoReady={(v) => {
-            const cueCount = v.cue_count ?? 0;
-            const hasCaptions = Boolean(v.has_captions ?? cueCount > 0);
-            const asVideo: TestVideo = {
-              id: v.id,
-              name: v.name,
-              mime_type: v.mime_type || "video/mp4",
-              path: null,
-              size: null,
-              status: v.status,
-              has_captions: hasCaptions,
-              cue_count: cueCount,
-            };
-            setSelected(asVideo);
-            stagedUploadsRef.current = prependUniqueById([asVideo], stagedUploadsRef.current);
-            setVideos((prev) => prependUniqueById([asVideo], prev));
-            setError(null);
-            if (v.status === "processed" && !hasCaptions) {
-              setUploadNote(
-                `“${v.name}” is indexed — getting transcripts from the video…`
-              );
-              void ensureTranscriptForVideo(asVideo);
-            } else {
-              setUploadNote(
-                v.status === "processed"
-                  ? `Using Drive video “${v.name}” (${cueCount} cues).`
-                  : `Pulling “${v.name}” — indexing at max priority.`
-              );
-            }
-          }}
-        />
 
         {selected ? (
           <div className="test-event-folder mt-4" data-testid="test-event-photo-folder">

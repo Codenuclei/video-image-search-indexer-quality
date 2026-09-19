@@ -65,11 +65,15 @@ export function createDriveApi(apiBase: string) {
     driveSession: () => jsonApi<DriveSession>(apiBase, "/api/session"),
     driveToken: () => jsonApi<DriveTokenResponse>(apiBase, "/api/drive-token"),
     saveDriveFolder: (id: string, name: string) =>
-      jsonApi<{ ok: boolean; folder?: { id: string; name: string; drive_url?: string } }>(
-        apiBase,
-        "/api/save-folder",
-        { method: "POST", body: JSON.stringify({ id, name }) }
-      ),
+      jsonApi<{
+        ok: boolean;
+        folder?: { id: string; name: string; drive_url?: string };
+        reused_existing_index?: boolean;
+        requeued?: number;
+      }>(apiBase, "/api/save-folder", {
+        method: "POST",
+        body: JSON.stringify({ id, name }),
+      }),
     driveLogout: () =>
       jsonApi<{ ok: boolean }>(apiBase, "/api/logout", { method: "POST" }),
     syncDriveFiles: () =>
