@@ -20,6 +20,7 @@ import {
   type DriveSession,
   type IndexedFolder,
 } from "@/lib/drive-api";
+import { driveFileOpenUrl, driveFolderPath } from "@/lib/drive-path";
 import { formatApiError } from "@/lib/api";
 import { toastApiError } from "@/lib/toast-api-error";
 import { ModalOverlay } from "@/components/modal";
@@ -1399,31 +1400,42 @@ export function DriveFolderPanel({
                 <ul className="divide-y divide-slate-200">
                   {filteredModalVideos.map((v) => {
                     const checked = selectedIds.has(v.id);
+                    const folderPath = driveFolderPath(v.path, v.name);
+                    const openUrl = driveFileOpenUrl(v.id);
                     return (
-                      <li key={v.id}>
-                        <label
-                          className={`drive-select-modal__row flex cursor-pointer items-start gap-3 px-3 py-2.5 ${
-                            checked ? "is-selected" : ""
-                          }`}
-                        >
-                          <input
-                            type="checkbox"
-                            className="mt-1 h-4 w-4 shrink-0 rounded border-slate-300"
-                            checked={checked}
-                            onChange={() => toggleSelected(v.id)}
-                            data-testid={`${testIdPrefix}-select-${v.id}`}
-                          />
-                          <span className="min-w-0 flex-1">
-                            <span className="block truncate text-sm text-slate-900">{v.name}</span>
-                            <span
-                              className={`mt-0.5 block text-[11px] ${
-                                statusTone[v.status] || "text-slate-500"
-                              }`}
-                            >
-                              {friendlyDriveFileStatus(v.status)}
-                            </span>
+                      <li
+                        key={v.id}
+                        className={`drive-select-modal__row flex items-start gap-3 px-3 py-2.5 ${
+                          checked ? "is-selected" : ""
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          className="mt-1 h-4 w-4 shrink-0 cursor-pointer rounded border-slate-300"
+                          checked={checked}
+                          onChange={() => toggleSelected(v.id)}
+                          aria-label={`Select ${v.name}`}
+                          data-testid={`${testIdPrefix}-select-${v.id}`}
+                        />
+                        <span className="min-w-0 flex-1">
+                          <a
+                            href={openUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="block truncate text-sm font-medium text-slate-900 hover:underline"
+                            title={v.path || v.name}
+                            data-testid={`${testIdPrefix}-open-${v.id}`}
+                          >
+                            {folderPath ? `${folderPath} / ${v.name}` : v.name}
+                          </a>
+                          <span
+                            className={`mt-0.5 block text-[11px] ${
+                              statusTone[v.status] || "text-slate-500"
+                            }`}
+                          >
+                            {friendlyDriveFileStatus(v.status)}
                           </span>
-                        </label>
+                        </span>
                       </li>
                     );
                   })}

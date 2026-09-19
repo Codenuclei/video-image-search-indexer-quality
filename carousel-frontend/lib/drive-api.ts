@@ -148,3 +148,5 @@ export function createDriveApi(apiBase: string) {
 export function isVideoMime(mime: string | null | undefined): boolean {
   return Boolean(mime && mime.toLowerCase().startsWith("video/"));
 }
+
+export { driveFileOpenUrl, driveFolderPath } from "./drive-path";
