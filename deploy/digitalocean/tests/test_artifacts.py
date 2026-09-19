@@ -61,7 +61,7 @@ def test_frontend_spec_single_service(frontend_yaml: str):
     assert "repository: dfi-carousel-frontend" in frontend_yaml
     assert "tag: REPLACE_IMAGE_TAG" in frontend_yaml
     assert "http_port: 3002" in frontend_yaml
-    assert "https://api-carousel.mastersunion.org" in frontend_yaml
+    assert "https://api-carousel.139-59-35-242.sslip.io" in frontend_yaml
     assert "API_PROXY_TARGET" in frontend_yaml
     assert "NEXT_PUBLIC_BACKEND_URL" in frontend_yaml
     assert "REPLACE_WITH_VPC_UUID" in frontend_yaml
@@ -99,7 +99,7 @@ def test_compose_private_pinned_stack(compose_yaml: str):
 
 def test_caddy_routes_public_backend_domain():
     caddy = (DO / "Caddyfile").read_text(encoding="utf-8")
-    assert "api-carousel.mastersunion.org" in caddy
+    assert "api-carousel.139-59-35-242.sslip.io" in caddy
     assert "reverse_proxy carousel-backend:8000" in caddy
 
 

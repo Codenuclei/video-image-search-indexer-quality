@@ -22,7 +22,7 @@ services:
       carousel-backend:
         condition: service_healthy
     environment:
-      CAROUSEL_BACKEND_DOMAIN: ${CAROUSEL_BACKEND_DOMAIN:-api-carousel.mastersunion.org}
+      CAROUSEL_BACKEND_DOMAIN: ${CAROUSEL_BACKEND_DOMAIN:-api-carousel.139-59-35-242.sslip.io}
     ports:
       - "80:80"
       - "443:443"

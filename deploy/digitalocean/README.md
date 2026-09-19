@@ -21,9 +21,9 @@ separate and must not use this stack.
 Internet
    │
    ├─ App Platform dfi-carousel-frontend (:3002)
-   │         API_PROXY_TARGET = https://api-carousel.mastersunion.org
+   │         API_PROXY_TARGET = https://api-carousel.139-59-35-242.sslip.io
    │
-   └─ api-carousel.mastersunion.org
+   └─ api-carousel.139-59-35-242.sslip.io
              │ Caddy :443
              └─ Droplet backend :8000
                     ├─ Postgres :5432 (Docker network)
@@ -54,8 +54,9 @@ read/write DOCR login:
 ./scripts/deploy-backend.sh <git-sha>
 ```
 
-DNS must contain `api-carousel.mastersunion.org A 139.59.35.242`. The firewall
-allows public TCP 80/443, restricted admin SSH, and keeps 5432/6333 private.
+The sslip.io hostname resolves directly to `139.59.35.242`; no managed DNS
+account is required. The firewall allows public TCP 80/443, restricted admin
+SSH, and keeps 5432/6333 private.
 
 ## 2. Build and publish
 
@@ -68,9 +69,9 @@ docker buildx build --platform linux/amd64 \
   --push backend
 
 docker buildx build --platform linux/amd64 \
-  --build-arg API_PROXY_TARGET=https://api-carousel.mastersunion.org \
+  --build-arg API_PROXY_TARGET=https://api-carousel.139-59-35-242.sslip.io \
   --build-arg NEXT_PUBLIC_API_URL=/api/proxy \
-  --build-arg NEXT_PUBLIC_BACKEND_URL=https://api-carousel.mastersunion.org \
+  --build-arg NEXT_PUBLIC_BACKEND_URL=https://api-carousel.139-59-35-242.sslip.io \
   -t "registry.digitalocean.com/mu-pitch-studio/dfi-carousel-frontend:${IMAGE_TAG}" \
   --push carousel-frontend
 
@@ -81,9 +82,10 @@ On Apple Silicon, build amd64 images on the amd64 Droplet if QEMU is unstable.
 
 ### OAuth
 
-Register Google redirect URI:
+Until the raw URL can be added to Google Cloud, keep the already-authorized App
+Platform callback as a lightweight OAuth relay:
 
-`https://api-carousel.mastersunion.org/auth/google/callback`
+`https://dfi-carousel-backend-zf4xh.ondigitalocean.app/auth/google/callback`
 
 API key HTTP referrer:
 
@@ -148,8 +150,9 @@ Interactive HTTP budget is `_STUDIO_HTTP_BUDGET_SEC` / `_SELECT_IMAGES_REQUEST_T
 
 ## Rollback
 
-Keep the previous App Platform backend image/spec only until the Droplet backend,
-OAuth, and large-video indexing are verified. Do not deploy or modify Railway.
+After validation, replace the previous App Platform backend workload with the
+small OAuth redirect relay required by the pre-authorized Google callback. All
+API and indexing work remains on the Droplet. Do not deploy or modify Railway.
 
 ## Out of scope for these artifacts
 

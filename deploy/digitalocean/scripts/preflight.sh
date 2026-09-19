@@ -79,7 +79,7 @@ if grep -q 'http_path: /' "${FRONTEND_SPEC}"; then
 else
   fail "frontend health_check missing"
 fi
-if grep -q 'https://api-carousel.mastersunion.org' "${FRONTEND_SPEC}"; then
+if grep -q 'https://api-carousel.139-59-35-242.sslip.io' "${FRONTEND_SPEC}"; then
   ok "frontend targets Droplet backend domain"
 else
   fail "frontend missing Droplet backend domain"
@@ -139,7 +139,7 @@ for token in 'carousel-backend:' 'caddy:' 'CAROUSEL_BACKEND_IMAGE' 'backend-data
     fail "compose missing ${token}"
   fi
 done
-if grep -q 'api-carousel.mastersunion.org' "${DO_DIR}/Caddyfile"; then
+if grep -q 'api-carousel.139-59-35-242.sslip.io' "${DO_DIR}/Caddyfile"; then
   ok "Caddy public backend domain"
 else
   fail "Caddy backend domain missing"

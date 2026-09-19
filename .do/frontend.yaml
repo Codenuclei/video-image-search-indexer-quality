@@ -11,8 +11,8 @@
 # Or enable VPC in the control panel after create.
 # VPC and dedicated egress IPs cannot be enabled at the same time.
 #
-# The Carousel backend runs on the BLR1 data Droplet behind Caddy at
-# api-carousel.mastersunion.org. App Platform hosts only this frontend.
+# The Carousel backend runs on the BLR1 data Droplet behind Caddy at the
+# sslip.io hostname resolving directly to 139.59.35.242.
 
 name: dfi-carousel-frontend
 region: nyc
@@ -53,12 +53,12 @@ services:
       - key: API_PROXY_TARGET
         scope: RUN_AND_BUILD_TIME
         type: GENERAL
-        value: https://api-carousel.mastersunion.org
+        value: https://api-carousel.139-59-35-242.sslip.io
       # Baked into the Next.js client at Docker build time.
       - key: NEXT_PUBLIC_BACKEND_URL
         scope: BUILD_TIME
         type: GENERAL
-        value: https://api-carousel.mastersunion.org
+        value: https://api-carousel.139-59-35-242.sslip.io
       - key: NEXT_PUBLIC_TEST_USE_REAL_API
         scope: RUN_AND_BUILD_TIME
         type: GENERAL
