@@ -47,10 +47,10 @@ need_exec "${DO_DIR}/scripts/restore.sh"
 need_exec "${DO_DIR}/scripts/preflight.sh"
 
 echo "==> Backend app spec invariants"
-if grep -q 'branch: pruned-craousel' "${BACKEND_SPEC}"; then
-  ok "backend branch pruned-craousel"
+if grep -q 'registry_type: DOCR' "${BACKEND_SPEC}" && grep -q 'repository: dfi-carousel-backend' "${BACKEND_SPEC}"; then
+  ok "backend DOCR image source"
 else
-  fail "backend.yaml missing branch pruned-craousel"
+  fail "backend.yaml missing DOCR image source"
 fi
 if grep -q 'name: carousel-backend' "${BACKEND_SPEC}"; then
   ok "carousel-backend service"
@@ -69,10 +69,10 @@ if grep -q 'name: carousel-frontend' "${BACKEND_SPEC}"; then
 else
   ok "backend.yaml has no frontend service"
 fi
-if grep -q 'source_dir: backend' "${BACKEND_SPEC}" && grep -q 'http_port: 8000' "${BACKEND_SPEC}"; then
-  ok "backend source_dir + port 8000"
+if grep -q 'tag: REPLACE_IMAGE_TAG' "${BACKEND_SPEC}" && grep -q 'http_port: 8000' "${BACKEND_SPEC}"; then
+  ok "backend immutable image tag placeholder + port 8000"
 else
-  fail "backend source_dir/port incorrect"
+  fail "backend image tag/port incorrect"
 fi
 if grep -q 'http_path: /health' "${BACKEND_SPEC}"; then
   ok "backend health /health"
@@ -106,10 +106,10 @@ else
 fi
 
 echo "==> Frontend app spec invariants"
-if grep -q 'branch: pruned-craousel' "${FRONTEND_SPEC}"; then
-  ok "frontend branch pruned-craousel"
+if grep -q 'registry_type: DOCR' "${FRONTEND_SPEC}" && grep -q 'repository: dfi-carousel-frontend' "${FRONTEND_SPEC}"; then
+  ok "frontend DOCR image source"
 else
-  fail "frontend.yaml missing branch pruned-craousel"
+  fail "frontend.yaml missing DOCR image source"
 fi
 if grep -q 'name: carousel-frontend' "${FRONTEND_SPEC}"; then
   ok "carousel-frontend service"
@@ -127,10 +127,10 @@ if grep -q 'name: carousel-backend' "${FRONTEND_SPEC}"; then
 else
   ok "frontend.yaml has no backend service"
 fi
-if grep -q 'source_dir: carousel-frontend' "${FRONTEND_SPEC}" && grep -q 'http_port: 3002' "${FRONTEND_SPEC}"; then
-  ok "frontend source_dir + port 3002"
+if grep -q 'tag: REPLACE_IMAGE_TAG' "${FRONTEND_SPEC}" && grep -q 'http_port: 3002' "${FRONTEND_SPEC}"; then
+  ok "frontend immutable image tag placeholder + port 3002"
 else
-  fail "frontend source_dir/port incorrect"
+  fail "frontend image tag/port incorrect"
 fi
 if grep -q 'http_path: /' "${FRONTEND_SPEC}"; then
   ok "frontend health /"

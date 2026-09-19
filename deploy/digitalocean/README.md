@@ -64,13 +64,23 @@ Confirm `pg_isready` and `curl -sf http://$DROPLET_BIND_ADDR:6333/readyz`.
 
 ```bash
 # From repo root on branch pruned-craousel
+# Publish immutable amd64 images to DOCR. Build the frontend only after the
+# backend public URL is known so Next.js bakes the correct origin.
+export IMAGE_TAG="$(git rev-parse --short HEAD)"
+doctl registry login --expiry-seconds 3600
+docker buildx build --platform linux/amd64 \
+  -t "registry.digitalocean.com/mu-pitch-studio/dfi-carousel-backend:${IMAGE_TAG}" \
+  --push backend
+
 # Validate locally (requires doctl auth):
 doctl apps spec validate .do/backend.yaml
 doctl apps spec validate .do/frontend.yaml
 
 # Edit both specs before create:
+#  - Both: REPLACE_IMAGE_TAG → $IMAGE_TAG
 #  - .do/backend.yaml: DATABASE_URL / QDRANT_URL → Droplet private IP + password
 #  - .do/backend.yaml: SECRET REPLACE_ME values → real keys (or Encrypt in UI)
+#  - .do/backend.yaml: REPLACE_BACKEND_PUBLIC_URL after backend is live
 #  - .do/backend.yaml: CAROUSEL_FRONTEND_URL / ALLOWED_ORIGINS after frontend is live
 #  - .do/frontend.yaml: API_PROXY_TARGET + NEXT_PUBLIC_BACKEND_URL → backend public https
 #  - Both: uncomment vpc.id with the SAME VPC UUID (doctl vpcs list)
@@ -81,10 +91,21 @@ doctl apps spec validate .do/frontend.yaml
 # VPC and dedicated egress IPs cannot both be enabled.
 
 doctl apps create --spec .do/backend.yaml
+
+docker buildx build --platform linux/amd64 \
+  --build-arg API_PROXY_TARGET=https://REPLACE_BACKEND_PUBLIC_URL \
+  --build-arg NEXT_PUBLIC_API_URL=/api/proxy \
+  --build-arg NEXT_PUBLIC_BACKEND_URL=https://REPLACE_BACKEND_PUBLIC_URL \
+  -t "registry.digitalocean.com/mu-pitch-studio/dfi-carousel-frontend:${IMAGE_TAG}" \
+  --push carousel-frontend
+
 doctl apps create --spec .do/frontend.yaml
 ```
 
 Env `type` enums must be uppercase `GENERAL` / `SECRET` (validated by doctl).
+The current DigitalOcean account deploys from DOCR because its App Platform
+GitHub integration is not authenticated. On Apple Silicon, build the amd64
+frontend on an amd64 runner if QEMU exits with signal 11.
 
 ### Cross-app URLs (no PRIVATE_URL)
 

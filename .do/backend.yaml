@@ -1,4 +1,4 @@
-# DigitalOcean App Platform — Carousel Studio API only (branch pruned-craousel).
+# DigitalOcean App Platform — Carousel Studio API only.
 # Pair with .do/frontend.yaml as a second App Platform app (one service each).
 # Search stack (dfi-backend / dfi-frontend / dfi-face-worker) stays on Railway/main.
 #
@@ -28,12 +28,12 @@ alerts:
 
 services:
   - name: carousel-backend
-    github:
-      repo: Codenuclei/video-image-search-indexer-quality
-      branch: pruned-craousel
-      deploy_on_push: false
-    dockerfile_path: Dockerfile
-    source_dir: backend
+    # Build backend/ from branch pruned-craousel and push this immutable tag.
+    image:
+      registry_type: DOCR
+      registry: mu-pitch-studio
+      repository: dfi-carousel-backend
+      tag: REPLACE_IMAGE_TAG
     http_port: 8000
     instance_count: 1
     # Size for Whisper fallback + InsightFace; raise if CPU-bound.
@@ -135,11 +135,11 @@ services:
       - key: CAROUSEL_GOOGLE_REDIRECT_URI
         scope: RUN_TIME
         type: GENERAL
-        value: ${_self.PUBLIC_URL}/auth/google/callback
+        value: https://REPLACE_BACKEND_PUBLIC_URL/auth/google/callback
       - key: PUBLIC_BASE_URL
         scope: RUN_TIME
         type: GENERAL
-        value: ${_self.PUBLIC_URL}
+        value: https://REPLACE_BACKEND_PUBLIC_URL
 
       - key: CAROUSEL_GOOGLE_CLIENT_ID
         scope: RUN_TIME

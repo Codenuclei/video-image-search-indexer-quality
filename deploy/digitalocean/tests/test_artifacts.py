@@ -62,8 +62,9 @@ def _service_names(text: str) -> list[str]:
 
 
 def test_backend_spec_single_service(backend_yaml: str):
-    assert "branch: pruned-craousel" in backend_yaml
-    assert "source_dir: backend" in backend_yaml
+    assert "registry_type: DOCR" in backend_yaml
+    assert "repository: dfi-carousel-backend" in backend_yaml
+    assert "tag: REPLACE_IMAGE_TAG" in backend_yaml
     assert "http_port: 8000" in backend_yaml
     assert "http_path: /health" in backend_yaml
     assert "dfi_video_transcripts" in backend_yaml
@@ -80,8 +81,9 @@ def test_backend_spec_single_service(backend_yaml: str):
 
 
 def test_frontend_spec_single_service(frontend_yaml: str):
-    assert "branch: pruned-craousel" in frontend_yaml
-    assert "source_dir: carousel-frontend" in frontend_yaml
+    assert "registry_type: DOCR" in frontend_yaml
+    assert "repository: dfi-carousel-frontend" in frontend_yaml
+    assert "tag: REPLACE_IMAGE_TAG" in frontend_yaml
     assert "http_port: 3002" in frontend_yaml
     assert "REPLACE_BACKEND_PUBLIC_URL" in frontend_yaml
     assert "API_PROXY_TARGET" in frontend_yaml

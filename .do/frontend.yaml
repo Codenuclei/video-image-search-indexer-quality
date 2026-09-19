@@ -1,4 +1,4 @@
-# DigitalOcean App Platform — Carousel Studio UI only (branch pruned-craousel).
+# DigitalOcean App Platform — Carousel Studio UI only.
 # Pair with .do/backend.yaml as a second App Platform app (one service each).
 # Search stack stays on Railway/main.
 #
@@ -29,12 +29,12 @@ alerts:
 
 services:
   - name: carousel-frontend
-    github:
-      repo: Codenuclei/video-image-search-indexer-quality
-      branch: pruned-craousel
-      deploy_on_push: false
-    dockerfile_path: Dockerfile
-    source_dir: carousel-frontend
+    # Build carousel-frontend/ from branch pruned-craousel after the backend URL is known.
+    image:
+      registry_type: DOCR
+      registry: mu-pitch-studio
+      repository: dfi-carousel-frontend
+      tag: REPLACE_IMAGE_TAG
     http_port: 3002
     instance_count: 1
     instance_size_slug: apps-s-1vcpu-1gb
