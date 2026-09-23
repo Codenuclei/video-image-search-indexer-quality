@@ -212,6 +212,10 @@ class Settings(BaseSettings):
     runpod_whisper_model_size: str = "base"
     runpod_whisper_timeout_seconds: float = 900.0
     runpod_whisper_poll_seconds: float = 2.0
+    # RunPod /run rejects bodies over ~10MB; long audio is sent as Opus chunks.
+    runpod_whisper_chunk_seconds: float = 600.0
+    runpod_whisper_max_audio_seconds: float = 7200.0
+    runpod_whisper_chunk_concurrency: int = 3
     runpod_face_endpoint_id: str = ""
     runpod_face_gpu_enabled: bool = False
     runpod_face_timeout_seconds: float = 180.0
