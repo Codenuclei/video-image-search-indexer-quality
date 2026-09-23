@@ -1342,7 +1342,7 @@ async def prioritize_drive_videos_for_carousel(
     items: list[dict[str, Any]] = []
     queued_ids: list[str] = []
     # Re-check after possible session clear during auth probe.
-    await session.expire_all()
+    session.expire_all()
     drive_user = (
         await session.execute(select(DriveUser).limit(1))
     ).scalar_one_or_none()
