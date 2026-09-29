@@ -37,7 +37,7 @@ class EnglishTranscriptError(RuntimeError):
 
 
 # Friendly copy for common outcomes (also used by the API ``message`` field).
-MSG_ALREADY_ENGLISH = "This transcript is already in English."
+MSG_ALREADY_ENGLISH = "Transcript is ready."
 MSG_TRANSLATED = "Translated to English and saved."
 MSG_STITCHED = "English transcript ready."
 MSG_NO_TRANSCRIPT = (
@@ -96,10 +96,10 @@ class EnglishTranscriptResult:
         if (self.message or "").strip():
             return self.message.strip()
         if self.translated:
-            return f"{MSG_TRANSLATED} ({self.cue_count} sentences)."
+            return f"{MSG_TRANSLATED} · {self.cue_count} lines."
         if self.already_english and self.source == "stored_en":
-            return f"{MSG_ALREADY_ENGLISH} ({self.cue_count} sentences)."
-        return f"{MSG_STITCHED} ({self.cue_count} sentences)."
+            return f"{MSG_ALREADY_ENGLISH} · {self.cue_count} lines."
+        return f"{MSG_STITCHED} · {self.cue_count} lines."
 
 
 def stitch_complete_sentences(
@@ -516,7 +516,7 @@ async def ensure_english_transcript(
                 language="en",
                 source="stored_en",
                 segments=sentences,
-                message=f"{MSG_ALREADY_ENGLISH} ({len(sentences)} sentences).",
+                message=f"{MSG_ALREADY_ENGLISH} · {len(sentences)} lines.",
             )
 
     def _from_stored(*, source: str, message: str) -> EnglishTranscriptResult:
@@ -554,7 +554,7 @@ async def ensure_english_transcript(
         )
         return _from_stored(
             source="stored_en",
-            message=f"{MSG_ALREADY_ENGLISH} ({len(old_segments)} sentences).",
+            message=f"{MSG_ALREADY_ENGLISH} · {len(old_segments)} lines.",
         )
 
     needs_translate = cues_need_english(
@@ -593,7 +593,7 @@ async def ensure_english_transcript(
         )
         return _from_stored(
             source="stored_en",
-            message=f"{MSG_ALREADY_ENGLISH} ({len(old_segments)} sentences).",
+            message=f"{MSG_ALREADY_ENGLISH} · {len(old_segments)} lines.",
         )
 
     deleted = await _replace_text_segments(
@@ -613,11 +613,11 @@ async def ensure_english_transcript(
         deleted,
     )
     if translated_flag:
-        user_msg = f"{MSG_TRANSLATED} ({len(sentences)} sentences)."
+        user_msg = f"{MSG_TRANSLATED} · {len(sentences)} lines."
     elif already_english:
-        user_msg = f"{MSG_ALREADY_ENGLISH} ({len(sentences)} sentences)."
+        user_msg = f"{MSG_ALREADY_ENGLISH} · {len(sentences)} lines."
     else:
-        user_msg = f"{MSG_STITCHED} ({len(sentences)} sentences)."
+        user_msg = f"{MSG_STITCHED} · {len(sentences)} lines."
     return EnglishTranscriptResult(
         drive_file_id=file_id,
         media_id=media.id,

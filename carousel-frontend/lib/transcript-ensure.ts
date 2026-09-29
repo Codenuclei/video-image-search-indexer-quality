@@ -181,7 +181,7 @@ export async function waitForEnglishTranscript(
       phase: "english_ready",
       message:
         english.message ||
-        `English transcript ready (${english.cue_count} sentences).`,
+        `Transcript ready · ${english.cue_count} lines.`,
     };
     opts?.onUpdate?.(ready);
     return { status: ready, english };

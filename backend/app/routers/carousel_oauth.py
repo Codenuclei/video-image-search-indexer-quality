@@ -127,7 +127,10 @@ async def auth_google(
         "response_type": "code",
         "scope": _SCOPES,
         "access_type": "offline",
-        "prompt": "consent",
+        # select_account avoids a half-filled email field (e.g. bare
+        # "@mastersunion.org") that blocks Next on Google's sign-in form.
+        # Never set login_hint / hd here — those caused the Provide flow bug.
+        "prompt": "select_account consent",
     }
     # Pass validated absolute return URL through Google's opaque state.
     resolved = resolve_oauth_return_url(settings, return_to)

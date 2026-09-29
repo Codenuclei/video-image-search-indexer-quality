@@ -488,29 +488,35 @@ export function DriveFolderPanel({
       await ensureGooglePickerApi();
 
       const origin = `${window.location.protocol}//${window.location.host}`;
-      const myDriveMediaView = new window.google.picker.DocsView(
-        window.google.picker.ViewId.DOCS_IMAGES_AND_VIDEOS
-      )
+      // Folders-only views (ViewId.FOLDERS + folder MIME). Using DOCS /
+      // DOCS_IMAGES_AND_VIDEOS surfaces Google's FILE TYPE filter and duplicate
+      // Shared drives tabs — wrong for "choose a folder to index".
+      const foldersViewId =
+        window.google.picker.ViewId.FOLDERS || window.google.picker.ViewId.DOCS;
+      const myDriveFolders = new window.google.picker.DocsView(foldersViewId)
         .setEnableDrives(false)
         .setIncludeFolders(true)
         .setSelectFolderEnabled(true)
-        .setLabel("My Drive images & videos");
+        .setMimeTypes(FOLDER_MIME)
+        .setLabel("My Drive folders");
 
-      const sharedDriveView = new window.google.picker.DocsView(window.google.picker.ViewId.DOCS)
+      const sharedDriveFolders = new window.google.picker.DocsView(foldersViewId)
         .setEnableDrives(true)
         .setIncludeFolders(true)
         .setSelectFolderEnabled(true)
+        .setMimeTypes(FOLDER_MIME)
         .setLabel("Shared drives");
 
       let pickerAlive = true;
       const builder = new window.google.picker.PickerBuilder()
         .setTitle("Choose a folder to pull videos from")
         .setOrigin(origin)
-        .addView(myDriveMediaView)
-        .addView(sharedDriveView)
+        .addView(myDriveFolders)
+        .addView(sharedDriveFolders)
         .setOAuthToken(accessToken)
         .setDeveloperKey(apiKey)
         .enableFeature(window.google.picker.Feature.SUPPORT_DRIVES)
+        .disableFeature(window.google.picker.Feature.MULTISELECT_ENABLED)
         .setCallback(async (data: any) => {
           if (data.action === window.google.picker.Action.CANCEL) {
             pickerAlive = false;
@@ -993,12 +999,12 @@ export function DriveFolderPanel({
           />
         </button>
       ) : (
-        <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+        <p className="mb-2 text-xs font-medium uppercase tracking-wide text-slate-500">
           Previously indexed folders
         </p>
       )}
       {(!guided || historyOpen) && (
-        <ul className="studio-scroll-fade mt-2 max-h-36 space-y-1.5 overflow-y-auto">
+        <ul className="studio-scroll-fade mt-1 max-h-36 space-y-1.5 overflow-y-auto pr-1">
           {historyFolders.map((f) => (
             <li
               key={f.id}
@@ -1490,13 +1496,13 @@ export function DriveFolderPanel({
                     return (
                       <li
                         key={v.id}
-                        className={`drive-select-modal__row flex items-start gap-3 px-3 py-2.5 ${
+                        className={`drive-select-modal__row flex items-center gap-3 px-3 py-2 ${
                           checked ? "is-selected" : ""
                         }`}
                       >
                         <input
                           type="checkbox"
-                          className="mt-1 h-4 w-4 shrink-0 cursor-pointer rounded border-slate-300"
+                          className="h-4 w-4 shrink-0 cursor-pointer rounded border-slate-300"
                           checked={checked}
                           onChange={() => toggleSelected(v.id)}
                           aria-label={`Select ${v.name}`}
@@ -1511,24 +1517,30 @@ export function DriveFolderPanel({
                             title={v.path || v.name}
                             data-testid={`${testIdPrefix}-open-${v.id}`}
                           >
-                            {folderPath ? `${folderPath} / ${v.name}` : v.name}
+                            {v.name}
                           </a>
-                          <span
-                            className={`mt-0.5 block text-[11px] ${
-                              statusTone[v.status] || "text-slate-500"
-                            }`}
-                          >
-                            {driveFileStatusLabel(v.status, v.error_message)}
-                          </span>
+                          {folderPath ? (
+                            <span className="mt-0.5 block truncate text-[11px] text-slate-400">
+                              {folderPath}
+                            </span>
+                          ) : null}
+                        </span>
+                        <span
+                          className={`shrink-0 self-center whitespace-nowrap text-[11px] font-medium ${
+                            statusTone[v.status] || "text-slate-500"
+                          }`}
+                          title={v.error_message || undefined}
+                        >
+                          {driveFileStatusLabel(v.status, v.error_message)}
                         </span>
                         <button
                           type="button"
-                          className="studio-btn studio-btn-primary shrink-0 px-2.5 py-1 text-xs"
+                          className="studio-btn studio-btn-primary shrink-0 self-center px-2.5 py-1 text-xs"
                           disabled={modalIndexing}
                           onClick={() => void indexSelected([v.id])}
                           data-testid={`${testIdPrefix}-index-this-${v.id}`}
                         >
-                          Index this
+                          Index
                         </button>
                       </li>
                     );

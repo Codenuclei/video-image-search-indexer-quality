@@ -14,7 +14,7 @@ export type TranscriptModalState = {
 
 function modalTitle(state: TranscriptModalState, failed: boolean, ready: boolean): string {
   if (failed) return "Couldn’t prepare transcript";
-  if (ready) return "English transcript ready";
+  if (ready) return "Transcript ready";
   const phase = (state.phase || "").toLowerCase();
   if (phase.includes("english")) return "Preparing English transcript";
   return "Getting transcripts from the video";
@@ -106,8 +106,14 @@ export function TranscriptProgressModal({
           ) : (
             <>
               <p className="text-sm text-emerald-700">
-                {state.message ||
-                  `English transcript ready (${state.cueCount ?? 0} sentences). You can continue.`}
+                {state.message?.toLowerCase().includes("already in english")
+                  ? `Transcript is ready${
+                      state.cueCount != null ? ` · ${state.cueCount} lines` : ""
+                    }.`
+                  : state.message ||
+                    `Transcript ready${
+                      state.cueCount != null ? ` · ${state.cueCount} lines` : ""
+                    }. You can continue.`}
               </p>
               <button
                 type="button"

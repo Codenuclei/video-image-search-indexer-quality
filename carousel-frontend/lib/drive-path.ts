@@ -19,25 +19,38 @@ export function driveFolderPath(
   return slash >= 0 ? full.slice(0, slash) : "";
 }
 
-/** Human-readable status line, including skip reasons when present. */
+/** Human-readable status line, including skip reasons when present.
+ *
+ * Keep this short — never echo the file path/name (that was the #11
+ * "extra space" / clutter bug in the Drive select modal).
+ */
 export function driveFileStatusLabel(
   status: string | null | undefined,
   errorMessage?: string | null
 ): string {
   const key = (status || "").trim().toLowerCase();
   const err = (errorMessage || "").trim();
-  if (key === "pending") return "Waiting to index";
+  if (key === "pending") return "Waiting";
   if (key === "processing") return "Indexing…";
   if (key === "processed") return "Ready";
-  if (key === "error") return "Couldn’t index";
+  if (key === "error") {
+    // Prefer a short machine reason (before ':') — never a Drive path.
+    if (err && !err.includes("/") && !err.includes("\\")) {
+      const short = err.split(":")[0].replace(/_/g, " ").trim();
+      if (short && short.length <= 28 && short.toLowerCase() !== key) {
+        return `Failed · ${short}`;
+      }
+    }
+    return "Failed";
+  }
   if (key === "skipped") {
     if (err.toLowerCase().startsWith("video_too_large")) {
       const m = err.match(/exceeds\s+(\d+)\s*GB/i);
-      return m ? `Skipped · over ${m[1]}GB` : "Skipped · file too large";
+      return m ? `Skipped · over ${m[1]}GB` : "Skipped · too large";
     }
-    if (err) {
-      const short = err.split(":")[0].replace(/_/g, " ");
-      return `Skipped · ${short}`;
+    if (err && !err.includes("/") && !err.includes("\\")) {
+      const short = err.split(":")[0].replace(/_/g, " ").trim();
+      if (short && short.length <= 28) return `Skipped · ${short}`;
     }
     return "Skipped";
   }

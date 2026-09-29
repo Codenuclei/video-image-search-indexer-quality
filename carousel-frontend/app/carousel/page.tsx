@@ -950,12 +950,12 @@ export default function CarouselSearchPage() {
           videoName: next.name,
           message:
             english.message ||
-            `English transcript ready (${next.cue_count} sentences).`,
+            `Transcript ready · ${next.cue_count} lines.`,
           phase: "english_ready",
           cueCount: next.cue_count,
           error: null,
         });
-        setUploadNote(`Using “${next.name}” (${next.cue_count} sentences).`);
+        setUploadNote(`Using “${next.name}” (${next.cue_count} lines).`);
         return next;
       }
 
@@ -1009,12 +1009,12 @@ export default function CarouselSearchPage() {
         videoName: next.name,
         message:
           status.message ||
-          `English transcript ready (${next.cue_count} sentences).`,
+          `Transcript ready · ${next.cue_count} lines.`,
         phase: status.phase || "english_ready",
         cueCount: next.cue_count,
         error: null,
       });
-      setUploadNote(`Using “${next.name}” (${next.cue_count} sentences).`);
+      setUploadNote(`Using “${next.name}” (${next.cue_count} lines).`);
       return next;
     } catch (e) {
       if (e instanceof DOMException && e.name === "AbortError") return null;
@@ -3919,6 +3919,16 @@ function VideoPickList({
                   {isDupe ? videoDisambiguator(v) : v.path || v.mime_type}
                 </span>
               </span>
+              <a
+                href={`https://drive.google.com/file/d/${encodeURIComponent(v.id)}/view`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="shrink-0 text-[11px] font-medium text-blue-600 underline-offset-2 hover:underline"
+                onClick={(e) => e.stopPropagation()}
+                title="Open in Google Drive"
+              >
+                Open
+              </a>
               <VideoListThumb video={v} />
             </button>
           </li>

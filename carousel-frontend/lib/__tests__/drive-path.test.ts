@@ -30,4 +30,13 @@ describe("driveFileStatusLabel", () => {
       driveFileStatusLabel("skipped", "video_too_large: exceeds 10GB (size=1)")
     ).toBe("Skipped · over 10GB");
   });
+
+  it("keeps error labels short without paths", () => {
+    expect(driveFileStatusLabel("error", "23rd July Images/IMG_6892.MOV")).toBe(
+      "Failed"
+    );
+    expect(driveFileStatusLabel("error", "corrupt_media: unreadable")).toBe(
+      "Failed · corrupt media"
+    );
+  });
 });
