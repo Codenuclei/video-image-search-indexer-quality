@@ -2019,11 +2019,33 @@
   border-color: #94a3b8;
   box-shadow: 0 0 0 3px rgba(15, 23, 42, 0.08);
 }
+/* Uniform gap between theme cards regardless of feedback / refs panel height. */
+.carousel-studio .studio-theme-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+  margin: 1rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+.carousel-studio .studio-theme-list > li {
+  margin: 0;
+}
 .carousel-studio .studio-theme-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
   border-radius: 0.65rem;
   border: 1px solid #e2e8f0;
   background: #fff;
-  padding: 0.15rem 0.15rem 0.45rem;
+  padding: 0.25rem;
+}
+.carousel-studio .studio-theme-extras {
+  padding: 0 0.5rem 0.25rem;
+}
+.carousel-studio .studio-theme-extras > .item-feedback:first-child,
+.carousel-studio .studio-theme-extras > .item-refs:first-child {
+  margin-top: 0;
 }
 .carousel-studio .topics-hooks-hook .item-feedback,
 .carousel-studio .topics-hooks-topic .item-feedback {
@@ -2061,6 +2083,11 @@
 .carousel-studio .item-refs-note {
   font-size: 0.65rem;
   color: #64748b;
+}
+.carousel-studio .item-refs-note.is-success {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #15803d;
 }
 .carousel-studio .item-refs-panel {
   margin-top: 0.4rem;
@@ -2147,18 +2174,21 @@
   background: #fef2f2;
 }
 .carousel-studio .item-refs-tabs {
-  display: flex;
-  gap: 0.25rem;
+  display: inline-flex;
+  gap: 0.15rem;
   margin-bottom: 0.45rem;
+  padding: 0.15rem;
+  border-radius: 0.45rem;
+  background: #f1f5f9;
 }
 .carousel-studio .item-refs-tab {
   display: inline-flex;
   align-items: center;
   gap: 0.25rem;
-  font-size: 0.65rem;
+  font-size: 0.7rem;
   font-weight: 600;
   color: #64748b;
-  padding: 0.25rem 0.5rem;
+  padding: 0.35rem 0.65rem;
   border-radius: 0.35rem;
   border: 1px solid transparent;
 }
@@ -2166,6 +2196,7 @@
   color: #0f172a;
   background: #fff;
   border-color: #e2e8f0;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
 }
 .carousel-studio .item-refs-form {
   display: flex;
@@ -2250,7 +2281,7 @@
   height: 100%;
   object-fit: cover;
 }
-.carousel-studio .item-refs-frame-btn span {
+.carousel-studio .item-refs-frame-btn > .item-refs-frame-ts {
   position: absolute;
   left: 0.2rem;
   bottom: 0.15rem;
@@ -2261,6 +2292,16 @@
 }
 .carousel-studio .item-refs-frame-btn:hover:not(:disabled) {
   border-color: #0f172a;
+}
+.carousel-studio .test-frame-candidate .frame-img-fallback {
+  display: flex;
+  width: 100%;
+  aspect-ratio: 4 / 5;
+}
+.carousel-studio .item-refs-frame-btn > span[role="img"] {
+  display: flex;
+  width: 100%;
+  height: 100%;
 }
 .carousel-studio .item-refs-dismiss {
   margin-top: 0.35rem;

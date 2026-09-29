@@ -4,9 +4,9 @@ import { ArrowRight } from "lucide-react";
 import HeroVideoBg from "./HeroVideoBg";
 
 const FEATURES = [
-  { num: "01", label: "Themes & hooks" },
-  { num: "02", label: "Frame select" },
-  { num: "03", label: "Instant cache" },
+  { num: "01", label: "Themes & hooks", blurb: "Pull non-overlapping beats from the transcript" },
+  { num: "02", label: "Frame select", blurb: "Pick stills that match each slide’s moment" },
+  { num: "03", label: "Polish & export", blurb: "Edit copy, score quality, then ship the carousel" },
 ] as const;
 
 export default function Hero() {
@@ -43,8 +43,8 @@ export default function Hero() {
           </div>
         </div>
 
-        <div className="mt-auto w-full max-w-5xl px-4 pt-10 sm:px-6 sm:pt-14">
-          <div className="border border-b-0 border-gray-200 bg-white/90 px-5 pb-0 pt-8 shadow-sm backdrop-blur-sm sm:px-8 sm:pt-12 md:px-12 md:pt-16">
+        <div className="mt-auto w-full max-w-5xl px-4 pb-10 pt-10 sm:px-6 sm:pb-14 sm:pt-14">
+          <div className="overflow-hidden rounded-t-2xl border border-gray-200 bg-white/95 px-5 pb-5 pt-8 shadow-sm backdrop-blur-sm sm:px-8 sm:pb-8 sm:pt-12 md:px-12 md:pt-16">
             <div className="grid gap-6 md:grid-cols-2 md:gap-16">
               <div>
                 <p className="text-[11px] font-medium uppercase tracking-[0.2em] text-[#191919]/50">
@@ -66,19 +66,22 @@ export default function Hero() {
 
             <div className="mt-6 h-px w-full bg-gray-200 sm:mt-8 md:mt-10" />
 
-            <div className="grid gap-2 py-2 sm:grid-cols-3 sm:gap-3 sm:py-3">
+            <div className="mt-4 grid gap-3 sm:grid-cols-3 sm:gap-4">
               {FEATURES.map((item) => (
                 <a
                   key={item.num}
                   href="/carousel"
-                  className="group flex cursor-pointer items-center justify-between bg-[#F4F3F3] px-4 py-3.5 text-left transition-all duration-200 hover:bg-[#eaeaea] sm:px-6 sm:py-4"
+                  className="group flex flex-col gap-2 rounded-xl bg-[#F4F3F3] px-4 py-4 text-left transition-all duration-200 hover:bg-[#eaeaea] sm:px-5 sm:py-5"
                 >
-                  <span className="text-sm text-[#191919]">
-                    <span className="text-[#191919]/40">{item.num}</span>
-                    <span className="mx-2 text-[#191919]/30">/</span>
-                    <span className="font-medium">{item.label}</span>
+                  <span className="flex items-center justify-between gap-2 text-sm text-[#191919]">
+                    <span>
+                      <span className="text-[#191919]/40">{item.num}</span>
+                      <span className="mx-2 text-[#191919]/30">/</span>
+                      <span className="font-medium">{item.label}</span>
+                    </span>
+                    <ArrowRight className="h-4 w-4 shrink-0 text-gray-400 transition-all duration-200 group-hover:translate-x-0.5 group-hover:text-gray-700" />
                   </span>
-                  <ArrowRight className="h-4 w-4 text-gray-400 transition-all duration-200 group-hover:translate-x-0.5 group-hover:text-gray-700" />
+                  <span className="text-xs leading-relaxed text-[#191919]/55">{item.blurb}</span>
                 </a>
               ))}
             </div>

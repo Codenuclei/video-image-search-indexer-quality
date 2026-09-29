@@ -52,14 +52,14 @@ export default function LibraryPage() {
           </Link>
           <div className="flex items-center gap-3">
             <span
-              className="hidden text-sm font-medium text-slate-900 sm:inline"
+              className="hidden h-9 items-center rounded-lg border border-slate-900 bg-slate-900 px-4 text-sm font-medium text-white shadow-sm sm:inline-flex"
               aria-current="page"
             >
               Library
             </span>
             <Link
               href="/carousel"
-              className="inline-flex h-9 items-center rounded-lg border border-slate-900 bg-slate-900 px-4 text-sm font-medium text-white shadow-sm"
+              className="text-sm text-slate-500 transition-colors hover:text-slate-900"
             >
               Studio
             </Link>
@@ -67,7 +67,7 @@ export default function LibraryPage() {
         </div>
       </nav>
 
-      <main className="relative z-10 mx-auto max-w-5xl px-4 pb-24 pt-8 sm:px-6 sm:pt-10">
+      <main className="relative z-10 mx-auto max-w-5xl px-4 pb-12 pt-8 sm:px-6 sm:pt-10">
         <header className="mb-8">
           <p className="text-[11px] font-medium uppercase tracking-[0.2em] text-slate-500">
             Library
@@ -128,11 +128,15 @@ export default function LibraryPage() {
         <section>
           <h2 className="mb-3 text-sm font-semibold text-slate-800">All videos</h2>
           {loading && videos.length === 0 ? (
-            <p className="text-sm text-slate-500">
-              <LoadingLabel>Loading library…</LoadingLabel>
-            </p>
+            <div className="flex flex-col items-center justify-center gap-2 rounded-xl bg-slate-50 px-4 py-8 text-center">
+              <p className="text-sm text-slate-500">
+                <LoadingLabel>Loading library…</LoadingLabel>
+              </p>
+            </div>
           ) : videos.length === 0 ? (
-            <p className="text-sm text-slate-500">No videos in the library yet.</p>
+            <div className="flex flex-col items-center justify-center gap-2 rounded-xl bg-slate-50 px-4 py-8 text-center">
+              <p className="text-sm text-slate-500">No videos in the library yet.</p>
+            </div>
           ) : (
             <ul className="divide-y divide-slate-200 overflow-hidden rounded-xl border border-slate-200 bg-white/90">
               {videos.map((v) => (

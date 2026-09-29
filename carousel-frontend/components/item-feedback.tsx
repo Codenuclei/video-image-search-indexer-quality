@@ -29,9 +29,9 @@ export function ItemFeedback({
   );
   const [comment, setComment] = useState(initial?.comment ?? "");
   const [open, setOpen] = useState(Boolean(initial?.comment));
-  const [saving, setSaving] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const seq = useRef(0);
 
   useEffect(() => {
     setRating((initial?.rating as "up" | "down" | null | undefined) ?? null);
@@ -45,7 +45,7 @@ export function ItemFeedback({
 
   async function persist(nextRating: "up" | "down" | null, nextComment: string) {
     if (!driveFileId || !targetKey) return;
-    setSaving(true);
+    const mine = ++seq.current;
     setNote(null);
     try {
       const res = await apiClient.carouselFeedbackUpsert({
@@ -56,14 +56,15 @@ export function ItemFeedback({
         rating: nextRating,
         comment: nextComment,
       });
+      // A newer click superseded this save; don't let the stale response overwrite it.
+      if (mine !== seq.current) return;
       onSaved?.(res.item);
       setNote("Saved");
       if (timer.current) clearTimeout(timer.current);
       timer.current = setTimeout(() => setNote(null), 1200);
     } catch (e) {
+      if (mine !== seq.current) return;
       setNote(formatApiError(e, "Could not save feedback"));
-    } finally {
-      setSaving(false);
     }
   }
 
@@ -95,7 +96,6 @@ export function ItemFeedback({
           aria-pressed={rating === "up"}
           aria-label="Thumbs up"
           title="Helpful"
-          disabled={saving}
           onClick={() => onThumb("up")}
         >
           <ThumbsUp size={12} strokeWidth={2.25} />
@@ -106,7 +106,6 @@ export function ItemFeedback({
           aria-pressed={rating === "down"}
           aria-label="Thumbs down"
           title="Not helpful"
-          disabled={saving}
           onClick={() => onThumb("down")}
         >
           <ThumbsDown size={12} strokeWidth={2.25} />
@@ -127,7 +126,6 @@ export function ItemFeedback({
           rows={2}
           value={comment}
           placeholder={`Short note on this ${kind}…`}
-          disabled={saving}
           onChange={(e) => setComment(e.target.value)}
           onBlur={onCommentBlur}
           maxLength={800}

@@ -20,6 +20,7 @@ import {
   type CarouselVerbatimItem,
 } from "@/lib/api";
 import { LoadingLabel } from "@/components/ui";
+import { FrameImg } from "@/components/frame-img";
 import { ItemFeedback } from "@/components/item-feedback";
 import { ItemReferences } from "@/components/item-references";
 import { useDismissible } from "@/lib/use-dismissible";
@@ -816,10 +817,8 @@ export function TranscriptFramePicker({
                   }
                   onClick={() => toggle(item.frame_ts)}
                 >
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
+                  <FrameImg
                     src={apiAssetUrl(item.preview_url)}
-                    alt=""
                     className="topics-hooks-frame-img"
                     loading="lazy"
                     width={1080}

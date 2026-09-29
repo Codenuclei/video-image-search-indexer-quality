@@ -19,6 +19,14 @@ const API_BASE =
 
 export { API_BASE };
 
+/**
+ * Client abort budget for job-start POSTs (extract / hooks / generate / select-images).
+ * The backend answers (or hands back a durable job id) within ~75s, so the client
+ * must outlast that plus proxy buffering — otherwise it aborts a call that is
+ * still succeeding and the user sees a spurious timeout.
+ */
+export const INITIATE_TIMEOUT_MS = 150_000;
+
 export const SERVICE_UNAVAILABLE_MESSAGE =
   "Can't reach the API right now. It may be starting up or temporarily unavailable.";
 
@@ -603,6 +611,35 @@ export type CarouselItemReference = {
   updated_at?: string | null;
 };
 
+/**
+ * Friendly message for a 5xx from the API / proxy. A bare "Internal Server Error"
+ * (or a gateway 502/504) usually means the upstream call outlived the proxy or
+ * the worker restarted mid-request; the durable job may still be running.
+ * The message names the action so it isn't always blamed on "extract".
+ */
+export function serverErrorMessage(
+  path: string,
+  status: number,
+  body: string
+): string | null {
+  const text = (body || "").trim();
+  const gateway = status === 502 || status === 504 || status === 524;
+  const bare = /^internal server error$/i.test(text) || gateway;
+  if (!bare) return null;
+  const action = /\/pipeline\/extract/.test(path)
+    ? "topic extract"
+    : /\/pipeline\/themes/.test(path)
+      ? "theme generation"
+      : /\/pipeline\/generate/.test(path)
+        ? "copy generation"
+        : /\/pipeline\/select-images/.test(path)
+          ? "image selection"
+          : /transcript-frames/.test(path)
+            ? "frame loading"
+            : "this request";
+  return `The API took too long or restarted during ${action}. Progress is saved — wait a few seconds and retry.`;
+}
+
 async function api<T>(
   path: string,
   init?: RequestInit & { timeoutMs?: number; silent?: boolean }
@@ -632,13 +669,7 @@ async function api<T>(
     if (!res.ok) {
       const text = await res.text();
       if (res.status >= 500) {
-        const textBody = text.trim();
-        if (/^internal server error$/i.test(textBody)) {
-          throw new Error(
-            "The API proxy timed out before extract finished. Soft-refresh the studio and try again — long extract calls now go through a durable proxy."
-          );
-        }
-        throw new Error(SERVICE_UNAVAILABLE_MESSAGE);
+        throw new Error(serverErrorMessage(path, res.status, text) ?? SERVICE_UNAVAILABLE_MESSAGE);
       }
       throw new Error(text || res.statusText);
     }
@@ -679,6 +710,17 @@ const withCarouselAspect = (asset: string) => {
 export const apiAssetUrl = (path: string) =>
   withCarouselAspect(path.startsWith("http") ? path : `${API_BASE}${path}`);
 
+/**
+ * `cache_only=1` frame URLs 404 when the JPEG isn't cached yet. Returns the same
+ * URL without that flag (so the backend may extract it), or null if there's nothing to strip.
+ */
+export function withoutCacheOnly(url: string): string | null {
+  if (!/[?&]cache_only=/.test(url)) return null;
+  return url
+    .replace(/([?&])cache_only=[^&#]*&?/, "$1")
+    .replace(/[?&]$/, "");
+}
+
 export const cacheOnlyAssetUrl = (path: string) => {
   const asset = apiAssetUrl(path);
   if (!asset.includes("/media/video/") || !asset.includes("/frame?")) return asset;
@@ -694,19 +736,28 @@ export const apiClient = {
       body: JSON.stringify({ urls, index_now: indexNow, download_local: downloadLocal }),
       timeoutMs: 120_000,
     }),
-  carouselRecentVideos: (limit = 5, captionedOnly = true) =>
-    api<{ items: CarouselRecentVideo[]; captioned_only?: boolean }>(
-      `/search/carousel/recent-videos?limit=${limit}&captioned_only=${captionedOnly ? "true" : "false"}`,
+  /** `rootFolderId` scopes the list to the active Drive folder (backend root_folder_id). */
+  carouselRecentVideos: (limit = 5, captionedOnly = true, rootFolderId?: string | null) => {
+    const params = new URLSearchParams({
+      limit: String(limit),
+      captioned_only: captionedOnly ? "true" : "false",
+    });
+    if (rootFolderId) params.set("root_folder_id", rootFolderId);
+    return api<{ items: CarouselRecentVideo[]; captioned_only?: boolean }>(
+      `/search/carousel/recent-videos?${params}`,
       { timeoutMs: 15_000 }
-    ),
+    );
+  },
   carouselVideos: (opts?: {
     q?: string;
     limit?: number;
     offset?: number;
     captionedOnly?: boolean;
+    rootFolderId?: string | null;
   }) => {
     const params = new URLSearchParams();
     if (opts?.q) params.set("q", opts.q);
+    if (opts?.rootFolderId) params.set("root_folder_id", opts.rootFolderId);
     params.set("limit", String(opts?.limit ?? 20));
     params.set("offset", String(opts?.offset ?? 0));
     params.set("captioned_only", opts?.captionedOnly === false ? "false" : "true");
@@ -761,7 +812,7 @@ export const apiClient = {
         generate: Boolean(opts?.generate),
       }),
       signal: opts?.signal,
-      timeoutMs: 60_000,
+      timeoutMs: 90_000,
     }),
   carouselPipelineThemesJobStatus: (jobId: number, opts?: { signal?: AbortSignal }) =>
     api<CarouselPipelineThemesResponse>(
@@ -849,7 +900,7 @@ export const apiClient = {
         // Studio extracts topics first; hooks come after topic selection.
         include_hooks: body.include_hooks ?? false,
       }),
-      timeoutMs: body.force || body.generate ? 90_000 : 90_000,
+      timeoutMs: INITIATE_TIMEOUT_MS,
     });
     if (first.status !== "running" || !first.job_id) return first;
     const started = Date.now();
@@ -901,7 +952,7 @@ export const apiClient = {
         max_hooks: body.max_hooks ?? 4,
         generate: body.generate ?? true,
       }),
-      timeoutMs: 90_000,
+      timeoutMs: INITIATE_TIMEOUT_MS,
     });
     if (first.status !== "running" || !first.job_id) return first;
     const started = Date.now();
@@ -943,7 +994,7 @@ export const apiClient = {
     >("/search/carousel/pipeline/generate", {
       method: "POST",
       body: JSON.stringify({ ...body, select_images: Boolean(body.select_images) }),
-      timeoutMs: 90_000,
+      timeoutMs: INITIATE_TIMEOUT_MS,
     });
     if (first.status !== "running" || !first.job_id) return first;
     const started = Date.now();
@@ -1104,7 +1155,7 @@ export const apiClient = {
     const first = await api<CarouselOutlineResponse>("/search/carousel/pipeline/select-images", {
       method: "POST",
       body: JSON.stringify(body),
-      timeoutMs: 90_000,
+      timeoutMs: INITIATE_TIMEOUT_MS,
     });
     if (!first.preparing && first.status !== "preparing") {
       return first;
@@ -1259,6 +1310,7 @@ export const apiClient = {
     limit?: number;
     timeoutMs?: number;
     silent?: boolean;
+    signal?: AbortSignal;
   }) => {
     const params = new URLSearchParams({
       drive_file_id: opts.driveFileId,
@@ -1271,6 +1323,7 @@ export const apiClient = {
       {
         timeoutMs: opts.timeoutMs ?? 180_000,
         silent: opts.silent,
+        signal: opts.signal,
       }
     );
   },

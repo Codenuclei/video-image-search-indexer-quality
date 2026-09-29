@@ -50,6 +50,9 @@ async def record_indexed_folder(
         row.is_active = mark_active if mark_active else row.is_active
         if mark_active:
             row.last_indexed_at = now
+            # Explicitly (re)selecting a folder brings it back into history.
+            # Backfill / event-photo links pass mark_active=False and never un-hide.
+            row.hidden = False
         if drive_user is not None:
             row.drive_user_id = drive_user.id
             row.drive_user_email = drive_user.email
@@ -60,11 +63,16 @@ async def record_indexed_folder(
     return row
 
 
-async def list_indexed_folders(session: AsyncSession) -> list[IndexedFolder]:
+async def list_indexed_folders(
+    session: AsyncSession, *, include_hidden: bool = False
+) -> list[IndexedFolder]:
+    stmt = select(IndexedFolder)
+    if not include_hidden:
+        stmt = stmt.where(IndexedFolder.hidden.is_(False))
     rows = list(
         (
             await session.execute(
-                select(IndexedFolder).order_by(
+                stmt.order_by(
                     IndexedFolder.is_active.desc(),
                     IndexedFolder.last_indexed_at.desc(),
                 )
@@ -74,6 +82,33 @@ async def list_indexed_folders(session: AsyncSession) -> list[IndexedFolder]:
         .all()
     )
     return rows
+
+
+class IndexedFolderHideError(Exception):
+    """Raised when a folder cannot be hidden (missing or currently selected)."""
+
+    def __init__(self, message: str, *, status_code: int) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
+async def hide_indexed_folder(session: AsyncSession, folder_id: str) -> IndexedFolder:
+    """Soft-hide a history row. Never touches ``drive_files`` or indexed media."""
+    row = await session.get(IndexedFolder, folder_id)
+    if row is None:
+        raise IndexedFolderHideError("Indexed folder not found", status_code=404)
+    user = (await session.execute(select(DriveUser).limit(1))).scalar_one_or_none()
+    if user is not None and user.selected_folder_id == folder_id:
+        raise IndexedFolderHideError(
+            "This is the folder currently selected for Drive sync. "
+            "Change or disconnect the folder first, then remove it from history.",
+            status_code=409,
+        )
+    row.hidden = True
+    row.is_active = False
+    await session.flush()
+    logger.info("Hid indexed folder history row %s (%s)", row.name, folder_id)
+    return row
 
 
 async def _guess_root_folder_name(session: AsyncSession, root_folder_id: str) -> str:

@@ -33,6 +33,7 @@ import {
   type CarouselItemReference,
   type CarouselOutlineSlide,
 } from "@/lib/api";
+import { FrameImg } from "@/components/frame-img";
 import {
   testApi,
   testAssetUrl,
@@ -678,8 +679,7 @@ export function TestIgPost({
                         applySlideImage(r.image_url!, r.frame_ts ?? current.frame_ts)
                       }
                     >
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={src} alt="" className="h-12 w-12 object-cover" />
+                      <FrameImg src={src} className="h-12 w-12 object-cover" />
                     </button>
                   </li>
                 );
@@ -719,8 +719,7 @@ export function TestIgPost({
                   : testAssetUrl(r.image_url || "");
               return (
                 <li key={`img-${r.id}`} className="flex items-center gap-2 text-xs">
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={src} alt="" className="h-8 w-8 rounded object-cover" />
+                  <FrameImg src={src} className="h-8 w-8 rounded object-cover" />
                   <span className="truncate">
                     <span className="font-medium">Image</span>
                     {r.note ? ` · ${r.note}` : ""}
@@ -1014,8 +1013,7 @@ export function TestIgPost({
                               aria-pressed={selected}
                               onClick={() => pickCandidate(item)}
                             >
-                              {/* eslint-disable-next-line @next/next/no-img-element */}
-                              <img src={src} alt="" loading="lazy" />
+                              <FrameImg src={src} loading="lazy" />
                               {badge ? (
                                 <span className="test-frame-candidate-badge">{badge}</span>
                               ) : item.hdr ? (
@@ -1383,14 +1381,12 @@ function TestFramePicker({
                   aria-pressed={on}
                   onClick={() => toggle(item.frame_ts)}
                 >
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
+                  <FrameImg
                     src={
                       item.source === "browser"
                         ? item.preview_url
                         : testAssetUrl(item.preview_url)
                     }
-                    alt=""
                     className="topics-hooks-frame-img"
                     width={1080}
                     height={1350}

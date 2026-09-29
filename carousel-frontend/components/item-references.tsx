@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ImagePlus, Link2, Trash2, Type, Upload } from "lucide-react";
+import { toast } from "sonner";
 import {
   apiAssetUrl,
   apiClient,
@@ -9,7 +10,8 @@ import {
   type CarouselItemReference,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import { uniquePickerFrames } from "@/app/carousel/utils";
+import { formatTimestamp, uniquePickerFrames } from "@/app/carousel/utils";
+import { FrameImg } from "@/components/frame-img";
 
 type Props = {
   driveFileId: string;
@@ -51,11 +53,19 @@ export function ItemReferences({
   const [saving, setSaving] = useState(false);
   const [pickingFrame, setPickingFrame] = useState(false);
   const [loadingFrames, setLoadingFrames] = useState(false);
+  const [frameError, setFrameError] = useState<string | null>(null);
+  const frameAbortRef = useRef<AbortController | null>(null);
   const [frameItems, setFrameItems] = useState<
     { text: string; frame_ts: number; preview_url: string }[]
   >([]);
   const [status, setStatus] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const statusTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => () => {
+    if (statusTimer.current) clearTimeout(statusTimer.current);
+    frameAbortRef.current?.abort();
+  }, []);
 
   useEffect(() => {
     if (items.length > 0) setOpen(true);
@@ -70,6 +80,15 @@ export function ItemReferences({
     [items]
   );
   const count = items.length;
+
+  function announceAdded() {
+    // Keep the panel open so the new chip is visible; make the confirmation obvious.
+    setOpen(true);
+    setStatus("Reference added");
+    toast.success("Reference added");
+    if (statusTimer.current) clearTimeout(statusTimer.current);
+    statusTimer.current = setTimeout(() => setStatus(null), 2500);
+  }
 
   async function addImage(url: string, frameTs?: number | null) {
     const trimmed = url.trim();
@@ -91,8 +110,7 @@ export function ItemReferences({
       setImageUrl("");
       setNote("");
       setPickingFrame(false);
-      setStatus("Saved");
-      setTimeout(() => setStatus(null), 1200);
+      announceAdded();
     } catch (e) {
       setStatus(formatApiError(e, "Could not save image ref"));
     } finally {
@@ -118,8 +136,7 @@ export function ItemReferences({
       onAdded?.(res.item);
       setCopyText("");
       setNote("");
-      setStatus("Saved");
-      setTimeout(() => setStatus(null), 1200);
+      announceAdded();
     } catch (e) {
       setStatus(formatApiError(e, "Could not save copy ref"));
     } finally {
@@ -144,8 +161,12 @@ export function ItemReferences({
 
   async function loadFrames() {
     if (frameStartSec == null || !driveFileId) return;
+    frameAbortRef.current?.abort();
+    const ac = new AbortController();
+    frameAbortRef.current = ac;
     setPickingFrame(true);
     setLoadingFrames(true);
+    setFrameError(null);
     setStatus(null);
     try {
       const res = await apiClient.carouselTranscriptFrames({
@@ -155,15 +176,27 @@ export function ItemReferences({
         limit: 16,
         timeoutMs: 180_000,
         silent: true,
+        signal: ac.signal,
       });
+      if (ac.signal.aborted) return;
       setFrameItems(uniquePickerFrames(res.items ?? []));
-      if (!(res.items ?? []).length) setStatus("No cached frames in this window");
     } catch (e) {
-      setStatus(formatApiError(e, "Could not load frames"));
-      setPickingFrame(false);
+      if (ac.signal.aborted) return;
+      // Keep the picker open with a clear error + Retry instead of silently closing.
+      setFrameItems([]);
+      setFrameError(formatApiError(e, "Could not load frames"));
     } finally {
-      setLoadingFrames(false);
+      // Only the latest request may clear the spinner (a cancelled one must not).
+      if (frameAbortRef.current === ac) setLoadingFrames(false);
     }
+  }
+
+  function cancelFrames() {
+    frameAbortRef.current?.abort();
+    frameAbortRef.current = null;
+    setLoadingFrames(false);
+    setPickingFrame(false);
+    setFrameError(null);
   }
 
   async function uploadFile(file: File | null | undefined) {
@@ -187,8 +220,7 @@ export function ItemReferences({
       setImageUrl("");
       setNote("");
       setPickingFrame(false);
-      setStatus("Saved");
-      setTimeout(() => setStatus(null), 1200);
+      announceAdded();
     } catch (e) {
       setStatus(formatApiError(e, "Could not upload image"));
     } finally {
@@ -212,9 +244,16 @@ export function ItemReferences({
           onClick={() => setOpen((v) => !v)}
         >
           <Link2 size={11} strokeWidth={2.25} />
-          {open ? "Hide refs" : count ? `Refs (${count})` : "Attach refs"}
+          {open ? "Hide refs" : count ? `Refs (${count})` : "Add ref"}
         </button>
-        {status ? <span className="item-refs-note">{status}</span> : null}
+        {status ? (
+          <span
+            className={cn("item-refs-note", status === "Reference added" && "is-success")}
+            role="status"
+          >
+            {status}
+          </span>
+        ) : null}
       </div>
 
       {open ? (
@@ -226,8 +265,7 @@ export function ItemReferences({
                 return (
                   <li key={r.id} className="item-refs-chip is-image">
                     {src ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img src={src} alt="" className="item-refs-thumb" />
+                      <FrameImg src={src} className="item-refs-thumb" />
                     ) : (
                       <span className="item-refs-thumb is-empty" />
                     )}
@@ -236,7 +274,7 @@ export function ItemReferences({
                       <span className="item-refs-chip-text" title={r.image_url ?? ""}>
                         {r.note ||
                           (r.frame_ts != null
-                            ? `Frame @ ${r.frame_ts.toFixed(1)}s`
+                            ? `Frame @ ${formatTimestamp(r.frame_ts)}`
                             : r.image_url?.slice(0, 48) || "Image")}
                       </span>
                     </span>
@@ -368,9 +406,34 @@ export function ItemReferences({
               {pickingFrame ? (
                 <div className="item-refs-frames">
                   {loadingFrames ? (
-                    <p className="item-refs-hint">Loading frames…</p>
+                    <p className="item-refs-hint">
+                      Loading frames… this can take a minute for uncached video.{" "}
+                      <button type="button" className="item-refs-dismiss" onClick={cancelFrames}>
+                        Cancel
+                      </button>
+                    </p>
+                  ) : frameError ? (
+                    <p className="item-refs-hint" role="alert">
+                      {frameError}{" "}
+                      <button
+                        type="button"
+                        className="item-refs-dismiss"
+                        onClick={() => void loadFrames()}
+                      >
+                        Retry
+                      </button>
+                    </p>
                   ) : frameItems.length === 0 ? (
-                    <p className="item-refs-hint">No frames available here.</p>
+                    <p className="item-refs-hint">
+                      No frames available here.{" "}
+                      <button
+                        type="button"
+                        className="item-refs-dismiss"
+                        onClick={() => void loadFrames()}
+                      >
+                        Retry
+                      </button>
+                    </p>
                   ) : (
                     <ul className="item-refs-frame-grid">
                       {frameItems.map((f) => (
@@ -382,9 +445,8 @@ export function ItemReferences({
                             title={f.text}
                             onClick={() => void addImage(f.preview_url, f.frame_ts)}
                           >
-                            {/* eslint-disable-next-line @next/next/no-img-element */}
-                            <img src={apiAssetUrl(f.preview_url)} alt="" />
-                            <span>{f.frame_ts.toFixed(1)}s</span>
+                            <FrameImg src={apiAssetUrl(f.preview_url)} />
+                            <span className="item-refs-frame-ts">{formatTimestamp(f.frame_ts)}</span>
                           </button>
                         </li>
                       ))}
@@ -393,7 +455,7 @@ export function ItemReferences({
                   <button
                     type="button"
                     className="item-refs-dismiss"
-                    onClick={() => setPickingFrame(false)}
+                    onClick={cancelFrames}
                   >
                     Close frames
                   </button>
@@ -409,6 +471,7 @@ export function ItemReferences({
                 value={copyText}
                 disabled={saving}
                 maxLength={4000}
+                spellCheck={false}
                 onChange={(e) => setCopyText(e.target.value)}
               />
               <input

@@ -69,6 +69,8 @@ class IndexedFolder(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )
     last_file_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Soft-hide from the history list only. Never deletes DriveFile rows / media.
+    hidden: Mapped[bool] = mapped_column(default=False, nullable=False, server_default="false")
 
 
 class CarouselEventPhotoFolder(Base):

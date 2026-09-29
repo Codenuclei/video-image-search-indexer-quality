@@ -30,7 +30,7 @@ export default function CarouselStudioLayout({ children }: { children: ReactNode
           </div>
         </div>
       </nav>
-      <main className="carousel-studio relative z-10 px-4 pb-24 pt-8 sm:px-6 sm:pt-10">
+      <main className="carousel-studio relative z-10 px-4 pb-12 pt-8 sm:px-6 sm:pt-10">
         {children}
       </main>
     </div>

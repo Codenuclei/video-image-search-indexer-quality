@@ -364,6 +364,7 @@ class IndexedFolderOut(BaseModel):
     drive_url: str
     drive_user_email: str | None = None
     is_active: bool = False
+    hidden: bool = False
     first_indexed_at: datetime | None = None
     last_indexed_at: datetime | None = None
     last_file_count: int | None = None

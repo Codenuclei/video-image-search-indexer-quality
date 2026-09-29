@@ -661,3 +661,37 @@ async def test_indexed_folder_persists_drive_url(db_session: AsyncSession) -> No
     listed = await list_indexed_folders(db_session)
     assert len(listed) == 2
     assert listed[0].id == "fold_xyz"
+
+
+@requires_postgres
+@pytest.mark.asyncio
+async def test_hide_indexed_folder_is_soft_and_not_unhidden_by_backfill(
+    db_session: AsyncSession,
+) -> None:
+    from app.drive.indexed_folders import (
+        IndexedFolderHideError,
+        ensure_indexed_folder_history,
+        hide_indexed_folder,
+    )
+
+    await record_indexed_folder(
+        db_session, folder_id="fold_keep", folder_name="Keep", mark_active=False
+    )
+    await record_indexed_folder(
+        db_session, folder_id="fold_gone", folder_name="Gone", mark_active=False
+    )
+    await db_session.flush()
+
+    row = await hide_indexed_folder(db_session, "fold_gone")
+    assert row.hidden is True and row.is_active is False
+    assert [f.id for f in await list_indexed_folders(db_session)] == ["fold_keep"]
+    assert len(await list_indexed_folders(db_session, include_hidden=True)) == 2
+
+    # Backfill must not resurrect a hidden folder.
+    await ensure_indexed_folder_history(db_session)
+    await db_session.refresh(row)
+    assert row.hidden is True
+
+    with pytest.raises(IndexedFolderHideError) as exc:
+        await hide_indexed_folder(db_session, "missing")
+    assert exc.value.status_code == 404

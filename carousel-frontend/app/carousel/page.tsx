@@ -32,6 +32,9 @@ import {
   X,
 } from "lucide-react";
 import { DriveFolderPanel } from "@/components/drive-folder-panel";
+import { FrameImg } from "@/components/frame-img";
+import { refreshAfterSync, type ActiveDriveFolder } from "@/lib/folder-refresh";
+import { duplicateVideoNames, videoDisambiguator } from "@/lib/studio-video-status";
 import { TranscriptProgressModal, type TranscriptModalState } from "@/components/transcript-progress-modal";
 import {
   API_BASE,
@@ -278,6 +281,17 @@ export default function CarouselSearchPage() {
   const [videoQuery, setVideoQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const [allVideos, setAllVideos] = useState<CarouselRecentVideo[]>([]);
+  /** Active Drive folder scopes Recent / All lists; null = whole library. */
+  const [activeFolder, setActiveFolder] = useState<ActiveDriveFolder>(null);
+  const [showAllLibrary, setShowAllLibrary] = useState(false);
+  const scopeFolderIdRef = useRef<string | null>(null);
+  const activeFolderRef = useRef<ActiveDriveFolder>(null);
+  const cancelSyncRefreshRef = useRef<(() => void) | null>(null);
+  const scopeFolderId = showAllLibrary ? null : (activeFolder?.id ?? null);
+  // Keep the ref in sync before the scoped-load effects below run (same-component effect order).
+  useEffect(() => {
+    scopeFolderIdRef.current = scopeFolderId;
+  }, [scopeFolderId]);
   const [loadingAll, setLoadingAll] = useState(false);
   const [, setAllVideosError] = useState<string | null>(null);
 
@@ -345,6 +359,7 @@ export default function CarouselSearchPage() {
   const [generatedCarousels, setGeneratedCarousels] = useState<CarouselGeneratedItem[]>([]);
   const [activeCarouselId, setActiveCarouselId] = useState<string | null>(null);
   const [outlineError, setOutlineError] = useState<string | null>(null);
+  const [outlineShortTranscript, setOutlineShortTranscript] = useState(false);
   const [imagesReady, setImagesReady] = useState(false);
   const [selectingImages, setSelectingImages] = useState(false);
   const [imageQualityNote, setImageQualityNote] = useState<string | null>(null);
@@ -558,9 +573,12 @@ export default function CarouselSearchPage() {
     setError(null);
     try {
       // Don't await persons here — a hung /persons used to stall the whole video list.
-      const vids = await apiClient.carouselRecentVideos(5, true);
+      const scope = scopeFolderIdRef.current;
+      const vids = await apiClient.carouselRecentVideos(scope ? 12 : 5, true, scope);
       if (signal?.aborted) return;
-      const items = vids.items ?? [];
+      if (scope !== scopeFolderIdRef.current) return; // scope changed mid-flight
+      // Unique by id even if the API repeats a row.
+      const items = prependUniqueById([], vids.items ?? []);
       const apiIds = new Set(items.map((v) => v.id));
       stagedUploadsRef.current = stagedUploadsRef.current.filter((v) => !apiIds.has(v.id));
       setRecent(prependUniqueById(stagedUploadsRef.current, items));
@@ -584,7 +602,35 @@ export default function CarouselSearchPage() {
     const ac = new AbortController();
     void loadRecentVideos(ac.signal);
     return () => ac.abort();
-  }, [loadRecentVideos]);
+  }, [loadRecentVideos, scopeFolderId]);
+
+  useEffect(() => () => cancelSyncRefreshRef.current?.(), []);
+
+  const applyActiveFolder = useCallback((folder: ActiveDriveFolder) => {
+    const changed = (activeFolderRef.current?.id ?? "") !== (folder?.id ?? "");
+    activeFolderRef.current = folder;
+    setActiveFolder(folder);
+    if (changed) {
+      // New folder: back to folder scope; drop the previous folder's rows (keep local uploads).
+      setShowAllLibrary(false);
+      setAllVideos([]);
+      setRecent([...stagedUploadsRef.current]);
+      setLoadingRecent(true);
+    }
+    return changed;
+  }, []);
+
+  const handleLibraryChanged = useCallback(
+    (ctx?: { folder: ActiveDriveFolder }) => {
+      if (ctx) applyActiveFolder(ctx.folder);
+      // /drive/sync is fire-and-forget: refresh now, then re-poll briefly.
+      cancelSyncRefreshRef.current?.();
+      cancelSyncRefreshRef.current = refreshAfterSync(() =>
+        loadRecentVideos(undefined, { silent: true })
+      );
+    },
+    [applyActiveFolder, loadRecentVideos]
+  );
 
   useEffect(() => {
     const t = window.setTimeout(() => setDebouncedQuery(videoQuery.trim()), 250);
@@ -602,6 +648,7 @@ export default function CarouselSearchPage() {
           q: debouncedQuery || undefined,
           limit: 30,
           captionedOnly: true,
+          rootFolderId: scopeFolderId,
         });
         if (!cancelled) setAllVideos(res.items ?? []);
       } catch (e) {
@@ -616,7 +663,7 @@ export default function CarouselSearchPage() {
     return () => {
       cancelled = true;
     };
-  }, [debouncedQuery, videoScope]);
+  }, [debouncedQuery, videoScope, scopeFolderId]);
 
   const resetFromPhase2 = useCallback(() => {
     setSelectedThemes([]);
@@ -1343,17 +1390,18 @@ export default function CarouselSearchPage() {
     }
   }
 
-  async function generateCarousel(opts?: { force?: boolean }) {
+  async function generateCarousel(opts?: { force?: boolean; topicsOnly?: boolean }) {
     if (!selectedVideo || !selectedThemes.length || !extract || building) return;
     setBuilding(true);
     setOutlineError(null);
+    setOutlineShortTranscript(false);
     setImageQualityNote(null);
     try {
       const hookPicks = selectedHooks.map((text) => toHookTimedPick(text, extract));
       // Explicit topics + parents implied by selected hooks → one carousel each.
       const topicPicks = expandTopicSeeds(selectedTopics, selectedHooks, extract);
       // Product model: one hook (or topic-as-goal) per request.
-      const goals: CarouselTimedPick[] = hookPicks.length
+      const goals: CarouselTimedPick[] = hookPicks.length && !opts?.topicsOnly
         ? hookPicks
         : topicPicks.length
           ? topicPicks
@@ -1374,7 +1422,7 @@ export default function CarouselSearchPage() {
 
       for (let i = 0; i < goals.length; i++) {
         const goal = goals[i];
-        const isHook = hookPicks.some((h) => h.text === goal.text);
+        const isHook = !opts?.topicsOnly && hookPicks.some((h) => h.text === goal.text);
         const parentTopic = isHook
           ? topicPicks.find(
               (topic) =>
@@ -1507,7 +1555,17 @@ export default function CarouselSearchPage() {
     } catch (e) {
       // Stay on phase 4 with a visible error — never silently wipe success state
       // without explaining why (error UI used to live only inside phase 5).
-      setOutlineError(formatApiError(e, "We couldn’t generate carousel copy. Please try again."));
+      const raw = e instanceof Error ? e.message : String(e);
+      setOutlineError(
+        /too short or fragmented|could not build any carousels/i.test(raw)
+          ? opts?.topicsOnly
+            ? "Couldn’t build slides from those topics either — the transcript around them is too short or fragmented. Pick different (longer) topics or another theme, then try again."
+            : "The transcript around these hooks is too short or fragmented to build slides. Pick longer hooks, or generate straight from your selected topics instead."
+          : formatApiError(e, "We couldn’t generate carousel copy. Please try again.")
+      );
+      setOutlineShortTranscript(
+        /too short or fragmented|could not build any carousels/i.test(raw) && !opts?.topicsOnly
+      );
     } finally {
       setBuilding(false);
     }
@@ -1609,7 +1667,7 @@ export default function CarouselSearchPage() {
           Start with a captioned video, choose the story beats you want, then generate
           polished slide layouts ready for Instagram.
         </p>
-        <PhaseRail phase={phase} />
+        <PhaseRail phase={phase} onNavigate={setPhase} locked={pipelineLocked} />
       </header>
 
       {pipelineLocked && (
@@ -1679,9 +1737,11 @@ export default function CarouselSearchPage() {
           className="mt-4"
           apiBase={API_BASE}
           testIdPrefix="carousel-drive"
-          onLibraryChanged={() => {
-            void loadRecentVideos(undefined, { silent: true });
+          onActiveFolderChange={(folder) => {
+            // State change re-runs the scoped load effect (scopeFolderId is a dep).
+            applyActiveFolder(folder);
           }}
+          onLibraryChanged={handleLibraryChanged}
           onVideoReady={(v) => {
             const cueCount = v.cue_count ?? 0;
             const hasCaptions = Boolean(v.has_captions ?? cueCount > 0);
@@ -1801,6 +1861,21 @@ export default function CarouselSearchPage() {
           )}
         </div>
 
+        {activeFolder ? (
+          <p className="mt-3 flex flex-wrap items-center gap-x-2 text-xs text-slate-500" data-testid="carousel-video-scope">
+            {showAllLibrary
+              ? "Showing videos from the whole library"
+              : `Showing videos from “${activeFolder.name}”`}
+            <button
+              type="button"
+              className="font-medium text-slate-700 underline-offset-2 hover:underline"
+              onClick={() => setShowAllLibrary((v) => !v)}
+            >
+              {showAllLibrary ? "Only this folder" : "Show all library"}
+            </button>
+          </p>
+        ) : null}
+
         <div className="mt-2">
           {videoScope === "recent" ? (
             loadingRecent && recent.length === 0 ? (
@@ -1810,7 +1885,11 @@ export default function CarouselSearchPage() {
             ) : recent.length === 0 ? (
               <div className="studio-empty mt-2">
                 <Video size={28} />
-                <p>No captioned videos yet. Index a video with transcripts, then refresh this list.</p>
+                <p>
+                  {activeFolder && !showAllLibrary
+                    ? `No captioned videos in “${activeFolder.name}” yet. Queue some from the Drive panel above, or show the whole library.`
+                    : "No captioned videos yet. Index a video with transcripts, then refresh this list."}
+                </p>
               </div>
             ) : (
               <VideoPickList
@@ -2044,7 +2123,7 @@ export default function CarouselSearchPage() {
               </button>
             </div>
           ) : (
-            <ul className="mt-4 space-y-2">
+            <ul className="studio-theme-list">
               {themes.map((t) => {
                 const active = selectedThemes.some((x) => x.theme_id === t.theme_id);
                 const fbKey = `theme:${t.theme_id || t.title}`;
@@ -2084,7 +2163,7 @@ export default function CarouselSearchPage() {
                       </span>
                     </button>
                     {selectedVideo ? (
-                      <div className="px-3 pb-1">
+                      <div className="studio-theme-extras">
                         <ItemFeedback
                           driveFileId={selectedVideo.id}
                           kind="theme"
@@ -2560,6 +2639,38 @@ export default function CarouselSearchPage() {
               Regenerate carousels
             </button>
           </div>
+          {outlineError && phase === 4 ? (
+            <div
+              className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-sm text-amber-900"
+              role="alert"
+              data-testid="carousel-generate-error"
+            >
+              <p>{outlineError}</p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {outlineShortTranscript && selectedTopics.length > 0 ? (
+                  <button
+                    type="button"
+                    className="studio-btn studio-btn-ghost"
+                    disabled={building}
+                    onClick={() => void generateCarousel({ force: true, topicsOnly: true })}
+                    data-testid="carousel-generate-from-topics"
+                  >
+                    Generate from topics instead
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  className="studio-btn studio-btn-ghost"
+                  onClick={() => {
+                    setOutlineError(null);
+                    setOutlineShortTranscript(false);
+                  }}
+                >
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          ) : null}
         </section>
       )}
 
@@ -3386,8 +3497,7 @@ function InstagramCarouselPost({
                         applySlideImage(r.image_url!, r.frame_ts ?? current.frame_ts)
                       }
                     >
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={src} alt="" className="h-12 w-12 object-cover" />
+                      <FrameImg src={src} className="h-12 w-12 object-cover" />
                     </button>
                   </li>
                 );
@@ -3411,8 +3521,7 @@ function InstagramCarouselPost({
                   : apiAssetUrl(r.image_url || "");
               return (
                 <li key={`img-${r.id}`} className="flex items-center gap-2 text-xs text-foreground">
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={src} alt="" className="h-8 w-8 rounded object-cover" />
+                  <FrameImg src={src} className="h-8 w-8 rounded object-cover" />
                   <span className="truncate">
                     <span className="font-medium">Image</span>
                     {r.note ? ` · ${r.note}` : ""}
@@ -3510,10 +3619,8 @@ function InstagramCarouselPost({
                   splitPanels.map((panel, p) => (
                     <div className="ig-panel" key={`${slide.index}-panel-${p}`}>
                       {framesVisible && panel.preview_url ? (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img
+                        <FrameImg
                           src={slideFrameUrl(panel.preview_url, slide.frame_source)}
-                          alt=""
                           draggable={false}
                           style={focalPointStyle(panel)}
                         />
@@ -3546,10 +3653,8 @@ function InstagramCarouselPost({
                 ) : (
                   <>
                     {showReal ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img
+                      <FrameImg
                         src={slideFrameUrl(slide.preview_url!, slide.frame_source)}
-                        alt=""
                         draggable={false}
                         style={focalPointStyle(slide)}
                       />
@@ -3686,10 +3791,8 @@ function InstagramCarouselPost({
               onClick={() => goTo(i)}
             >
               {slide.preview_url ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img
+                <FrameImg
                   src={slideFrameUrl(slide.preview_url, slide.frame_source)}
-                  alt=""
                   draggable={false}
                   style={focalPointStyle(slide)}
                 />
@@ -3787,6 +3890,7 @@ function VideoPickList({
   disabled?: boolean;
   maxHeightClass?: string;
 }) {
+  const dupeNames = duplicateVideoNames(videos);
   return (
     <ul
       className={cn(
@@ -3796,6 +3900,7 @@ function VideoPickList({
     >
       {videos.map((v) => {
         const active = selectedId === v.id;
+        const isDupe = dupeNames.has(v.name.trim().toLowerCase());
         return (
           <li key={v.id}>
             <button
@@ -3811,7 +3916,7 @@ function VideoPickList({
                 <span className="block truncate text-sm font-semibold text-slate-900">{v.name}</span>
                 <span className="mt-0.5 block truncate text-xs text-zinc-500">
                   {v.has_captions !== false ? `${v.cue_count ?? "…"} cues · ` : "No captions · "}
-                  {v.path || v.mime_type}
+                  {isDupe ? videoDisambiguator(v) : v.path || v.mime_type}
                 </span>
               </span>
               <VideoListThumb video={v} />
@@ -3823,7 +3928,15 @@ function VideoPickList({
   );
 }
 
-function PhaseRail({ phase }: { phase: Phase }) {
+function PhaseRail({
+  phase,
+  onNavigate,
+  locked = false,
+}: {
+  phase: Phase;
+  onNavigate: (n: Phase) => void;
+  locked?: boolean;
+}) {
   const steps = [
     { n: 1, label: "Video", Icon: Video },
     { n: 2, label: "Themes", Icon: Layers },
@@ -3833,21 +3946,32 @@ function PhaseRail({ phase }: { phase: Phase }) {
   ] as const;
   return (
     <ol className="studio-phase-rail" aria-label="Studio steps">
-      {steps.map((s) => (
-        <li
-          key={s.n}
-          className={cn(
-            "studio-phase-chip",
-            phase === s.n && "is-active",
-            phase > s.n && "is-done"
-          )}
-        >
-          {phase > s.n ? <Check size={12} /> : <s.Icon size={12} />}
-          <span>
-            {s.n}. {s.label}
-          </span>
-        </li>
-      ))}
+      {steps.map((s) => {
+        // Completed and current steps are clickable; future steps stay locked.
+        const enabled = !locked && s.n <= phase;
+        return (
+          <li key={s.n}>
+            <button
+              type="button"
+              className={cn(
+                "studio-phase-chip",
+                phase === s.n && "is-active",
+                phase > s.n && "is-done"
+              )}
+              disabled={!enabled}
+              aria-current={phase === s.n ? "step" : undefined}
+              onClick={() => {
+                if (enabled && s.n !== phase) onNavigate(s.n as Phase);
+              }}
+            >
+              {phase > s.n ? <Check size={12} /> : <s.Icon size={12} />}
+              <span>
+                {s.n}. {s.label}
+              </span>
+            </button>
+          </li>
+        );
+      })}
     </ol>
   );
 }

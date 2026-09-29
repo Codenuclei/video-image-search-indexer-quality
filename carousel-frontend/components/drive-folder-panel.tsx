@@ -25,6 +25,7 @@ import { formatApiError } from "@/lib/api";
 import { toastApiError } from "@/lib/toast-api-error";
 import { ModalOverlay } from "@/components/modal";
 import { pollVideoTranscriptStatus } from "@/lib/transcript-ensure";
+import type { ActiveDriveFolder } from "@/lib/folder-refresh";
 import {
   guidedFolderSaveNote,
   guidedIndexSummaryNote,
@@ -54,8 +55,13 @@ type Props = {
     cue_count?: number;
     message?: string;
   }) => void;
-  /** Refresh parent video lists after sync / pull. */
-  onLibraryChanged?: () => void;
+  /**
+   * Refresh parent video lists after sync / pull / folder switch. Receives the
+   * fresh active folder (post session refresh) so the parent can scope its list.
+   */
+  onLibraryChanged?: (ctx?: { folder: ActiveDriveFolder }) => void;
+  /** Fires on mount and whenever the active Drive folder id changes. */
+  onActiveFolderChange?: (folder: ActiveDriveFolder) => void;
   className?: string;
   testIdPrefix?: string;
   /**
@@ -133,6 +139,7 @@ export function DriveFolderPanel({
   apiBase,
   onVideoReady,
   onLibraryChanged,
+  onActiveFolderChange,
   className = "",
   testIdPrefix = "drive",
   guided = false,
@@ -210,7 +217,15 @@ export function DriveFolderPanel({
     }
   }, [api, apiBase]);
 
-  const load = useCallback(async () => {
+  const onActiveFolderChangeRef = useRef(onActiveFolderChange);
+  const onLibraryChangedRef = useRef(onLibraryChanged);
+  useEffect(() => {
+    onActiveFolderChangeRef.current = onActiveFolderChange;
+    onLibraryChangedRef.current = onLibraryChanged;
+  });
+  const lastFolderKeyRef = useRef<string | undefined>(undefined);
+
+  const load = useCallback(async (): Promise<DriveSession | null> => {
     try {
       const [ds, foldersRes, settings] = await Promise.all([
         api.driveSession().catch(() => null as DriveSession | null),
@@ -219,14 +234,35 @@ export function DriveFolderPanel({
       ]);
       setSession(ds);
       setIndexedFolders(foldersRes.folders ?? []);
+      const folder: ActiveDriveFolder = ds?.selected_folder
+        ? { id: ds.selected_folder.id, name: ds.selected_folder.name }
+        : null;
+      const folderKey = folder?.id ?? "";
+      if (lastFolderKeyRef.current !== folderKey) {
+        lastFolderKeyRef.current = folderKey;
+        onActiveFolderChangeRef.current?.(folder);
+      }
       if (!shortcutsBusyRef.current) {
         setFollowShortcuts(Boolean(settings.follow_shortcut_folders));
       }
       setError(null);
+      return ds;
     } catch (e) {
       setError(formatApiError(e, "Failed to load Drive status"));
+      return null;
     }
   }, [api]);
+
+  /** Invalidate cached modal list, refresh session, then tell the parent (with the fresh folder). */
+  const refreshLibrary = useCallback(async () => {
+    invalidateDriveVideoJob(apiBase);
+    const ds = await load();
+    const folder: ActiveDriveFolder = ds?.selected_folder
+      ? { id: ds.selected_folder.id, name: ds.selected_folder.name }
+      : null;
+    onLibraryChangedRef.current?.({ folder });
+    return ds;
+  }, [apiBase, load]);
 
   useEffect(() => {
     void load();
@@ -247,9 +283,8 @@ export function DriveFolderPanel({
       setNote("Google Drive connected. Choose a folder to pull videos.");
       api
         .syncDriveFiles()
-        .then(() => load())
-        .catch(() => load())
-        .then(() => onLibraryChanged?.());
+        .catch(() => {})
+        .then(() => refreshLibrary());
     } else if (params.get("error")) {
       const msg = formatApiError(
         `Drive connection failed: ${params.get("error")}`,
@@ -262,7 +297,7 @@ export function DriveFolderPanel({
       url.searchParams.delete("detail");
       window.history.replaceState({}, "", url.pathname + url.search);
     }
-  }, [api, load, onLibraryChanged]);
+  }, [api, refreshLibrary]);
 
   // Guided mode: poll transcript status for queued/in-flight index rows.
   useEffect(() => {
@@ -494,12 +529,10 @@ export function DriveFolderPanel({
           try {
             const saved = await api.saveDriveFolder(doc.id, doc.name);
             await api.syncDriveFiles().catch(() => {});
-            invalidateDriveVideoJob(apiBase);
             setNote(
               guidedFolderSaveNote(doc.name, Boolean(saved.reused_existing_index))
             );
-            await load();
-            onLibraryChanged?.();
+            await refreshLibrary();
           } catch (e) {
             setError(formatApiError(e, "Could not save folder"));
           } finally {
@@ -593,12 +626,35 @@ export function DriveFolderPanel({
     try {
       const saved = await api.saveDriveFolder(folder.id, folder.name);
       await api.syncDriveFiles().catch(() => {});
-      invalidateDriveVideoJob(apiBase);
       setNote(guidedFolderSaveNote(folder.name, Boolean(saved.reused_existing_index)));
-      await load();
-      onLibraryChanged?.();
+      await refreshLibrary();
     } catch (e) {
       setError(formatApiError(e, "Could not select folder"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function hideFolder(folder: IndexedFolder) {
+    const isActive = folder.is_active || session?.selected_folder?.id === folder.id;
+    if (isActive) {
+      const msg = "Change to another folder first, then remove this one from history.";
+      setError(msg);
+      toastApiError(msg);
+      return;
+    }
+    const ok = window.confirm(
+      `Remove "${folder.name}" from this list? Its indexed videos and photos are kept — this only hides the folder from history.`
+    );
+    if (!ok) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.hideIndexedFolder(folder.id);
+      setNote(`Removed "${folder.name}" from history. Indexed media is untouched.`);
+      await load();
+    } catch (e) {
+      setError(formatApiError(e, "Could not remove folder from history"));
     } finally {
       setBusy(false);
     }
@@ -631,9 +687,7 @@ export function DriveFolderPanel({
     try {
       await api.syncDriveFiles();
       setNote("Drive folder sync scheduled.");
-      invalidateDriveVideoJob(apiBase);
-      await load();
-      onLibraryChanged?.();
+      await refreshLibrary();
     } catch (e) {
       setError(formatApiError(e, "Sync failed"));
     } finally {
@@ -818,7 +872,7 @@ export function DriveFolderPanel({
       } else {
         setModalOpen(false);
       }
-      void load().then(() => onLibraryChanged?.());
+      void refreshLibrary();
     } catch (e) {
       const raw = e instanceof Error ? e.message : String(e || "");
       const msg = friendlyDriveIndexError(
@@ -981,6 +1035,18 @@ export function DriveFolderPanel({
                     onClick={() => void useIndexedFolder(f)}
                   >
                     Use
+                  </button>
+                )}
+                {!f.is_active && f.id !== session?.selected_folder?.id && (
+                  <button
+                    type="button"
+                    className="text-[11px] font-medium text-red-600 underline-offset-2 hover:underline disabled:opacity-50"
+                    disabled={busy}
+                    onClick={() => void hideFolder(f)}
+                    title="Hide from this list (indexed media is kept)"
+                    data-testid={`${testIdPrefix}-hide-folder-${f.id}`}
+                  >
+                    Remove
                   </button>
                 )}
               </div>
@@ -1203,11 +1269,11 @@ export function DriveFolderPanel({
                   <a
                     className="studio-btn studio-btn-ghost inline-flex items-center gap-1.5 no-underline"
                     href={reconnectHref}
-                    data-testid={`${testIdPrefix}-provide`}
-                    title="Re-authorize Google Drive access (same OAuth as Connect)"
+                    data-testid={`${testIdPrefix}-reconnect`}
+                    title="Re-authorize Google Drive access"
                   >
                     <HardDrive size={14} />
-                    Provide
+                    Reconnect
                   </a>
                   <button
                     type="button"
@@ -1293,7 +1359,6 @@ export function DriveFolderPanel({
           aria-modal="true"
           aria-labelledby={`${testIdPrefix}-select-title`}
           data-testid={`${testIdPrefix}-select-modal`}
-          style={{ minHeight: "44rem" }}
         >
           <div className="drive-select-modal__chrome drive-select-modal__header flex items-start justify-between gap-3 px-4 py-3 sm:px-5">
             <div className="min-w-0">
@@ -1402,7 +1467,7 @@ export function DriveFolderPanel({
               </span>
             </div>
 
-            <div className="studio-scroll-fade drive-select-modal__list max-h-[min(80vh,44rem)] overflow-y-auto rounded-xl border border-slate-200">
+            <div className="studio-scroll-fade drive-select-modal__list max-h-[min(70vh,40rem)] min-h-[10rem] overflow-y-auto rounded-xl border border-slate-200">
               {modalLoading ? (
                 <p className="flex items-center justify-center gap-2 px-3 py-10 text-sm text-slate-500">
                   <Loader2 size={16} className="animate-spin" />

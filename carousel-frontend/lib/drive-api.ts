@@ -24,6 +24,7 @@ export type IndexedFolder = {
   drive_url: string;
   drive_user_email?: string | null;
   is_active: boolean;
+  hidden?: boolean;
   first_indexed_at?: string | null;
   last_indexed_at?: string | null;
   last_file_count?: number | null;
@@ -82,6 +83,13 @@ export function createDriveApi(apiBase: string) {
       }),
     indexedFolders: () =>
       jsonApi<{ folders: IndexedFolder[]; total: number }>(apiBase, "/index/folders"),
+    /** Soft-hide a folder from history. Never deletes indexed media. */
+    hideIndexedFolder: (folderId: string) =>
+      jsonApi<{ ok: boolean; id: string; hidden: boolean }>(
+        apiBase,
+        `/index/folders/${encodeURIComponent(folderId)}`,
+        { method: "DELETE" }
+      ),
     driveFilesPage: (opts?: {
       status?: string;
       source?: string;
@@ -140,7 +148,10 @@ export function createDriveApi(apiBase: string) {
       const dest = (returnTo || "").trim();
       const qs = dest ? `?return_to=${encodeURIComponent(dest)}` : "";
       const origin = (process.env.NEXT_PUBLIC_BACKEND_URL || "").replace(/\/+$/, "");
-      return `${origin || apiBase}/auth/google${qs}`;
+      // Same-origin `/backend/*` Route Handler (app/backend/[...path]) forwards the
+      // 307 to Google without following it; prefer it over the relative proxy base.
+      const base = origin || (apiBase.startsWith("/") ? "/backend" : apiBase);
+      return `${base}/auth/google${qs}`;
     },
   };
 }

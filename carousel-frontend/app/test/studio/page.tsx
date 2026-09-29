@@ -8,13 +8,11 @@
 
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import Link from "next/link";
 import {
   ArrowLeft,
   ArrowRight,
   Check,
   ImageIcon,
-  Link2,
   Sparkles,
   Target,
   Upload,
@@ -24,6 +22,8 @@ import { DriveFolderPanel } from "@/components/drive-folder-panel";
 import { TranscriptProgressModal, type TranscriptModalState } from "@/components/transcript-progress-modal";
 import { ItemFeedback } from "@/components/item-feedback";
 import { ItemReferences } from "@/components/item-references";
+import { FrameImg } from "@/components/frame-img";
+import { refreshAfterSync, type ActiveDriveFolder } from "@/lib/folder-refresh";
 import {
   API_BASE,
   testVideoStreamUrl,
@@ -32,7 +32,6 @@ import {
   type TestCarousel,
   type TestExtract,
   type TestGenerate,
-  type TestEventPhotoFolder,
   type TestItem,
   type TestSlide,
   type TestTheme,
@@ -47,6 +46,7 @@ import {
 import {
   apiClient,
   formatApiError,
+  INITIATE_TIMEOUT_MS,
   prependUniqueById,
   type CarouselItemFeedback,
   type CarouselItemReference,
@@ -56,7 +56,11 @@ import { cn } from "@/lib/utils";
 import { toastApiError } from "@/lib/toast-api-error";
 import { toast } from "sonner";
 import { loadRunConfig, persistRunConfig } from "../carousel-llm-picker";
-import { studioVideoStatus } from "@/lib/studio-video-status";
+import {
+  duplicateVideoNames,
+  studioVideoStatus,
+  videoDisambiguator,
+} from "@/lib/studio-video-status";
 import { StageLlmGenerate } from "../stage-llm-generate";
 import { TestIgPost } from "../test-ig-post";
 import { TopicsHooksTree } from "../topics-hooks-tree";
@@ -97,6 +101,12 @@ function toggleTheme(list: TestTheme[], theme: TestTheme): TestTheme[] {
     return list.filter((t) => t.theme_id !== id);
   }
   return [...list, theme].sort((a, b) => a.start_sec - b.start_sec);
+}
+
+/** Backend 400 when transcript lines around the chosen hooks can't fill a deck. */
+function isShortTranscriptCopyError(error: unknown): boolean {
+  const msg = error instanceof Error ? error.message : String(error);
+  return /too short or fragmented|could not build any carousels/i.test(msg);
 }
 
 function isExtractBusyError(error: unknown): boolean {
@@ -349,6 +359,14 @@ function TestStudioInner() {
   const [videos, setVideos] = useState<TestVideo[]>([]);
   const [selected, setSelected] = useState<TestVideo | null>(null);
   const [loadingVideos, setLoadingVideos] = useState(true);
+  /** Active Drive folder — scopes the Step 1 list; null = global library. */
+  const [activeFolder, setActiveFolder] = useState<ActiveDriveFolder>(null);
+  const [showAllLibrary, setShowAllLibrary] = useState(false);
+  const activeFolderRef = useRef<ActiveDriveFolder>(null);
+  const showAllRef = useRef(false);
+  const cancelSyncRefreshRef = useRef<(() => void) | null>(null);
+  const loadSeqRef = useRef(0);
+  const [copyHintState, setCopyHintState] = useState<{ message: string; key: string } | null>(null);
   const [themesLoading, setThemesLoading] = useState(false);
   const [extractLoading, setExtractLoading] = useState(false);
   const [hooksLoading, setHooksLoading] = useState(false);
@@ -371,6 +389,8 @@ function TestStudioInner() {
     { frame_ts: number; preview_url: string; text?: string }[]
   >([]);
   const [previewFramesLoading, setPreviewFramesLoading] = useState(false);
+  const [previewFramesError, setPreviewFramesError] = useState<string | null>(null);
+  const [previewFramesTry, setPreviewFramesTry] = useState(0);
   const [itemFeedback, setItemFeedback] = useState<Record<string, CarouselItemFeedback>>({});
   const [itemReferences, setItemReferences] = useState<Record<string, CarouselItemReference[]>>(
     {}
@@ -392,9 +412,6 @@ function TestStudioInner() {
   const [extractStage, setExtractStage] = useState<StageState>(null);
   const [copyStage, setCopyStage] = useState<StageState>(null);
   const [imageStage, setImageStage] = useState<StageState>(null);
-  const [eventFolder, setEventFolder] = useState<TestEventPhotoFolder | null>(null);
-  const [eventFolderUrl, setEventFolderUrl] = useState("");
-  const [eventFolderBusy, setEventFolderBusy] = useState(false);
   const [transcriptModal, setTranscriptModal] = useState<TranscriptModalState>({
     open: false,
   });
@@ -541,8 +558,12 @@ function TestStudioInner() {
   const loadVideos = useCallback(async (opts?: { silent?: boolean }) => {
     if (!opts?.silent) setLoadingVideos(true);
     try {
-      const res = await testApi.recentVideos();
-      const items = res.items ?? [];
+      const seq = ++loadSeqRef.current;
+      const scope = showAllRef.current ? null : activeFolderRef.current;
+      const res = await testApi.recentVideos({ rootFolderId: scope?.id ?? null });
+      if (seq !== loadSeqRef.current) return; // a newer scope/load superseded this one
+      // Unique by id (a video can only appear once even if the API repeats it).
+      const items = prependUniqueById([], res.items ?? []);
       const apiIds = new Set(items.map((v) => v.id));
       stagedUploadsRef.current = stagedUploadsRef.current.filter((v) => !apiIds.has(v.id));
       setVideos(prependUniqueById(stagedUploadsRef.current, items));
@@ -557,6 +578,66 @@ function TestStudioInner() {
     const task = window.setTimeout(() => void loadVideos(), 0);
     return () => window.clearTimeout(task);
   }, [loadVideos]);
+
+  useEffect(() => () => cancelSyncRefreshRef.current?.(), []);
+
+  /** Apply a new active folder: clear the stale list, reload scoped to it. */
+  const applyActiveFolder = useCallback(
+    (folder: ActiveDriveFolder, opts?: { clear?: boolean }) => {
+      const changed = (activeFolderRef.current?.id ?? "") !== (folder?.id ?? "");
+      activeFolderRef.current = folder;
+      setActiveFolder(folder);
+      if (changed) {
+        // New folder → back to folder scope and never show the previous folder's rows.
+        showAllRef.current = false;
+        setShowAllLibrary(false);
+        if (opts?.clear !== false) {
+          // Drop the previous folder's rows immediately; keep in-flight local uploads.
+          setVideos([...stagedUploadsRef.current]);
+          setLoadingVideos(true);
+        }
+      }
+      return changed;
+    },
+    []
+  );
+
+  const handleActiveFolderChange = useCallback(
+    (folder: ActiveDriveFolder) => {
+      applyActiveFolder(folder);
+      void loadVideos();
+    },
+    [applyActiveFolder, loadVideos]
+  );
+
+  const handleLibraryChanged = useCallback(
+    (ctx?: { folder: ActiveDriveFolder }) => {
+      const changed = ctx ? applyActiveFolder(ctx.folder) : false;
+      // /drive/sync is fire-and-forget: refresh now, then re-poll briefly.
+      cancelSyncRefreshRef.current?.();
+      if (changed) void loadVideos(); // clears the loading state set by applyActiveFolder
+      cancelSyncRefreshRef.current = refreshAfterSync(
+        () => loadVideos({ silent: true }),
+        changed ? [4_000, 10_000, 20_000] : undefined
+      );
+    },
+    [applyActiveFolder, loadVideos]
+  );
+
+  function toggleShowAllLibrary(next: boolean) {
+    showAllRef.current = next;
+    setShowAllLibrary(next);
+    setLoadingVideos(true);
+    void loadVideos();
+  }
+
+  const dupeNames = useMemo(() => duplicateVideoNames(videos), [videos]);
+
+  // The "too short" hint applies only to the selection that produced it.
+  const copySelectionKey = `${selectedHooks.join("\u0001")}::${selectedTopics.join("\u0001")}`;
+  const copyHint = copyHintState?.key === copySelectionKey ? copyHintState.message : null;
+  const setCopyHint = (message: string | null) =>
+    setCopyHintState(message ? { message, key: copySelectionKey } : null);
 
   const inflightIds = videos
     .filter((v) => studioVideoStatus(v).inflight)
@@ -667,54 +748,12 @@ function TestStudioInner() {
   }, [selected]);
 
   useEffect(() => {
-    if (!selected) {
-      setEventFolder(null);
-      setEventFolderUrl("");
-      return;
-    }
-    let cancelled = false;
-    void testApi
-      .eventPhotoFolder(selected.id)
-      .then((folder) => {
-        if (cancelled) return;
-        setEventFolder(folder);
-        setEventFolderUrl(folder.folder?.drive_url || folder.folder?.id || "");
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setEventFolder(null);
-          setEventFolderUrl("");
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [selected]);
-
-  async function linkEventPhotoFolder() {
-    if (!selected || eventFolderBusy) return;
-    const folderUrl = eventFolderUrl.trim();
-    if (!/^https?:\/\//i.test(folderUrl)) {
-      toastApiError("Paste a complete event-photo folder URL.");
-      return;
-    }
-    setEventFolderBusy(true);
-    try {
-      const folder = await testApi.linkEventPhotoFolder(selected.id, folderUrl);
-      setEventFolder(folder);
-      setEventFolderUrl(folder.folder?.drive_url || folder.folder?.id || folderUrl);
-      toast.success("Event-photo folder linked");
-    } catch (e) {
-      setError(formatApiError(e, "Could not link the event-photo folder."));
-    } finally {
-      setEventFolderBusy(false);
-    }
-  }
-
-  useEffect(() => {
     if (!previewItem || !selected) return;
     let cancelled = false;
-    const task = window.setTimeout(() => setPreviewFramesLoading(true), 0);
+    const task = window.setTimeout(() => {
+      setPreviewFramesLoading(true);
+      setPreviewFramesError(null);
+    }, 0);
     void testApi
       .transcriptFrames({
         driveFileId: selected.id,
@@ -725,8 +764,10 @@ function TestStudioInner() {
       .then((res) => {
         if (!cancelled) setPreviewFrames(res.items ?? []);
       })
-      .catch(() => {
-        if (!cancelled) setPreviewFrames([]);
+      .catch((e) => {
+        if (cancelled) return;
+        setPreviewFrames([]);
+        setPreviewFramesError(formatApiError(e, "Could not load frames for this moment."));
       })
       .finally(() => {
         if (!cancelled) setPreviewFramesLoading(false);
@@ -735,7 +776,7 @@ function TestStudioInner() {
       cancelled = true;
       window.clearTimeout(task);
     };
-  }, [previewItem, selected]);
+  }, [previewItem, selected, previewFramesTry]);
 
   async function uploadVideos(files: FileList | File[]) {
     const list = Array.from(files);
@@ -1016,8 +1057,8 @@ function TestStudioInner() {
             generate: true,
             include_hooks: false,
             runConfig: cfg,
-            // Initiate under App Platform 100s; client polls durable job if needed.
-            timeoutMs: 90_000,
+            // Outlast the backend's ~75s job hand-off; client polls the durable job.
+            timeoutMs: INITIATE_TIMEOUT_MS,
             silent: attempt > 0,
           });
           break;
@@ -1139,9 +1180,21 @@ function TestStudioInner() {
   }
 
   /** Phase 4 — text-first generate (no frames yet). */
-  async function generateCopy(opts?: { force?: boolean; runConfig?: CarouselRunConfig }) {
+  async function generateCopy(opts?: {
+    force?: boolean;
+    runConfig?: CarouselRunConfig;
+    /** Skip hooks and build from the selected topics (fallback for short/fragmented hooks). */
+    topicsOnly?: boolean;
+  }) {
     if (!selected || !extract || copyLoading) return;
-    if (!selectedHooks.length) {
+    const topicsOnly = Boolean(opts?.topicsOnly);
+    if (topicsOnly && !selectedTopics.length) {
+      const msg = "Select at least one topic to generate copy from topics.";
+      setError(msg);
+      toastApiError(msg);
+      return;
+    }
+    if (!topicsOnly && !selectedHooks.length) {
       const msg = hooksReady
         ? "Select at least one hook, then generate copy."
         : "Generate hooks from your selected topics first, then pick at least one.";
@@ -1152,12 +1205,17 @@ function TestStudioInner() {
     const cfg = opts?.runConfig ?? runConfig;
     setCopyLoading(true);
     setError(null);
+    setCopyHint(null);
     try {
-      const intentRes = await testApi.intent(selectedHooks, selectedTopics, cfg);
+      const intentRes = await testApi.intent(
+        topicsOnly ? [] : selectedHooks,
+        selectedTopics,
+        cfg
+      );
       const resolvedIntent = intentRes.intent ?? extract.intent ?? "";
       setIntent(resolvedIntent || null);
 
-      const hookPicks = selectedHooks
+      const hookPicks = (topicsOnly ? [] : selectedHooks)
         .map((text) => hooks.find((h) => h.text === text))
         .filter(Boolean) as TestItem[];
       const topicPicks = selectedTopics
@@ -1179,7 +1237,8 @@ function TestStudioInner() {
           jobs.push({ hooks: [h], topics: parent ? [parent] : [] });
         }
       } else {
-        for (const t of topicPicks.slice(0, 1)) {
+        // Topics-only fallback tries each selected topic until one yields a deck.
+        for (const t of topicPicks.slice(0, topicsOnly ? 4 : 1)) {
           jobs.push({ hooks: [], topics: [t] });
         }
       }
@@ -1190,32 +1249,39 @@ function TestStudioInner() {
       let lastCopySource: string | null = null;
       for (let i = 0; i < jobs.length; i++) {
         const job = jobs[i];
-        const gen = await testApi.generate({
-          drive_file_id: selected.id,
-          hooks: job.hooks.map((h) => ({
-            id: h.id,
-            text: h.text,
-            start_sec: h.start_sec,
-            end_sec: h.end_sec,
-            theme_id: h.theme_id,
-            topic_id: h.topic_id,
-            topic_text: h.topic_text,
-            original_text: h.original_text,
-          })),
-          topics: job.topics.map((t) => ({
-            id: t.id,
-            text: t.text,
-            start_sec: t.start_sec,
-            end_sec: t.end_sec,
-            theme_id: t.theme_id,
-            time_ranges: t.time_ranges,
-          })),
-          themes: themePayload,
-          intent: resolvedIntent,
-          select_images: false,
-          force: Boolean(opts?.force),
-          run_config: cfg,
-        });
+        let gen: TestGenerate;
+        try {
+          gen = await testApi.generate({
+            drive_file_id: selected.id,
+            hooks: job.hooks.map((h) => ({
+              id: h.id,
+              text: h.text,
+              start_sec: h.start_sec,
+              end_sec: h.end_sec,
+              theme_id: h.theme_id,
+              topic_id: h.topic_id,
+              topic_text: h.topic_text,
+              original_text: h.original_text,
+            })),
+            topics: job.topics.map((t) => ({
+              id: t.id,
+              text: t.text,
+              start_sec: t.start_sec,
+              end_sec: t.end_sec,
+              theme_id: t.theme_id,
+              time_ranges: t.time_ranges,
+            })),
+            themes: themePayload,
+            intent: resolvedIntent,
+            select_images: false,
+            force: Boolean(opts?.force),
+            run_config: cfg,
+          });
+        } catch (genErr) {
+          // Topics-only fallback: a fragmented topic shouldn't block the next one.
+          if (topicsOnly && i < jobs.length - 1 && isShortTranscriptCopyError(genErr)) continue;
+          throw genErr;
+        }
         const list = gen.carousels ?? [];
         for (const c of list) {
           merged.push({
@@ -1227,6 +1293,7 @@ function TestStudioInner() {
         if (gen.layouts) lastLayouts = gen.layouts;
         if (gen.copy_source) lastCopySource = gen.copy_source;
         setCopyStage(gen.cache_hit ? "cache" : "generated");
+        if (topicsOnly && merged.length) break;
       }
 
       if (!merged.length) {
@@ -1240,6 +1307,13 @@ function TestStudioInner() {
       setImageStage(null);
       resetProgressTo(4);
     } catch (e) {
+      if (isShortTranscriptCopyError(e)) {
+        setCopyHint(
+          topicsOnly
+            ? "Couldn’t build slides from those topics either — the transcript around them is too short or fragmented. Pick different (longer) topics or a different theme, then try again."
+            : "The transcript around these hooks is too short or fragmented to build slides. Pick longer hooks, or generate the copy straight from your selected topics instead."
+        );
+      }
       setError(formatApiError(e, "We couldn’t generate copy. Please try again."));
     } finally {
       setCopyLoading(false);
@@ -1392,21 +1466,8 @@ function TestStudioInner() {
   }
 
   function canVisitPhase(n: Phase): boolean {
-    if (n > maxPhase) return false;
-    switch (n) {
-      case 1:
-        return true;
-      case 2:
-        return themes.length > 0;
-      case 3:
-        return Boolean(extract);
-      case 4:
-        return carousels.length > 0;
-      case 5:
-        return Boolean(imageStage);
-      default:
-        return false;
-    }
+    // Any step already reached stays navigable, even if its content was cleared.
+    return n <= maxPhase;
   }
 
   function toggleSelectedTheme(theme: TestTheme) {
@@ -1473,7 +1534,7 @@ function TestStudioInner() {
   }, [phase]);
 
   return (
-    <div className="mx-auto max-w-5xl space-y-8 px-4 pb-24 pt-8 sm:px-6 sm:pt-10">
+    <div className="mx-auto max-w-5xl space-y-8 px-4 pb-12 pt-8 sm:px-6 sm:pt-10">
       <header className="studio-rise">
         <p className="studio-eyebrow">Test studio · real API</p>
         <h1 className="studio-title">Create a carousel</h1>
@@ -1505,9 +1566,8 @@ function TestStudioInner() {
           apiBase={API_BASE}
           testIdPrefix="test-drive"
           guided
-          onLibraryChanged={() => {
-            void loadVideos({ silent: true });
-          }}
+          onActiveFolderChange={handleActiveFolderChange}
+          onLibraryChanged={handleLibraryChanged}
           onVideoReady={(v) => {
             const cueCount = v.cue_count ?? 0;
             const hasCaptions = Boolean(v.has_captions ?? cueCount > 0);
@@ -1592,62 +1652,46 @@ function TestStudioInner() {
           )}
         </div>
 
-        {selected ? (
-          <div className="test-event-folder mt-4" data-testid="test-event-photo-folder">
-            <div className="test-event-folder-copy">
-              <p className="test-event-folder-title">
-                <Link2 size={14} />
-                Event-photo folder
-              </p>
-              <p className="test-event-folder-help">
-                Paste the Drive folder for this video. Its photos will appear beside video
-                frames in each slide&apos;s candidate picker.
-              </p>
-            </div>
-            <div className="test-event-folder-form">
-              <input
-                className="studio-input"
-                type="url"
-                value={eventFolderUrl}
-                onChange={(event) => setEventFolderUrl(event.target.value)}
-                placeholder="https://drive.google.com/drive/folders/…"
-                aria-label="Event-photo folder URL"
-                data-testid="test-event-photo-folder-url"
-              />
-              <button
-                type="button"
-                className="studio-btn studio-btn-ghost"
-                disabled={eventFolderBusy || !eventFolderUrl.trim()}
-                onClick={() => void linkEventPhotoFolder()}
-                data-testid="test-link-event-photo-folder"
-              >
-                {eventFolderBusy ? "Linking…" : eventFolder?.linked ? "Update link" : "Link folder"}
-              </button>
-            </div>
-            {eventFolder?.linked ? (
-              <p className="test-event-folder-status" role="status">
-                {eventFolder.folder?.name || "Folder linked"} ·{" "}
-                {eventFolder.indexing_state === "preparing"
-                  ? "preparing photos…"
-                  : eventFolder.indexing_state === "error"
-                    ? "prepare failed"
-                    : eventFolder.ready
-                      ? "ready"
-                      : "waiting for faces"}{" "}
-                · {eventFolder.indexed_image_count} event photo
-                {eventFolder.indexed_image_count === 1 ? "" : "s"} ·{" "}
-                {eventFolder.face_image_count} face-ready
-                {eventFolder.last_error ? ` · ${eventFolder.last_error}` : ""}
-              </p>
-            ) : null}
-          </div>
+        {activeFolder ? (
+          <p className="mt-5 flex flex-wrap items-center gap-x-2 text-xs text-slate-500" data-testid="test-video-scope">
+            {showAllLibrary ? "Showing all library videos" : `Showing videos from “${activeFolder.name}”`}
+            <button
+              type="button"
+              className="font-medium text-slate-700 underline-offset-2 hover:underline"
+              onClick={() => toggleShowAllLibrary(!showAllLibrary)}
+            >
+              {showAllLibrary ? "Only this folder" : "Show all library"}
+            </button>
+          </p>
         ) : null}
 
-        <div className="mt-5">
+        <div className={activeFolder ? "mt-2" : "mt-5"}>
           {loadingVideos && videos.length === 0 ? (
-            <p className="text-sm text-muted-foreground">Loading videos…</p>
+            <div className="studio-empty">
+              <p>Loading videos…</p>
+            </div>
           ) : videos.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No captioned videos — is the backend up?</p>
+            <div className="studio-empty">
+              <Video size={28} />
+              {activeFolder && !showAllLibrary ? (
+                <>
+                  <p>
+                    No captioned videos in “{activeFolder.name}” yet. Use “Choose videos to
+                    index” above to queue some, or browse the whole library.
+                  </p>
+                  <button
+                    type="button"
+                    className="studio-btn studio-btn-ghost mt-2"
+                    onClick={() => toggleShowAllLibrary(true)}
+                    data-testid="test-show-all-library"
+                  >
+                    Show all library videos
+                  </button>
+                </>
+              ) : (
+                <p>No captioned videos found. Index a video above, or check that the API is up.</p>
+              )}
+            </div>
           ) : (
             <ul className="studio-scroll-fade max-h-[min(20rem,45vh)] divide-y divide-slate-200 overflow-y-auto rounded-xl border border-slate-200 bg-white">
               {videos.map((v) => {
@@ -1690,9 +1734,23 @@ function TestStudioInner() {
                       </span>
                       <span className="min-w-0 flex-1">
                         <span className="block truncate text-sm font-semibold">{v.name}</span>
-                        <span className={cn("text-xs", studioVideoStatus(v).tone)}>
-                          {studioVideoStatus(v).label}
-                        </span>
+                        {dupeNames.has(v.name.trim().toLowerCase()) ? (
+                          <span
+                            className="block truncate text-[11px] text-slate-500"
+                            title={v.path || v.id}
+                            data-testid="test-video-disambiguator"
+                          >
+                            {videoDisambiguator(v)}
+                          </span>
+                        ) : null}
+                      </span>
+                      <span
+                        className={cn(
+                          "shrink-0 text-right text-xs whitespace-nowrap",
+                          studioVideoStatus(v).tone
+                        )}
+                      >
+                        {studioVideoStatus(v).label}
                       </span>
                     </button>
                   </li>
@@ -1754,7 +1812,7 @@ function TestStudioInner() {
           <p className="mt-2 max-w-[65ch] text-sm leading-relaxed text-slate-500">
             Themes are non-overlapping segments of the talk. Select one or more, then extract topics.
           </p>
-          <ul className="mt-4 space-y-2">
+          <ul className="studio-theme-list">
             {themes.map((t) => {
               const active = selectedThemes.some((x) => x.theme_id === t.theme_id);
               return (
@@ -1787,7 +1845,7 @@ function TestStudioInner() {
                     </span>
                   </button>
                   {selected ? (
-                    <div className="px-3 pb-1">
+                    <div className="studio-theme-extras">
                       <ItemFeedback
                         driveFileId={selected.id}
                         kind="theme"
@@ -1971,6 +2029,33 @@ function TestStudioInner() {
                   : `${selectedHooks.length} hook${selectedHooks.length === 1 ? "" : "s"} selected`}
             </span>
           </div>
+          {copyHint ? (
+            <div
+              className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-sm text-amber-900"
+              role="alert"
+              data-testid="test-copy-short-hint"
+            >
+              <p>{copyHint}</p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  className="studio-btn studio-btn-ghost"
+                  disabled={copyLoading || !selectedTopics.length}
+                  onClick={() => void generateCopy({ force: true, topicsOnly: true })}
+                  data-testid="test-copy-from-topics"
+                >
+                  Generate from topics instead
+                </button>
+                <button
+                  type="button"
+                  className="studio-btn studio-btn-ghost"
+                  onClick={() => setCopyHint(null)}
+                >
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          ) : null}
         </section>
       )}
 
@@ -2145,7 +2230,19 @@ function TestStudioInner() {
               {previewFramesLoading && (
                 <p className="mt-2 text-xs text-muted-foreground">Loading frames…</p>
               )}
-              {!previewFramesLoading && previewFrames.length === 0 && (
+              {!previewFramesLoading && previewFramesError && (
+                <p className="mt-2 text-xs text-red-700" role="alert">
+                  {previewFramesError}{" "}
+                  <button
+                    type="button"
+                    className="font-medium underline-offset-2 hover:underline"
+                    onClick={() => setPreviewFramesTry((n) => n + 1)}
+                  >
+                    Retry
+                  </button>
+                </p>
+              )}
+              {!previewFramesLoading && !previewFramesError && previewFrames.length === 0 && (
                 <p className="mt-2 text-xs text-muted-foreground">No cached frames in this span.</p>
               )}
               {previewFrames.length > 0 && (
@@ -2161,10 +2258,8 @@ function TestStudioInner() {
                           }
                         }}
                       >
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img
+                        <FrameImg
                           src={testAssetUrl(frame.preview_url)}
-                          alt=""
                           className="topics-hooks-frame-img"
                         />
                         <span className="topics-hooks-frame-ts tabular-nums">

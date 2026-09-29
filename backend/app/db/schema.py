@@ -660,6 +660,12 @@ async def ensure_schema(engine: AsyncEngine) -> None:
                 """
             )
         )
+        await _ensure_column(
+            conn,
+            "indexed_folders",
+            "hidden",
+            "ALTER TABLE indexed_folders ADD COLUMN hidden BOOLEAN NOT NULL DEFAULT false",
+        )
         await _ensure_index(
             conn,
             "ix_indexed_folders_drive_user_id",

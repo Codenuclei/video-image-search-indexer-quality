@@ -1002,16 +1002,21 @@ def _video_mime_filter():
 async def carousel_recent_videos(
     limit: int = 5,
     captioned_only: bool = True,
+    root_folder_id: str | None = None,
     session: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     """Phase 1: recent videos with transcript captions (most relevant for themes).
 
     Ordered by last sync / modified. By default only returns videos that have
     non-empty transcript cues; set captioned_only=false to backfill.
+
+    ``root_folder_id`` scopes the list to videos discovered under that Drive
+    root folder (the active/selected folder in Studio).
     """
     from sqlalchemy import and_, func
 
-    limit = max(1, min(int(limit or 5), 12))
+    scope_folder = (root_folder_id or "").strip() or None
+    limit = max(1, min(int(limit or 5), 40 if scope_folder else 12))
     cue_count = func.count(VideoSegment.id).label("cue_count")
     stmt = (
         select(DriveFile, cue_count)
@@ -1023,6 +1028,11 @@ async def carousel_recent_videos(
         .where(
             DriveFile.status == DriveFileStatus.PROCESSED,
             _video_mime_filter(),
+            *(
+                [DriveFile.root_folder_id == scope_folder]
+                if scope_folder
+                else []
+            ),
         )
         .group_by(DriveFile.id)
         .order_by(
@@ -1062,9 +1072,12 @@ async def carousel_videos(
     limit: int = 20,
     offset: int = 0,
     captioned_only: bool = True,
+    root_folder_id: str | None = None,
     session: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     """List / search transcript-done (captioned) videos by title for Phase 1 picker.
+
+    Optional ``root_folder_id`` scopes to videos under that Drive root folder.
 
     Same captioned definition as /recent-videos: at least one VideoSegment with
     non-empty text. Uses EXISTS (not HAVING on a label) so Postgres pagination
@@ -1104,6 +1117,8 @@ async def carousel_videos(
     )
     if captioned_only:
         stmt = stmt.where(has_cues)
+    if (root_folder_id or "").strip():
+        stmt = stmt.where(DriveFile.root_folder_id == root_folder_id.strip())
     if query:
         stmt = stmt.where(DriveFile.name.ilike(f"%{query}%"))
     stmt = stmt.order_by(

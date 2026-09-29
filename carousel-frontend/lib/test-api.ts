@@ -7,7 +7,7 @@
  * Set `NEXT_PUBLIC_TEST_USE_REAL_API=0` to fall back to local `/api/test` mocks.
  */
 
-import { formatApiError } from "@/lib/api";
+import { formatApiError, INITIATE_TIMEOUT_MS, serverErrorMessage } from "@/lib/api";
 import { toastApiError } from "@/lib/toast-api-error";
 
 const USE_REAL_API = process.env.NEXT_PUBLIC_TEST_USE_REAL_API !== "0";
@@ -22,13 +22,20 @@ const API_BASE = USE_REAL_API ? REAL_API_BASE : "/api/test";
 
 export { API_BASE, USE_REAL_API };
 
-/** Prefix relative media paths (e.g. `/media/video/.../frame`) with API_BASE. */
-export const testAssetUrl = (path: string) => {
+/**
+ * Prefix relative media paths (e.g. `/media/video/.../frame`) with API_BASE.
+ *
+ * `cache_only=1` makes the backend 404 when a frame isn't cached, so display
+ * previews do NOT force it. Pass `{ cacheOnly: true }` only where a miss should
+ * fail fast. URLs that already carry `cache_only` (from the API) are kept as-is;
+ * pair them with `FrameImg`, which retries without the flag on error.
+ */
+export const testAssetUrl = (path: string, opts?: { cacheOnly?: boolean }) => {
   if (!path) return path;
   let url = path.startsWith("http") ? path : `${API_BASE}${path}`;
   if (url.includes("/media/video/") && url.includes("/frame?")) {
     if (!url.includes("ar=")) url = `${url}&ar=4x5`;
-    if (!url.includes("cache_only=")) url = `${url}&cache_only=1`;
+    if (opts?.cacheOnly && !url.includes("cache_only=")) url = `${url}&cache_only=1`;
   }
   return url;
 };
@@ -57,7 +64,8 @@ async function api<T>(path: string, init?: RequestInit & { timeoutMs?: number; s
     });
     if (!res.ok) {
       const text = await res.text();
-      throw new Error(text || res.statusText);
+      const friendly = res.status >= 500 ? serverErrorMessage(path, res.status, text) : null;
+      throw new Error(friendly || text || res.statusText);
     }
     if (res.status === 204) return undefined as T;
     return res.json();
@@ -321,8 +329,15 @@ export type CarouselLlmModelsResponse = {
 };
 
 export const testApi = {
-  recentVideos: () =>
-    api<{ items: TestVideo[] }>("/search/carousel/recent-videos?limit=20&captioned_only=true"),
+  /** `rootFolderId` scopes the list to videos under the active Drive folder. */
+  recentVideos: (opts?: { rootFolderId?: string | null; limit?: number }) => {
+    const params = new URLSearchParams({
+      limit: String(opts?.limit ?? 20),
+      captioned_only: "true",
+    });
+    if (opts?.rootFolderId) params.set("root_folder_id", opts.rootFolderId);
+    return api<{ items: TestVideo[] }>(`/search/carousel/recent-videos?${params}`);
+  },
   allVideos: (q?: string) => {
     const params = new URLSearchParams({ limit: "40", captioned_only: "true" });
     if (q) params.set("q", q);
@@ -415,7 +430,7 @@ export const testApi = {
         llm_provider: opts?.runConfig?.provider,
         llm_model: opts?.runConfig?.model,
       }),
-      timeoutMs: 60_000,
+      timeoutMs: 90_000,
     });
     if (
       start.status === "ready" ||
@@ -459,8 +474,8 @@ export const testApi = {
   ) => {
     const first = await api<TestExtract>("/search/carousel/pipeline/extract", {
       method: "POST",
-      // Initiate under App Platform 100s; durable job + poll if still running.
-      timeoutMs: opts?.timeoutMs ?? 90_000,
+      // Backend hands back a durable job id by ~75s; outlast that + proxy buffering.
+      timeoutMs: opts?.timeoutMs ?? INITIATE_TIMEOUT_MS,
       silent: opts?.silent,
       body: JSON.stringify({
         drive_file_id: driveFileId,
@@ -518,7 +533,7 @@ export const testApi = {
   ) => {
     const first = await api<TestExtract>("/search/carousel/pipeline/extract/hooks", {
       method: "POST",
-      timeoutMs: 90_000,
+      timeoutMs: INITIATE_TIMEOUT_MS,
       body: JSON.stringify({
         drive_file_id: driveFileId,
         generate: true,
@@ -599,7 +614,7 @@ export const testApi = {
   }) => {
     const first = await api<TestGenerate>("/search/carousel/pipeline/generate", {
       method: "POST",
-      timeoutMs: 90_000,
+      timeoutMs: INITIATE_TIMEOUT_MS,
       body: JSON.stringify({
         drive_file_id: body.drive_file_id,
         hooks: body.hooks,
@@ -649,7 +664,7 @@ export const testApi = {
       method: "POST",
       // RunPod cold-start can exceed the interactive budget; the client polls
       // visual-prep status when the backend returns preparing.
-      timeoutMs: 90_000,
+      timeoutMs: INITIATE_TIMEOUT_MS,
       body: JSON.stringify({
         ...body,
         llm_provider: body.run_config?.provider,

@@ -34,7 +34,7 @@ export default function TestLibraryPage() {
   }, [load]);
 
   return (
-    <div className="mx-auto max-w-5xl px-4 pb-24 pt-8 sm:px-6 sm:pt-10">
+    <div className="mx-auto max-w-5xl px-4 pb-12 pt-8 sm:px-6 sm:pt-10">
       <header className="mb-8">
         <p className="text-[11px] font-medium uppercase tracking-[0.2em] text-slate-500">
           Test · Library
@@ -82,9 +82,13 @@ export default function TestLibraryPage() {
       <section>
         <h2 className="mb-3 text-sm font-semibold text-slate-800">All videos</h2>
         {loading && videos.length === 0 ? (
-          <p className="text-sm text-slate-500">Loading library…</p>
+          <div className="studio-empty">
+            <p>Loading library…</p>
+          </div>
         ) : videos.length === 0 ? (
-          <p className="text-sm text-slate-500">No videos yet.</p>
+          <div className="studio-empty">
+            <p>No videos yet.</p>
+          </div>
         ) : (
           <ul className="divide-y divide-slate-200 overflow-hidden rounded-xl border border-slate-200 bg-white/90">
             {videos.map((v) => (

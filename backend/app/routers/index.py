@@ -586,6 +586,26 @@ async def indexed_folders(session: AsyncSession = Depends(get_db)) -> dict[str, 
     }
 
 
+@router.delete("/index/folders/{folder_id}")
+async def hide_indexed_folder_route(
+    folder_id: str, session: AsyncSession = Depends(get_db)
+) -> dict[str, object]:
+    """Soft-hide a previously indexed folder from history.
+
+    Never deletes ``drive_files`` / media (never-delete policy). The folder
+    currently selected for Drive sync cannot be hidden — change it first.
+    """
+    from app.drive.indexed_folders import IndexedFolderHideError, hide_indexed_folder
+
+    try:
+        row = await hide_indexed_folder(session, folder_id)
+    except IndexedFolderHideError as exc:
+        await session.rollback()
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    await session.commit()
+    return {"ok": True, "id": row.id, "hidden": True}
+
+
 @router.post("/index/backup/run")
 async def run_backup_now() -> dict[str, object]:
     """Trigger a durable Postgres + Qdrant + carousel forever backup (leader-safe)."""
