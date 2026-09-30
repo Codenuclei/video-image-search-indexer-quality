@@ -58,6 +58,7 @@ import { toast } from "sonner";
 import { loadRunConfig, persistRunConfig } from "../carousel-llm-picker";
 import {
   duplicateVideoNames,
+  dedupeVideosByName,
   studioVideoStatus,
   videoDisambiguator,
 } from "@/lib/studio-video-status";
@@ -381,6 +382,8 @@ function TestStudioInner() {
   const stagedUploadsRef = useRef<TestVideo[]>([]);
   const videosRef = useRef<TestVideo[]>([]);
   videosRef.current = videos;
+  const selectedRef = useRef<TestVideo | null>(null);
+  selectedRef.current = selected;
   const previewVideoRef = useRef<HTMLVideoElement>(null);
   const [previewItem, setPreviewItem] = useState<{ start_sec: number; text: string } | null>(
     null
@@ -562,11 +565,16 @@ function TestStudioInner() {
       const scope = showAllRef.current ? null : activeFolderRef.current;
       const res = await testApi.recentVideos({ rootFolderId: scope?.id ?? null });
       if (seq !== loadSeqRef.current) return; // a newer scope/load superseded this one
-      // Unique by id (a video can only appear once even if the API repeats it).
-      const items = prependUniqueById([], res.items ?? []);
+      // Unique by id, then collapse same display name (re-indexed copies).
+      const preferId = selectedRef.current?.id;
+      const items = dedupeVideosByName(prependUniqueById([], res.items ?? []), {
+        preferId,
+      });
       const apiIds = new Set(items.map((v) => v.id));
       stagedUploadsRef.current = stagedUploadsRef.current.filter((v) => !apiIds.has(v.id));
-      setVideos(prependUniqueById(stagedUploadsRef.current, items));
+      setVideos(
+        dedupeVideosByName(prependUniqueById(stagedUploadsRef.current, items), { preferId })
+      );
     } catch (e) {
       setError(formatApiError(e, "Could not load videos. Please refresh and try again."));
     } finally {
@@ -806,7 +814,9 @@ function TestStudioInner() {
           cue_count: 0,
         };
         stagedUploadsRef.current = prependUniqueById([asVideo], stagedUploadsRef.current);
-        setVideos((prev) => prependUniqueById([asVideo], prev));
+        setVideos((prev) =>
+          dedupeVideosByName(prependUniqueById([asVideo], prev), { preferId: asVideo.id })
+        );
       }
       setUploadNote(notes.join(" · "));
       if (firstId) {
@@ -1583,7 +1593,9 @@ function TestStudioInner() {
             };
             setSelected(asVideo);
             stagedUploadsRef.current = prependUniqueById([asVideo], stagedUploadsRef.current);
-            setVideos((prev) => prependUniqueById([asVideo], prev));
+            setVideos((prev) =>
+              dedupeVideosByName(prependUniqueById([asVideo], prev), { preferId: asVideo.id })
+            );
             setError(null);
             if (v.status === "processed" && !hasCaptions) {
               setUploadNote(
@@ -1693,17 +1705,15 @@ function TestStudioInner() {
               )}
             </div>
           ) : (
-            <ul className="studio-scroll-fade max-h-[min(20rem,45vh)] divide-y divide-slate-200 overflow-y-auto rounded-xl border border-slate-200 bg-white">
+            <ul className="studio-video-list studio-scroll-fade max-h-[min(20rem,45vh)]">
               {videos.map((v) => {
                 const on = selected?.id === v.id;
+                const status = studioVideoStatus(v);
                 return (
                   <li key={v.id}>
                     <button
                       type="button"
-                      className={cn(
-                        "flex w-full items-center gap-3 px-3 py-3 text-left hover:bg-slate-50",
-                        on && "bg-slate-100"
-                      )}
+                      className={cn("studio-video-row studio-video-row--compact", on && "is-active")}
                       onClick={() => {
                         setSelected(v);
                         resetProgressTo(1);
@@ -1732,11 +1742,11 @@ function TestStudioInner() {
                       <span className={cn("studio-check", on && "is-on")}>
                         {on ? <Check size={12} strokeWidth={2.5} /> : null}
                       </span>
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate text-sm font-semibold">{v.name}</span>
+                      <span className="studio-video-row__main">
+                        <span className="studio-video-row__name">{v.name}</span>
                         {dupeNames.has(v.name.trim().toLowerCase()) ? (
                           <span
-                            className="block truncate text-[11px] text-slate-500"
+                            className="studio-video-row__meta"
                             title={v.path || v.id}
                             data-testid="test-video-disambiguator"
                           >
@@ -1744,19 +1754,14 @@ function TestStudioInner() {
                           </span>
                         ) : null}
                       </span>
-                      <span
-                        className={cn(
-                          "shrink-0 text-right text-xs whitespace-nowrap",
-                          studioVideoStatus(v).tone
-                        )}
-                      >
-                        {studioVideoStatus(v).label}
+                      <span className={cn("studio-video-row__status", status.tone)}>
+                        {status.label}
                       </span>
                       <a
                         href={`https://drive.google.com/file/d/${encodeURIComponent(v.id)}/view`}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="shrink-0 text-[11px] font-medium text-blue-600 underline-offset-2 hover:underline"
+                        className="studio-video-row__open"
                         onClick={(e) => e.stopPropagation()}
                         title="Open in Google Drive"
                       >

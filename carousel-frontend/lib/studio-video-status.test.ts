@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { duplicateVideoNames, studioVideoStatus, videoDisambiguator } from "./studio-video-status";
+import {
+  dedupeVideosByName,
+  duplicateVideoNames,
+  studioVideoRank,
+  studioVideoStatus,
+  videoDisambiguator,
+} from "./studio-video-status";
 
 describe("studioVideoStatus", () => {
   it("shows upload waiting before the indexer claims the file", () => {
@@ -46,6 +52,54 @@ describe("duplicate video names", () => {
     ).toBe("/Root/Sub · id …123456");
     expect(videoDisambiguator({ id: "abcdef123456", name: "Talk.mp4", path: null })).toBe(
       "id …123456"
+    );
+  });
+});
+
+describe("dedupeVideosByName", () => {
+  it("keeps the higher-cue captioned copy of the same name", () => {
+    const out = dedupeVideosByName([
+      {
+        id: "a",
+        name: "Talk.mp4",
+        status: "processed",
+        has_captions: true,
+        cue_count: 401,
+      },
+      {
+        id: "b",
+        name: "Talk.mp4",
+        status: "processed",
+        has_captions: true,
+        cue_count: 609,
+      },
+      { id: "c", name: "Other.mp4", status: "processed", has_captions: true, cue_count: 10 },
+    ]);
+    expect(out.map((v) => v.id)).toEqual(["b", "c"]);
+  });
+
+  it("prefers the currently selected id when names collide", () => {
+    const out = dedupeVideosByName(
+      [
+        { id: "a", name: "Talk.mp4", status: "processed", has_captions: true, cue_count: 10 },
+        { id: "b", name: "Talk.mp4", status: "processed", has_captions: true, cue_count: 99 },
+      ],
+      { preferId: "a" }
+    );
+    expect(out.map((v) => v.id)).toEqual(["a"]);
+  });
+
+  it("ranks captioned above pending", () => {
+    expect(
+      studioVideoRank({
+        id: "1",
+        name: "x",
+        status: "processed",
+        has_captions: true,
+        cue_count: 1,
+      })
+    ).toBeGreaterThan(
+      studioVideoRank({ id: "2", name: "x", status: "pending", has_captions: false, cue_count: 0 })
     );
   });
 });

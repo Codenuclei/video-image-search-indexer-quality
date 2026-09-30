@@ -1660,7 +1660,7 @@
   border: none !important; /* no outer shell border; row dividers remain */
   border-radius: 0.75rem;
   max-height: min(24rem, 50vh);
-  overflow-x: hidden;
+  overflow-x: clip;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
   background: #ffffff !important;
@@ -1668,25 +1668,85 @@
 
 .carousel-studio .studio-video-list > li {
   list-style: none;
+  min-width: 0;
 }
 
 .carousel-studio .studio-video-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
   width: 100%;
+  max-width: 100%;
   align-items: center;
-  gap: 0.75rem;
-  padding: 0.8rem 0.9rem;
+  column-gap: 0.65rem;
+  padding: 0.7rem 0.85rem;
   text-align: left;
   border: 0 !important;
   border-bottom: 1px solid #e2e8f0 !important;
   border-radius: 0;
   transition: background 140ms ease, box-shadow 140ms ease;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* Compact rows (test studio): check | name | status | open — no thumb */
+.carousel-studio .studio-video-row--compact {
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+}
+
+.carousel-studio .studio-video-row__main {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.carousel-studio .studio-video-row__name {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.carousel-studio .studio-video-row__meta {
+  display: block;
+  margin-top: 0.1rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.6875rem;
+  color: #64748b;
+}
+
+.carousel-studio .studio-video-row__status {
+  justify-self: end;
+  max-width: 9.5rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.75rem;
+  text-align: right;
+}
+
+.carousel-studio .studio-video-row__open {
+  justify-self: end;
+  flex-shrink: 0;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: #2563eb;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.carousel-studio .studio-video-row__open:hover {
+  text-decoration: underline;
 }
 
 .carousel-studio .studio-video-thumb {
   flex-shrink: 0;
-  width: 4.5rem;
-  height: 3rem;
+  justify-self: end;
+  width: 3.75rem;
+  height: 2.5rem;
   display: flex;
   align-items: center;
   justify-content: center;

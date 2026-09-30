@@ -34,7 +34,7 @@ import {
 import { DriveFolderPanel } from "@/components/drive-folder-panel";
 import { FrameImg } from "@/components/frame-img";
 import { refreshAfterSync, type ActiveDriveFolder } from "@/lib/folder-refresh";
-import { duplicateVideoNames, videoDisambiguator } from "@/lib/studio-video-status";
+import { dedupeVideosByName, duplicateVideoNames, videoDisambiguator } from "@/lib/studio-video-status";
 import { TranscriptProgressModal, type TranscriptModalState } from "@/components/transcript-progress-modal";
 import {
   API_BASE,
@@ -296,6 +296,8 @@ export default function CarouselSearchPage() {
   const [, setAllVideosError] = useState<string | null>(null);
 
   const [selectedVideo, setSelectedVideo] = useState<CarouselRecentVideo | null>(null);
+  const selectedVideoRef = useRef<CarouselRecentVideo | null>(null);
+  selectedVideoRef.current = selectedVideo;
   const [searchEntity, setSearchEntity] = useState("");
   const [personPick, setPersonPick] = useState("");
   const [objectQuery, setObjectQuery] = useState("");
@@ -577,11 +579,16 @@ export default function CarouselSearchPage() {
       const vids = await apiClient.carouselRecentVideos(scope ? 12 : 5, true, scope);
       if (signal?.aborted) return;
       if (scope !== scopeFolderIdRef.current) return; // scope changed mid-flight
-      // Unique by id even if the API repeats a row.
-      const items = prependUniqueById([], vids.items ?? []);
+      // Unique by id, then collapse same display name (re-indexed copies).
+      const preferId = selectedVideoRef.current?.id;
+      const items = dedupeVideosByName(prependUniqueById([], vids.items ?? []), {
+        preferId,
+      });
       const apiIds = new Set(items.map((v) => v.id));
       stagedUploadsRef.current = stagedUploadsRef.current.filter((v) => !apiIds.has(v.id));
-      setRecent(prependUniqueById(stagedUploadsRef.current, items));
+      setRecent(
+        dedupeVideosByName(prependUniqueById(stagedUploadsRef.current, items), { preferId })
+      );
     } catch (e) {
       if (signal?.aborted) return;
       setError(formatApiError(e, "Could not load recent videos"));
@@ -650,7 +657,11 @@ export default function CarouselSearchPage() {
           captionedOnly: true,
           rootFolderId: scopeFolderId,
         });
-        if (!cancelled) setAllVideos(res.items ?? []);
+        if (!cancelled) {
+          setAllVideos(
+            dedupeVideosByName(res.items ?? [], { preferId: selectedVideoRef.current?.id })
+          );
+        }
       } catch (e) {
         if (!cancelled) {
           setAllVideos([]);
@@ -1157,7 +1168,11 @@ export default function CarouselSearchPage() {
         });
       }
       stagedUploadsRef.current = prependUniqueById(uploaded, stagedUploadsRef.current);
-      setRecent((prev) => prependUniqueById(uploaded, prev));
+      setRecent((prev) =>
+        dedupeVideosByName(prependUniqueById(uploaded, prev), {
+          preferId: uploaded[0]?.id,
+        })
+      );
       if (uploaded[0]) {
         setSelectedVideo(uploaded[0]);
         setVideoScope("recent");
@@ -1759,7 +1774,9 @@ export default function CarouselSearchPage() {
             };
             setSelectedVideo(asVideo);
             stagedUploadsRef.current = prependUniqueById([asVideo], stagedUploadsRef.current);
-            setRecent((prev) => prependUniqueById([asVideo], prev));
+            setRecent((prev) =>
+              dedupeVideosByName(prependUniqueById([asVideo], prev), { preferId: asVideo.id })
+            );
             setError(null);
             if (v.status === "processed" && !hasCaptions) {
               setUploadNote(`“${v.name}” is indexed — getting transcripts from the video…`);
@@ -3892,15 +3909,14 @@ function VideoPickList({
 }) {
   const dupeNames = duplicateVideoNames(videos);
   return (
-    <ul
-      className={cn(
-        "studio-video-list studio-scroll-fade overflow-x-hidden overflow-y-auto",
-        maxHeightClass
-      )}
-    >
+    <ul className={cn("studio-video-list studio-scroll-fade", maxHeightClass)}>
       {videos.map((v) => {
         const active = selectedId === v.id;
         const isDupe = dupeNames.has(v.name.trim().toLowerCase());
+        const cues =
+          v.has_captions !== false
+            ? `${v.cue_count ?? "…"} cues`
+            : "No captions";
         return (
           <li key={v.id}>
             <button
@@ -3912,18 +3928,17 @@ function VideoPickList({
               <span className={cn("studio-check", active && "is-on")} aria-hidden>
                 {active ? <Check size={12} strokeWidth={2.5} /> : null}
               </span>
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-sm font-semibold text-slate-900">{v.name}</span>
-                <span className="mt-0.5 block truncate text-xs text-zinc-500">
-                  {v.has_captions !== false ? `${v.cue_count ?? "…"} cues · ` : "No captions · "}
-                  {isDupe ? videoDisambiguator(v) : v.path || v.mime_type}
+              <span className="studio-video-row__main">
+                <span className="studio-video-row__name">{v.name}</span>
+                <span className="studio-video-row__meta">
+                  {isDupe ? videoDisambiguator(v) : cues}
                 </span>
               </span>
               <a
                 href={`https://drive.google.com/file/d/${encodeURIComponent(v.id)}/view`}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="shrink-0 text-[11px] font-medium text-blue-600 underline-offset-2 hover:underline"
+                className="studio-video-row__open"
                 onClick={(e) => e.stopPropagation()}
                 title="Open in Google Drive"
               >

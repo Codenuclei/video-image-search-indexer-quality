@@ -151,6 +151,9 @@ export function DriveFolderPanel({
   const [videoTotalHint, setVideoTotalHint] = useState(0);
   const [followShortcuts, setFollowShortcuts] = useState(false);
   const shortcutsBusyRef = useRef(false);
+  /** User's intended shortcuts value — blocks load() from snapping the checkbox back. */
+  const shortcutsDesiredRef = useRef<boolean | null>(null);
+  const shortcutsSyncTimerRef = useRef<number | null>(null);
   const [oauthReturnTo, setOauthReturnTo] = useState("");
   const [busy, setBusy] = useState(false);
   const [pickerBusy, setPickerBusy] = useState(false);
@@ -242,8 +245,17 @@ export function DriveFolderPanel({
         lastFolderKeyRef.current = folderKey;
         onActiveFolderChangeRef.current?.(folder);
       }
-      if (!shortcutsBusyRef.current) {
-        setFollowShortcuts(Boolean(settings.follow_shortcut_folders));
+      const serverShortcuts = Boolean(settings.follow_shortcut_folders);
+      if (shortcutsBusyRef.current || shortcutsDesiredRef.current !== null) {
+        // Keep the optimistic checkbox value. Clear the pin once the server matches.
+        if (
+          shortcutsDesiredRef.current !== null &&
+          serverShortcuts === shortcutsDesiredRef.current
+        ) {
+          shortcutsDesiredRef.current = null;
+        }
+      } else {
+        setFollowShortcuts(serverShortcuts);
       }
       setError(null);
       return ds;
@@ -267,6 +279,14 @@ export function DriveFolderPanel({
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    return () => {
+      if (shortcutsSyncTimerRef.current != null) {
+        window.clearTimeout(shortcutsSyncTimerRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     setOauthReturnTo(`${window.location.origin}${window.location.pathname}`);
@@ -669,12 +689,25 @@ export function DriveFolderPanel({
   async function toggleShortcuts(enabled: boolean) {
     const previous = followShortcuts;
     shortcutsBusyRef.current = true;
+    shortcutsDesiredRef.current = enabled;
     setFollowShortcuts(enabled);
+    if (shortcutsSyncTimerRef.current != null) {
+      window.clearTimeout(shortcutsSyncTimerRef.current);
+      shortcutsSyncTimerRef.current = null;
+    }
     try {
       const updated = await api.updateShortcutFolders(enabled);
-      setFollowShortcuts(updated.follow_shortcut_folders);
-      void api.syncDriveFiles().catch(() => {});
+      const next = Boolean(updated.follow_shortcut_folders);
+      shortcutsDesiredRef.current = next;
+      // Avoid a second paint when the server echoes the optimistic value.
+      setFollowShortcuts((cur) => (cur === next ? cur : next));
+      // Defer sync so the checkbox isn't fighting a session/library refresh.
+      shortcutsSyncTimerRef.current = window.setTimeout(() => {
+        shortcutsSyncTimerRef.current = null;
+        void api.syncDriveFiles().catch(() => {});
+      }, 800);
     } catch (e) {
+      shortcutsDesiredRef.current = previous;
       setFollowShortcuts(previous);
       setError(formatApiError(e, "Could not update the shortcut setting."));
     } finally {
@@ -966,7 +999,7 @@ export function DriveFolderPanel({
                 type="checkbox"
                 checked={followShortcuts}
                 onChange={(e) => void toggleShortcuts(e.target.checked)}
-                className="mt-0.5 h-4 w-4 shrink-0 rounded border-slate-300"
+                className="mt-0.5 h-4 w-4 shrink-0 cursor-pointer rounded border-slate-300 accent-slate-900"
                 data-testid={`${testIdPrefix}-shortcuts`}
               />
               <span>
@@ -1310,7 +1343,7 @@ export function DriveFolderPanel({
                 type="checkbox"
                 checked={followShortcuts}
                 onChange={(e) => void toggleShortcuts(e.target.checked)}
-                className="mt-0.5 h-4 w-4 shrink-0 rounded border-slate-300"
+                className="mt-0.5 h-4 w-4 shrink-0 cursor-pointer rounded border-slate-300 accent-slate-900"
                 data-testid={`${testIdPrefix}-shortcuts`}
               />
               <span>
