@@ -280,6 +280,16 @@ async def ensure_schema(engine: AsyncEngine) -> None:
                 f"ALTER TABLE app_settings ADD COLUMN {column} {ddl_type}",
             )
 
+        # The folders API filters on this column. Keep required ORM columns
+        # ahead of the warm-DB shortcut so existing production databases are
+        # upgraded before requests can query them.
+        await _ensure_column(
+            conn,
+            "indexed_folders",
+            "hidden",
+            "ALTER TABLE indexed_folders ADD COLUMN hidden BOOLEAN NOT NULL DEFAULT false",
+        )
+
         # Warm prod DBs already have additive columns. Skip ALTER TABLE entirely —
         # even IF NOT EXISTS takes AccessExclusiveLock and can 503 the API on boot.
         warm = await _column_exists(conn, "drive_files", "archived_at")
@@ -659,12 +669,6 @@ async def ensure_schema(engine: AsyncEngine) -> None:
                 )
                 """
             )
-        )
-        await _ensure_column(
-            conn,
-            "indexed_folders",
-            "hidden",
-            "ALTER TABLE indexed_folders ADD COLUMN hidden BOOLEAN NOT NULL DEFAULT false",
         )
         await _ensure_index(
             conn,
