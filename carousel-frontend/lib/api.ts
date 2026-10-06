@@ -1308,6 +1308,7 @@ export const apiClient = {
     startSec?: number;
     endSec?: number | null;
     limit?: number;
+    waitMs?: number;
     timeoutMs?: number;
     silent?: boolean;
     signal?: AbortSignal;
@@ -1318,7 +1319,12 @@ export const apiClient = {
       limit: String(opts.limit ?? 40),
     });
     if (opts.endSec != null) params.set("end_sec", String(opts.endSec));
-    return api<{ drive_file_id: string; items: CarouselTranscriptFrameItem[] }>(
+    if (opts.waitMs != null) params.set("wait_ms", String(opts.waitMs));
+    return api<{
+      drive_file_id: string;
+      items: CarouselTranscriptFrameItem[];
+      quality?: { cached?: number; preparing?: number };
+    }>(
       `/search/carousel/pipeline/transcript-frames?${params}`,
       {
         timeoutMs: opts.timeoutMs ?? 180_000,

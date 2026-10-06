@@ -67,6 +67,7 @@ function loadTranscriptFrames(
           startSec: Math.max(0, startSec - 4),
           endSec: endSec != null ? endSec + 4 : startSec + 28,
           limit: 24,
+          waitMs: 45_000,
           timeoutMs: TRANSCRIPT_FRAME_TIMEOUT_MS,
           silent: true,
         });
@@ -78,9 +79,17 @@ function loadTranscriptFrames(
             return a.frame_ts - b.frame_ts;
           })
         );
-        return list;
+        if (list.length) return list;
+        lastError = new Error(
+          res.quality?.preparing
+            ? "Frames are still being prepared"
+            : "No usable frames could be extracted from this video span"
+        );
       } catch (error) {
         lastError = error;
+      }
+      if (attempt < TRANSCRIPT_FRAME_MAX_ATTEMPTS) {
+        await new Promise((resolve) => window.setTimeout(resolve, 1_200 * attempt));
       }
     }
     throw lastError instanceof Error
@@ -88,9 +97,14 @@ function loadTranscriptFrames(
       : new Error("Could not load transcript frames");
   })();
   transcriptFrameJobs.set(key, job);
-  job.catch(() => {
-    transcriptFrameJobs.delete(key);
-  });
+  job.then(
+    () => {
+      if (transcriptFrameJobs.get(key) === job) transcriptFrameJobs.delete(key);
+    },
+    () => {
+      if (transcriptFrameJobs.get(key) === job) transcriptFrameJobs.delete(key);
+    }
+  );
   return job;
 }
 

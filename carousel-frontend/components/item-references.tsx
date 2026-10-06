@@ -53,6 +53,7 @@ export function ItemReferences({
   const [saving, setSaving] = useState(false);
   const [pickingFrame, setPickingFrame] = useState(false);
   const [loadingFrames, setLoadingFrames] = useState(false);
+  const [frameAttempt, setFrameAttempt] = useState(1);
   const [frameError, setFrameError] = useState<string | null>(null);
   const frameAbortRef = useRef<AbortController | null>(null);
   const [frameItems, setFrameItems] = useState<
@@ -166,20 +167,40 @@ export function ItemReferences({
     frameAbortRef.current = ac;
     setPickingFrame(true);
     setLoadingFrames(true);
+    setFrameAttempt(1);
     setFrameError(null);
     setStatus(null);
     try {
-      const res = await apiClient.carouselTranscriptFrames({
-        driveFileId,
-        startSec: Math.max(0, frameStartSec - 4),
-        endSec: frameEndSec != null ? frameEndSec + 4 : frameStartSec + 28,
-        limit: 16,
-        timeoutMs: 180_000,
-        silent: true,
-        signal: ac.signal,
-      });
-      if (ac.signal.aborted) return;
-      setFrameItems(uniquePickerFrames(res.items ?? []));
+      let loaded: { text: string; frame_ts: number; preview_url: string }[] = [];
+      let preparing = false;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        setFrameAttempt(attempt);
+        const res = await apiClient.carouselTranscriptFrames({
+          driveFileId,
+          startSec: Math.max(0, frameStartSec - 4),
+          endSec: frameEndSec != null ? frameEndSec + 4 : frameStartSec + 28,
+          limit: 16,
+          waitMs: 45_000,
+          timeoutMs: 60_000,
+          silent: true,
+          signal: ac.signal,
+        });
+        if (ac.signal.aborted) return;
+        loaded = uniquePickerFrames(res.items ?? []);
+        preparing = Boolean(res.quality?.preparing);
+        if (loaded.length) break;
+        if (attempt < 3) {
+          await new Promise((resolve) => window.setTimeout(resolve, 1_200 * attempt));
+        }
+      }
+      if (!loaded.length) {
+        throw new Error(
+          preparing
+            ? "Frames are still being prepared. Please retry in a moment."
+            : "No usable frames could be extracted from this video span."
+        );
+      }
+      setFrameItems(loaded);
     } catch (e) {
       if (ac.signal.aborted) return;
       // Keep the picker open with a clear error + Retry instead of silently closing.
@@ -407,7 +428,9 @@ export function ItemReferences({
                 <div className="item-refs-frames">
                   {loadingFrames ? (
                     <p className="item-refs-hint">
-                      Loading frames… this can take a minute for uncached video.{" "}
+                      {frameAttempt > 1
+                        ? `Still preparing frames — attempt ${frameAttempt} of 3.`
+                        : "Preparing video frames…"}{" "}
                       <button type="button" className="item-refs-dismiss" onClick={cancelFrames}>
                         Cancel
                       </button>

@@ -1223,27 +1223,44 @@ function loadTestFrames(
         /* fall through to API frames */
       }
     }
-    const res = await testApi.transcriptFrames({
-      driveFileId,
-      startSec: lo,
-      endSec: hi,
-      limit: 24,
-    });
-    return {
-      items: uniquePickerFrames(
+    let preparing = false;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const res = await testApi.transcriptFrames({
+        driveFileId,
+        startSec: lo,
+        endSec: hi,
+        limit: 24,
+      });
+      const items = uniquePickerFrames(
         (res.items ?? []).map((item) => ({
           frame_ts: item.frame_ts,
           preview_url: item.preview_url,
           source: "api" as const,
         }))
-      ),
-      sourceNote: "API frames",
-    };
+      );
+      if (items.length) {
+        return { items, sourceNote: "API frames" };
+      }
+      preparing = Boolean(res.quality?.preparing);
+      if (attempt < 3) {
+        await new Promise((resolve) => window.setTimeout(resolve, 1_200 * attempt));
+      }
+    }
+    throw new Error(
+      preparing
+        ? "Frames are still being prepared. Please retry in a moment."
+        : "No usable frames could be extracted from this video span."
+    );
   })();
   testFrameJobs.set(key, job);
-  job.catch(() => {
-    testFrameJobs.delete(key);
-  });
+  job.then(
+    () => {
+      if (testFrameJobs.get(key) === job) testFrameJobs.delete(key);
+    },
+    () => {
+      if (testFrameJobs.get(key) === job) testFrameJobs.delete(key);
+    }
+  );
   return job;
 }
 

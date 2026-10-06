@@ -7,6 +7,7 @@ from app.routers.carousel_script import (
     PipelineThemeSlice,
     TimedPick,
     _build_hook_carousels,
+    _build_fragment_tolerant_carousel,
     _cue_corpus_needs_relaxed_lines,
     _line_complete_enough,
     _line_starts_clean,
@@ -72,6 +73,87 @@ def test_relaxed_gates_accept_autocaption_lines_but_not_fragments():
 def test_punctuated_transcript_keeps_strict_line_rules():
     assert _line_complete_enough("It has been a tradition in India.")
     assert not _line_complete_enough("it has been a tradition in India")
+
+
+def test_fragment_tolerant_fallback_builds_from_tiny_cues():
+    fragmented = [
+        (0.0, 0.8, "so"),
+        (0.8, 1.6, "we started"),
+        (1.6, 2.4, "with customers"),
+        (2.4, 3.2, "then learned"),
+    ]
+    built = _build_fragment_tolerant_carousel(
+        hook=TimedPick(id="h1", text="How the company started", start_sec=0, end_sec=3.2),
+        topics=[],
+        themes=[],
+        intent="",
+        cue_corpus=fragmented,
+        drive_file_id="short-video",
+        video_name="Short.mp4",
+        min_slides=6,
+        max_slides=8,
+        select_images=False,
+    )
+    assert len(built) == 1
+    assert built[0]["fragment_tolerant"] is True
+    assert built[0]["plan_source"] == "fragment_tolerant"
+    assert len(built[0]["slides"]) >= 2
+    assert all(slide["fragment_tolerant"] for slide in built[0]["slides"])
+    assert all(slide["frame_source"] == "deferred" for slide in built[0]["slides"])
+
+
+def test_fragment_tolerant_fallback_rejects_only_one_transcript_line():
+    built = _build_fragment_tolerant_carousel(
+        hook=TimedPick(id="h1", text="Only hook"),
+        topics=[],
+        themes=[],
+        intent="",
+        cue_corpus=[(0.0, 1.0, "only one line")],
+        drive_file_id="one-line",
+        video_name="One line.mp4",
+        min_slides=6,
+        max_slides=8,
+        select_images=False,
+    )
+    assert built == []
+
+
+def test_fragment_tolerant_fallback_stays_near_selected_hook():
+    cues = [
+        (0.0, 2.0, "Opening section should not be selected"),
+        (2.0, 4.0, "More unrelated opening context"),
+        (282.0, 284.0, "Nearby setup one is still before selection"),
+        (284.0, 286.0, "Nearby setup two is still before selection"),
+        (286.0, 288.0, "Nearby setup three is still before selection"),
+        (288.0, 290.0, "Nearby setup four is still before selection"),
+        (290.0, 292.0, "Nearby setup five is still before selection"),
+        (292.0, 294.0, "Nearby setup six is still before selection"),
+        (300.0, 302.0, "Selected segment starts with customer demand"),
+        (302.0, 304.0, "Then the founders changed their product"),
+        (304.0, 306.0, "Revenue followed after the change"),
+    ]
+    built = _build_fragment_tolerant_carousel(
+        hook=TimedPick(
+            id="late",
+            text="Why customer demand changed the product",
+            start_sec=300.0,
+            end_sec=306.0,
+        ),
+        topics=[],
+        themes=[],
+        intent="",
+        cue_corpus=cues,
+        drive_file_id="late-video",
+        video_name="Late.mp4",
+        min_slides=6,
+        max_slides=8,
+        select_images=False,
+    )
+    assert len(built) == 1
+    texts = " ".join(slide["transcript_text"] for slide in built[0]["slides"])
+    assert "customer demand" in texts
+    assert "Opening section" not in texts
+    assert "Nearby setup one" not in texts
 
 
 @pytest.mark.asyncio

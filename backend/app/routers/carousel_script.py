@@ -4039,9 +4039,15 @@ async def transcript_frame_candidates(
     start_sec: float = 0,
     end_sec: float | None = None,
     limit: int = 48,
+    wait_ms: int = Query(45_000, ge=0, le=90_000),
     session: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    """Dense transcript+frame candidates in a span, quality-filtered for image picking."""
+    """Dense, ready-to-display transcript frames in a span.
+
+    Missing frames are scheduled in a bounded batch and this request waits briefly
+    for them.  Only files that actually exist are returned, so clients never render
+    speculative URLs that become broken images.
+    """
     from app.search.carousel_frame_select import (
         filter_frame_candidates_by_quality,
         list_cached_timestamps_in_span,
@@ -4049,6 +4055,7 @@ async def transcript_frame_candidates(
         sample_candidate_timestamps,
         HARVEST_NEAREST_TOLERANCE_SEC,
     )
+    from pathlib import Path
 
     settings = get_settings()
     drive_file, cues = await _load_video_cues(session, drive_file_id.strip())
@@ -4091,7 +4098,9 @@ async def transcript_frame_candidates(
     by_ts: dict[float, dict[str, Any]] = {}
     # Seed with real cached frames first (snappy img loads via cache_only).
     for ts in cached_ts:
-        key = round(float(ts), 2)
+        # Frame filenames use three decimal places. Preserve that precision so
+        # exact-path verification below checks the file that was actually found.
+        key = round(float(ts), 3)
         nearest_cue = _cue_for(key)
         by_ts[key] = {
             "start_sec": key,
@@ -4168,9 +4177,22 @@ async def transcript_frame_candidates(
         row["cached"] = cached
         return row
 
-    items = [_row(i, cached=True) for i in kept_idx if images[i] is not None]
-    # Cap cold fallbacks tightly — browser extract-on-view is what felt eternal.
+    frames_dir = Path(thumb) / "video" / fid
+
+    def _exact_frame_path(index: int) -> Path:
+        return frames_dir / f"{float(raw_items[index]['frame_ts']):.3f}.jpg"
+
+    # Quality filtering may inspect a nearby cached JPEG. Only advertise an exact
+    # timestamp when that exact path exists; cache_only URLs never use nearest.
+    items = [
+        _row(i, cached=True)
+        for i in kept_idx
+        if images[i] is not None and _exact_frame_path(i).is_file()
+    ]
+    # Cap cold extraction tightly. The endpoint waits for these jobs below rather
+    # than returning speculative URLs and making every <img> start its own ffmpeg.
     cold_budget = 4 if items else min(8, target)
+    cold_rows: list[dict[str, Any]] = []
     if len(items) < target:
         claimed = {round(float(x["frame_ts"]), 2) for x in items}
         fallback_order = sorted(
@@ -4184,27 +4206,72 @@ async def transcript_frame_candidates(
         for i in fallback_order:
             if len(items) >= target or cold_added >= cold_budget:
                 break
-            if images[i] is not None:
+            if _exact_frame_path(i).is_file():
                 continue
             ts = round(float(raw_items[i]["frame_ts"]), 2)
             if ts in claimed:
                 continue
             claimed.add(ts)
-            items.append(_row(i, cached=False))
+            cold_rows.append(_row(i, cached=False))
             cold_added += 1
-    items.sort(key=lambda x: float(x["frame_ts"]))
-    from app.routers.media import schedule_frame_extract
+    from app.routers.media import ensure_frame_extracted
 
-    for row in items:
-        if not row.get("cached"):
-            schedule_frame_extract(fid, float(row["frame_ts"]))
+    async def _extract(row: dict[str, Any]) -> bool:
+        ts = float(row["frame_ts"])
+        path = frames_dir / f"{ts:.3f}.jpg"
+        frames_dir.mkdir(parents=True, exist_ok=True)
+        return await ensure_frame_extracted(fid, ts, path, settings, session)
+
+    task_rows = {
+        asyncio.create_task(_extract(row)): row
+        for row in cold_rows
+    }
+    done: set[asyncio.Task[bool]] = set()
+    pending_tasks: set[asyncio.Task[bool]] = set(task_rows)
+    if task_rows:
+        done, pending_tasks = await asyncio.wait(
+            task_rows,
+            timeout=wait_ms / 1000.0,
+        )
+
+    failed = 0
+    for task in done:
+        row = task_rows[task]
+        try:
+            ok = bool(task.result())
+        except Exception:  # noqa: BLE001
+            ok = False
+        ts = float(row["frame_ts"])
+        path = frames_dir / f"{ts:.3f}.jpg"
+        if ok and path.is_file():
+            ready = dict(row)
+            ready["cached"] = True
+            ready["preview_url"] = f"/media/video/{fid}/frame?ts={ts:.3f}&cache_only=1"
+            items.append(ready)
+        else:
+            failed += 1
+
+    # Do not cancel timed-out extraction: ensure_frame_extracted is coalesced and
+    # shielded, so a later retry reuses the same job instead of restarting ffmpeg.
+    def _consume_background_result(task: asyncio.Task[bool]) -> None:
+        try:
+            task.result()
+        except (Exception, asyncio.CancelledError):
+            pass
+
+    for task in pending_tasks:
+        task.add_done_callback(_consume_background_result)
+
+    items.sort(key=lambda x: float(x["frame_ts"]))
     return {
         "drive_file_id": fid,
         "items": items,
         "quality": {
             "candidates": len(raw_items),
             "kept": len(items),
-            "cached": sum(1 for x in items if x.get("cached")),
+            "cached": len(items),
+            "preparing": len(pending_tasks),
+            "failed": failed,
             **reject_stats,
         },
     }
@@ -4946,6 +5013,133 @@ async def _build_hook_carousels(
     return carousels
 
 
+def _build_fragment_tolerant_carousel(
+    *,
+    hook: "TimedPick",
+    topics: list["TimedPick"],
+    themes: list["PipelineThemeSlice"],
+    intent: str,
+    cue_corpus: list[tuple[float, float | None, str]],
+    drive_file_id: str,
+    video_name: str,
+    min_slides: int,
+    max_slides: int,
+    select_images: bool,
+    references: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Build a small truthful deck when ASR cues are too fragmented for normal cuts.
+
+    This is deliberately deterministic and transcript-only. Consecutive tiny cues
+    are joined verbatim into readable lines; no text is invented. It is preferable
+    to return a 2–6 slide deck that the user can edit than to reject a valid short
+    clip after all normal and relaxed planners have already failed.
+    """
+    all_rows = [
+        (float(s), float(e) if e is not None else float(s) + 1.0, " ".join((t or "").split()))
+        for s, e, t in cue_corpus
+        if (t or "").strip()
+    ]
+    if len(all_rows) < 2:
+        return []
+
+    hs, he = _anchor_hook_span(hook, cue_corpus)
+    anchor_end = float(he) if he is not None else hs + 12.0
+    window_lo = max(0.0, hs - 2.0)
+    window_hi = anchor_end + 90.0
+    rows = [row for row in all_rows if window_lo <= row[0] <= window_hi]
+    if len(rows) < 2:
+        # Keep the fallback tied to the selection: nearest cues are safer than
+        # silently building a late-video hook from the transcript's opening.
+        rows = sorted(all_rows, key=lambda row: abs(row[0] - hs))[:18]
+        rows.sort(key=lambda row: row[0])
+
+    target = min(max_slides, max(2, min(min_slides, 6)))
+    groups: list[list[tuple[float, float | None, str]]] = []
+    current: list[tuple[float, float | None, str]] = []
+    current_words = 0
+    for row in rows:
+        words = len(row[2].split())
+        if current and current_words >= 4:
+            groups.append(current)
+            current = []
+            current_words = 0
+            if len(groups) >= target:
+                break
+        current.append(row)
+        current_words += words
+        if current_words >= 18:
+            groups.append(current)
+            current = []
+            current_words = 0
+            if len(groups) >= target:
+                break
+    if current and len(groups) < target:
+        groups.append(current)
+
+    # A two-cue clip can otherwise collapse into one group. Split it explicitly;
+    # each resulting line remains exact transcript text.
+    if len(groups) < 2 and len(rows) >= 2:
+        cut = max(1, len(rows) // 2)
+        groups = [rows[:cut], rows[cut:]]
+
+    slides: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for group in groups:
+        if not group:
+            continue
+        text = _join_rolling_cue_texts(group).strip()
+        if not text:
+            text = " ".join(row[2] for row in group).strip()
+        key = _norm_slide_key(text)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        start = float(group[0][0])
+        end = float(group[-1][1] if group[-1][1] is not None else group[-1][0] + 1.0)
+        slide = _make_oneline_slide(
+            text=text,
+            start_sec=start,
+            end_sec=end,
+            drive_file_id=drive_file_id,
+            video_name=video_name,
+            crafted_hook=hook.text,
+            defer_images=not select_images,
+            order=len(slides) + 1,
+        )
+        slide["fragment_tolerant"] = True
+        slides.append(slide)
+        if len(slides) >= target:
+            break
+    if len(slides) < 2:
+        return []
+
+    parent_topic = topics[0] if topics else None
+    matching_theme = themes[0] if themes else None
+    return [
+        {
+            "id": "hook_1",
+            "kind": "hook",
+            "title": _hook_carousel_title(video_name, hook.text or ""),
+            "topic_labels": [parent_topic.text] if parent_topic else [],
+            "slide_count": len(slides),
+            "slides": slides,
+            "hooks": [hook.text],
+            "hook_goal": hook.text,
+            "topics": [parent_topic.text] if parent_topic else [],
+            "theme_context": matching_theme.title if matching_theme else None,
+            "topic_context": parent_topic.text if parent_topic else (hook.topic_text or None),
+            "intent": intent or None,
+            "plan_source": "fragment_tolerant",
+            "images_ready": select_images,
+            "hook_start_sec": hs,
+            "hook_end_sec": he,
+            "references": list(references or []),
+            "duplicate_repairs": 0,
+            "fragment_tolerant": True,
+        }
+    ]
+
+
 async def _carousel_pipeline_generate_impl(
     body: CarouselGenerateRequest,
     session: AsyncSession = Depends(get_db),
@@ -5203,12 +5397,28 @@ async def _carousel_pipeline_generate_impl(
         )
 
     if not carousels:
+        logger.warning(
+            "carousel generate using fragment-tolerant fallback drive=%s cues=%d",
+            drive_file_id,
+            len(cue_corpus),
+        )
+        carousels = _build_fragment_tolerant_carousel(
+            hook=unique_hooks[0],
+            topics=topics,
+            themes=list(body.themes or []),
+            intent=(body.intent or "").strip(),
+            cue_corpus=cue_corpus,
+            drive_file_id=drive_file_id,
+            video_name=video_name,
+            min_slides=min_slides,
+            max_slides=max_slides,
+            select_images=select_images,
+            references=attached_refs,
+        )
+    if not carousels:
         raise HTTPException(
             status_code=400,
-            detail=(
-                "Could not build any carousels from selection — transcript lines around "
-                "these hooks were too short or fragmented. Try other hooks or topics."
-            ),
+            detail="This video does not contain two distinct transcript lines to build slides from.",
         )
 
     # Hindi/non-English one-liners → faithful English for display/edit (cuts stay timed).

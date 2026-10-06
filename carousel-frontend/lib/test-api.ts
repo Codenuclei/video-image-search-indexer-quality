@@ -741,11 +741,13 @@ export const testApi = {
       drive_file_id: opts.driveFileId,
       start_sec: String(opts.startSec),
       limit: String(opts.limit ?? 24),
+      wait_ms: "45000",
     });
     if (opts.endSec != null) params.set("end_sec", String(opts.endSec));
     return api<{
       drive_file_id: string;
       items: { frame_ts: number; preview_url: string; cached?: boolean }[];
+      quality?: { cached?: number; preparing?: number };
     }>(`/search/carousel/pipeline/transcript-frames?${params}`, {
       timeoutMs: 180_000,
       silent: true,

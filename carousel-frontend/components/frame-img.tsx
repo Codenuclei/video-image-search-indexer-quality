@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type ImgHTMLAttributes } from "react";
+import { useEffect, useRef, useState, type ImgHTMLAttributes } from "react";
 import { ImageOff } from "lucide-react";
 import { withoutCacheOnly } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -17,15 +17,21 @@ type Props = Omit<ImgHTMLAttributes<HTMLImageElement>, "src"> & {
  * visible placeholder instead of a broken-image icon.
  */
 export function FrameImg({ src, alt = "", className, placeholderClassName, onError, ...rest }: Props) {
-  const [state, setState] = useState<{ src: string; current: string; failed: boolean }>({
-    src,
-    current: src,
-    failed: false,
-  });
-  // Reset when the parent swaps the source.
-  const view = state.src === src ? state : { src, current: src, failed: false };
+  const [current, setCurrent] = useState(src);
+  const [failed, setFailed] = useState(false);
+  const attemptRef = useRef(0);
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  if (view.failed) {
+  useEffect(() => {
+    attemptRef.current = 0;
+    setCurrent(src);
+    setFailed(false);
+    return () => {
+      if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
+    };
+  }, [src]);
+
+  if (failed) {
     return (
       <span
         className={cn(
@@ -46,16 +52,27 @@ export function FrameImg({ src, alt = "", className, placeholderClassName, onErr
     // eslint-disable-next-line @next/next/no-img-element
     <img
       {...rest}
-      src={view.current}
+      src={current}
       alt={alt}
       className={className}
       onError={(e) => {
         onError?.(e);
-        const retry = withoutCacheOnly(view.current);
-        if (retry && retry !== view.current) {
-          setState({ src, current: retry, failed: false });
+        const attempt = ++attemptRef.current;
+        if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
+
+        // The transcript-frame endpoint may have a coalesced extraction finishing
+        // just after this image request. Retry with a cache-buster, then make one
+        // explicit non-cache-only request that can complete extraction itself.
+        if (attempt <= 3) {
+          const base =
+            attempt >= 2 ? withoutCacheOnly(current) || withoutCacheOnly(src) || src : src;
+          const separator = base.includes("?") ? "&" : "?";
+          retryTimerRef.current = setTimeout(
+            () => setCurrent(`${base}${separator}_frame_retry=${attempt}`),
+            attempt === 1 ? 800 : 1_500
+          );
         } else {
-          setState({ src, current: view.current, failed: true });
+          setFailed(true);
         }
       }}
     />
