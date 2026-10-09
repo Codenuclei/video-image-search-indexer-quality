@@ -16,6 +16,7 @@ import {
 import {
   createDriveApi,
   isVideoMime,
+  writeDriveBrowserSession,
   type DriveLibraryFile,
   type DriveSession,
   type IndexedFolder,
@@ -132,7 +133,11 @@ const MAX_PAGES = 8;
 const driveVideoJobs = new Map<string, Promise<DriveLibraryFile[]>>();
 
 function invalidateDriveVideoJob(apiBase: string) {
-  driveVideoJobs.delete(apiBase);
+  for (const key of driveVideoJobs.keys()) {
+    if (key === apiBase || key.startsWith(`${apiBase}::`)) {
+      driveVideoJobs.delete(key);
+    }
+  }
 }
 
 export function DriveFolderPanel({
@@ -191,7 +196,9 @@ export function DriveFolderPanel({
   );
 
   const loadVideosFromDrive = useCallback(async (): Promise<DriveLibraryFile[]> => {
-    const existing = driveVideoJobs.get(apiBase);
+    const rootFolderId = session?.selected_folder?.id ?? null;
+    const cacheKey = `${apiBase}::${rootFolderId ?? "all"}`;
+    const existing = driveVideoJobs.get(cacheKey);
     if (existing) return existing;
     const job = (async () => {
       const collected: DriveLibraryFile[] = [];
@@ -199,6 +206,7 @@ export function DriveFolderPanel({
       for (let page = 0; page < MAX_PAGES; page++) {
         const res = await api.driveFilesPage({
           source: "drive",
+          rootFolderId,
           limit: PAGE_SIZE,
           offset,
         });
@@ -211,14 +219,14 @@ export function DriveFolderPanel({
       }
       return collected;
     })();
-    driveVideoJobs.set(apiBase, job);
+    driveVideoJobs.set(cacheKey, job);
     try {
       return await job;
     } catch (e) {
-      driveVideoJobs.delete(apiBase);
+      driveVideoJobs.delete(cacheKey);
       throw e;
     }
-  }, [api, apiBase]);
+  }, [api, apiBase, session?.selected_folder?.id]);
 
   const onActiveFolderChangeRef = useRef(onActiveFolderChange);
   const onLibraryChangedRef = useRef(onLibraryChanged);
@@ -292,13 +300,16 @@ export function DriveFolderPanel({
     setOauthReturnTo(`${window.location.origin}${window.location.pathname}`);
   }, []);
 
-  // OAuth callback: ?connected=1 or ?error=...
+  // OAuth callback: ?connected=1&ds=<browser-session> or ?error=...
   useEffect(() => {
     if (typeof window === "undefined") return;
     const params = new URLSearchParams(window.location.search);
     if (params.get("connected") === "1") {
+      const driveSession = (params.get("ds") || "").trim();
+      if (driveSession) writeDriveBrowserSession(driveSession);
       const url = new URL(window.location.href);
       url.searchParams.delete("connected");
+      url.searchParams.delete("ds");
       window.history.replaceState({}, "", url.pathname + url.search);
       setNote("Google Drive connected. Choose a folder to pull videos.");
       api
@@ -1510,13 +1521,18 @@ export function DriveFolderPanel({
               {modalLoading ? (
                 <p className="flex items-center justify-center gap-2 px-3 py-10 text-sm text-slate-500">
                   <Loader2 size={16} className="animate-spin" />
-                  Loading indexed library videos…
+                  Loading videos
+                  {session?.selected_folder?.name
+                    ? ` from “${session.selected_folder.name}”…`
+                    : " from the indexed library…"}
                 </p>
               ) : filteredModalVideos.length === 0 ? (
                 <p className="px-3 py-10 text-center text-sm text-slate-500">
                   {modalVideos.length === 0
                     ? session?.connected
-                      ? "No Drive videos synced yet. Hit Sync on the folder panel, then try again."
+                      ? session.selected_folder?.name
+                        ? `No videos found in “${session.selected_folder.name}”. Hit Sync, then try again.`
+                        : "No Drive videos synced yet. Choose and sync a folder, then try again."
                       : "No indexed Drive videos in the library yet. Reconnect Google Drive and sync a folder to add videos."
                     : "No videos match this filter."}
                 </p>

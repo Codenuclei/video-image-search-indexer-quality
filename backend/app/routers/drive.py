@@ -86,6 +86,7 @@ def _live_drive_http_status(exc: BaseException) -> int:
 async def list_drive_files(
     status: str | None = None,
     source: str | None = None,
+    root_folder_id: str | None = None,
     limit: int = 200,
     offset: int = 0,
     session: AsyncSession = Depends(get_db),
@@ -99,6 +100,8 @@ async def list_drive_files(
         stmt = stmt.where(DriveFile.status == status_enum)
     if source:
         stmt = stmt.where(DriveFile.source == source)
+    if (root_folder_id or "").strip():
+        stmt = stmt.where(DriveFile.root_folder_id == root_folder_id.strip())
     return list((await session.execute(stmt)).scalars().all())
 
 
@@ -106,6 +109,7 @@ async def list_drive_files(
 async def list_drive_files_page(
     status: str | None = None,
     source: str | None = None,
+    root_folder_id: str | None = None,
     limit: int = 50,
     offset: int = 0,
     session: AsyncSession = Depends(get_db),
@@ -121,6 +125,8 @@ async def list_drive_files_page(
         filters.append(DriveFile.status == status_enum)
     if source:
         filters.append(DriveFile.source == source)
+    if (root_folder_id or "").strip():
+        filters.append(DriveFile.root_folder_id == root_folder_id.strip())
     count_stmt = select(sa_func.count()).select_from(DriveFile)
     list_stmt = select(DriveFile).order_by(DriveFile.path).offset(offset).limit(limit)
     for f in filters:

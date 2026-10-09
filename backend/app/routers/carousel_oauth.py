@@ -21,10 +21,10 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import httpx
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth_credentials import carousel_google
@@ -35,6 +35,13 @@ from app.db.session import get_db
 from app.dependencies import get_indexing_worker
 from app.drive.google_client import DriveDirectError, _do_token_refresh, resolve_folder_for_indexing
 from app.drive.indexed_folders import record_indexed_folder
+from app.drive_browser_session import (
+    COOKIE_NAME,
+    MAX_AGE_SEC,
+    QUERY_PARAM,
+    read_drive_browser_user_id,
+    seal_drive_browser_session,
+)
 from app.workers.indexer import IndexingWorker
 
 logger = logging.getLogger(__name__)
@@ -194,7 +201,7 @@ async def auth_google_callback(
         user_id: str = profile["id"]
         email: str = profile.get("email", "")
 
-        # Upsert DriveUser
+        # Upsert DriveUser (single active connector for background indexing).
         existing = await session.get(DriveUser, user_id)
         if existing is None:
             existing = DriveUser(id=user_id, email=email, access_token=access_token)
@@ -206,12 +213,27 @@ async def auth_google_callback(
             existing.refresh_token = refresh_token
         existing.token_expiry = token_expiry
         had_folder = bool(existing.selected_folder_id)
+        # Drop other Google accounts so worker ``limit(1)`` stays deterministic.
+        await session.execute(delete(DriveUser).where(DriveUser.id != user_id))
         await session.commit()
 
+        browser_token = seal_drive_browser_session(user_id, settings)
         logger.info("Google Drive connected for %s", email)
         if had_folder and not worker.is_running:
             background_tasks.add_task(_sync_after_folder_change, worker)
-        return RedirectResponse(_with_query(return_base, connected="1"))
+        redirect = RedirectResponse(
+            _with_query(return_base, connected="1", **{QUERY_PARAM: browser_token})
+        )
+        redirect.set_cookie(
+            key=COOKIE_NAME,
+            value=browser_token,
+            max_age=MAX_AGE_SEC,
+            httponly=True,
+            secure=True,
+            samesite="none",
+            path="/",
+        )
+        return redirect
 
     except Exception as exc:
         logger.exception("OAuth callback failed: %s", exc)
@@ -219,12 +241,44 @@ async def auth_google_callback(
         return RedirectResponse(_with_query(return_base, error="oauth_failed", detail=safe))
 
 
+async def _require_browser_drive_user(
+    request: Request,
+    session: AsyncSession,
+    settings: Settings,
+) -> DriveUser:
+    """Resolve DriveUser only for the browser that completed OAuth."""
+    browser_uid = read_drive_browser_user_id(request, settings)
+    if not browser_uid:
+        raise HTTPException(
+            status_code=401,
+            detail="Connect Google Drive on this browser to continue.",
+        )
+    user = await session.get(DriveUser, browser_uid)
+    if user is None:
+        raise HTTPException(
+            status_code=401,
+            detail="Google Drive is not connected on this browser. Please reconnect.",
+        )
+    return user
+
+
 # ── Session / status ──────────────────────────────────────────────────────────
 
 @router.get("/api/session")
-async def get_session(session: AsyncSession = Depends(get_db)):
-    """Return Drive connection status."""
-    user = (await session.execute(select(DriveUser).limit(1))).scalar_one_or_none()
+async def get_session(
+    request: Request,
+    session: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    """Return Drive connection status for *this browser only*.
+
+    Tokens may still exist in Postgres for background indexing, but other
+    visitors must not see the connected email or receive access tokens.
+    """
+    browser_uid = read_drive_browser_user_id(request, settings)
+    if not browser_uid:
+        return {"connected": False}
+    user = await session.get(DriveUser, browser_uid)
     if user is None:
         return {"connected": False}
     return {
@@ -240,6 +294,7 @@ async def get_session(session: AsyncSession = Depends(get_db)):
 
 @router.get("/api/drive-token")
 async def get_drive_token(
+    request: Request,
     session: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ):
@@ -247,9 +302,7 @@ async def get_drive_token(
     from app.drive.google_client import _do_token_refresh
 
     creds = carousel_google(settings)
-    user = (await session.execute(select(DriveUser).limit(1))).scalar_one_or_none()
-    if user is None:
-        raise HTTPException(status_code=401, detail="No Google Drive account connected.")
+    user = await _require_browser_drive_user(request, session, settings)
 
     now = datetime.now(tz=timezone.utc)
     if user.token_expiry is None or user.token_expiry - timedelta(minutes=5) <= now:
@@ -362,6 +415,7 @@ async def _sync_after_folder_change(worker: IndexingWorker) -> None:
 @router.post("/api/save-folder")
 async def save_folder(
     body: SaveFolderBody,
+    request: Request,
     background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
@@ -369,9 +423,7 @@ async def save_folder(
 ):
     """Save the user's chosen Drive folder."""
     creds = carousel_google(settings)
-    user = (await session.execute(select(DriveUser).limit(1))).scalar_one_or_none()
-    if user is None:
-        raise HTTPException(status_code=401, detail="No Google Drive account connected.")
+    user = await _require_browser_drive_user(request, session, settings)
 
     access_token = user.access_token
     now = datetime.now(tz=timezone.utc)
@@ -461,16 +513,31 @@ async def save_folder(
 # ── Logout ────────────────────────────────────────────────────────────────────
 
 @router.post("/api/logout")
-async def logout(session: AsyncSession = Depends(get_db)):
-    """Disconnect Google Drive (delete stored tokens).
+async def logout(
+    request: Request,
+    session: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    """Disconnect Google Drive for *this browser's* session.
 
     Indexed folder history (``indexed_folders``), ``drive_files``, and embeddings
     are intentionally preserved so reconnecting / re-selecting the same folder
     reuses existing indexed data.
+
+    Visitors without a browser session cannot disconnect someone else's Drive.
     """
-    user = (await session.execute(select(DriveUser).limit(1))).scalar_one_or_none()
+    browser_uid = read_drive_browser_user_id(request, settings)
+    if not browser_uid:
+        return {"ok": True}
+    user = await session.get(DriveUser, browser_uid)
     if user is not None:
         await session.delete(user)
         await session.commit()
         logger.info("Drive account disconnected (indexed_folders preserved)")
-    return {"ok": True}
+    response = {"ok": True}
+    # Caller clears client storage; also clear API-host cookie if present.
+    from fastapi.responses import JSONResponse
+
+    out = JSONResponse(response)
+    out.delete_cookie(COOKIE_NAME, path="/")
+    return out

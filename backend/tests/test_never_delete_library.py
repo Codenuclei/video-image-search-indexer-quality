@@ -282,9 +282,13 @@ async def test_logout_preserves_drive_files_and_media(db_session):
 
     app.dependency_overrides[get_db] = _get_db_override
     try:
+        from app.config import get_settings
+        from app.drive_browser_session import HEADER_NAME, seal_drive_browser_session
+
+        token = seal_drive_browser_session("sub-1", get_settings())
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as ac:
-            resp = await ac.post("/api/logout")
+            resp = await ac.post("/api/logout", headers={HEADER_NAME: token})
             assert resp.status_code == 200
             assert resp.json()["ok"] is True
     finally:
@@ -545,9 +549,13 @@ async def test_e2e_connect_index_switch_disconnect_reconnect_preserves(db_sessio
 
     app.dependency_overrides[get_db] = _get_db_override
     try:
+        from app.config import get_settings
+        from app.drive_browser_session import HEADER_NAME, seal_drive_browser_session
+
+        token = seal_drive_browser_session("sub-1", get_settings())
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as ac:
-            assert (await ac.post("/api/logout")).status_code == 200
+            assert (await ac.post("/api/logout", headers={HEADER_NAME: token})).status_code == 200
             # Library still lists prior indexed file
             with (
                 patch("app.qdrant.image_captions.valid_caption_ids_sync", return_value={"sample-1"}),

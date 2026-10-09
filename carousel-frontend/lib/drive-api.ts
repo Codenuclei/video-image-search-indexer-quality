@@ -45,10 +45,46 @@ export type DriveShortcutSettings = {
   follow_shortcut_folders: boolean;
 };
 
+/** Bound to the browser that completed OAuth — not shared across machines. */
+const DRIVE_BROWSER_SESSION_KEY = "carousel_drive_session";
+
+export function readDriveBrowserSession(): string {
+  if (typeof window === "undefined") return "";
+  try {
+    return (window.sessionStorage.getItem(DRIVE_BROWSER_SESSION_KEY) || "").trim();
+  } catch {
+    return "";
+  }
+}
+
+export function writeDriveBrowserSession(token: string): void {
+  if (typeof window === "undefined") return;
+  const value = (token || "").trim();
+  try {
+    if (value) window.sessionStorage.setItem(DRIVE_BROWSER_SESSION_KEY, value);
+    else window.sessionStorage.removeItem(DRIVE_BROWSER_SESSION_KEY);
+  } catch {
+    /* ignore quota / private mode */
+  }
+}
+
+export function clearDriveBrowserSession(): void {
+  writeDriveBrowserSession("");
+}
+
+function driveSessionHeaders(): HeadersInit {
+  const token = readDriveBrowserSession();
+  return token ? { "X-Carousel-Drive-Session": token } : {};
+}
+
 async function jsonApi<T>(base: string, path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${base}${path}`, {
     ...init,
-    headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
+    headers: {
+      "Content-Type": "application/json",
+      ...driveSessionHeaders(),
+      ...(init?.headers || {}),
+    },
     cache: "no-store",
   });
   if (!res.ok) {
@@ -75,8 +111,13 @@ export function createDriveApi(apiBase: string) {
         method: "POST",
         body: JSON.stringify({ id, name }),
       }),
-    driveLogout: () =>
-      jsonApi<{ ok: boolean }>(apiBase, "/api/logout", { method: "POST" }),
+    driveLogout: async () => {
+      try {
+        return await jsonApi<{ ok: boolean }>(apiBase, "/api/logout", { method: "POST" });
+      } finally {
+        clearDriveBrowserSession();
+      }
+    },
     syncDriveFiles: () =>
       jsonApi<{ ok: boolean; scheduled?: boolean }>(apiBase, "/drive/sync", {
         method: "POST",
@@ -93,12 +134,14 @@ export function createDriveApi(apiBase: string) {
     driveFilesPage: (opts?: {
       status?: string;
       source?: string;
+      rootFolderId?: string | null;
       limit?: number;
       offset?: number;
     }) => {
       const params = new URLSearchParams();
       if (opts?.status) params.set("status", opts.status);
       if (opts?.source) params.set("source", opts.source);
+      if (opts?.rootFolderId) params.set("root_folder_id", opts.rootFolderId);
       params.set("limit", String(opts?.limit ?? 60));
       params.set("offset", String(opts?.offset ?? 0));
       return jsonApi<{
