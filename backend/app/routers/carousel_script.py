@@ -6054,6 +6054,24 @@ async def _carousel_pipeline_select_images_impl(
         except Exception:  # noqa: BLE001
             return None
 
+    burst_source = None
+    burst_headers = None
+    if bool(getattr(settings, "carousel_burst_enabled", True)):
+        try:
+            from app.search.carousel_burst_refine import resolve_video_source_for_burst
+
+            burst_source, burst_headers = await resolve_video_source_for_burst(
+                drive_file_id, settings, session
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "select-images burst source resolve failed drive=%s: %s",
+                drive_file_id,
+                exc,
+            )
+    # Leave headroom inside the interactive wait_for budget for burst work;
+    # remaining slides fall back to today's single-frame candidates.
+    burst_deadline = time.monotonic() + max(5.0, _SELECT_IMAGES_TIMEOUT_SEC * 0.75)
     try:
         selected_slides, identity_summary = await asyncio.wait_for(
             apply_quote_identity_selection_to_slides(
@@ -6064,6 +6082,9 @@ async def _carousel_pipeline_select_images_impl(
                 force_catalog=bool(getattr(body, "force", False)),
                 prefer_hdr=True,
                 extract_frame=_extract_frame,
+                burst_source=burst_source,
+                burst_headers=burst_headers,
+                burst_deadline_monotonic=burst_deadline,
             ),
             timeout=_SELECT_IMAGES_TIMEOUT_SEC,
         )

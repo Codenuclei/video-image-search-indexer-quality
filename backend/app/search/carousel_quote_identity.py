@@ -334,6 +334,10 @@ async def apply_quote_identity_selection_to_slides(
     force_catalog: bool = False,
     prefer_hdr: bool = True,
     extract_frame=None,
+    burst_source: str | None = None,
+    burst_headers: str | None = None,
+    burst_deadline_monotonic: float | None = None,
+    video_duration: float | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     from app.search.carousel_identity_catalog import (
         associate_quote_identity,
@@ -341,6 +345,7 @@ async def apply_quote_identity_selection_to_slides(
         has_explicit_picker_selection,
     )
 
+    settings = settings or get_settings()
     catalog = await build_quote_window_identity_catalog(
         thumbnail_dir=thumbnail_dir,
         drive_file_id=drive_file_id,
@@ -392,6 +397,42 @@ async def apply_quote_identity_selection_to_slides(
             item.pop("frame_warning", None)
         out.append(item)
 
+    burst_summary: dict[str, Any] = {"enabled": False, "attempted": 0, "succeeded": 0}
+    if bool(getattr(settings, "carousel_burst_enabled", True)):
+        try:
+            from app.search.carousel_burst_refine import (
+                apply_burst_refine_to_slides,
+                resolve_video_source_for_burst,
+            )
+
+            source = burst_source
+            headers = burst_headers
+            if source is None:
+                source, headers = await resolve_video_source_for_burst(
+                    drive_file_id, settings, session=None
+                )
+            out, burst_summary = await apply_burst_refine_to_slides(
+                out,
+                thumbnail_dir=thumbnail_dir,
+                drive_file_id=drive_file_id,
+                catalog=catalog,
+                settings=settings,
+                source=source,
+                headers=headers,
+                video_duration=video_duration,
+                deadline_monotonic=burst_deadline_monotonic,
+                prefer_hdr=prefer_hdr,
+            )
+        except Exception as exc:  # noqa: BLE001
+            # Never let burst failures break select-images.
+            logger.debug("burst refine skipped: %s", exc)
+            burst_summary = {
+                "enabled": True,
+                "attempted": 0,
+                "succeeded": 0,
+                "error": str(exc)[:120],
+            }
+
     summary = {
         "algorithm": QUOTE_WINDOW_CATALOG_VERSION,
         "frames_scanned": catalog.get("frames_scanned"),
@@ -400,5 +441,6 @@ async def apply_quote_identity_selection_to_slides(
         "modes": modes,
         "slides": len(out),
         "scope": "quote_windows",
+        "burst": burst_summary,
     }
     return out, summary

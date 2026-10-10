@@ -127,13 +127,42 @@ async def get_carousel_event_photo(
 _PORTRAIT_ASPECT = 4 / 5
 
 
-def _ensure_portrait_crop(source: Path, variant: Path) -> Path:
-    """Return a cached 4:5 crop of *source*; fall back to the original on error."""
+def _face_centre_for_crop(source: Path) -> tuple[float, float] | None:
+    """Load optional face focal point written by the burst refine path."""
+    try:
+        from app.search.carousel_burst_refine import read_face_sidecar
+
+        return read_face_sidecar(source)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _ensure_portrait_crop(
+    source: Path,
+    variant: Path,
+    *,
+    face_cx: float | None = None,
+    face_cy: float | None = None,
+) -> Path:
+    """Return a cached 4:5 crop of *source*; fall back to the original on error.
+
+    When a face centre is known (args or ``*.face.json`` sidecar), bias the crop
+    toward that point instead of the fixed 0.33 vertical bias.
+    """
     from PIL import Image
 
     try:
-        if variant.is_file() and variant.stat().st_mtime >= source.stat().st_mtime:
-            return variant
+        if face_cx is None or face_cy is None:
+            sidecar = _face_centre_for_crop(source)
+            if sidecar is not None:
+                face_cx, face_cy = sidecar
+        # Face-aware crops use a distinct cache key so a later sidecar write
+        # does not leave a stale centre-biased JPEG in place.
+        crop_target = variant
+        if face_cx is not None and face_cy is not None:
+            crop_target = variant.parent / f"face_{variant.name}"
+        if crop_target.is_file() and crop_target.stat().st_mtime >= source.stat().st_mtime:
+            return crop_target
         with Image.open(source) as im:
             width, height = im.size
             if not width or not height:
@@ -143,17 +172,28 @@ def _ensure_portrait_crop(source: Path, variant: Path) -> Path:
                 return source
             if current > _PORTRAIT_ASPECT:
                 new_w = round(height * _PORTRAIT_ASPECT)
-                x0 = (width - new_w) // 2
+                if face_cx is not None:
+                    cx_px = float(face_cx) * width
+                    x0 = int(round(cx_px - new_w / 2.0))
+                    x0 = max(0, min(width - new_w, x0))
+                else:
+                    x0 = (width - new_w) // 2
                 box = (x0, 0, x0 + new_w, height)
             else:
                 new_h = round(width / _PORTRAIT_ASPECT)
-                # Bias upward: faces and on-screen text live in the upper part
-                # of vertical reels.
-                y0 = round((height - new_h) * 0.33)
+                if face_cy is not None:
+                    # Anchor so the face sits near the upper-third of the crop.
+                    cy_px = float(face_cy) * height
+                    y0 = int(round(cy_px - new_h * 0.42))
+                    y0 = max(0, min(height - new_h, y0))
+                else:
+                    # Bias upward: faces and on-screen text live in the upper part
+                    # of vertical reels.
+                    y0 = round((height - new_h) * 0.33)
                 box = (0, y0, width, y0 + new_h)
-            variant.parent.mkdir(parents=True, exist_ok=True)
-            im.convert("RGB").crop(box).save(variant, "JPEG", quality=90)
-        return variant
+            crop_target.parent.mkdir(parents=True, exist_ok=True)
+            im.convert("RGB").crop(box).save(crop_target, "JPEG", quality=90)
+        return crop_target
     except Exception as exc:  # noqa: BLE001
         logger.debug("portrait crop failed for %s: %s", source, exc)
         return source
@@ -182,18 +222,29 @@ async def get_video_frame(
     ``ar=4x5`` serves an Instagram-carousel 4:5 crop of the frame (cached).
     ``variant=hdr`` serves a prebuilt natural-HDR derivative when present
     (cache_only misses do not invent HDR on the fly).
+    ``variant=master`` serves the native-resolution burst winner when present
+    (cache_only misses do not invent a master).
     """
     settings = get_settings()
     frames_dir = Path(settings.thumbnail_dir) / "video" / drive_file_id
     out_path = frames_dir / f"{ts:.3f}.jpg"
     # FastAPI injects Query defaults; unit tests may call this function directly.
     variant_raw = variant if isinstance(variant, str) else None
-    want_hdr = (variant_raw or "").strip().lower() == "hdr"
+    variant_key = (variant_raw or "").strip().lower()
+    want_hdr = variant_key == "hdr"
+    want_master = variant_key == "master"
     filename_raw = filename if isinstance(filename, str) else None
     ar_raw = ar if isinstance(ar, str) else None
 
     def _respond(path: Path) -> FileResponse:
         serve = path
+        if want_master:
+            master_path = frames_dir / "master" / f"{ts:.3f}.jpg"
+            if master_path.is_file():
+                serve = master_path
+            elif cache_only:
+                raise HTTPException(status_code=404, detail="Master frame not available")
+            # Interactive: fall through to the portrait still when no master.
         if want_hdr:
             from app.video.frame_enhance import ensure_hdr_variant, hdr_variant_path
 
@@ -211,6 +262,8 @@ async def get_video_frame(
         if ar_raw == "4x5":
             if want_hdr:
                 crop_root = frames_dir / "hdr" / "4x5"
+            elif want_master:
+                crop_root = frames_dir / "master" / "4x5"
             else:
                 crop_root = frames_dir / "4x5"
             serve = _ensure_portrait_crop(serve, crop_root / Path(serve).name)
@@ -221,6 +274,14 @@ async def get_video_frame(
         if download:
             headers["Content-Disposition"] = f'attachment; filename="{safe}"'
         return FileResponse(serve, media_type="image/jpeg", headers=headers or None)
+
+    # 0. Master-only fast path (exact stem under master/)
+    if want_master:
+        master_path = frames_dir / "master" / f"{ts:.3f}.jpg"
+        if master_path.is_file():
+            return _respond(master_path)
+        if cache_only:
+            raise HTTPException(status_code=404, detail="Master frame not available")
 
     # 1. Exact pre-extracted frame
     if out_path.is_file():

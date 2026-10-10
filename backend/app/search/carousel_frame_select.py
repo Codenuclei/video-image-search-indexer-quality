@@ -358,6 +358,316 @@ def score_frame_quality(
         return stats
 
 
+_BURST_ANALYZE_MAX = 960
+_BURST_PIXELATION_MAX = 1080
+_BURST_GEMINI_TIE_MARGIN = 8.0
+
+
+def _laplacian_var(gray) -> float:
+    import cv2
+
+    return float(cv2.Laplacian(gray, cv2.CV_64F).var())
+
+
+def _face_safe_in_portrait(
+    cx: float,
+    cy: float,
+    fw: float,
+    fh: float,
+    *,
+    img_w: int,
+    img_h: int,
+) -> tuple[bool, float]:
+    """Return (inside_4x5_safe_crop, edge_penalty) for a normalized face box."""
+    aspect = 4.0 / 5.0
+    current = float(img_w) / max(float(img_h), 1.0)
+    # Approximate the 4:5 crop window with face-centred bias (matches media crop).
+    if current > aspect:
+        crop_w = aspect * float(img_h) / float(img_w)
+        x0 = max(0.0, min(1.0 - crop_w, cx - crop_w / 2.0))
+        x1 = x0 + crop_w
+        y0, y1 = 0.0, 1.0
+    else:
+        crop_h = (float(img_w) / aspect) / float(img_h)
+        y0 = max(0.0, min(1.0 - crop_h, cy - crop_h * 0.42))
+        y1 = y0 + crop_h
+        x0, x1 = 0.0, 1.0
+    face_x0 = cx - fw / 2.0
+    face_y0 = cy - fh / 2.0
+    face_x1 = cx + fw / 2.0
+    face_y1 = cy + fh / 2.0
+    inside = face_x0 >= x0 - 0.02 and face_x1 <= x1 + 0.02 and face_y0 >= y0 - 0.02 and face_y1 <= y1 + 0.02
+    edge_penalty = 1.0
+    if face_x0 <= 0.02 or face_y0 <= 0.02 or face_x1 >= 0.98 or face_y1 >= 0.98:
+        edge_penalty = 0.35
+    elif not inside:
+        edge_penalty = 0.55
+    return inside, edge_penalty
+
+
+def score_burst_frame(
+    path: Path | str,
+    *,
+    faces: list[Any] | None = None,
+    check_pixelation: bool = True,
+) -> dict[str, Any]:
+    """Score one burst frame at ~960px. Memory-safe (one frame at a time).
+
+    Signals: face-crop sharpness, whole-frame sharpness, exposure/contrast,
+    single main face + area fraction, frontal score, 4:5 safe-crop fit.
+    Reuses hard rejects from ``score_frame_quality``; pixelation runs on a
+    ~1080px downscale, never full 4K.
+    """
+    stats: dict[str, Any] = {
+        "ok": False,
+        "score": 0.0,
+        "reject": None,
+        "sharpness": 0.0,
+        "face_sharpness": 0.0,
+        "brightness": 0.0,
+        "contrast": 0.0,
+        "front_face_score": 0.0,
+        "face_count": 0,
+        "face_area": 0.0,
+        "focal_x": 0.5,
+        "focal_y": 0.4,
+        "pixelation": 0.0,
+    }
+    try:
+        import cv2
+        import numpy as np
+
+        from app.video.pixelation import PIXELATION_SCORE_THRESHOLD, evaluate_pixelation
+
+        cv2.setNumThreads(1)
+        bgr = cv2.imread(str(path), cv2.IMREAD_COLOR)
+        if bgr is None or bgr.size == 0:
+            stats["reject"] = "decode"
+            return stats
+        h, w = bgr.shape[:2]
+        if h < 48 or w < 48:
+            stats["reject"] = "tiny"
+            return stats
+
+        # Pixelation on ~1080px downscale (not full 4K).
+        pix_flag = False
+        pix_details: dict[str, Any] = {}
+        if check_pixelation:
+            pix_scale = min(1.0, float(_BURST_PIXELATION_MAX) / max(h, w))
+            pix_bgr = bgr
+            if pix_scale < 1.0:
+                pix_bgr = cv2.resize(
+                    bgr,
+                    (max(1, int(w * pix_scale)), max(1, int(h * pix_scale))),
+                    interpolation=cv2.INTER_AREA,
+                )
+            pix_flag, pix_details = evaluate_pixelation(
+                pix_bgr, threshold=PIXELATION_SCORE_THRESHOLD
+            )
+        pix_score = float(pix_details.get("score") or 0.0)
+        stats["pixelation"] = pix_score
+
+        # Analysis at ~960px.
+        scale = min(1.0, float(_BURST_ANALYZE_MAX) / max(h, w))
+        if scale < 1.0:
+            analyze = cv2.resize(
+                bgr,
+                (max(1, int(w * scale)), max(1, int(h * scale))),
+                interpolation=cv2.INTER_AREA,
+            )
+        else:
+            analyze = bgr
+        ah, aw = analyze.shape[:2]
+        gray = cv2.cvtColor(analyze, cv2.COLOR_BGR2GRAY)
+        sharp = _laplacian_var(gray)
+        brightness = float(gray.mean())
+        contrast = float(gray.std())
+        stats.update(sharpness=sharp, brightness=brightness, contrast=contrast)
+
+        if brightness < 18:
+            stats["reject"] = "black"
+            return stats
+        if brightness > 245:
+            stats["reject"] = "blown"
+            return stats
+        if contrast < 8:
+            stats["reject"] = "flat"
+            return stats
+        if sharp < 25:
+            stats["reject"] = "blurry"
+            return stats
+        if pix_flag:
+            stats["reject"] = "pixelated"
+            return stats
+
+        face_list = list(faces or [])
+        face_count = len(face_list)
+        stats["face_count"] = face_count
+
+        main = None
+        main_area = 0.0
+        face_sharp = 0.0
+        front = 0.0
+        focal_x, focal_y = 0.5, 0.4
+        edge_penalty = 1.0
+        if face_list:
+            scored_faces: list[tuple[float, Any, float, float, float, float]] = []
+            for face in face_list:
+                def _v(name: str, default: float = 0.0) -> float:
+                    if isinstance(face, dict):
+                        raw = face.get(name, default)
+                    else:
+                        raw = getattr(face, name, default)
+                    try:
+                        return float(raw if raw is not None else default)
+                    except (TypeError, ValueError):
+                        return default
+
+                bx = _v("bbox_x", _v("x", 0.0))
+                by = _v("bbox_y", _v("y", 0.0))
+                bw = _v("bbox_width", _v("width", 0.0))
+                bh = _v("bbox_height", _v("height", 0.0))
+                # Pixel → normalized against analysis frame when needed.
+                if bw > 1.5 or bh > 1.5 or bx > 1.5 or by > 1.5:
+                    bx, by, bw, bh = bx / aw, by / ah, bw / aw, bh / ah
+                bx = max(0.0, min(1.0, bx))
+                by = max(0.0, min(1.0, by))
+                bw = max(0.0, min(1.0 - bx, bw))
+                bh = max(0.0, min(1.0 - by, bh))
+                area = bw * bh
+                payload = {
+                    "bbox_x": bx,
+                    "bbox_y": by,
+                    "bbox_width": bw,
+                    "bbox_height": bh,
+                    "detection_confidence": _v("detection_confidence", _v("confidence", 0.5)),
+                    "yaw": _v("yaw", _v("pose_yaw", 0.0)),
+                    "pitch": _v("pitch", _v("pose_pitch", 0.0)),
+                    "roll": _v("roll", _v("pose_roll", 0.0)),
+                }
+                scored_faces.append((area, payload, bx, by, bw, bh))
+            scored_faces.sort(key=lambda row: row[0], reverse=True)
+            _area, main, bx, by, bw, bh = scored_faces[0]
+            main_area = float(_area)
+            front = float(front_face_score(main))
+            cx = bx + bw / 2.0
+            cy = by + bh / 2.0
+            focal_x, focal_y = cx, max(0.0, min(1.0, by + bh * 0.42))
+            _inside, edge_penalty = _face_safe_in_portrait(
+                cx, cy, bw, bh, img_w=aw, img_h=ah
+            )
+            # Face-crop Laplacian (motion blur on the speaker).
+            x0 = max(0, int(bx * aw))
+            y0 = max(0, int(by * ah))
+            x1 = min(aw, int((bx + bw) * aw))
+            y1 = min(ah, int((by + bh) * ah))
+            if x1 > x0 + 4 and y1 > y0 + 4:
+                crop = gray[y0:y1, x0:x1]
+                face_sharp = _laplacian_var(crop)
+
+        stats.update(
+            face_sharpness=face_sharp,
+            front_face_score=front,
+            face_area=main_area,
+            focal_x=round(focal_x, 4),
+            focal_y=round(focal_y, 4),
+        )
+
+        bright_term = 1.0 - abs(brightness - 128.0) / 128.0
+        # Prefer sharp face crop when available; else whole-frame sharpness.
+        sharp_term = face_sharp * 0.7 + sharp * 0.3 if face_sharp > 0 else sharp
+        score = (
+            sharp_term * 0.45
+            + contrast * 2.0
+            + bright_term * 35.0
+            + front * 80.0
+            + min(main_area, 0.35) * 120.0
+        )
+        if face_count == 1:
+            score += 25.0
+        elif face_count == 0:
+            score *= 0.55
+        elif face_count >= 3:
+            score *= 0.35
+        else:
+            score *= 0.75
+        if main_area > 0 and main_area < 0.012:
+            score *= 0.4
+        score *= edge_penalty
+
+        stats.update(ok=True, score=float(score), reject=None)
+        return stats
+    except Exception as exc:  # noqa: BLE001
+        stats["reject"] = f"error:{str(exc)[:40]}"
+        return stats
+
+
+def pick_best_burst_frame(
+    frames: list[tuple[float, Path]],
+    *,
+    faces_by_index: list[list[Any]] | None = None,
+    gemini_tiebreak: bool = False,
+    check_pixelation: bool = True,
+) -> tuple[float, Path, dict[str, Any]] | None:
+    """Score burst frames one-at-a-time and return the winner.
+
+    Optional Gemini tie-break only when *gemini_tiebreak* is True and the top
+    two scores are within ``_BURST_GEMINI_TIE_MARGIN`` (stub: no-op unless a
+    caller wires a real Gemini ranker later).
+    """
+    if not frames:
+        return None
+
+    def _faces_for(i: int) -> list[Any] | None:
+        if faces_by_index is not None and i < len(faces_by_index):
+            return faces_by_index[i]
+        return None
+
+    # Pass 1: rank every frame on the cheap signals only. The pixelation
+    # detector is a per-block Python loop (~1s/frame) so it must not run on
+    # all frames.
+    scored: list[tuple[float, int, float, Path, dict[str, Any]]] = []
+    for i, (ts, path) in enumerate(frames):
+        q = score_burst_frame(path, faces=_faces_for(i), check_pixelation=False)
+        if q.get("reject"):
+            continue
+        scored.append((float(q.get("score") or 0.0), i, float(ts), path, q))
+    scored.sort(reverse=True)
+
+    if not scored:
+        # Every burst frame hit a hard quality reject (black / blown / flat /
+        # blurry / undecodable). Never promote one of them: return None so the
+        # caller keeps the existing candidate untouched.
+        return None
+
+    if (
+        gemini_tiebreak
+        and len(scored) >= 2
+        and abs(scored[0][0] - scored[1][0]) <= _BURST_GEMINI_TIE_MARGIN
+    ):
+        # Flag is on but Gemini ranking is intentionally not wired by default
+        # (cost/latency). Keep local argmax; hook point for a future ranker.
+        logger.debug(
+            "burst gemini tie-break eligible (margin=%.2f) — using local argmax",
+            abs(scored[0][0] - scored[1][0]),
+        )
+
+    if not check_pixelation:
+        _score, _i, ts, path, q = scored[0]
+        return float(ts), path, q
+
+    # Pass 2: verify pixelation down the ranking and take the first frame that
+    # passes (normally the top-1, so ~1 pixelation eval per slide, not 5).
+    # If every candidate is pixelated, return None (never promote a rejected
+    # frame).
+    for _score, i, ts, path, _q in scored:
+        q2 = score_burst_frame(path, faces=_faces_for(i), check_pixelation=True)
+        if q2.get("reject"):
+            continue
+        return float(ts), path, q2
+    return None
+
+
 def _hamming(a: str | None, b: str | None) -> int:
     if not a or not b or len(a) != len(b):
         return 64

@@ -64,6 +64,59 @@ async def test_cache_only_hdr_serves_prebuilt(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_cache_only_master_miss_does_not_invent(tmp_path, monkeypatch):
+    class Settings:
+        thumbnail_dir = str(tmp_path)
+
+    frames = tmp_path / "video" / "drive-id"
+    frames.mkdir(parents=True)
+    (frames / "12.500.jpg").write_bytes(b"preview-only")
+
+    async def fail_extract(*args, **kwargs):
+        raise AssertionError("cache-only master must not extract")
+
+    monkeypatch.setattr(media, "get_settings", lambda: Settings())
+    monkeypatch.setattr(media, "_extract_frame_on_demand", fail_extract)
+
+    with pytest.raises(media.HTTPException) as exc:
+        await media.get_video_frame(
+            "drive-id",
+            ts=12.5,
+            cache_only=True,
+            variant="master",
+            session=None,
+        )
+
+    assert exc.value.status_code == 404
+    assert "Master" in str(exc.value.detail)
+
+
+@pytest.mark.asyncio
+async def test_cache_only_master_serves_prebuilt(tmp_path, monkeypatch):
+    class Settings:
+        thumbnail_dir = str(tmp_path)
+
+    frames = tmp_path / "video" / "drive-id"
+    master = frames / "master"
+    frames.mkdir(parents=True)
+    master.mkdir(parents=True)
+    (frames / "12.500.jpg").write_bytes(b"preview")
+    (master / "12.500.jpg").write_bytes(b"master-bytes")
+
+    monkeypatch.setattr(media, "get_settings", lambda: Settings())
+
+    response = await media.get_video_frame(
+        "drive-id",
+        ts=12.5,
+        cache_only=True,
+        variant="master",
+        session=None,
+    )
+    assert Path(response.path).name == "12.500.jpg"
+    assert "master" in str(response.path)
+
+
+@pytest.mark.asyncio
 async def test_cache_only_does_not_serve_nearest_neighbour(tmp_path, monkeypatch):
     """Split panels use distinct ts URLs; nearest±5s must not collapse them."""
     class Settings:

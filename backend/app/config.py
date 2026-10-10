@@ -225,6 +225,15 @@ class Settings(BaseSettings):
     # Hard cap quote-window frames scanned at Choose images.
     select_images_quote_frame_cap: int = 24
 
+    # 4K burst snapshot picker (select-images): one short ffmpeg window per slide,
+    # score N native-res frames, keep the winner. Failures fall back to single-frame.
+    carousel_burst_enabled: bool = True
+    carousel_burst_frames: int = 5
+    carousel_burst_window_sec: float = 1.6
+    carousel_burst_max_long_edge: int = 3840
+    carousel_burst_gemini_tiebreak: bool = False
+    carousel_burst_max_per_request: int = 12
+
     # Gemini API client-side concurrency (tune to your tier; see ai.google.dev rate limits).
     # Embedding 2: allow ~20 concurrent batchEmbedContents (batch=5 → ~50 img/s).
     # VLM: must be >= image_caption_batch_parallel or the caption semaphore is useless.

@@ -60,3 +60,18 @@ def test_crop_is_cached_and_reused(tmp_path) -> None:
 
     assert first == second == variant
     assert second.stat().st_mtime_ns == first_mtime
+
+
+def test_portrait_crop_uses_face_centre(tmp_path) -> None:
+    source = tmp_path / "5.000.jpg"
+    variant = tmp_path / "4x5" / "5.000.jpg"
+    _write_jpeg(source, 1080, 1920)
+
+    # Face near the bottom — crop should shift down vs the fixed 0.33 bias.
+    result = _ensure_portrait_crop(source, variant, face_cx=0.5, face_cy=0.8)
+    assert result != source
+    with Image.open(result) as im:
+        width, height = im.size
+    assert abs(width / height - 4 / 5) < 0.01
+    # Face-aware cache uses a distinct filename.
+    assert result.name.startswith("face_")
