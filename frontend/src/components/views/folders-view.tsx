@@ -15,9 +15,9 @@ import {
   type LibraryResponse,
   API_BASE,
 } from "@/lib/api";
-import { Button, Card, Input, LoadingLabel, Spinner } from "@/components/ui";
+import { Button, Card, ConfirmDialog, Input, LoadingLabel, Spinner } from "@/components/ui";
 import { ModalOverlay } from "@/components/modal";
-import { formatCount, humanizeIndexError } from "@/lib/index-errors";
+import { formatCount, formatIndexStatusLabel, humanizeIndexError } from "@/lib/index-errors";
 import { formatDate } from "@/lib/utils";
 import { toastApiError } from "@/lib/toast-api-error";
 import { toast } from "sonner";
@@ -90,6 +90,7 @@ export function FoldersPage({
   const [queueTotal, setQueueTotal] = useState(0);
   const [queueItems, setQueueItems] = useState<DriveFile[]>([]);
   const [queueLoading, setQueueLoading] = useState(false);
+  const [confirmRemoveId, setConfirmRemoveId] = useState<string | null>(null);
   const foldersResource = useCachedResource<FoldersSnapshot>({
     key: "foldersPage",
     fetcher: async () => {
@@ -210,7 +211,7 @@ export function FoldersPage({
       const { accessToken, apiKey, appId } = await apiClient.driveToken();
       if (!apiKey) {
         toastApiError(
-          "GOOGLE_API_KEY is missing on the backend. Set a Browser API key (Drive + Picker APIs, HTTP referrer localhost:3001) in backend/.env and restart."
+          "GOOGLE_API_KEY is missing on the backend. Create a Browser key with Drive API + Google Picker API enabled, restrict HTTP referrers to this site’s origin (and localhost:3001/* for local), set GOOGLE_API_KEY in backend/.env, then restart."
         );
         return;
       }
@@ -268,8 +269,14 @@ export function FoldersPage({
       }
 
       builder.build().setVisible(true);
-    } catch {
-      /* driveToken already toasted; local picker errors toasted above */
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e ?? "");
+      if (/developer key|api[- ]?key|invalid/i.test(msg)) {
+        toastApiError(
+          "Google Picker rejected the API developer key. Use a Browser key (not a server key), enable Drive API + Picker API, and allow this page’s HTTPS origin in the key’s HTTP referrer restrictions."
+        );
+      }
+      /* driveToken already toasted for auth failures */
     } finally {
       setPickerBusy(false);
     }
@@ -302,12 +309,14 @@ export function FoldersPage({
     setBusy(true);
     try {
       await apiClient.removeDriveFile(id);
+      toast.success("File removed from index");
       await load();
       if (queueOpen) await loadQueue(queueStatus, queueOffset);
     } catch {
       /* api() already toasted */
     } finally {
       setBusy(false);
+      setConfirmRemoveId(null);
     }
   }
 
@@ -680,7 +689,7 @@ export function FoldersPage({
               <h3 className="text-sm font-semibold">Indexing queue</h3>
               <p className="text-xs text-muted-foreground">
                 {queueTotal} file{queueTotal === 1 ? "" : "s"}
-                {queueStatus ? ` · ${queueStatus}` : ""}
+                {queueStatus ? ` · ${formatIndexStatusLabel(queueStatus)}` : ""}
               </p>
             </div>
             <Button variant="secondary" onClick={() => setQueueOpen(false)}>
@@ -767,7 +776,9 @@ export function FoldersPage({
                             {f.source === "youtube" ? "Other" : "Drive"}
                           </span>
                         </td>
-                        <td className={`p-3 ${statusColor[f.status] ?? ""}`}>{f.status}</td>
+                        <td className={`p-3 ${statusColor[f.status] ?? ""}`}>
+                          {formatIndexStatusLabel(f.status)}
+                        </td>
                         <td
                           className="max-w-[16rem] p-3 text-xs text-red-700 dark:text-red-300"
                           title={friendlyErr?.summary ?? ""}
@@ -790,7 +801,11 @@ export function FoldersPage({
                               </Button>
                             )}
                             {canRemove && (
-                              <Button variant="secondary" onClick={() => removeFile(f.id)} disabled={busy}>
+                              <Button
+                                variant="secondary"
+                                onClick={() => setConfirmRemoveId(f.id)}
+                                disabled={busy}
+                              >
                                 Remove
                               </Button>
                             )}
@@ -826,6 +841,16 @@ export function FoldersPage({
           </div>
         </Card>
       </ModalOverlay>
+      <ConfirmDialog
+        open={confirmRemoveId != null}
+        title="Remove this file from the index?"
+        message="The file stays in Drive. It will be dropped from the indexing queue and may be rediscovered later."
+        confirmLabel={busy ? <LoadingLabel>Removing…</LoadingLabel> : "Remove"}
+        onConfirm={() => {
+          if (confirmRemoveId) void removeFile(confirmRemoveId);
+        }}
+        onCancel={() => !busy && setConfirmRemoveId(null)}
+      />
     </div>
   );
 }

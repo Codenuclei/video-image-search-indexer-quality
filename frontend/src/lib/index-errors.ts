@@ -1,7 +1,13 @@
 /** Human-readable labels for indexer skip-reason keys from /index/skip-stats. */
 const SKIP_REASON_META: Record<
   string,
-  { label: string; hint: string; retryable: boolean; retryLabel: string }
+  {
+    label: string;
+    hint: string;
+    retryable: boolean;
+    retryLabel: string;
+    action?: "retry" | "skip_corrupt";
+  }
 > = {
   indexing_paused: {
     label: "Indexing paused",
@@ -31,7 +37,8 @@ const SKIP_REASON_META: Record<
     label: "Corrupt file",
     hint: "File appears damaged or unreadable",
     retryable: true,
-    retryLabel: "Retry all",
+    retryLabel: "Skip files",
+    action: "skip_corrupt",
   },
   duplicate_content: {
     label: "Duplicate content",
@@ -64,16 +71,37 @@ export function skipReasonMeta(reason: string): {
   hint: string;
   retryable: boolean;
   retryLabel: string;
+  action: "retry" | "skip_corrupt";
 } {
   const key = (reason || "unknown").trim();
-  return (
+  const meta =
     SKIP_REASON_META[key] ?? {
       label: key.replace(/_/g, " "),
       hint: "Skipped during indexing",
       retryable: true,
       retryLabel: "Retry all",
-    }
-  );
+    };
+  return {
+    ...meta,
+    action: meta.action ?? "retry",
+  };
+}
+
+const INDEX_STATUS_LABELS: Record<string, string> = {
+  processed: "Processed",
+  pending: "Pending",
+  processing: "Processing",
+  error: "Error",
+  skipped: "Skipped",
+  archived: "Archived",
+};
+
+/** Display label for indexer file status values (Processed, Archived, …). */
+export function formatIndexStatusLabel(status: string): string {
+  const key = status.trim().toLowerCase();
+  if (INDEX_STATUS_LABELS[key]) return INDEX_STATUS_LABELS[key];
+  if (!status) return status;
+  return status.charAt(0).toUpperCase() + status.slice(1);
 }
 
 export type FriendlyIndexError = {

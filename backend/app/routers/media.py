@@ -259,6 +259,10 @@ async def ensure_frame_extracted(
     """One in-flight ffmpeg per (video, timestamp). Closing the client does not cancel it."""
     if out_path.is_file():
         return True
+    from app.reid.thumb_fail_cache import frame_fail_cached, frame_fail_put
+
+    if frame_fail_cached(drive_file_id, float(ts)):
+        return False
     key = _extract_job_key(drive_file_id, ts)
     lock = _extract_jobs_lock()
     async with lock:
@@ -279,9 +283,12 @@ async def ensure_frame_extracted(
                                 ok = await _extract_frame_on_demand(
                                     drive_file_id, ts, out_path, settings, own
                                 )
+                    if not ok:
+                        frame_fail_put(drive_file_id, float(ts))
                     if not fut.done():
                         fut.set_result(bool(ok))
                 except Exception as exc:  # noqa: BLE001
+                    frame_fail_put(drive_file_id, float(ts))
                     if not fut.done():
                         fut.set_exception(exc)
                 finally:
@@ -333,6 +340,12 @@ async def _extract_frame_on_demand(
     from app.video.youtube_cache import video_cache_path
     from app.video.youtube_registry import is_youtube_source
 
+    from app.reid.thumb_fail_cache import frame_fail_put
+
+    def _fail() -> bool:
+        frame_fail_put(drive_file_id, float(ts))
+        return False
+
     drive_file = await session.get(DriveFile, drive_file_id)
     if drive_file is not None:
         src = video_cache_path(settings, drive_file)
@@ -346,11 +359,12 @@ async def _extract_frame_on_demand(
                 except (subprocess.TimeoutExpired, FileNotFoundError):
                     return False
 
-            return await asyncio.to_thread(_run_local)
+            ok = await asyncio.to_thread(_run_local)
+            return ok if ok else _fail()
 
         if is_youtube_source(drive_file):
             logger.warning("Frame on-demand: YouTube local file missing for %s", drive_file_id)
-            return False
+            return _fail()
 
     from datetime import datetime, timedelta, timezone
 
@@ -368,13 +382,13 @@ async def _extract_frame_on_demand(
             "Frame on-demand: no local cache and no Drive account connected for %s",
             drive_file_id,
         )
-        return False
+        return _fail()
 
     now = datetime.now(tz=timezone.utc)
     if user.token_expiry is None or user.token_expiry - timedelta(minutes=5) <= now:
         if not user.refresh_token:
             logger.warning("Frame on-demand: token expired and no refresh_token")
-            return False
+            return _fail()
         try:
             new_token, new_expiry = await asyncio.to_thread(
                 _do_token_refresh,
@@ -387,7 +401,7 @@ async def _extract_frame_on_demand(
             await session.commit()
         except Exception as exc:
             logger.warning("Frame on-demand: token refresh failed: %s", exc)
-            return False
+            return _fail()
 
     access_token = user.access_token
     drive_url = f"https://www.googleapis.com/drive/v3/files/{drive_file_id}?alt=media"
@@ -414,7 +428,8 @@ async def _extract_frame_on_demand(
             logger.warning("Frame extraction error (%s): %s", type(exc).__name__, exc)
             return False
 
-    return await asyncio.to_thread(_run)
+    ok = await asyncio.to_thread(_run)
+    return ok if ok else _fail()
 
 
 @router.get("/{media_id}/ocr")

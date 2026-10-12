@@ -5,6 +5,7 @@ import {
   API_BASE,
   apiClient,
   formatApiError,
+  isAbortError,
   type FolderContext,
   type LibraryResponse,
   type Person,
@@ -19,6 +20,7 @@ import {
   indexedFolderPickerOptions,
   type LibraryFolderOption,
 } from "@/lib/library-folders";
+import { clearReverseFaceSearch } from "@/lib/reverse-face-session";
 
 const SEARCH_RESULTS_CACHE_KEY = "searchResults";
 const LIBRARY_SHELL_CACHE_KEY = "driveLibraryShell";
@@ -295,26 +297,18 @@ function newSearchId(): string {
   return `s-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-function isAbortError(error: unknown): boolean {
-  if (!error || typeof error !== "object") return false;
-  const name = "name" in error ? String((error as { name?: unknown }).name) : "";
-  return name === "AbortError";
-}
-
 export function runSearch() {
   const current = getSearchSession();
   const q = current.q.trim();
   if (!q) return inFlight;
 
   // Text search and reverse-face share the Search page — drop leftover face results/spinners.
-  void import("@/lib/reverse-face-session").then(({ clearReverseFaceSearch }) => {
-    clearReverseFaceSearch();
-  });
+  clearReverseFaceSearch();
 
   // Drop any prior request without clearing the query / cached preview results.
   abortInFlightHttp();
 
-  const mime = current.mime === "video" ? "all" : current.mime;
+  const mime = current.mime;
   const searchId = newSearchId();
   activeSearchId = searchId;
   searchAbort = new AbortController();

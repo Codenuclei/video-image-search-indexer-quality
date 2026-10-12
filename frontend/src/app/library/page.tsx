@@ -27,7 +27,7 @@ import {
 import { Button, Card, DownloadButton, IconLink, Input, LoadingLabel, Spinner } from "@/components/ui";
 import { ManualFaceTagger } from "@/components/manual-face-tagger";
 import { isLiveIndexingActive } from "@/components/live-indexing-lanes";
-import { formatCount, humanizeIndexError } from "@/lib/index-errors";
+import { formatCount, formatIndexStatusLabel, humanizeIndexError } from "@/lib/index-errors";
 import { cn } from "@/lib/utils";
 import { readCache, writeCache, hydrateKeyFromDisk } from "@/lib/data-cache";
 import { useIndexStatusStore } from "@/lib/index-status-store";
@@ -241,8 +241,8 @@ function FileRow({
         <span className="truncate font-medium">{file.name}</span>
       </span>
       <span className="flex min-w-0 items-center justify-center">
-        <span className={cn("max-w-full truncate rounded px-1.5 py-0.5 text-center text-[10px] font-medium uppercase", statusBadge(file.status))}>
-          {file.status}
+        <span className={cn("max-w-full truncate rounded px-1.5 py-0.5 text-center text-[10px] font-medium", statusBadge(file.status))}>
+          {formatIndexStatusLabel(file.status)}
         </span>
       </span>
       <span className="hidden items-center justify-center sm:flex">
@@ -627,7 +627,7 @@ export default function LibraryPage() {
         </Card>
       )}
 
-      <div className="flex min-h-[520px] max-h-[min(720px,calc(100vh-12rem))] flex-col overflow-hidden rounded-lg border border-border lg:flex-row">
+      <div className="flex min-h-[520px] max-h-[min(70dvh,calc(100vh-11rem))] flex-col overflow-hidden rounded-lg border border-border lg:flex-row">
         <aside className="flex w-full shrink-0 flex-col overflow-hidden border-b border-border lg:w-64 lg:border-b-0 lg:border-r">
           <div className="shrink-0 border-b border-border px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
             Folders
@@ -793,8 +793,10 @@ export default function LibraryPage() {
               <dl className="space-y-1.5 text-xs">
                 <div className="flex justify-between gap-2">
                   <dt className="text-muted-foreground">Status</dt>
-                  <dd className={cn("rounded px-1.5 py-0.5 font-medium uppercase", statusBadge(selectedFile.status))}>
-                    {isFailedLibraryFile(selectedFile) ? "failed" : selectedFile.status}
+                  <dd className={cn("rounded px-1.5 py-0.5 font-medium", statusBadge(selectedFile.status))}>
+                    {isFailedLibraryFile(selectedFile)
+                      ? "Failed"
+                      : formatIndexStatusLabel(selectedFile.status)}
                   </dd>
                 </div>
                 <div className="flex justify-between gap-2">

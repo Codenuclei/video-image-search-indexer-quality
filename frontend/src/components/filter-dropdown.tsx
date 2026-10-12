@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Check, ChevronDown, type LucideIcon } from "lucide-react";
 import { FaceThumb } from "@/components/ui";
 import { cn } from "@/lib/utils";
@@ -11,6 +11,20 @@ export type FilterDropdownOption = {
   hint?: string;
   faceId?: number | null;
 };
+
+type MenuPlacement = {
+  openUp: boolean;
+  maxHeight: number;
+  /** Fixed positioning when the trigger is near a scroll edge. */
+  fixed: boolean;
+  top: number;
+  left: number;
+  width: number;
+};
+
+const MENU_GAP = 6;
+const MENU_MIN = 120;
+const MENU_IDEAL = 256;
 
 export function FilterDropdown({
   icon: Icon,
@@ -36,21 +50,59 @@ export function FilterDropdown({
   className?: string;
 }) {
   const [open, setOpen] = useState(false);
+  const [placement, setPlacement] = useState<MenuPlacement | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  function measurePlacement(): MenuPlacement | null {
+    const trigger = rootRef.current;
+    if (!trigger) return null;
+    const rect = trigger.getBoundingClientRect();
+    const spaceBelow = window.innerHeight - rect.bottom - MENU_GAP - 8;
+    const spaceAbove = rect.top - MENU_GAP - 8;
+    const openUp = spaceBelow < MENU_MIN && spaceAbove > spaceBelow;
+    const available = Math.max(MENU_MIN, openUp ? spaceAbove : spaceBelow);
+    const maxHeight = Math.min(MENU_IDEAL, available);
+    return {
+      openUp,
+      maxHeight,
+      fixed: true,
+      top: openUp ? Math.max(8, rect.top - MENU_GAP - maxHeight) : rect.bottom + MENU_GAP,
+      left: Math.min(rect.left, window.innerWidth - Math.max(rect.width, 224) - 8),
+      width: Math.max(rect.width, 224),
+    };
+  }
+
+  useLayoutEffect(() => {
+    if (!open) {
+      setPlacement(null);
+      return;
+    }
+    setPlacement(measurePlacement());
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
     function onDocClick(e: MouseEvent) {
-      if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
+      if (!rootRef.current?.contains(e.target as Node) && !menuRef.current?.contains(e.target as Node)) {
+        setOpen(false);
+      }
     }
     function onKey(e: KeyboardEvent) {
       if (e.key === "Escape") setOpen(false);
     }
+    function onReposition() {
+      setPlacement(measurePlacement());
+    }
     document.addEventListener("mousedown", onDocClick);
     document.addEventListener("keydown", onKey);
+    window.addEventListener("resize", onReposition);
+    window.addEventListener("scroll", onReposition, true);
     return () => {
       document.removeEventListener("mousedown", onDocClick);
       document.removeEventListener("keydown", onKey);
+      window.removeEventListener("resize", onReposition);
+      window.removeEventListener("scroll", onReposition, true);
     };
   }, [open]);
 
@@ -102,12 +154,23 @@ export function FilterDropdown({
           </>
         )}
       </button>
-      {open && (
-        <div className="absolute left-0 top-full z-40 mt-1.5 w-56 max-w-[70vw] overflow-hidden rounded-xl border border-border bg-card py-1 shadow-lg">
+      {open && placement && (
+        <div
+          ref={menuRef}
+          className="z-[60] overflow-hidden rounded-xl border border-border bg-card py-1 shadow-lg"
+          style={{
+            position: "fixed",
+            top: placement.top,
+            left: placement.left,
+            width: placement.width,
+            maxWidth: "min(70vw, 18rem)",
+          }}
+        >
           <ul
             role="listbox"
             aria-label={title}
-            className="scrollbar-hidden max-h-64 overflow-y-auto"
+            className="overflow-y-auto overscroll-contain"
+            style={{ maxHeight: placement.maxHeight }}
           >
             {options.map((o) => {
               const isSel = o.value === value;

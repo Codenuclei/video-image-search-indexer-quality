@@ -18,13 +18,14 @@ import { usePathname } from "next/navigation";
 import {
   apiClient,
   driveFilePreviewUrl,
+  formatApiError,
   type FaceSearchAppearance,
   type FaceSearchMatch,
   type FaceSearchResponse,
   type LeadershipPerson,
 } from "@/lib/api";
 import { Button, Card, ConfirmDialog, FaceThumb, LoadingLabel } from "@/components/ui";
-import { cn } from "@/lib/utils";
+import { cn, toTitleCase } from "@/lib/utils";
 import {
   clearReverseFaceSearch,
   hydrateLeadershipRoster,
@@ -139,10 +140,15 @@ function ResultsSidePanel({
   const initialFiles = useMemo(() => collectAppearances(result.matches), [result.matches]);
   const [files, setFiles] = useState(initialFiles);
   const [appearanceOffsets, setAppearanceOffsets] = useState<Record<string, number>>({});
+  const [matchTotals, setMatchTotals] = useState<Record<string, number>>({});
+  const [exhaustedKeys, setExhaustedKeys] = useState<Record<string, boolean>>({});
   const [loadingMoreFiles, setLoadingMoreFiles] = useState(false);
+  const [loadMoreError, setLoadMoreError] = useState<string | null>(null);
   const totalFileCount = useMemo(() => totalMatchFileCount(result.matches), [result.matches]);
   useEffect(() => {
     setFiles(initialFiles);
+    setExhaustedKeys({});
+    setLoadMoreError(null);
     setAppearanceOffsets(
       Object.fromEntries(
         result.matches.map((match) => [
@@ -151,10 +157,20 @@ function ResultsSidePanel({
         ])
       )
     );
+    setMatchTotals(
+      Object.fromEntries(
+        result.matches.map((match) => [
+          match.person_id != null ? `p:${match.person_id}` : `c:${match.cluster_id}`,
+          match.file_count ?? match.appears_in?.length ?? 0,
+        ])
+      )
+    );
   }, [initialFiles, result.matches]);
   const nextAppearanceMatch = result.matches.find((match) => {
     const key = match.person_id != null ? `p:${match.person_id}` : `c:${match.cluster_id}`;
-    return (appearanceOffsets[key] ?? 0) < (match.file_count ?? match.appears_in?.length ?? 0);
+    if (exhaustedKeys[key]) return false;
+    const total = matchTotals[key] ?? match.file_count ?? match.appears_in?.length ?? 0;
+    return (appearanceOffsets[key] ?? 0) < total;
   });
 
   async function loadMoreFiles() {
@@ -165,6 +181,7 @@ function ResultsSidePanel({
         : `c:${nextAppearanceMatch.cluster_id}`;
     const offset = appearanceOffsets[key] ?? 0;
     setLoadingMoreFiles(true);
+    setLoadMoreError(null);
     try {
       const page = await apiClient.faceMatchAppearances({
         personId: nextAppearanceMatch.person_id,
@@ -173,14 +190,21 @@ function ResultsSidePanel({
         offset,
         limit: 50,
       });
+      if (typeof page.total === "number") {
+        setMatchTotals((current) => ({ ...current, [key]: page.total }));
+      }
+      const seen = new Set(files.map((item) => item.drive_file_id));
+      const added = page.items.filter((item) => !seen.has(item.drive_file_id));
+      if (added.length === 0 || page.items.length === 0) {
+        setExhaustedKeys((prev) => ({ ...prev, [key]: true }));
+      }
+      if (added.length > 0) setFiles((current) => [...current, ...added]);
       setAppearanceOffsets((current) => ({
         ...current,
         [key]: offset + page.items.length,
       }));
-      setFiles((current) => {
-        const seen = new Set(current.map((item) => item.drive_file_id));
-        return [...current, ...page.items.filter((item) => !seen.has(item.drive_file_id))];
-      });
+    } catch (e) {
+      setLoadMoreError(formatApiError(e, "Could not load more files"));
     } finally {
       setLoadingMoreFiles(false);
     }
@@ -301,12 +325,6 @@ function ResultsSidePanel({
                       {c.person_name !== "Unknown" ? ` · ${c.person_name}` : ""}
                     </p>
                   </div>
-                  <Link
-                    href="/review"
-                    className="shrink-0 text-[11px] text-muted-foreground hover:text-foreground"
-                  >
-                    Review
-                  </Link>
                 </div>
               ))}
             </div>
@@ -346,6 +364,9 @@ function ResultsSidePanel({
               ))}
             </ul>
           )}
+          {loadMoreError && (
+            <p className="text-xs text-destructive">{loadMoreError}</p>
+          )}
           {nextAppearanceMatch && (
             <Button
               variant="secondary"
@@ -381,10 +402,20 @@ export function ReverseFaceLabPage({ embedded = false }: { embedded?: boolean } 
     tagMessage,
     confirmTagOpen,
   } = useReverseFaceSession();
+  const [showSlowHint, setShowSlowHint] = useState(false);
 
   useEffect(() => {
     void hydrateLeadershipRoster();
   }, []);
+
+  useEffect(() => {
+    if (!searching) {
+      setShowSlowHint(false);
+      return;
+    }
+    const timer = setTimeout(() => setShowSlowHint(true), 8_000);
+    return () => clearTimeout(timer);
+  }, [searching]);
 
   const setSelectedFile = useCallback((next: File | null) => {
     setReverseFaceFile(next);
@@ -501,7 +532,9 @@ export function ReverseFaceLabPage({ embedded = false }: { embedded?: boolean } 
                   <span className="line-clamp-2 w-full text-[10px] font-medium leading-tight text-foreground sm:text-[11px]">
                     {person.name}
                   </span>
-                  <span className="line-clamp-1 w-full text-[9px] text-muted-foreground">{person.role}</span>
+                  <span className="line-clamp-1 w-full text-[9px] text-muted-foreground">
+                    {person.role ? toTitleCase(person.role) : ""}
+                  </span>
                 </button>
               );
             })}
@@ -553,6 +586,18 @@ export function ReverseFaceLabPage({ embedded = false }: { embedded?: boolean } 
             <Button onClick={() => runSearch()} disabled={!file || searching}>
               {searching && !selectedLeader ? <LoadingLabel>Searching…</LoadingLabel> : "Search faces"}
             </Button>
+            {(file || previewUrl || result) && (
+              <Button
+                variant="secondary"
+                onClick={() => {
+                  clearReverseFaceSearch();
+                  if (fileInputRef.current) fileInputRef.current.value = "";
+                }}
+                disabled={searching}
+              >
+                Remove
+              </Button>
+            )}
           </div>
           <input
             ref={fileInputRef}
@@ -569,11 +614,16 @@ export function ReverseFaceLabPage({ embedded = false }: { embedded?: boolean } 
       </section>
 
       {searching && !result && (
-        <p className="py-6 text-center text-sm text-muted-foreground">
+        <div className="py-6 text-center text-sm text-muted-foreground">
           <LoadingLabel>
             {selectedLeader ? `Searching for ${selectedLeader.name}…` : "Searching faces…"}
           </LoadingLabel>
-        </p>
+          {showSlowHint && (
+            <p className="mt-2 text-xs text-muted-foreground">
+              Still working. The face engine may be starting up.
+            </p>
+          )}
+        </div>
       )}
 
       {result && (
@@ -589,6 +639,12 @@ export function ReverseFaceLabPage({ embedded = false }: { embedded?: boolean } 
               <X size={16} aria-hidden />
             </button>
           </div>
+          {(result.faces_detected === 0 ||
+            (result.matches.length === 0 && !!result.message)) && (
+            <p className="mb-3 text-sm text-amber-700 dark:text-amber-400">
+              {result.message ?? "No face detected in upload"}
+            </p>
+          )}
           <ResultsSidePanel
             result={result}
             leader={selectedLeader}
@@ -639,11 +695,15 @@ export function ReverseFaceLabPage({ embedded = false }: { embedded?: boolean } 
             </p>
             {crawlResult.results.map((item) => (
               <div key={item.url} className="rounded-md bg-muted/30 p-3">
-                <p className="break-all text-xs font-medium" title={item.url}>
-                  {item.url}
+                <p className="truncate text-xs font-medium" title={item.url}>
+                  {item.url.length > 96 ? `${item.url.slice(0, 93)}…` : item.url}
                 </p>
                 {!item.ok ? (
-                  <p className="mt-1 text-xs text-destructive">{item.error || "Failed"}</p>
+                  <p className="mt-1 text-xs text-destructive" title={item.error || undefined}>
+                    {(item.error || "Failed").length > 120
+                      ? `${(item.error || "Failed").slice(0, 117)}…`
+                      : item.error || "Failed"}
+                  </p>
                 ) : (
                   <div className="mt-2 space-y-2">
                     <p className="text-xs text-muted-foreground">

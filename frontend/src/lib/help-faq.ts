@@ -459,6 +459,20 @@ export const TEST_FAQ_CATEGORIES: FaqCategory[] = [
         href: "/test/folders",
       },
       {
+        id: "invalid-api-key",
+        question: "Indexed Folders shows “Invalid API developer key”",
+        answer:
+          "The Google Picker Browser API key is missing, is a server key, or its HTTP referrer restrictions do not include this site’s origin. In Google Cloud, enable Drive API + Google Picker API, create a Browser key, allow your deployed HTTPS origin (and localhost:3001/* for local), set GOOGLE_API_KEY on the backend, and restart.",
+        href: "/test/folders",
+      },
+      {
+        id: "env-result-parity",
+        question: "Search counts differ between environments (e.g. DigitalOcean vs Railway)",
+        answer:
+          "Result counts follow whatever is indexed in that environment’s database and vector store. Re-sync the same Drive folders, wait for indexing to finish on both, and compare Dashboard file counts before comparing search recall.",
+        href: "/test/folders",
+      },
+      {
         id: "need-admin",
         question: "Where do I retry failed files or see skip reasons?",
         answer:

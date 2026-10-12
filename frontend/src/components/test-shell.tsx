@@ -109,7 +109,7 @@ export function TestShell({ children }: { children: React.ReactNode }) {
   const profileEmail = driveEmail ?? authEmail;
   const searchActive = pathname === "/test/search" || pathname === "/test";
   const compactHeader = !searchActive;
-  const mimeValue = mime === "video" ? "all" : mime;
+  const mimeValue = mime || "all";
 
   useEffect(() => {
     setAuthEmail(getAuthEmail());
@@ -141,6 +141,20 @@ export function TestShell({ children }: { children: React.ReactNode }) {
     if (searchActive) setHeaderQuery(q);
   }, [searchActive, q]);
 
+  // Reverse-face upload lives on People + Search; clear when leaving those routes
+  // so the preview does not persist on Folders/Admin/etc. Keep it when moving
+  // between /test/people and /test/search (shell image-search navigates there).
+  useEffect(() => {
+    const keepReverseFace =
+      pathname === "/test/search" ||
+      pathname === "/test" ||
+      pathname === "/test/people" ||
+      pathname.startsWith("/test/people/");
+    if (!keepReverseFace) {
+      clearReverseFaceSearch();
+    }
+  }, [pathname]);
+
   useEffect(() => {
     const main = mainRef.current;
     if (!main) return;
@@ -163,6 +177,7 @@ export function TestShell({ children }: { children: React.ReactNode }) {
     event.preventDefault();
     patchSearchSession({ q: headerQuery });
     clearReverseFaceSearch();
+    // runSearch reads session state after the sync patch above.
     void runSearch();
   }
 
@@ -287,10 +302,14 @@ export function TestShell({ children }: { children: React.ReactNode }) {
                     title={`Type: ${mimeValue}`}
                     value={mimeValue}
                     active={mimeValue !== "all"}
-                    onChange={(v) => patchSearchSession({ mime: v })}
+                    onChange={(v) => {
+                      patchSearchSession({ mime: v, q: headerQuery });
+                      if (headerQuery.trim()) void runSearch();
+                    }}
                     options={[
                       { value: "all", label: "All types" },
                       { value: "image", label: "Images" },
+                      { value: "video", label: "Videos" },
                       { value: "pdf", label: "PDFs" },
                     ]}
                   />
@@ -306,7 +325,10 @@ export function TestShell({ children }: { children: React.ReactNode }) {
                     }
                     value={folderPath}
                     active={folderPath !== ""}
-                    onChange={(v) => patchSearchSession({ folderPath: v })}
+                    onChange={(v) => {
+                      patchSearchSession({ folderPath: v, q: headerQuery });
+                      if (headerQuery.trim()) void runSearch();
+                    }}
                     options={[
                       { value: "", label: "All folders" },
                       ...libraryFolders.map((f) => ({
@@ -323,7 +345,10 @@ export function TestShell({ children }: { children: React.ReactNode }) {
                     value={person}
                     active={person !== ""}
                     disabled={persons.length === 0}
-                    onChange={(v) => patchSearchSession({ person: v })}
+                    onChange={(v) => {
+                      patchSearchSession({ person: v, q: headerQuery });
+                      if (headerQuery.trim()) void runSearch();
+                    }}
                     options={[
                       { value: "", label: "All people" },
                       ...persons.map((p) => ({
@@ -338,7 +363,13 @@ export function TestShell({ children }: { children: React.ReactNode }) {
                     title={useCaptions ? "Captions on" : "Captions off"}
                     active={useCaptions}
                     activeClassName="bg-blue-500/10 text-blue-600 dark:bg-blue-400/15 dark:text-blue-300"
-                    onClick={() => void persistSearchCaptions(!useCaptions)}
+                    onClick={() => {
+                      void (async () => {
+                        patchSearchSession({ q: headerQuery });
+                        await persistSearchCaptions(!useCaptions);
+                        if (headerQuery.trim()) void runSearch();
+                      })();
+                    }}
                   />
                 </div>
                 <button

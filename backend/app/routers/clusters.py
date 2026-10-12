@@ -23,11 +23,19 @@ async def _build_cluster_out(session: AsyncSession, cluster: FaceCluster) -> Clu
             DriveFile.path,
             Media.type,
             func.min(Face.frame_timestamp),
+            Media.duration_seconds,
         )
         .join(Face, Face.media_id == Media.id)
         .join(DriveFile, DriveFile.id == Media.drive_file_id)
         .where(Face.cluster_id == cluster.id)
-        .group_by(Media.id, DriveFile.id, DriveFile.name, DriveFile.path, Media.type)
+        .group_by(
+            Media.id,
+            DriveFile.id,
+            DriveFile.name,
+            DriveFile.path,
+            Media.type,
+            Media.duration_seconds,
+        )
     )
     rows = (await session.execute(stmt)).all()
     appears_in = [
@@ -38,8 +46,9 @@ async def _build_cluster_out(session: AsyncSession, cluster: FaceCluster) -> Clu
             path=path,
             media_type=media_type.value,
             frame_timestamp=frame_timestamp,
+            duration_seconds=duration_seconds,
         )
-        for media_id, drive_id, name, path, media_type, frame_timestamp in rows
+        for media_id, drive_id, name, path, media_type, frame_timestamp, duration_seconds in rows
     ]
 
     representative_confidence = None
@@ -76,6 +85,7 @@ async def _build_cluster_outs(
                 DriveFile.path,
                 Media.type,
                 func.min(Face.frame_timestamp),
+                Media.duration_seconds,
             )
             .join(Media, Face.media_id == Media.id)
             .join(DriveFile, DriveFile.id == Media.drive_file_id)
@@ -87,11 +97,21 @@ async def _build_cluster_outs(
                 DriveFile.name,
                 DriveFile.path,
                 Media.type,
+                Media.duration_seconds,
             )
         )
     ).all()
     occurrences: dict[int, list[MediaOccurrence]] = {cluster_id: [] for cluster_id in cluster_ids}
-    for cluster_id, media_id, drive_id, name, path, media_type, frame_timestamp in occurrence_rows:
+    for (
+        cluster_id,
+        media_id,
+        drive_id,
+        name,
+        path,
+        media_type,
+        frame_timestamp,
+        duration_seconds,
+    ) in occurrence_rows:
         if cluster_id is None:
             continue
         occurrences[int(cluster_id)].append(
@@ -102,6 +122,7 @@ async def _build_cluster_outs(
                 path=path,
                 media_type=media_type.value,
                 frame_timestamp=frame_timestamp,
+                duration_seconds=duration_seconds,
             )
         )
 

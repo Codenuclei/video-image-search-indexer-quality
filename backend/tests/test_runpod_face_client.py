@@ -279,9 +279,10 @@ def test_reverse_face_search_uses_runpod_when_configured() -> None:
     from app.reid import face_search as face_search_mod
     import inspect
 
-    src = inspect.getsource(face_search_mod.search_faces_by_image_bytes)
+    src = inspect.getsource(face_search_mod._detect_query_faces)
     assert "detect_faces_runpod" in src
     assert "runpod_face_configured" in src
+    assert "_detect_query_faces" in inspect.getsource(face_search_mod.search_faces_by_image_bytes)
 
 
 def test_api_leader_starts_face_loop_alongside_identify() -> None:

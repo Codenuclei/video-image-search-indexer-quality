@@ -12,14 +12,18 @@ import {
 } from "lucide-react";
 import {
   apiClient,
+  driveFileDownloadUrl,
+  driveFileThumbnailUrl,
   driveGoogleViewUrl,
+  driveVideoStreamUrl,
   type LibraryFile,
   type LibraryFolder,
   type LibraryFolderPage,
   type LibraryResponse,
 } from "@/lib/api";
-import { LoadingLabel, DriveMediaThumb } from "@/components/ui";
+import { Button, DownloadButton, LoadingLabel, DriveMediaThumb } from "@/components/ui";
 import { DriveSessionBar } from "@/components/drive-session-bar";
+import { ModalOverlay } from "@/components/modal";
 import { cn } from "@/lib/utils";
 import { formatCount, skipReasonMeta } from "@/lib/index-errors";
 import { hydrateKeyFromDisk, readCache, writeCache } from "@/lib/data-cache";
@@ -236,14 +240,19 @@ function FolderTile({
   );
 }
 
-function FileTile({ file }: { file: LibraryFile }) {
+function FileTile({
+  file,
+  onOpen,
+}: {
+  file: LibraryFile;
+  onOpen: (file: LibraryFile) => void;
+}) {
   const Icon = file.is_video ? FileVideo : FileImage;
   const showThumb = file.is_image || file.is_video;
   return (
-    <a
-      href={driveGoogleViewUrl(file.id)}
-      target="_blank"
-      rel="noopener noreferrer"
+    <button
+      type="button"
+      onClick={() => onOpen(file)}
       title={file.name}
       className="group relative flex flex-col items-center gap-1.5 rounded-xl border border-transparent p-3 text-center transition-colors hover:border-border hover:bg-accent/60"
     >
@@ -271,7 +280,7 @@ function FileTile({ file }: { file: LibraryFile }) {
         )}
         title={file.status}
       />
-    </a>
+    </button>
   );
 }
 
@@ -283,6 +292,8 @@ export default function TestFoldersPage() {
   const [filesLoading, setFilesLoading] = useState(false);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [total, setTotal] = useState(0);
+  const [previewFile, setPreviewFile] = useState<LibraryFile | null>(null);
+  const [previewVideoError, setPreviewVideoError] = useState<string | null>(null);
   const reasonLibraryRef = useRef<LibraryResponse | null>(null);
   const reasonLibraryRequestRef = useRef<Promise<LibraryResponse | null> | null>(null);
 
@@ -499,7 +510,14 @@ export default function TestFoldersPage() {
                 />
               ))}
               {files.map((file) => (
-                <FileTile key={file.id} file={file} />
+                <FileTile
+                  key={file.id}
+                  file={file}
+                  onOpen={(next) => {
+                    setPreviewVideoError(null);
+                    setPreviewFile(next);
+                  }}
+                />
               ))}
             </div>
           )}
@@ -522,6 +540,69 @@ export default function TestFoldersPage() {
           )}
         </div>
       )}
+
+      <ModalOverlay
+        open={!!previewFile}
+        onClose={() => {
+          setPreviewFile(null);
+          setPreviewVideoError(null);
+        }}
+      >
+        {previewFile && (
+          <div className="mx-auto w-full max-w-3xl space-y-3 rounded-xl border border-border bg-card p-4 shadow-xl">
+            <div className="flex items-start justify-between gap-3">
+              <p className="min-w-0 truncate text-sm font-medium">{previewFile.name}</p>
+              <Button
+                variant="secondary"
+                onClick={() => {
+                  setPreviewFile(null);
+                  setPreviewVideoError(null);
+                }}
+              >
+                Close
+              </Button>
+            </div>
+            {previewFile.is_video ? (
+              <div className="overflow-hidden rounded-lg bg-black">
+                <video
+                  key={previewFile.id}
+                  src={driveVideoStreamUrl(previewFile.id)}
+                  controls
+                  playsInline
+                  autoPlay
+                  className="max-h-[70vh] w-full"
+                  onError={() =>
+                    setPreviewVideoError("Video preview unavailable — try Download or Open in Drive.")
+                  }
+                />
+                {previewVideoError && (
+                  <p className="px-3 py-2 text-xs text-destructive">{previewVideoError}</p>
+                )}
+              </div>
+            ) : previewFile.is_image ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={driveFileThumbnailUrl(previewFile.id)}
+                alt={previewFile.name}
+                className="max-h-[70vh] w-full rounded-lg object-contain"
+              />
+            ) : (
+              <p className="text-sm text-muted-foreground">No in-app preview for this file type.</p>
+            )}
+            <div className="flex flex-wrap gap-2">
+              <DownloadButton url={driveFileDownloadUrl(previewFile.id)} filename={previewFile.name} />
+              <a
+                href={driveGoogleViewUrl(previewFile.id)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex h-9 items-center rounded-md border border-border px-3 text-sm hover:bg-muted"
+              >
+                Open in Drive
+              </a>
+            </div>
+          </div>
+        )}
+      </ModalOverlay>
     </div>
   );
 }

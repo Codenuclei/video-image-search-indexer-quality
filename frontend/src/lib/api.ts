@@ -75,6 +75,17 @@ export function formatApiError(
     return SERVICE_UNAVAILABLE_MESSAGE;
   }
 
+  // AbortController / fetch cancel — never surface raw DOMException text.
+  if (
+    lower === "aborterror" ||
+    lower.includes("signal is aborted") ||
+    lower.includes("the operation was aborted") ||
+    lower.includes("the user aborted a request") ||
+    lower.includes("request aborted")
+  ) {
+    return "Search cancelled.";
+  }
+
   if (
     /localhost:\d+/i.test(raw) ||
     /127\.0\.0\.1/i.test(raw) ||
@@ -85,6 +96,28 @@ export function formatApiError(
   }
 
   return sanitizeUserFacingError(raw, fallback);
+}
+
+export function isAbortError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const name = "name" in error ? String((error as { name?: unknown }).name) : "";
+  if (name === "AbortError") return true;
+  const message =
+    error instanceof Error
+      ? error.message
+      : typeof error === "string"
+        ? error
+        : "message" in error
+          ? String((error as { message?: unknown }).message ?? "")
+          : "";
+  const lower = message.toLowerCase();
+  return (
+    lower.includes("signal is aborted") ||
+    lower.includes("the operation was aborted") ||
+    lower.includes("the user aborted a request") ||
+    lower.includes("request aborted") ||
+    lower === "search cancelled."
+  );
 }
 
 export function isServiceUnavailableMessage(message: string): boolean {
@@ -117,6 +150,7 @@ export type Cluster = {
     path: string;
     media_type: string;
     frame_timestamp?: number | null;
+    duration_seconds?: number | null;
   }[];
   created_at: string;
 };
@@ -142,6 +176,7 @@ export type PersonClusterSuggestion = {
     path: string;
     media_type: string;
     frame_timestamp?: number | null;
+    duration_seconds?: number | null;
   }[];
 };
 
@@ -279,6 +314,7 @@ export type FaceSearchAppearance = {
   path: string;
   media_type: string;
   frame_timestamp?: number | null;
+  duration_seconds?: number | null;
 };
 
 export type FaceSearchMatch = {
@@ -1074,10 +1110,23 @@ async function api<T>(
     });
     if (!res.ok) {
       const text = await res.text();
+      let detail = text || res.statusText;
+      try {
+        const parsed = JSON.parse(text) as { detail?: unknown };
+        if (typeof parsed.detail === "string" && parsed.detail.trim()) {
+          detail = parsed.detail.trim();
+        }
+      } catch {
+        /* keep raw text */
+      }
+      // Intentional capacity response from face search — keep the readable detail.
+      if (res.status === 503 && /busy|try again/i.test(detail)) {
+        throw new Error(detail);
+      }
       if (res.status >= 500) {
         throw new Error(SERVICE_UNAVAILABLE_MESSAGE);
       }
-      throw new Error(formatApiError(new Error(text || res.statusText)));
+      throw new Error(formatApiError(new Error(detail || res.statusText)));
     }
     if (res.status === 204) return undefined as T;
     return res.json();
@@ -1289,6 +1338,7 @@ export const apiClient = {
         path: string;
         media_type: string;
         frame_timestamp?: number | null;
+        duration_seconds?: number | null;
       }[]
     >(`/persons/${id}/media`),
   personClusterSuggestions: (id: number, opts?: { limit?: number; offset?: number; minSimilarity?: number }) => {
@@ -1317,13 +1367,20 @@ export const apiClient = {
     });
     return api<FileFace[]>(`/faces?${params}`);
   },
-  clusters: (opts?: { includeIgnored?: boolean; limit?: number; offset?: number }) => {
+  clusters: (opts?: {
+    includeIgnored?: boolean;
+    limit?: number;
+    offset?: number;
+    timeoutMs?: number;
+  }) => {
     const params = new URLSearchParams();
     if (opts?.includeIgnored) params.set("include_ignored", "true");
     if (opts?.limit != null) params.set("limit", String(opts.limit));
     if (opts?.offset != null) params.set("offset", String(opts.offset));
     const qs = params.toString();
-    return api<ClusterListResponse>(`/clusters${qs ? `?${qs}` : ""}`);
+    return api<ClusterListResponse>(`/clusters${qs ? `?${qs}` : ""}`, {
+      timeoutMs: opts?.timeoutMs ?? 45_000,
+    });
   },
   nameCluster: (id: number, name: string) =>
     api<Person>(`/clusters/${id}/name`, { method: "POST", body: JSON.stringify({ name }) }),
@@ -1756,29 +1813,65 @@ export const apiClient = {
     const params = new URLSearchParams({ limit: String(limit) });
     const form = new FormData();
     form.append("file", file);
+    const controller = new AbortController();
+    const timeoutMs = 90_000;
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    if (signal) {
+      if (signal.aborted) controller.abort();
+      else signal.addEventListener("abort", () => controller.abort(), { once: true });
+    }
     try {
       const res = await fetch(`${API_BASE}/reid/faces/search?${params}`, {
         method: "POST",
         body: form,
         cache: "no-store",
-        signal,
+        signal: controller.signal,
       });
       if (!res.ok) {
         const text = await res.text();
-        if (res.status >= 500) throw new Error(SERVICE_UNAVAILABLE_MESSAGE);
-        throw new Error(text || res.statusText);
+        let detail = text || res.statusText;
+        try {
+          const parsed = JSON.parse(text) as { detail?: unknown };
+          if (typeof parsed.detail === "string" && parsed.detail.trim()) {
+            detail = parsed.detail;
+          }
+        } catch {
+          /* keep raw text */
+        }
+        // Cap/busy from the backend (FaceSearchBusyError → 503) should stay readable.
+        if (res.status === 503 && /busy|try again/i.test(detail)) {
+          throw new Error(detail.trim());
+        }
+        // Only treat true gateway/connectivity failures as "service unavailable".
+        if (res.status === 502 || res.status === 503 || res.status === 504) {
+          throw new Error(SERVICE_UNAVAILABLE_MESSAGE);
+        }
+        throw new Error(detail || `Face search failed (${res.status})`);
       }
       return res.json();
     } catch (error) {
-      const msg = formatApiError(error);
-      toastApiError(msg);
-      throw new Error(msg);
+      if (signal?.aborted || isAbortError(error)) {
+        // Timer fired (not an external/user cancel) — toast and surface a clear message.
+        if (!signal?.aborted && controller.signal.aborted) {
+          const msg = "Face search took too long. Please try again.";
+          toastApiError(msg);
+          throw new Error(msg);
+        }
+        throw error;
+      }
+      // In-panel UI shows the error; avoid duplicate toasts.
+      throw new Error(formatApiError(error));
+    } finally {
+      clearTimeout(timer);
     }
   },
-  searchFaceByUrl: (imageUrl: string, limit = 20) =>
+  searchFaceByUrl: (imageUrl: string, limit = 20, signal?: AbortSignal) =>
     api<FaceSearchResponse>("/reid/faces/search-by-url", {
       method: "POST",
       body: JSON.stringify({ image_url: imageUrl, limit }),
+      signal,
+      // Backend caps GPU+CPU (~80s); keep client slightly above that.
+      timeoutMs: 90_000,
     }),
   faceMatchAppearances: (opts: {
     personId?: number | null;
@@ -1846,6 +1939,8 @@ export const apiClient = {
         cluster_ids: body.cluster_ids ?? [],
         face_ids: body.face_ids ?? [],
       }),
+      // Large reverse-index name-tags can touch many clusters; avoid premature abort.
+      timeoutMs: 300_000,
     }),
   // Shared visual search: images via Qdrant embeddings; videos (mime=video) via
   // Gemini frame embeddings + Qdrant + optional VLM rerank. Carousel uses mime=video.

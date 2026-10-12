@@ -1,7 +1,10 @@
 """Upload-an-image reverse face search against pgvector FaceEmbedding index."""
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
+from collections import OrderedDict
 
 import cv2
 import httpx
@@ -9,6 +12,7 @@ import numpy as np
 from sqlalchemy import case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import Settings
 from app.db.models import (
     DriveFile,
     Face,
@@ -18,12 +22,16 @@ from app.db.models import (
     MediaType,
     Person,
 )
-from app.faces.engine import get_face_engine
+from app.faces.engine import DetectedFace, get_face_engine
 from app.pipelines.async_cpu import run_cpu_bound
 from app.reid.face_thumbs import resolve_face_thumbnail_id
 from app.reid.reverse_search import linkedin_map
 
 logger = logging.getLogger(__name__)
+
+
+class FaceSearchBusyError(Exception):
+    """Interactive face search timed out or failed on both GPU and CPU paths."""
 
 _MAX_APPEARANCES_PER_MATCH = 24
 
@@ -33,6 +41,34 @@ _FETCH_HEADERS = {
     ),
     "Accept": "image/*,*/*;q=0.8",
 }
+
+# In-memory LRU+TTL cache for leadership portrait downloads (search-by-url).
+_PORTRAIT_CACHE_MAX = 100
+_PORTRAIT_CACHE_TTL_SEC = 600.0
+_portrait_bytes_cache: OrderedDict[str, tuple[float, bytes]] = OrderedDict()
+
+
+class ImageUrlFetchError(Exception):
+    """Failed to download a public portrait URL for reverse face search."""
+
+
+def _portrait_cache_get(url: str) -> bytes | None:
+    entry = _portrait_bytes_cache.get(url)
+    if entry is None:
+        return None
+    ts, data = entry
+    if time.monotonic() - ts > _PORTRAIT_CACHE_TTL_SEC:
+        _portrait_bytes_cache.pop(url, None)
+        return None
+    _portrait_bytes_cache.move_to_end(url)
+    return data
+
+
+def _portrait_cache_put(url: str, data: bytes) -> None:
+    _portrait_bytes_cache[url] = (time.monotonic(), data)
+    _portrait_bytes_cache.move_to_end(url)
+    while len(_portrait_bytes_cache) > _PORTRAIT_CACHE_MAX:
+        _portrait_bytes_cache.popitem(last=False)
 
 
 async def _appears_in_for_face(
@@ -56,23 +92,37 @@ async def _appears_in_for_face(
     else:
         return []
 
+    # One row per DriveFile (same basis as _file_count_for_face) so pagination
+    # totals and list lengths cannot disagree.
+    type_rank = case(
+        (Media.type == MediaType.IMAGE, 0),
+        (Media.type == MediaType.VIDEO, 1),
+        else_=2,
+    )
+    _type_by_rank = {
+        0: MediaType.IMAGE.value,
+        1: MediaType.VIDEO.value,
+        2: MediaType.PDF.value,
+    }
     stmt = (
         select(
-            Media.id,
+            func.min(Media.id).label("media_id"),
             DriveFile.id,
             DriveFile.name,
             DriveFile.path,
-            Media.type,
-            func.min(Face.frame_timestamp),
+            func.min(type_rank).label("type_rank"),
+            func.min(Face.frame_timestamp).label("frame_timestamp"),
+            func.max(Media.duration_seconds).label("duration_seconds"),
         )
         .join(Face, Face.media_id == Media.id)
         .join(DriveFile, DriveFile.id == Media.drive_file_id)
         .where(face_filter)
-        .group_by(Media.id, DriveFile.id, DriveFile.name, DriveFile.path, Media.type)
+        .group_by(DriveFile.id, DriveFile.name, DriveFile.path)
         # Images before videos so gallery pages stay visually consistent.
         .order_by(
-            case((Media.type == MediaType.IMAGE, 0), else_=1),
+            func.min(type_rank),
             DriveFile.name,
+            DriveFile.id,
         )
         .offset(max(0, offset))
         .limit(limit)
@@ -84,10 +134,11 @@ async def _appears_in_for_face(
             "drive_file_id": str(drive_id),
             "name": name,
             "path": path or "",
-            "media_type": media_type.value if hasattr(media_type, "value") else str(media_type),
+            "media_type": _type_by_rank.get(int(type_rank_val or 2), MediaType.IMAGE.value),
             "frame_timestamp": float(frame_timestamp) if frame_timestamp is not None else None,
+            "duration_seconds": float(duration_seconds) if duration_seconds is not None else None,
         }
-        for media_id, drive_id, name, path, media_type, frame_timestamp in rows
+        for media_id, drive_id, name, path, type_rank_val, frame_timestamp, duration_seconds in rows
     ]
 
 
@@ -111,11 +162,11 @@ async def _file_count_for_face(
         return 0
 
     stmt = (
-        select(func.count(func.distinct(Media.drive_file_id)))
+        select(func.count(func.distinct(DriveFile.id)))
         .select_from(Face)
         .join(Media, Face.media_id == Media.id)
+        .join(DriveFile, DriveFile.id == Media.drive_file_id)
         .where(face_filter)
-        .where(Media.drive_file_id.is_not(None))
     )
     return int((await session.execute(stmt)).scalar_one() or 0)
 
@@ -175,6 +226,69 @@ def _identity_key(
     return ("face", int(face_id))
 
 
+def downscale_bgr_for_search(image_bgr: np.ndarray, max_edge: int) -> np.ndarray:
+    """Cap long edge for interactive reverse face search; no-op when max_edge <= 0."""
+    if max_edge <= 0:
+        return image_bgr
+    h, w = image_bgr.shape[:2]
+    long_edge = max(h, w)
+    if long_edge <= max_edge:
+        return image_bgr
+    scale = max_edge / float(long_edge)
+    new_w = max(1, int(round(w * scale)))
+    new_h = max(1, int(round(h * scale)))
+    return cv2.resize(image_bgr, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+
+async def _detect_query_faces(
+    image_bgr: np.ndarray, *, settings: Settings
+) -> tuple[list[DetectedFace], str]:
+    """GPU detect with short timeout, then CPU fallback. Raises FaceSearchBusyError."""
+    from app.faces.runpod_gpu import RunPodFaceError, detect_faces_runpod, runpod_face_configured
+
+    detections: list[DetectedFace] | None = None
+    engine_name = "cpu"
+    t0 = time.monotonic()
+
+    if runpod_face_configured(settings):
+        try:
+            detections = await asyncio.wait_for(
+                detect_faces_runpod(image_bgr, settings=settings),
+                timeout=settings.face_search_gpu_timeout_seconds,
+            )
+            engine_name = "gpu"
+        except asyncio.TimeoutError:
+            elapsed_ms = (time.monotonic() - t0) * 1000.0
+            logger.warning(
+                "face_search cause=gpu_timeout elapsed_ms=%.0f",
+                elapsed_ms,
+            )
+            detections = None
+        except RunPodFaceError:
+            elapsed_ms = (time.monotonic() - t0) * 1000.0
+            logger.warning(
+                "face_search cause=gpu_error elapsed_ms=%.0f",
+                elapsed_ms,
+                exc_info=True,
+            )
+            detections = None
+
+    if detections is None:
+        engine_name = "cpu"
+        try:
+            engine = get_face_engine()
+            detections = await asyncio.wait_for(
+                run_cpu_bound(engine.detect_faces, image_bgr),
+                timeout=settings.face_search_cpu_timeout_seconds,
+            )
+        except asyncio.TimeoutError as exc:
+            raise FaceSearchBusyError("Face search is busy, please try again") from exc
+        except Exception as exc:  # noqa: BLE001
+            raise FaceSearchBusyError("Face search is busy, please try again") from exc
+
+    return detections, engine_name
+
+
 async def search_faces_by_image_bytes(
     session: AsyncSession,
     image_bytes: bytes,
@@ -183,30 +297,28 @@ async def search_faces_by_image_bytes(
     max_distance: float = 0.55,
 ) -> dict[str, object]:
     """Detect the largest face in an upload and ANN-match against indexed embeddings."""
+    t_start = time.monotonic()
     arr = np.frombuffer(image_bytes, dtype=np.uint8)
     image_bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     if image_bgr is None:
         raise ValueError("Could not decode image")
 
     from app.config import get_settings
-    from app.faces.runpod_gpu import detect_faces_runpod, runpod_face_configured
 
     settings = get_settings()
-    if runpod_face_configured(settings):
-        from app.faces.runpod_gpu import RunPodFaceError
+    image_bgr = downscale_bgr_for_search(image_bgr, settings.face_search_max_edge)
 
-        try:
-            detections = await detect_faces_runpod(image_bgr, settings=settings)
-        except RunPodFaceError:
-            logger.exception("face_gpu_search_failed_fallback_cpu")
-            detections = None
-        if detections is None:
-            engine = get_face_engine()
-            detections = await run_cpu_bound(engine.detect_faces, image_bgr)
-    else:
-        engine = get_face_engine()
-        detections = await run_cpu_bound(engine.detect_faces, image_bgr)
+    t_detect = time.monotonic()
+    detections, engine_name = await _detect_query_faces(image_bgr, settings=settings)
+    detect_ms = (time.monotonic() - t_detect) * 1000.0
+
     if not detections:
+        logger.info(
+            "face_search detect_ms=%.0f match_ms=0 total_ms=%.0f engine=%s faces=0 matches=0",
+            detect_ms,
+            (time.monotonic() - t_start) * 1000.0,
+            engine_name,
+        )
         return {"faces_detected": 0, "matches": [], "message": "No face detected in upload"}
 
     # Prefer largest face by bbox area
@@ -216,6 +328,7 @@ async def search_faces_by_image_bytes(
         reverse=True,
     )
     query = detections[0]
+    t_match = time.monotonic()
     dist = FaceEmbedding.embedding.cosine_distance(query.embedding).label("dist")
     identity_person_id = func.coalesce(Face.person_id, FaceCluster.person_id).label(
         "identity_person_id"
@@ -327,6 +440,17 @@ async def search_faces_by_image_bytes(
         if len(matches) >= limit:
             break
 
+    match_ms = (time.monotonic() - t_match) * 1000.0
+    total_ms = (time.monotonic() - t_start) * 1000.0
+    logger.info(
+        "face_search detect_ms=%.0f match_ms=%.0f total_ms=%.0f engine=%s faces=%s matches=%s",
+        detect_ms,
+        match_ms,
+        total_ms,
+        engine_name,
+        len(detections),
+        len(matches),
+    )
     return {
         "faces_detected": len(detections),
         "query_confidence": float(query.confidence),
@@ -345,16 +469,32 @@ async def search_faces_by_image_url(
     url = (image_url or "").strip()
     if not url.startswith(("http://", "https://")):
         raise ValueError("image_url must be an http(s) URL")
-    async with httpx.AsyncClient(timeout=45.0, follow_redirects=True, headers=_FETCH_HEADERS) as client:
-        resp = await client.get(url)
-        resp.raise_for_status()
-        content_type = (resp.headers.get("content-type") or "").lower()
-        if content_type and "image" not in content_type and "octet-stream" not in content_type:
-            # Some CDNs omit/mislabel; still try decode if body looks like an image
-            if len(resp.content) < 64:
-                raise ValueError(f"URL did not return an image ({content_type or 'unknown'})")
-        if len(resp.content) > 12 * 1024 * 1024:
-            raise ValueError("Image too large (max 12MB)")
-        return await search_faces_by_image_bytes(
-            session, resp.content, limit=limit, max_distance=max_distance
-        )
+
+    content = _portrait_cache_get(url)
+    if content is None:
+        try:
+            async with httpx.AsyncClient(
+                timeout=45.0, follow_redirects=True, headers=_FETCH_HEADERS
+            ) as client:
+                resp = await client.get(url)
+                resp.raise_for_status()
+                content_type = (resp.headers.get("content-type") or "").lower()
+                if content_type and "image" not in content_type and "octet-stream" not in content_type:
+                    # Some CDNs omit/mislabel; still try decode if body looks like an image
+                    if len(resp.content) < 64:
+                        raise ImageUrlFetchError("Couldn't load this person's photo")
+                if len(resp.content) > 12 * 1024 * 1024:
+                    raise ValueError("Image too large (max 12MB)")
+                content = resp.content
+        except ImageUrlFetchError:
+            raise
+        except ValueError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("portrait download failed url=%s: %s", url[:120], exc)
+            raise ImageUrlFetchError("Couldn't load this person's photo") from None
+        _portrait_cache_put(url, content)
+
+    return await search_faces_by_image_bytes(
+        session, content, limit=limit, max_distance=max_distance
+    )

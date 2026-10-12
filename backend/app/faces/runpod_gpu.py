@@ -318,23 +318,30 @@ async def _run_face_job(payload: dict[str, Any], settings: Settings) -> dict[str
         status_url = f"{_RUN}/{endpoint}/status/{job_id}"
         deadline = time.monotonic() + settings.runpod_face_timeout_seconds
         status = ""
-        while time.monotonic() < deadline:
-            status_resp = await client.get(status_url, headers=headers)
-            if status_resp.status_code >= 400:
-                raise RunPodFaceError(
-                    f"status HTTP {status_resp.status_code}: {status_resp.text[:300]}"
-                )
-            data = status_resp.json()
-            status = str(data.get("status") or "")
-            if status in {"COMPLETED", "completed"}:
-                output = data.get("output") or {}
-                if not isinstance(output, dict):
-                    raise RunPodFaceError("RunPod output was not an object")
-                return output
-            if status in {"FAILED", "failed", "CANCELLED", "cancelled", "TIMED_OUT", "timed_out"}:
-                raise RunPodFaceError(f"job {job_id} {status}: {data.get('error') or data}")
-            await asyncio.sleep(0.5)
-        raise RunPodFaceError(f"job {job_id} still {status} after timeout")
+        try:
+            while time.monotonic() < deadline:
+                status_resp = await client.get(status_url, headers=headers)
+                if status_resp.status_code >= 400:
+                    raise RunPodFaceError(
+                        f"status HTTP {status_resp.status_code}: {status_resp.text[:300]}"
+                    )
+                data = status_resp.json()
+                status = str(data.get("status") or "")
+                if status in {"COMPLETED", "completed"}:
+                    output = data.get("output") or {}
+                    if not isinstance(output, dict):
+                        raise RunPodFaceError("RunPod output was not an object")
+                    return output
+                if status in {"FAILED", "failed", "CANCELLED", "cancelled", "TIMED_OUT", "timed_out"}:
+                    raise RunPodFaceError(f"job {job_id} {status}: {data.get('error') or data}")
+                await asyncio.sleep(0.5)
+            raise RunPodFaceError(f"job {job_id} still {status} after timeout")
+        except asyncio.CancelledError:
+            try:
+                await client.post(f"{_RUN}/{endpoint}/cancel/{job_id}", headers=headers)
+            except Exception:
+                logger.debug("runpod cancel failed job_id=%s", job_id, exc_info=True)
+            raise
 
 
 async def detect_faces_runpod(

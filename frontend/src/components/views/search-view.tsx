@@ -17,6 +17,7 @@ import { ModalOverlay } from "@/components/modal";
 import { clearReverseFaceSearch } from "@/lib/reverse-face-session";
 import {
   cancelSearch,
+  getSearchSession,
   hydrateSearchCatalogs,
   hydrateSearchSettings,
   patchSearchSession,
@@ -113,8 +114,10 @@ export function SearchPage({
     previewFile,
     previewMoment,
     linkedinMap,
+    lastSearchMode,
   } = useSearchSession();
   const [visibleFileCount, setVisibleFileCount] = useState(SEARCH_RESULTS_PAGE_SIZE);
+  const [previewVideoError, setPreviewVideoError] = useState<string | null>(null);
   const loadMoreRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -122,15 +125,23 @@ export function SearchPage({
     hydrateSearchSettings();
   }, []);
 
+  useEffect(() => {
+    setPreviewVideoError(null);
+  }, [previewFile?.drive_file_id]);
+
   function search() {
     clearReverseFaceSearch();
     void runSearch();
   }
 
-  const files = (results?.files ?? []).filter(
-    (f) => f.score != null || !f.mime_type.startsWith("image/")
-  );
-  const moments = results?.moments ?? [];
+  const files = (results?.files ?? []).filter((f) => {
+    // Defense in depth: never show mismatched types when a mime filter is active.
+    if (mime === "image" && !f.mime_type.startsWith("image/")) return false;
+    if (mime === "video" && !f.mime_type.startsWith("video/")) return false;
+    if (mime === "pdf" && f.mime_type !== "application/pdf") return false;
+    return f.score != null || !f.mime_type.startsWith("image/");
+  });
+  const moments = mime === "pdf" || mime === "image" ? [] : results?.moments ?? [];
   const visibleFiles = files.slice(0, visibleFileCount);
 
   useEffect(() => {
@@ -179,11 +190,15 @@ export function SearchPage({
           <FilterDropdown
             icon={ImageIcon}
             title="File type"
-            value={mime === "video" ? "all" : mime}
-            onChange={(v) => patchSearchSession({ mime: v })}
+            value={mime}
+            onChange={(v) => {
+              patchSearchSession({ mime: v });
+              if (getSearchSession().q.trim()) void runSearch();
+            }}
             options={[
               { value: "all", label: "All types" },
               { value: "image", label: "Images" },
+              { value: "video", label: "Videos" },
               { value: "pdf", label: "PDFs" },
             ]}
           />
@@ -191,7 +206,10 @@ export function SearchPage({
             title="Person"
             value={person}
             disabled={persons.length === 0}
-            onChange={(v) => patchSearchSession({ person: v })}
+            onChange={(v) => {
+              patchSearchSession({ person: v });
+              if (getSearchSession().q.trim()) void runSearch();
+            }}
             options={[
               { value: "", label: "All people" },
               ...persons.map((p) => ({
@@ -210,7 +228,10 @@ export function SearchPage({
                 : "Folder"
             }
             value={folderPath}
-            onChange={(v) => patchSearchSession({ folderPath: v })}
+            onChange={(v) => {
+              patchSearchSession({ folderPath: v });
+              if (getSearchSession().q.trim()) void runSearch();
+            }}
             options={[
               { value: "", label: "All folders" },
               ...libraryFolders.map((f) => ({
@@ -237,7 +258,12 @@ export function SearchPage({
           )}
           <button
             type="button"
-            onClick={() => void persistSearchCaptions(!useCaptions)}
+            onClick={() => {
+              void (async () => {
+                await persistSearchCaptions(!useCaptions);
+                if (getSearchSession().q.trim()) void runSearch();
+              })();
+            }}
             title={useCaptions ? "Caption search ON" : "Caption search OFF"}
             className={`inline-flex h-9 items-center gap-1.5 rounded-full border px-3 text-xs font-medium transition-colors ${
               useCaptions
@@ -271,7 +297,7 @@ export function SearchPage({
         </p>
       )}
 
-      {loading && !hideSearchBar && (
+      {loading && (
         <p className="text-sm text-muted-foreground">
           <LoadingLabel size={16}>Searching…</LoadingLabel>
           {" "}
@@ -282,6 +308,15 @@ export function SearchPage({
           >
             Cancel
           </button>
+        </p>
+      )}
+
+      {results && lastSearchMode && (
+        <p className="text-xs text-muted-foreground">
+          Search mode for this query: Captions {lastSearchMode.captions ? "ON" : "OFF"}
+          {lastSearchMode.rerank != null
+            ? ` · Re-rank ${lastSearchMode.rerank ? "ON" : "OFF"}`
+            : ""}
         </p>
       )}
 
@@ -410,24 +445,44 @@ export function SearchPage({
         </section>
       )}
 
-      <ModalOverlay open={!!previewFile} onClose={() => patchSearchSession({ previewFile: null })}>
+      <ModalOverlay
+        open={!!previewFile}
+        onClose={() => {
+          setPreviewVideoError(null);
+          patchSearchSession({ previewFile: null });
+        }}
+      >
         {previewFile && (
           <div className="relative flex max-h-[min(88dvh,720px)] flex-col overflow-hidden rounded-lg bg-card shadow-2xl">
-            <div className="relative flex shrink-0 items-center justify-center bg-black">
+            <div className="relative flex shrink-0 flex-col items-center justify-center bg-black">
               <IconButton
                 icon={X}
                 label="Close"
-                onClick={() => patchSearchSession({ previewFile: null })}
+                onClick={() => {
+                  setPreviewVideoError(null);
+                  patchSearchSession({ previewFile: null });
+                }}
                 className="absolute right-3 top-3 z-10 bg-black/60 text-white hover:bg-black/80 hover:text-white"
               />
               {previewFile.mime_type.startsWith("video/") ? (
-                <video
-                  src={driveVideoStreamUrl(previewFile.drive_file_id)}
-                  controls
-                  playsInline
-                  preload="metadata"
-                  className="max-h-[min(48dvh,420px)] w-full object-contain"
-                />
+                <>
+                  <video
+                    key={previewFile.drive_file_id}
+                    src={driveVideoStreamUrl(previewFile.drive_file_id)}
+                    controls
+                    playsInline
+                    preload="metadata"
+                    className="max-h-[min(48dvh,420px)] w-full object-contain"
+                    onError={() =>
+                      setPreviewVideoError(
+                        "Video preview unavailable — try Download or Open in Drive."
+                      )
+                    }
+                  />
+                  {previewVideoError && (
+                    <p className="w-full px-4 py-3 text-xs text-destructive">{previewVideoError}</p>
+                  )}
+                </>
               ) : (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img
@@ -437,7 +492,7 @@ export function SearchPage({
                 />
               )}
             </div>
-            <div className="min-h-0 flex-1 overflow-y-auto border-t border-border px-4 py-3">
+            <div className="dfi-scroll min-h-0 flex-1 overflow-y-auto border-t border-border px-4 py-3">
               <p className="break-all text-sm font-medium text-foreground">{previewFile.name}</p>
               {previewFile.caption && (
                 <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{previewFile.caption}</p>
@@ -614,7 +669,7 @@ function MomentPreviewPanel({ moment, onClose }: { moment: SearchMoment; onClose
           />
         </div>
       )}
-      <div className="min-h-0 flex-1 overflow-y-auto border-t border-border px-4 py-3">
+      <div className="dfi-scroll min-h-0 flex-1 overflow-y-auto border-t border-border px-4 py-3">
         <p className="break-all text-sm font-medium text-foreground">{moment.name}</p>
         <p className="mt-1 truncate text-xs text-muted-foreground" title={moment.path}>
           {moment.path}

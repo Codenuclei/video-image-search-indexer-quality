@@ -10,6 +10,7 @@ Nothing here mutates the existing face pipeline, clusters, or persons.
 
 from __future__ import annotations
 
+import logging
 import os
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
@@ -19,6 +20,8 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.reid.face_search import (
+    FaceSearchBusyError,
+    ImageUrlFetchError,
     _appears_in_for_face,
     _file_count_for_face,
     search_faces_by_image_bytes,
@@ -53,6 +56,8 @@ from app.reid.google_vision import (
     official_image_search_face,
     official_image_search_status,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/reid", tags=["reid"])
 
@@ -244,6 +249,10 @@ async def search_uploaded_face(
         raise HTTPException(status_code=400, detail="Image too large (max 12MB)")
     try:
         return await search_faces_by_image_bytes(session, raw, limit=max(1, min(limit, 50)))
+    except FaceSearchBusyError as exc:
+        raise HTTPException(
+            status_code=503, detail="Face search is busy, please try again."
+        ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -331,10 +340,21 @@ async def search_face_by_url(
     """Reverse-match a public portrait URL (used by Executive Leaders mini-cards)."""
     try:
         return await search_faces_by_image_url(session, body.image_url, limit=body.limit)
+    except FaceSearchBusyError as exc:
+        raise HTTPException(
+            status_code=503, detail="Face search is busy, please try again."
+        ) from exc
+    except ImageUrlFetchError:
+        raise HTTPException(
+            status_code=502, detail="Couldn't load this person's photo"
+        ) from None
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Image fetch failed: {exc}") from exc
+    except Exception:  # noqa: BLE001
+        logger.exception("search-by-url face search failed")
+        raise HTTPException(
+            status_code=502, detail="Face search failed. Please try again."
+        ) from None
 
 
 class FaceCrawlRequest(BaseModel):

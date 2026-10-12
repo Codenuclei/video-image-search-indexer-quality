@@ -16,7 +16,7 @@ function roleButtonClass(selected: boolean, value: PersonRole, card: boolean) {
   return cn(
     "rounded-md font-medium transition-all duration-150 disabled:pointer-events-none disabled:opacity-50",
     card
-      ? "inline-flex min-w-0 items-center justify-center gap-1 px-1 py-1.5 text-[10px] leading-none whitespace-nowrap"
+      ? "inline-flex items-center justify-center gap-0.5 px-1 py-1.5 text-[10px] leading-none whitespace-nowrap sm:gap-1 sm:px-1.5 sm:text-[11px]"
       : "inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap px-2.5 py-1.5 text-[11px]",
     selected
       ? value === "student"

@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import asyncio
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.db.models import Face, Media, Person
 from app.db.session import get_db
 from app.matching.service import create_manual_face_box, tag_face_manual
@@ -12,6 +16,12 @@ from app.runtime_settings import get_runtime_settings
 from app.schemas import FaceOut, ManualFaceBoxRequest, PersonOut, TagFaceRequest
 
 router = APIRouter(prefix="/faces", tags=["faces"])
+
+# Limit concurrent Drive/frame regenerations so a face-grid burst cannot starve the pool.
+_THUMB_REGEN_SEM = asyncio.Semaphore(4)
+_THUMB_CACHE_HEADERS = {"Cache-Control": "public, max-age=86400"}
+# Sibling fallbacks are stand-ins; keep them short-lived so the real crop wins once regenerated.
+_THUMB_FALLBACK_CACHE_HEADERS = {"Cache-Control": "public, max-age=300"}
 
 
 def _face_out(face: Face, person_name: str | None = None) -> dict:
@@ -140,11 +150,31 @@ async def tag_face_endpoint(
 
 @router.get("/{face_id}/thumbnail")
 async def get_face_thumbnail(face_id: int, session: AsyncSession = Depends(get_db)) -> FileResponse:
-    from app.reid.face_thumbs import ensure_face_thumbnail_jpeg
+    from app.reid.face_thumbs import (
+        ensure_face_thumbnail_jpeg,
+        face_thumbnail_path,
+        thumb_exists_on_disk,
+    )
+
+    face = await session.get(Face, face_id)
+    if face is None:
+        raise HTTPException(status_code=404, detail="Thumbnail not found")
+
+    settings = get_settings()
+    if thumb_exists_on_disk(face, settings):
+        path = Path(face.thumbnail_path) if face.thumbnail_path else face_thumbnail_path(face.id, settings)
+        return FileResponse(
+            str(path), media_type="image/jpeg", headers=_THUMB_CACHE_HEADERS
+        )
 
     try:
-        path, _face, _source = await ensure_face_thumbnail_jpeg(session, face_id)
-        await session.commit()
+        async with _THUMB_REGEN_SEM:
+            path, _face, source = await ensure_face_thumbnail_jpeg(session, face_id)
+            await session.commit()
     except ValueError:
         raise HTTPException(status_code=404, detail="Thumbnail not found") from None
-    return FileResponse(str(path), media_type="image/jpeg")
+    return FileResponse(
+        str(path),
+        media_type="image/jpeg",
+        headers=_THUMB_FALLBACK_CACHE_HEADERS if source == "sibling" else _THUMB_CACHE_HEADERS,
+    )

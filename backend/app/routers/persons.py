@@ -495,6 +495,7 @@ async def get_person_media(person_id: int, session: AsyncSession = Depends(get_d
             DriveFile.path,
             Media.type,
             func.min(Face.frame_timestamp),
+            Media.duration_seconds,
         )
         .join(Face, Face.media_id == Media.id)
         .join(DriveFile, DriveFile.id == Media.drive_file_id)
@@ -506,7 +507,14 @@ async def get_person_media(person_id: int, session: AsyncSession = Depends(get_d
                 ),
             )
         )
-        .group_by(Media.id, DriveFile.id, DriveFile.name, DriveFile.path, Media.type)
+        .group_by(
+            Media.id,
+            DriveFile.id,
+            DriveFile.name,
+            DriveFile.path,
+            Media.type,
+            Media.duration_seconds,
+        )
     )
     rows = (await session.execute(stmt)).all()
     return [
@@ -517,6 +525,7 @@ async def get_person_media(person_id: int, session: AsyncSession = Depends(get_d
             path=path,
             media_type=media_type.value,
             frame_timestamp=frame_timestamp,
+            duration_seconds=duration_seconds,
         )
-        for media_id, drive_id, name, path, media_type, frame_timestamp in rows
+        for media_id, drive_id, name, path, media_type, frame_timestamp, duration_seconds in rows
     ]

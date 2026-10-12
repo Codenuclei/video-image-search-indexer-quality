@@ -4,13 +4,14 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { Images, Pencil } from "lucide-react";
 import { apiClient, formatApiError, type Person, type PersonRole } from "@/lib/api";
-import { Button, Card, ConfirmDialog, FaceThumb, Input, LoadingLabel } from "@/components/ui";
+import { Button, Card, ConfirmDialog, FaceThumb, Input, LoadingLabel, ServiceErrorCard } from "@/components/ui";
 import { RoleSelector } from "@/components/role-selector";
 import { AnimatedTrash } from "@/components/animated-trash";
 import { cn } from "@/lib/utils";
 import { useCachedResource } from "@/lib/use-cached-resource";
 import { writeCache } from "@/lib/data-cache";
 import { personsRevision } from "@/lib/fingerprints";
+import { toast } from "sonner";
 
 function PersonCard({
   person,
@@ -86,12 +87,14 @@ function PersonCard({
   async function remove() {
     setDeleting(true);
     setError(null);
+    setConfirmDelete(false);
     // Let the dustbin + card exit animation play before the card unmounts.
     setVanishing(true);
     await new Promise((resolve) => setTimeout(resolve, 420));
     onDeleted(person.id);
     try {
       await apiClient.deletePerson(person.id);
+      toast.success(`Deleted "${person.name}"`);
     } catch (e) {
       onDeleteFailed(person);
       setVanishing(false);
@@ -111,11 +114,32 @@ function PersonCard({
   return (
     <Card
       className={cn(
-        "group relative flex min-w-0 flex-col gap-3 overflow-hidden p-3 transition-all duration-200 sm:gap-4 sm:p-4",
+        "group relative flex min-w-0 flex-col gap-3 overflow-hidden p-3 pt-10 transition-all duration-200 sm:gap-4 sm:p-4 sm:pt-10",
         "hover:-translate-y-0.5 hover:border-border hover:shadow-[0_12px_40px_-18px_rgba(0,0,0,0.35)]",
         vanishing && "card-vanish"
       )}
     >
+      {!editing && (
+        <div className="absolute right-2 top-2 z-10 flex items-center gap-0.5 rounded-lg border border-transparent bg-card/90 p-0.5 backdrop-blur-sm transition-colors group-hover:border-border/60 group-hover:bg-muted/70">
+          <button
+            type="button"
+            onClick={() => setEditing(true)}
+            title="Edit name"
+            className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-background hover:text-foreground hover:shadow-sm"
+          >
+            <Pencil size={13} />
+          </button>
+          <button
+            type="button"
+            onClick={() => setConfirmDelete(true)}
+            disabled={deleting}
+            title="Delete name"
+            className="group/trash rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
+          >
+            <AnimatedTrash size={13} animating={deleting} />
+          </button>
+        </div>
+      )}
       {editing ? (
         <div className="space-y-3">
           <div className="flex items-start gap-3">
@@ -153,7 +177,7 @@ function PersonCard({
         </div>
       ) : (
         <>
-          <div className="flex items-start gap-3">
+          <div className="flex items-start gap-3 pr-1">
             <Link href={detailHref} className="shrink-0">
               <FaceThumb
                 faceId={person.representative_face_id}
@@ -161,47 +185,24 @@ function PersonCard({
               />
             </Link>
             <div className="min-w-0 flex-1">
-              <div className="flex flex-wrap items-start justify-between gap-x-2 gap-y-1">
-                <div className="min-w-0 flex-1 basis-[calc(100%-3rem)] sm:basis-auto">
-                  <Link
-                    href={detailHref}
-                    className="block break-words text-sm font-semibold leading-snug tracking-tight text-foreground hover:underline sm:text-[15px]"
-                  >
-                    {person.name}
-                  </Link>
-                  <p className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-muted-foreground">
-                    <Images size={12} aria-hidden className="shrink-0 opacity-70" />
-                    <span>
-                      {person.file_count ?? person.occurrence_count} file
-                      {(person.file_count ?? person.occurrence_count) === 1 ? "" : "s"}
-                    </span>
-                    {suggestionCount > 0 && (
-                      <span className="rounded-full bg-primary/10 px-1.5 py-0.5 font-semibold text-primary">
-                        {suggestionCount} suggested
-                      </span>
-                    )}
-                  </p>
-                </div>
-                <div className="flex shrink-0 items-center gap-0.5 rounded-lg border border-transparent bg-transparent p-0.5 transition-colors group-hover:border-border/60 group-hover:bg-muted/40">
-                  <button
-                    type="button"
-                    onClick={() => setEditing(true)}
-                    title="Edit name"
-                    className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-background hover:text-foreground hover:shadow-sm"
-                  >
-                    <Pencil size={13} />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setConfirmDelete(true)}
-                    disabled={deleting}
-                    title="Delete name"
-                    className="group/trash rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
-                  >
-                    <AnimatedTrash size={13} animating={deleting} />
-                  </button>
-                </div>
-              </div>
+              <Link
+                href={detailHref}
+                className="block break-words text-sm font-semibold leading-snug tracking-tight text-foreground hover:underline sm:text-[15px]"
+              >
+                {person.name}
+              </Link>
+              <p className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-muted-foreground">
+                <Images size={12} aria-hidden className="shrink-0 opacity-70" />
+                <span>
+                  {person.file_count ?? person.occurrence_count} file
+                  {(person.file_count ?? person.occurrence_count) === 1 ? "" : "s"}
+                </span>
+                {suggestionCount > 0 && (
+                  <span className="rounded-full bg-primary/10 px-1.5 py-0.5 font-semibold text-primary">
+                    {suggestionCount} suggested
+                  </span>
+                )}
+              </p>
             </div>
           </div>
 
@@ -221,13 +222,12 @@ function PersonCard({
       <ConfirmDialog
         open={confirmDelete}
         title={`Delete "${person.name}"?`}
-        message="Faces will be unlinked and may return to the review queue."
+        message="Are you sure you want to delete this name? Faces will be unlinked and may return to the review queue."
         confirmLabel={deleting ? <LoadingLabel>Deleting…</LoadingLabel> : "Delete"}
         onConfirm={() => {
-          setConfirmDelete(false);
-          remove();
+          void remove();
         }}
-        onCancel={() => setConfirmDelete(false)}
+        onCancel={() => !deleting && setConfirmDelete(false)}
       />
     </Card>
   );
@@ -285,6 +285,10 @@ export function PeoplePage({
         <p className="text-sm text-muted-foreground">
           <LoadingLabel size={16}>Loading people…</LoadingLabel>
         </p>
+      )}
+
+      {error && !loading && list.length === 0 && (
+        <ServiceErrorCard message={error} onRetry={() => void refresh(true)} />
       )}
 
       <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,17.5rem),1fr))] gap-4">

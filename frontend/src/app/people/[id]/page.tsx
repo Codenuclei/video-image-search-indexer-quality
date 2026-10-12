@@ -3,19 +3,24 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, usePathname, useRouter } from "next/navigation";
 import { ArrowLeft, Check, ChevronDown, Pencil, X } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { cn, formatMediaClock } from "@/lib/utils";
 import {
   apiClient,
+  driveFileDownloadUrl,
+  driveFileThumbnailUrl,
   driveGoogleViewUrl,
+  driveVideoStreamUrl,
   formatApiError,
   type Person,
   type PersonClusterSuggestion,
   type PersonRole,
 } from "@/lib/api";
-import { Button, Card, ConfirmDialog, DriveMediaThumb, FaceThumb, Input, LoadingLabel } from "@/components/ui";
+import { Button, Card, ConfirmDialog, DownloadButton, DriveMediaThumb, FaceThumb, Input, LoadingLabel } from "@/components/ui";
 import { RoleSelector } from "@/components/role-selector";
 import { AnimatedTrash } from "@/components/animated-trash";
+import { ModalOverlay } from "@/components/modal";
 import { useRegisterTestShellChrome } from "@/lib/test-shell-chrome";
+import { toast } from "sonner";
 
 type ClusterFile = {
   media_id: number;
@@ -24,6 +29,7 @@ type ClusterFile = {
   path: string;
   media_type: string;
   frame_timestamp?: number | null;
+  duration_seconds?: number | null;
 };
 
 type PersonMedia = ClusterFile;
@@ -33,14 +39,18 @@ type ClusterPreview = {
   faceIds: number[];
 };
 
-function formatTimestamp(sec: number): string {
-  const m = Math.floor(sec / 60);
-  const s = Math.floor(sec % 60);
-  return `${m}:${s.toString().padStart(2, "0")}`;
-}
+const APPEARS_IN_PAGE_SIZE = 48;
 
 function isVideoFile(file: ClusterFile): boolean {
   return (file.media_type || "").toLowerCase() === "video";
+}
+
+/** Prefer real duration; never present a face frame timestamp as the video length. */
+function videoBadgeLabel(file: ClusterFile): string {
+  if (file.duration_seconds != null && Number.isFinite(file.duration_seconds) && file.duration_seconds > 0) {
+    return formatMediaClock(file.duration_seconds);
+  }
+  return "Video";
 }
 
 const REC_THRESHOLD_OPTIONS = [0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8];
@@ -52,15 +62,20 @@ function matchSummary(suggestion: PersonClusterSuggestion): string {
   return `${percent}% match · ${faces} · ${files}`;
 }
 
-function ClusterFileTile({ file }: { file: ClusterFile }) {
+function ClusterFileTile({
+  file,
+  onOpen,
+}: {
+  file: ClusterFile;
+  onOpen: (file: ClusterFile) => void;
+}) {
   const video = isVideoFile(file);
   return (
-    <a
-      href={driveGoogleViewUrl(file.drive_file_id)}
-      target="_blank"
-      rel="noopener noreferrer"
+    <button
+      type="button"
+      onClick={() => onOpen(file)}
       title={file.name}
-      className="group block min-w-0 overflow-hidden rounded-lg border border-border bg-muted/40 transition-colors hover:border-ring"
+      className="group block min-w-0 w-full overflow-hidden rounded-lg border border-border bg-muted/40 text-left transition-colors hover:border-ring"
     >
       <span className="relative block aspect-square">
         <DriveMediaThumb
@@ -71,34 +86,44 @@ function ClusterFileTile({ file }: { file: ClusterFile }) {
         />
         {video && (
           <span className="absolute bottom-1 left-1 rounded bg-black/70 px-1 py-px text-[9px] font-semibold uppercase text-white">
-            {file.frame_timestamp != null ? formatTimestamp(file.frame_timestamp) : "Video"}
+            {videoBadgeLabel(file)}
           </span>
         )}
       </span>
       <span className="block truncate px-1.5 py-1 text-[10px] text-muted-foreground group-hover:text-foreground">
         {file.name}
       </span>
-    </a>
+    </button>
   );
 }
+
+const CLUSTER_FACE_PREVIEW_LIMIT = 12;
 
 function ClusterGallery({
   files,
   faceIds,
   loading,
   expectedFileCount,
+  onOpenFile,
 }: {
   files: ClusterFile[];
   faceIds: number[];
   loading: boolean;
   expectedFileCount: number;
+  onOpenFile: (file: ClusterFile) => void;
 }) {
+  const [showAllFaces, setShowAllFaces] = useState(false);
+  const [previewFaceId, setPreviewFaceId] = useState<number | null>(null);
   const photos = files.filter((file) => !isVideoFile(file));
   const videos = files.filter(isVideoFile);
   const sections = [
     { label: "Photos", items: photos },
     { label: "Videos", items: videos },
   ].filter((section) => section.items.length > 0);
+  const visibleFaceIds =
+    showAllFaces || faceIds.length <= CLUSTER_FACE_PREVIEW_LIMIT
+      ? faceIds
+      : faceIds.slice(0, CLUSTER_FACE_PREVIEW_LIMIT);
 
   if (loading && files.length === 0 && faceIds.length === 0) {
     return (
@@ -116,12 +141,37 @@ function ClusterGallery({
             Faces in this cluster · {faceIds.length}
           </p>
           <ul className="flex flex-wrap gap-1.5">
-            {faceIds.map((faceId) => (
+            {visibleFaceIds.map((faceId) => (
               <li key={faceId}>
-                <FaceThumb faceId={faceId} className="h-14 w-14 rounded-lg" />
+                <div
+                  role="button"
+                  tabIndex={0}
+                  title="Preview face"
+                  onClick={() => setPreviewFaceId(faceId)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      setPreviewFaceId(faceId);
+                    }
+                  }}
+                  className="cursor-pointer rounded-lg transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  <FaceThumb faceId={faceId} className="h-14 w-14 rounded-lg" />
+                </div>
               </li>
             ))}
           </ul>
+          {faceIds.length > CLUSTER_FACE_PREVIEW_LIMIT && (
+            <button
+              type="button"
+              className="mt-2 text-[11px] font-medium text-sky-700 underline-offset-2 hover:underline dark:text-sky-300"
+              onClick={() => setShowAllFaces((v) => !v)}
+            >
+              {showAllFaces
+                ? "Show fewer faces"
+                : `Show all ${faceIds.length} faces`}
+            </button>
+          )}
         </div>
       )}
       {sections.map((section) => (
@@ -132,7 +182,7 @@ function ClusterGallery({
           <ul className="grid grid-cols-[repeat(auto-fill,minmax(5.5rem,1fr))] gap-2">
             {section.items.map((file) => (
               <li key={file.media_id} className="min-w-0">
-                <ClusterFileTile file={file} />
+                <ClusterFileTile file={file} onOpen={onOpenFile} />
               </li>
             ))}
           </ul>
@@ -146,6 +196,14 @@ function ClusterGallery({
           Showing {files.length} of {expectedFileCount} files
         </p>
       )}
+      <ModalOverlay open={previewFaceId != null} onClose={() => setPreviewFaceId(null)}>
+        <div className="mx-auto flex max-w-sm flex-col items-center gap-3 rounded-xl bg-card p-4 shadow-2xl">
+          <FaceThumb faceId={previewFaceId} className="h-48 w-48 rounded-xl" />
+          <Button type="button" variant="secondary" onClick={() => setPreviewFaceId(null)}>
+            Close
+          </Button>
+        </div>
+      </ModalOverlay>
     </div>
   );
 }
@@ -181,6 +239,9 @@ function SuggestionPicker({
 
   if (!selected) return null;
 
+  const selectedFaceId = selected.representative_face_id;
+  const selectedSample = selected.sample_files[0];
+
   return (
     <div ref={rootRef} className="relative w-full">
       <button
@@ -193,10 +254,20 @@ function SuggestionPicker({
           open && "border-ring ring-2 ring-ring/20"
         )}
       >
-        <FaceThumb
-          faceId={selected.representative_face_id}
-          className="h-7 w-7 shrink-0 rounded-full"
-        />
+        {selectedFaceId ? (
+          <FaceThumb faceId={selectedFaceId} className="h-7 w-7 shrink-0 rounded-full" />
+        ) : selectedSample ? (
+          <span className="h-7 w-7 shrink-0 overflow-hidden rounded-full border border-border bg-muted/40">
+            <DriveMediaThumb
+              driveFileId={selectedSample.drive_file_id}
+              name={selectedSample.name}
+              isVideo={isVideoFile(selectedSample)}
+              frameTimestamp={selectedSample.frame_timestamp}
+            />
+          </span>
+        ) : (
+          <FaceThumb faceId={null} className="h-7 w-7 shrink-0 rounded-full" />
+        )}
         <span className="min-w-0 flex-1 truncate text-xs text-foreground">
           {matchSummary(selected)}
         </span>
@@ -244,10 +315,23 @@ function SuggestionPicker({
                         : "text-foreground hover:bg-accent"
                     )}
                   >
-                    <FaceThumb
-                      faceId={item.representative_face_id}
-                      className="h-8 w-8 shrink-0 rounded-full"
-                    />
+                    {item.representative_face_id ? (
+                      <FaceThumb
+                        faceId={item.representative_face_id}
+                        className="h-8 w-8 shrink-0 rounded-full"
+                      />
+                    ) : item.sample_files[0] ? (
+                      <span className="h-8 w-8 shrink-0 overflow-hidden rounded-full border border-border bg-muted/40">
+                        <DriveMediaThumb
+                          driveFileId={item.sample_files[0].drive_file_id}
+                          name={item.sample_files[0].name}
+                          isVideo={isVideoFile(item.sample_files[0])}
+                          frameTimestamp={item.sample_files[0].frame_timestamp}
+                        />
+                      </span>
+                    ) : (
+                      <FaceThumb faceId={null} className="h-8 w-8 shrink-0 rounded-full" />
+                    )}
                     <span className="min-w-0 flex-1">
                       <span className="block truncate">
                         {percent}% match
@@ -310,6 +394,9 @@ export default function PersonDetailPage() {
   const [selectedClusterId, setSelectedClusterId] = useState<number | null>(null);
   const [clusterPreviews, setClusterPreviews] = useState<Record<number, ClusterPreview>>({});
   const [previewLoadingId, setPreviewLoadingId] = useState<number | null>(null);
+  const [previewMedia, setPreviewMedia] = useState<ClusterFile | null>(null);
+  const [previewVideoError, setPreviewVideoError] = useState<string | null>(null);
+  const [appearsInVisible, setAppearsInVisible] = useState(APPEARS_IN_PAGE_SIZE);
   const savingRef = useRef(false);
 
   useEffect(() => {
@@ -318,7 +405,10 @@ export default function PersonDetailPage() {
       setPerson(p);
       setName(p.name);
     });
-    apiClient.personMedia(id).then(setMedia);
+    apiClient.personMedia(id).then((items) => {
+      setMedia(items);
+      setAppearsInVisible(APPEARS_IN_PAGE_SIZE);
+    });
   }, [id]);
 
   useEffect(() => {
@@ -424,9 +514,11 @@ export default function PersonDetailPage() {
     if (!person) return;
     setDeleting(true);
     setError(null);
+    const deletedName = person.name;
     router.push(peopleListHref);
     try {
       await apiClient.deletePerson(person.id);
+      toast.success(`Deleted "${deletedName}"`);
     } catch (e) {
       setError(formatApiError(e, "Delete failed"));
       setDeleting(false);
@@ -603,17 +695,17 @@ export default function PersonDetailPage() {
               </div>
             </div>
           ) : inTestShell ? (
-            <div className="w-fit max-w-full space-y-1.5">
+            <div className="w-fit max-w-full space-y-1.5 overflow-visible">
               <p className="text-[11px] text-muted-foreground">Role tag</p>
               <RoleSelector role={person.role ?? null} disabled={roleSaving} onChange={saveRole} />
               {error && <p className="text-sm text-destructive">{error}</p>}
             </div>
           ) : (
             <div className="flex min-w-0 items-start gap-2">
-              <div className="min-w-0 flex-1">
+              <div className="min-w-0 flex-1 overflow-visible">
                 <h2 className="truncate text-xl font-semibold sm:text-2xl">{person.name}</h2>
                 <p className="text-sm text-muted-foreground">{mediaSummary}</p>
-                <div className="mt-3 w-fit max-w-full space-y-1.5">
+                <div className="mt-3 w-fit max-w-full space-y-1.5 overflow-visible">
                   <p className="text-[11px] text-muted-foreground">Role tag</p>
                   <RoleSelector role={person.role ?? null} disabled={roleSaving} onChange={saveRole} />
                 </div>
@@ -695,6 +787,7 @@ export default function PersonDetailPage() {
             {selectedSuggestion && (
               <div className="space-y-4">
                 <ClusterGallery
+                  key={selectedSuggestion.cluster_id}
                   files={
                     clusterPreviews[selectedSuggestion.cluster_id]?.files ??
                     selectedSuggestion.sample_files
@@ -707,6 +800,10 @@ export default function PersonDetailPage() {
                   }
                   loading={previewLoadingId === selectedSuggestion.cluster_id}
                   expectedFileCount={selectedSuggestion.file_count}
+                  onOpenFile={(file) => {
+                    setPreviewVideoError(null);
+                    setPreviewMedia(file);
+                  }}
                 />
                 <div
                   role="group"
@@ -735,23 +832,29 @@ export default function PersonDetailPage() {
                 </div>
               </div>
             )}
-          </div>
-        )}
-        {(suggestionError || suggestions.length < suggestionTotal) && (
-          <div className="flex items-center justify-between gap-3 border-t border-border px-4 py-3">
-            {suggestionError ? (
-              <p className="text-sm text-destructive">{suggestionError}</p>
-            ) : (
-              <span />
-            )}
-            {suggestions.length < suggestionTotal && (
-              <Button
-                variant="secondary"
-                onClick={loadMoreSuggestions}
-                disabled={suggestionsLoadingMore}
-              >
-                {suggestionsLoadingMore ? <LoadingLabel>Loading…</LoadingLabel> : "Load more"}
-              </Button>
+            {(suggestionError || suggestions.length < suggestionTotal) && (
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border/70 bg-muted/30 px-3 py-2.5">
+                {suggestionError ? (
+                  <p className="text-sm text-destructive">{suggestionError}</p>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    Showing {suggestions.length} of {suggestionTotal} potential matches
+                  </p>
+                )}
+                {suggestions.length < suggestionTotal && (
+                  <Button
+                    variant="secondary"
+                    onClick={loadMoreSuggestions}
+                    disabled={suggestionsLoadingMore}
+                  >
+                    {suggestionsLoadingMore ? (
+                      <LoadingLabel>Loading…</LoadingLabel>
+                    ) : (
+                      "Load more matches"
+                    )}
+                  </Button>
+                )}
+              </div>
             )}
           </div>
         )}
@@ -769,18 +872,20 @@ export default function PersonDetailPage() {
         {media.length === 0 ? (
           <p className="px-4 py-6 text-sm text-muted-foreground">No media linked yet.</p>
         ) : (
-          <div className="scrollbar-hidden min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-4 py-3">
+          <div className="dfi-scroll min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-4 py-3">
             <ul className="grid grid-cols-[repeat(auto-fill,minmax(4.5rem,1fr))] gap-2">
-              {media.map((m) => {
+              {media.slice(0, appearsInVisible).map((m) => {
                 const isVideo = (m.media_type || "").toLowerCase() === "video";
                 return (
                   <li key={m.media_id} className="min-w-0">
-                    <a
-                      href={driveGoogleViewUrl(m.drive_file_id)}
-                      target="_blank"
-                      rel="noopener noreferrer"
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPreviewVideoError(null);
+                        setPreviewMedia(m);
+                      }}
                       title={m.name}
-                      className="relative block aspect-square overflow-hidden rounded-md border border-border bg-muted/40 transition-opacity hover:opacity-90"
+                      className="relative block aspect-square w-full overflow-hidden rounded-md border border-border bg-muted/40 transition-opacity hover:opacity-90"
                     >
                       {isVideo ? (
                         <>
@@ -791,17 +896,29 @@ export default function PersonDetailPage() {
                             frameTimestamp={m.frame_timestamp}
                           />
                           <span className="absolute bottom-0.5 left-0.5 rounded bg-black/70 px-1 py-px text-[8px] font-semibold uppercase text-white">
-                            {m.frame_timestamp != null ? formatTimestamp(m.frame_timestamp) : "Video"}
+                            {videoBadgeLabel(m)}
                           </span>
                         </>
                       ) : (
                         <DriveMediaThumb driveFileId={m.drive_file_id} name={m.name} />
                       )}
-                    </a>
+                    </button>
                   </li>
                 );
               })}
             </ul>
+            {appearsInVisible < media.length && (
+              <div className="mt-3 flex justify-center">
+                <Button
+                  variant="secondary"
+                  onClick={() =>
+                    setAppearsInVisible((n) => Math.min(n + APPEARS_IN_PAGE_SIZE, media.length))
+                  }
+                >
+                  Load more files ({Math.min(appearsInVisible, media.length)} of {media.length})
+                </Button>
+              </div>
+            )}
           </div>
         )}
       </Card>
@@ -809,14 +926,86 @@ export default function PersonDetailPage() {
       <ConfirmDialog
         open={confirmDelete}
         title={`Delete "${person.name}"?`}
-        message="Faces will be unlinked and may return to the review queue."
+        message="Are you sure you want to delete this name? Faces will be unlinked and may return to the review queue."
         confirmLabel={deleting ? <LoadingLabel>Deleting…</LoadingLabel> : "Delete"}
         onConfirm={() => {
-          setConfirmDelete(false);
-          deleteName();
+          void deleteName();
         }}
-        onCancel={() => setConfirmDelete(false)}
+        onCancel={() => !deleting && setConfirmDelete(false)}
       />
+
+      <ModalOverlay
+        open={!!previewMedia}
+        onClose={() => {
+          setPreviewMedia(null);
+          setPreviewVideoError(null);
+        }}
+      >
+        {previewMedia && (
+          <div className="mx-auto w-full max-w-3xl space-y-3 rounded-xl border border-border bg-card p-4 shadow-xl">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="truncate text-sm font-medium">{previewMedia.name}</p>
+                <p className="truncate text-xs text-muted-foreground">{previewMedia.path}</p>
+              </div>
+              <Button
+                variant="secondary"
+                onClick={() => {
+                  setPreviewMedia(null);
+                  setPreviewVideoError(null);
+                }}
+              >
+                Close
+              </Button>
+            </div>
+            {isVideoFile(previewMedia) ? (
+              <div className="overflow-hidden rounded-lg bg-black">
+                <video
+                  key={previewMedia.drive_file_id}
+                  src={
+                    previewMedia.frame_timestamp != null
+                      ? `${driveVideoStreamUrl(previewMedia.drive_file_id)}#t=${Math.floor(
+                          previewMedia.frame_timestamp
+                        )}`
+                      : driveVideoStreamUrl(previewMedia.drive_file_id)
+                  }
+                  controls
+                  playsInline
+                  autoPlay
+                  className="max-h-[70vh] w-full"
+                  onError={() =>
+                    setPreviewVideoError("Video preview unavailable — try Download or Open in Drive.")
+                  }
+                />
+                {previewVideoError && (
+                  <p className="px-3 py-2 text-xs text-destructive">{previewVideoError}</p>
+                )}
+              </div>
+            ) : (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={driveFileThumbnailUrl(previewMedia.drive_file_id)}
+                alt={previewMedia.name}
+                className="max-h-[70vh] w-full rounded-lg object-contain"
+              />
+            )}
+            <div className="flex flex-wrap gap-2">
+              <DownloadButton
+                url={driveFileDownloadUrl(previewMedia.drive_file_id)}
+                filename={previewMedia.name}
+              />
+              <a
+                href={driveGoogleViewUrl(previewMedia.drive_file_id)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex h-9 items-center rounded-md border border-border px-3 text-sm hover:bg-muted"
+              >
+                Open in Drive
+              </a>
+            </div>
+          </div>
+        )}
+      </ModalOverlay>
     </div>
   );
 }

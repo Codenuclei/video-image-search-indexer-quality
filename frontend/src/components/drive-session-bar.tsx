@@ -45,7 +45,7 @@ export function DriveSessionBar({ compact = false }: { compact?: boolean }) {
       const { accessToken, apiKey, appId } = await apiClient.driveToken();
       if (!apiKey) {
         toastApiError(
-          "GOOGLE_API_KEY is missing on the backend. Set a Browser API key (Drive + Picker APIs) in backend/.env and restart."
+          "GOOGLE_API_KEY is missing on the backend. Create a Browser key with Drive API + Google Picker API enabled, restrict HTTP referrers to this site’s origin, set GOOGLE_API_KEY in backend/.env, then restart."
         );
         return;
       }
@@ -98,8 +98,14 @@ export function DriveSessionBar({ compact = false }: { compact?: boolean }) {
 
       if (appId) builder.setAppId(appId);
       builder.build().setVisible(true);
-    } catch {
-      /* driveToken already toasted */
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e ?? "");
+      if (/developer key|api[- ]?key|invalid/i.test(msg)) {
+        toastApiError(
+          "Google Picker rejected the API developer key. Use a Browser key (not a server key), enable Drive API + Picker API, and allow this page’s HTTPS origin in the key’s HTTP referrer restrictions."
+        );
+      }
+      /* driveToken already toasted for auth failures */
     } finally {
       setPickerBusy(false);
     }

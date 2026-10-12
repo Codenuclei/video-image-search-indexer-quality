@@ -69,7 +69,11 @@ export function ReviewPage({ embedded = false }: { embedded?: boolean } = {}) {
       if (initial && !paintedCache) setInitialLoading(true);
       else setRefreshing(true);
       try {
-        const response = await apiClient.clusters({ limit: CLUSTER_PAGE_SIZE, offset });
+        const response = await apiClient.clusters({
+          limit: CLUSTER_PAGE_SIZE,
+          offset,
+          timeoutMs: 45_000,
+        });
         setClusters(response.items);
         setClusterTotal(response.total);
         if (offset === 0) {
@@ -82,7 +86,7 @@ export function ReviewPage({ embedded = false }: { embedded?: boolean } = {}) {
         }
         setError(null);
       } catch (e) {
-        setError(formatApiError(e, "Failed to load"));
+        setError(formatApiError(e, "Failed to load review queue"));
       } finally {
         if (initial) setInitialLoading(false);
         setRefreshing(false);
@@ -207,6 +211,19 @@ export function ReviewPage({ embedded = false }: { embedded?: boolean } = {}) {
         <p className="text-muted-foreground">
           <LoadingLabel size={16}>Loading review queue…</LoadingLabel>
         </p>
+      )}
+      {error && !initialLoading && (
+        <div className="rounded-lg border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm">
+          <p className="text-destructive">{error}</p>
+          <Button
+            className="mt-2"
+            variant="secondary"
+            onClick={() => void load({ initial: clusters.length === 0 })}
+            disabled={refreshing}
+          >
+            {refreshing ? <LoadingLabel>Retrying…</LoadingLabel> : "Retry"}
+          </Button>
+        </div>
       )}
       {refreshing && !initialLoading && (
         <p className="pointer-events-none sticky top-0 z-10 mb-1 w-fit rounded-md border border-border bg-background/90 px-2 py-1 text-xs text-muted-foreground shadow-sm backdrop-blur">

@@ -109,6 +109,10 @@ class Settings(BaseSettings):
     # Hard cap (10GiB). Worker pulls via signed HTTPS Range GET — never JSON/base64.
     runpod_face_video_max_bytes: int = 10 * 1024 * 1024 * 1024
     runpod_face_video_pull_ttl_seconds: int = 3600
+    # Interactive reverse face search only (indexing keeps runpod_face_timeout_seconds).
+    face_search_max_edge: int = 1600  # long-edge cap for interactive reverse face search only
+    face_search_gpu_timeout_seconds: float = 20.0
+    face_search_cpu_timeout_seconds: float = 60.0
     # Stop claiming new index downloads when free space on media/video volume is below this.
     index_disk_high_water_bytes: int = 2 * 1024 * 1024 * 1024
 

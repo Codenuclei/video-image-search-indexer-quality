@@ -133,7 +133,12 @@ export default function AdminPage() {
   async function requestRetryAll(reason: string) {
     setRetryingReason(reason);
     try {
-      await apiClient.retrySkippedByReason(reason);
+      const meta = skipReasonMeta(reason);
+      if (meta.action === "skip_corrupt") {
+        await apiClient.skipCorruptFiles();
+      } else {
+        await apiClient.retrySkippedByReason(reason);
+      }
       await refresh();
       await loadSecondary();
     } catch {
@@ -765,13 +770,23 @@ export default function AdminPage() {
 
       <ConfirmDialog
         open={!!confirmRetry}
-        title={confirmRetry ? `Retry ${confirmRetry.label}?` : ""}
-        message={
+        title={
           confirmRetry
-            ? `Re-queue ${formatCount(confirmRetry.count)} skipped file(s) with reason “${confirmRetry.reason}”.`
+            ? `${skipReasonMeta(confirmRetry.reason).action === "skip_corrupt" ? "Skip" : "Retry"} ${confirmRetry.label}?`
             : ""
         }
-        confirmLabel="Retry"
+        message={
+          confirmRetry
+            ? skipReasonMeta(confirmRetry.reason).action === "skip_corrupt"
+              ? `Mark ${formatCount(confirmRetry.count)} corrupt file(s) as permanently skipped.`
+              : `Re-queue ${formatCount(confirmRetry.count)} skipped file(s) with reason “${confirmRetry.reason}”.`
+            : ""
+        }
+        confirmLabel={
+          confirmRetry && skipReasonMeta(confirmRetry.reason).action === "skip_corrupt"
+            ? "Skip files"
+            : "Retry"
+        }
         onConfirm={() => confirmRetry && void requestRetryAll(confirmRetry.reason)}
         onCancel={() => setConfirmRetry(null)}
       />

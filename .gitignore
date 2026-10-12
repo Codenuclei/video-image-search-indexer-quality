@@ -19,6 +19,7 @@ backend/.env
 # Backups/variants of the real env file also hold secrets.
 backend/.env.*
 !backend/.env.example
+client_secret*.json
 .cohesivity
 
 # Data (never push local volumes / imports / video clones)

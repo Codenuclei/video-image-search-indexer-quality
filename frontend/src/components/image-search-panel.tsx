@@ -23,7 +23,7 @@ import {
 import { Button, ConfirmDialog, DriveMediaThumb, FaceThumb, Input, LoadingLabel, Spinner } from "@/components/ui";
 import { ModalOverlay } from "@/components/modal";
 import { PersonMergeSearch } from "@/components/person-merge-search";
-import { cn } from "@/lib/utils";
+import { cn, formatMediaClock } from "@/lib/utils";
 import {
   clearReverseFaceSearch,
   collectUnknownNameTagIds,
@@ -70,6 +70,18 @@ function scopeOf(match: FaceSearchMatch): MatchScope {
 
 function isVideo(item: FaceSearchAppearance) {
   return item.media_type.toLowerCase() === "video";
+}
+
+/** Prefer real duration; never present a face frame timestamp as the video length. */
+function videoBadgeLabel(item: FaceSearchAppearance): string {
+  if (
+    item.duration_seconds != null &&
+    Number.isFinite(item.duration_seconds) &&
+    item.duration_seconds > 0
+  ) {
+    return formatMediaClock(item.duration_seconds);
+  }
+  return "Video";
 }
 
 function statusBadgeClass(status: string) {
@@ -207,6 +219,8 @@ function ClusterGalleryDialog({
   const profileHref = match.person_id != null ? `${personBase}/${match.person_id}` : null;
 
   const [items, setItems] = useState<FaceSearchAppearance[]>(match.appears_in ?? []);
+  const [total, setTotal] = useState(match.file_count ?? match.appears_in?.length ?? 0);
+  const [exhausted, setExhausted] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [draft, setDraft] = useState("");
   const [naming, setNaming] = useState(false);
@@ -214,14 +228,13 @@ function ClusterGalleryDialog({
   const [adding, setAdding] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
-  const total = match.file_count ?? items.length;
   const pageKey =
     scope === "cluster" && match.cluster_id != null
       ? { clusterId: match.cluster_id }
       : scope === "person" && match.person_id != null
         ? { personId: match.person_id }
         : null;
-  const canLoadMore = pageKey != null && items.length < total;
+  const canLoadMore = pageKey != null && !exhausted && items.length < total;
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -241,16 +254,20 @@ function ClusterGalleryDialog({
   async function loadMore() {
     if (!pageKey || loadingMore || !canLoadMore) return;
     setLoadingMore(true);
+    setActionError(null);
     try {
       const page = await apiClient.faceMatchAppearances({
         ...pageKey,
         offset: items.length,
         limit: APPEARANCES_PAGE_SIZE,
       });
-      setItems((current) => {
-        const seen = new Set(current.map((item) => item.drive_file_id));
-        return [...current, ...page.items.filter((item) => !seen.has(item.drive_file_id))];
-      });
+      if (typeof page.total === "number") setTotal(page.total);
+      const seen = new Set(items.map((item) => item.drive_file_id));
+      const added = page.items.filter((item) => !seen.has(item.drive_file_id));
+      if (added.length === 0 || page.items.length === 0) setExhausted(true);
+      if (added.length > 0) setItems((current) => [...current, ...added]);
+    } catch (e) {
+      setActionError(formatApiError(e, "Could not load more files"));
     } finally {
       setLoadingMore(false);
     }
@@ -412,7 +429,7 @@ function ClusterGalleryDialog({
                             frameTimestamp={item.frame_timestamp}
                           />
                           <span className="absolute bottom-1 left-1 rounded bg-black/70 px-1 py-0.5 text-[9px] font-semibold uppercase text-white">
-                            Video
+                            {videoBadgeLabel(item)}
                           </span>
                         </>
                       ) : (
@@ -426,6 +443,9 @@ function ClusterGalleryDialog({
                 </div>
               ))}
             </div>
+          )}
+          {actionError && !unknown && (
+            <p className="mt-2 text-center text-xs text-destructive">{actionError}</p>
           )}
           {canLoadMore && (
             <div className="mt-3 flex justify-center">
@@ -514,6 +534,16 @@ export function ImageSearchPanel() {
   const [bulkName, setBulkName] = useState("");
   const [confirmBulkOpen, setConfirmBulkOpen] = useState(false);
   const [openTarget, setOpenTarget] = useState<OpenTarget | null>(null);
+  const [showSlowHint, setShowSlowHint] = useState(false);
+
+  useEffect(() => {
+    if (!searching) {
+      setShowSlowHint(false);
+      return;
+    }
+    const timer = setTimeout(() => setShowSlowHint(true), 8_000);
+    return () => clearTimeout(timer);
+  }, [searching]);
 
   const matches = useMemo(() => result?.matches ?? [], [result?.matches]);
   const unknownIds = useMemo(() => collectUnknownNameTagIds(matches), [matches]);
@@ -634,7 +664,14 @@ export function ImageSearchPanel() {
         </button>
         <div className="min-w-0 flex-1 text-xs text-muted-foreground">
           {searching ? (
-            <LoadingLabel size={14}>Searching faces…</LoadingLabel>
+            <>
+              <LoadingLabel size={14}>Searching faces…</LoadingLabel>
+              {showSlowHint && (
+                <p className="mt-1 text-[11px] text-muted-foreground">
+                  Still working. The face engine may be starting up.
+                </p>
+              )}
+            </>
           ) : result ? (
             <p>
               {result.faces_detected} face{result.faces_detected === 1 ? "" : "s"} detected
@@ -662,6 +699,9 @@ export function ImageSearchPanel() {
             <p>Upload a photo to find matching people across your library.</p>
           )}
           {error && <p className="mt-1 text-red-600 dark:text-red-400">{error}</p>}
+          {result?.message && !error && (
+            <p className="mt-1 text-amber-700 dark:text-amber-400">{result.message}</p>
+          )}
           {tagMessage && <p className="mt-1 text-emerald-700 dark:text-emerald-400">{tagMessage}</p>}
           {result && matchedPeople.length > 0 && (
             <label className="mt-1.5 flex items-center gap-1.5 text-[11px] text-muted-foreground">
@@ -683,7 +723,6 @@ export function ImageSearchPanel() {
             </label>
           )}
         </div>
-        {(searching || tagging) && <Spinner size={16} />}
         {(file || result) && (
           <button
             type="button"

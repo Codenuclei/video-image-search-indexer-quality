@@ -8,7 +8,7 @@ import {
   type FileIndexConflict,
   type SkipStats,
 } from "@/lib/api";
-import { formatCount, skipReasonMeta } from "@/lib/index-errors";
+import { formatCount, formatIndexStatusLabel, skipReasonMeta } from "@/lib/index-errors";
 import { Button, Card, LoadingLabel } from "@/components/ui";
 import { useIndexStatusStore } from "@/lib/index-status-store";
 
@@ -23,20 +23,8 @@ const STATUS_COLORS: Record<string, string> = {
   archived: "#64748b",
 };
 
-const STATUS_LABELS: Record<string, string> = {
-  processed: "Processed",
-  pending: "Pending",
-  processing: "Processing",
-  error: "Error",
-  skipped: "Skipped",
-  archived: "Archived",
-};
-
 function statusChartLabel(status: string): string {
-  const key = status.trim().toLowerCase();
-  if (STATUS_LABELS[key]) return STATUS_LABELS[key];
-  if (!status) return status;
-  return status.charAt(0).toUpperCase() + status.slice(1);
+  return formatIndexStatusLabel(status);
 }
 
 function conflictKindLabel(kind: string): string {
@@ -81,7 +69,12 @@ export default function DashboardPage() {
   async function requestRetryAll(reason: string) {
     setRetryingReason(reason);
     try {
-      await apiClient.retrySkippedByReason(reason);
+      const meta = skipReasonMeta(reason);
+      if (meta.action === "skip_corrupt") {
+        await apiClient.skipCorruptFiles();
+      } else {
+        await apiClient.retrySkippedByReason(reason);
+      }
       await loadSecondary();
     } catch {
       /* api() already toasted */
@@ -188,12 +181,12 @@ export default function DashboardPage() {
                 </span>
               ))}
             </div>
-            <div className="h-44 max-w-md">
+            <div className="h-52 w-full max-w-xl">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart
                   data={chartData}
-                  margin={{ top: 8, right: 4, left: -8, bottom: 0 }}
-                  barCategoryGap="12%"
+                  margin={{ top: 8, right: 8, left: 0, bottom: 0 }}
+                  barCategoryGap="28%"
                 >
                   <XAxis
                     dataKey="label"
@@ -208,7 +201,7 @@ export default function DashboardPage() {
                     allowDecimals={false}
                     tickLine={false}
                     axisLine={false}
-                    width={32}
+                    width={36}
                   />
                   <Tooltip
                     cursor={{ fill: "transparent" }}
@@ -226,7 +219,7 @@ export default function DashboardPage() {
                     formatter={(value: number) => [String(value), "Files"]}
                     labelFormatter={(label) => String(label)}
                   />
-                  <Bar dataKey="count" radius={[4, 4, 0, 0]} barSize={40} maxBarSize={48}>
+                  <Bar dataKey="count" radius={[4, 4, 0, 0]} barSize={56} maxBarSize={72} minPointSize={3}>
                     {chartData.map((row) => (
                       <Cell key={row.status} fill={row.fill} />
                     ))}
@@ -315,7 +308,7 @@ export default function DashboardPage() {
                 <li key={c.id} className="space-y-2 px-3 py-3">
                   <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
                     <p className="text-sm font-medium">{conflictKindLabel(c.conflict_kind)}</p>
-                    <span className="text-xs text-muted-foreground">{c.status}</span>
+                    <span className="text-xs text-muted-foreground">{formatIndexStatusLabel(c.status)}</span>
                   </div>
                   <p className="text-xs text-muted-foreground">
                     Incoming <span className="font-medium text-foreground">{c.incoming_name}</span>

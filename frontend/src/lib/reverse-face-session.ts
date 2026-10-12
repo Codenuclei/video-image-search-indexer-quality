@@ -4,6 +4,8 @@ import { useSyncExternalStore } from "react";
 import {
   apiClient,
   formatApiError,
+  isAbortError,
+  isServiceUnavailableMessage,
   type FaceCrawlResponse,
   type FaceSearchMatch,
   type FaceSearchResponse,
@@ -72,6 +74,24 @@ function bumpSearchGeneration() {
 
 function isStaleSearch(gen: number) {
   return gen !== searchGeneration;
+}
+
+/** One automatic retry on transient service-unavailable / cold-start failures. */
+async function withNetworkRetry<T>(
+  fn: () => Promise<T>,
+  opts: { signal?: AbortSignal; isStale: () => boolean; delayMs?: number }
+): Promise<T> {
+  const delayMs = opts.delayMs ?? 800;
+  try {
+    return await fn();
+  } catch (e) {
+    if (opts.signal?.aborted || isAbortError(e) || opts.isStale()) throw e;
+    const msg = formatApiError(e, "Request failed");
+    if (!isServiceUnavailableMessage(msg)) throw e;
+    await new Promise((r) => setTimeout(r, delayMs));
+    if (opts.isStale() || opts.signal?.aborted) throw e;
+    return await fn();
+  }
 }
 
 function emit() {
@@ -164,7 +184,8 @@ export function runReverseFaceSearch(upload?: File) {
   const target = upload ?? state.file;
   if (!target) return searchJob;
   void import("@/lib/search-session").then(({ cancelSearch }) => {
-    cancelSearch();
+    // Drop in-flight text search; keep prior text results until face results arrive.
+    cancelSearch({ clearResults: false });
   });
   const gen = bumpSearchGeneration();
   searchAbort = new AbortController();
@@ -179,12 +200,18 @@ export function runReverseFaceSearch(upload?: File) {
   let job!: Promise<void>;
   job = (async () => {
     try {
-      const result = await apiClient.searchUploadedFace(target, 20, signal);
+      const result = await withNetworkRetry(
+        () => apiClient.searchUploadedFace(target, 20, signal),
+        { signal, isStale: () => isStaleSearch(gen) }
+      );
       if (isStaleSearch(gen)) return;
       patchReverseFaceSession({ result, searching: false });
     } catch (e) {
       if (isStaleSearch(gen)) return;
-      if (signal.aborted) return;
+      if (signal.aborted || isAbortError(e)) {
+        patchReverseFaceSession({ searching: false, error: null });
+        return;
+      }
       patchReverseFaceSession({
         error: formatApiError(e, "Face search failed"),
         result: null,
@@ -205,9 +232,11 @@ export function selectReverseFaceLeader(person: LeadershipPerson) {
     return searchJob;
   }
   void import("@/lib/search-session").then(({ cancelSearch }) => {
-    cancelSearch();
+    cancelSearch({ clearResults: false });
   });
   const gen = bumpSearchGeneration();
+  searchAbort = new AbortController();
+  const signal = searchAbort.signal;
   const prevUrl = state.previewUrl;
   if (prevUrl) URL.revokeObjectURL(prevUrl);
   patchReverseFaceSession({
@@ -222,11 +251,18 @@ export function selectReverseFaceLeader(person: LeadershipPerson) {
   let job!: Promise<void>;
   job = (async () => {
     try {
-      const result = await apiClient.searchFaceByUrl(person.image_url!, 20);
+      const result = await withNetworkRetry(
+        () => apiClient.searchFaceByUrl(person.image_url!, 20, signal),
+        { signal, isStale: () => isStaleSearch(gen) }
+      );
       if (isStaleSearch(gen)) return;
-      patchReverseFaceSession({ result, searching: false });
+      patchReverseFaceSession({ result, searching: false, error: null });
     } catch (e) {
       if (isStaleSearch(gen)) return;
+      if (signal.aborted || isAbortError(e)) {
+        patchReverseFaceSession({ searching: false, error: null });
+        return;
+      }
       patchReverseFaceSession({
         error: formatApiError(e, "Leader face search failed"),
         result: null,
@@ -234,6 +270,7 @@ export function selectReverseFaceLeader(person: LeadershipPerson) {
       });
     } finally {
       if (searchJob === job) searchJob = null;
+      if (searchAbort?.signal === signal) searchAbort = null;
     }
   })();
   searchJob = job;
@@ -351,19 +388,36 @@ export async function runReverseFaceNameTag(opts: {
       face_ids: faceIds,
     });
     const okCount = res.actions.filter((a) => a.ok).length;
+    // Release the tagging spinner as soon as the write completes — refresh can follow.
     patchReverseFaceSession({
+      tagging: false,
       tagMessage: `Tagged as “${res.person.name}” (person #${res.person.id}) · ${okCount} action(s) · ${res.person.file_count ?? res.person.occurrence_count} files`,
     });
 
-    // Refresh matches so named people show up immediately.
+    // Refresh matches in the background so name-tag does not feel blocked on reverse search.
     const refreshGen = searchGeneration;
-    if (state.selectedLeader?.image_url) {
-      const refreshed = await apiClient.searchFaceByUrl(state.selectedLeader.image_url, 20);
-      if (refreshGen === searchGeneration) patchReverseFaceSession({ result: refreshed });
-    } else if (state.file) {
-      const refreshed = await apiClient.searchUploadedFace(state.file, 20);
-      if (refreshGen === searchGeneration) patchReverseFaceSession({ result: refreshed });
-    }
+    const leaderUrl = state.selectedLeader?.image_url;
+    const upload = state.file;
+    const isStaleRefresh = () => refreshGen !== searchGeneration;
+    void (async () => {
+      try {
+        if (leaderUrl) {
+          const refreshed = await withNetworkRetry(
+            () => apiClient.searchFaceByUrl(leaderUrl, 20),
+            { isStale: isStaleRefresh }
+          );
+          if (!isStaleRefresh()) patchReverseFaceSession({ result: refreshed });
+        } else if (upload) {
+          const refreshed = await withNetworkRetry(
+            () => apiClient.searchUploadedFace(upload, 20),
+            { isStale: isStaleRefresh }
+          );
+          if (!isStaleRefresh()) patchReverseFaceSession({ result: refreshed });
+        }
+      } catch {
+        /* keep tagged message; refresh is best-effort */
+      }
+    })();
     return true;
   } catch (e) {
     patchReverseFaceSession({ error: formatApiError(e, "Name-tag failed") });

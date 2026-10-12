@@ -198,6 +198,7 @@ class MediaOccurrence(BaseModel):
     path: str
     media_type: str
     frame_timestamp: float | None = None
+    duration_seconds: float | None = None
 
 
 class ClusterOut(BaseModel):

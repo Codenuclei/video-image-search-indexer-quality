@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { LucideIcon } from "lucide-react";
 import { Download, ExternalLink, FileVideo, Image as ImageIcon, Play, User } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -365,10 +365,25 @@ export function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {
 
 export function FaceThumb({ faceId, className }: { faceId: number | null; className?: string }) {
   const [broken, setBroken] = useState(false);
+  const [retryToken, setRetryToken] = useState(0);
+  const autoRetriedFor = useRef<number | null>(null);
+  const autoRetryTimer = useRef<number | null>(null);
   useEffect(() => {
     setBroken(false);
+    setRetryToken(0);
+    autoRetriedFor.current = null;
+    if (autoRetryTimer.current != null) {
+      window.clearTimeout(autoRetryTimer.current);
+      autoRetryTimer.current = null;
+    }
+    return () => {
+      if (autoRetryTimer.current != null) {
+        window.clearTimeout(autoRetryTimer.current);
+        autoRetryTimer.current = null;
+      }
+    };
   }, [faceId]);
-  if (!faceId || broken) {
+  if (!faceId) {
     return (
       <div
         className={cn(
@@ -381,13 +396,46 @@ export function FaceThumb({ faceId, className }: { faceId: number | null; classN
       </div>
     );
   }
+  if (broken) {
+    return (
+      <button
+        type="button"
+        title="Retry thumbnail"
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          setBroken(false);
+          setRetryToken((n) => n + 1);
+        }}
+        className={cn(
+          "flex items-center justify-center rounded-md bg-muted text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
+          className
+        )}
+      >
+        <User size={18} />
+      </button>
+    );
+  }
+  const src = `${API_BASE}/faces/${faceId}/thumbnail${retryToken ? `?retry=${retryToken}` : ""}`;
   return (
     // eslint-disable-next-line @next/next/no-img-element
     <img
-      src={`${API_BASE}/faces/${faceId}/thumbnail`}
+      src={src}
       alt="face"
+      loading="lazy"
+      decoding="async"
       className={cn("rounded-md object-cover", className)}
-      onError={() => setBroken(true)}
+      onError={() => {
+        if (autoRetriedFor.current !== faceId) {
+          autoRetriedFor.current = faceId;
+          autoRetryTimer.current = window.setTimeout(() => {
+            autoRetryTimer.current = null;
+            setRetryToken((n) => n + 1);
+          }, 2000);
+          return;
+        }
+        setBroken(true);
+      }}
     />
   );
 }
@@ -405,26 +453,39 @@ export function DriveMediaThumb({
   frameTimestamp?: number | null;
   className?: string;
 }) {
+  const frameSrc = isVideo ? driveVideoFrameUrl(driveFileId, frameTimestamp) : null;
+  const thumbSrc = driveFileThumbnailUrl(driveFileId);
+  const [retryToken, setRetryToken] = useState(0);
+  const [src, setSrc] = useState(frameSrc ?? thumbSrc);
   const [failed, setFailed] = useState(false);
-  const src = isVideo
-    ? driveVideoFrameUrl(driveFileId, frameTimestamp)
-    : driveFileThumbnailUrl(driveFileId);
 
   useEffect(() => {
+    setSrc(frameSrc ?? thumbSrc);
     setFailed(false);
-  }, [src]);
+    setRetryToken(0);
+  }, [frameSrc, thumbSrc]);
 
   if (failed) {
     return (
-      <span
+      <button
+        type="button"
+        title="Retry thumbnail"
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const next = retryToken + 1;
+          setRetryToken(next);
+          const bust = (url: string) => `${url}${url.includes("?") ? "&" : "?"}retry=${next}`;
+          setSrc(bust(frameSrc ?? thumbSrc));
+          setFailed(false);
+        }}
         className={cn(
-          "flex h-full w-full items-center justify-center bg-muted text-muted-foreground",
+          "flex h-full w-full items-center justify-center bg-muted text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
           className
         )}
-        aria-hidden
       >
         {isVideo ? <FileVideo size={18} /> : <ImageIcon size={18} />}
-      </span>
+      </button>
     );
   }
 
@@ -435,7 +496,18 @@ export function DriveMediaThumb({
       alt={name}
       loading="lazy"
       decoding="async"
-      onError={() => setFailed(true)}
+      onError={() => {
+        // Video frame endpoints can 404 for sparse indexes — fall back to Drive thumb once.
+        if (isVideo && frameSrc && src.startsWith(frameSrc.split("?")[0]!) && thumbSrc !== frameSrc) {
+          const busted =
+            retryToken > 0
+              ? `${thumbSrc}${thumbSrc.includes("?") ? "&" : "?"}retry=${retryToken}`
+              : thumbSrc;
+          setSrc(busted);
+          return;
+        }
+        setFailed(true);
+      }}
       className={cn("h-full w-full object-cover", className)}
     />
   );
@@ -455,7 +527,7 @@ export function FilePreview({
   onClick?: () => void;
 }) {
   // Images: compressed KB JPEG thumb only — never stream the original.
-  const thumbUrl = driveFileThumbnailUrl(driveFileId);
+  const baseThumbUrl = driveFileThumbnailUrl(driveFileId);
   const previewUrl = driveFilePreviewUrl(driveFileId, mimeType);
   const driveViewUrl = driveGoogleViewUrl(driveFileId);
   const isImage = mimeType.startsWith("image/");
@@ -463,6 +535,17 @@ export function FilePreview({
   const isPdf = mimeType === "application/pdf";
   const [loaded, setLoaded] = useState(false);
   const [failed, setFailed] = useState(false);
+  const [retryToken, setRetryToken] = useState(0);
+  const thumbUrl =
+    retryToken > 0
+      ? `${baseThumbUrl}${baseThumbUrl.includes("?") ? "&" : "?"}retry=${retryToken}`
+      : baseThumbUrl;
+
+  useEffect(() => {
+    setLoaded(false);
+    setFailed(false);
+    setRetryToken(0);
+  }, [driveFileId]);
 
   if (isImage) {
     return (
@@ -475,14 +558,15 @@ export function FilePreview({
         {failed ? (
           <button
             type="button"
-            onClick={onClick}
-            className={cn(
-              "flex h-full w-full flex-col items-center justify-center gap-2 p-4 text-center text-xs text-muted-foreground",
-              onClick && "cursor-pointer hover:bg-black/10"
-            )}
+            onClick={() => {
+              setFailed(false);
+              setLoaded(false);
+              setRetryToken((n) => n + 1);
+            }}
+            className="flex h-full w-full cursor-pointer flex-col items-center justify-center gap-2 p-4 text-center text-xs text-muted-foreground hover:bg-black/10"
           >
             <span>Image unavailable</span>
-            {onClick ? <span>Click to retry</span> : null}
+            <span>Click to retry</span>
           </button>
         ) : (
           <>

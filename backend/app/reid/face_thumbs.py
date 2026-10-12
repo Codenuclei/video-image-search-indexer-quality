@@ -14,6 +14,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import Settings, get_settings
 from app.db.models import DriveFile, Face, Media, MediaType
 from app.pipelines.common import decode_image_bgr, save_face_thumbnail
+from app.reid.thumb_fail_cache import (
+    face_fail_cached,
+    face_fail_put,
+    frame_fail_cached,
+    frame_fail_put,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -100,12 +106,34 @@ async def _load_video_frame_path(
 ) -> Path | None:
     if ts is None:
         return None
+    if frame_fail_cached(drive_file.id, float(ts)):
+        return None
     from app.routers.media import ensure_frame_extracted
 
     frames_dir = Path(settings.thumbnail_dir) / "video" / drive_file.id
     out_path = frames_dir / f"{float(ts):.3f}.jpg"
     ok = await ensure_frame_extracted(drive_file.id, float(ts), out_path, settings, session)
     return out_path if ok and out_path.is_file() else None
+
+
+def _mark_regen_failed(
+    face: Face,
+    *,
+    drive_file_id: str | None,
+    media_type: str | None,
+    cause: str,
+    frame_ts: float | None = None,
+) -> None:
+    face_fail_put(face.id)
+    if drive_file_id and frame_ts is not None and (media_type or "").lower() == MediaType.VIDEO.value:
+        frame_fail_put(drive_file_id, float(frame_ts))
+    logger.warning(
+        "face thumb regen failed face_id=%s drive_file_id=%s media_type=%s cause=%s",
+        face.id,
+        drive_file_id,
+        media_type,
+        cause,
+    )
 
 
 async def _regen_face_thumbnail(
@@ -119,21 +147,60 @@ async def _regen_face_thumbnail(
     # in the async session (and there is no thumbnail volume on DigitalOcean yet).
     media = await session.get(Media, face.media_id)
     if media is None:
+        _mark_regen_failed(face, drive_file_id=None, media_type=None, cause="no_media")
         return None
     drive_file = (
         await session.get(DriveFile, media.drive_file_id) if media.drive_file_id else None
     )
     if drive_file is None:
+        _mark_regen_failed(
+            face,
+            drive_file_id=media.drive_file_id,
+            media_type=media.type.value if media.type else None,
+            cause="no_drive_file",
+        )
         return None
 
     image_bgr: np.ndarray | None = None
     source: ThumbSource = "regen"
+    media_type = media.type.value if media.type else None
+    frame_ts = float(face.frame_timestamp) if face.frame_timestamp is not None else None
 
     if media.type == MediaType.VIDEO:
-        frame_path = await _load_video_frame_path(session, settings, drive_file, face.frame_timestamp)
-        if frame_path is not None:
-            image_bgr = await asyncio.to_thread(_load_frame_jpeg, frame_path)
-            source = "frame"
+        try:
+            frame_path = await asyncio.wait_for(
+                _load_video_frame_path(session, settings, drive_file, face.frame_timestamp),
+                timeout=min(timeout_sec, 25.0),
+            )
+        except asyncio.TimeoutError:
+            _mark_regen_failed(
+                face,
+                drive_file_id=drive_file.id,
+                media_type=media_type,
+                cause="timeout",
+                frame_ts=frame_ts,
+            )
+            return None
+        if frame_path is None:
+            _mark_regen_failed(
+                face,
+                drive_file_id=drive_file.id,
+                media_type=media_type,
+                cause="video_frame_missing",
+                frame_ts=frame_ts,
+            )
+            return None
+        image_bgr = await asyncio.to_thread(_load_frame_jpeg, frame_path)
+        source = "frame"
+        if image_bgr is None:
+            _mark_regen_failed(
+                face,
+                drive_file_id=drive_file.id,
+                media_type=media_type,
+                cause="image_decode_failed",
+                frame_ts=frame_ts,
+            )
+            return None
     else:
         image_bgr = await _load_image_bgr_from_cache(settings, drive_file)
         if image_bgr is not None:
@@ -149,15 +216,35 @@ async def _regen_face_thumbnail(
                 except Exception as exc:  # noqa: BLE001
                     logger.debug("face thumb stream decode failed face=%s: %s", face.id, exc)
 
-    if image_bgr is None:
-        return None
+        if image_bgr is None:
+            _mark_regen_failed(
+                face,
+                drive_file_id=drive_file.id,
+                media_type=media_type,
+                cause="image_decode_failed",
+            )
+            return None
 
     jpeg = crop_face_jpeg(image_bgr, face)
     if not jpeg:
+        _mark_regen_failed(
+            face,
+            drive_file_id=drive_file.id,
+            media_type=media_type,
+            cause="crop_empty",
+            frame_ts=frame_ts if media.type == MediaType.VIDEO else None,
+        )
         return None
 
     path_str = save_face_thumbnail(face.id, jpeg, settings)
     if not path_str:
+        _mark_regen_failed(
+            face,
+            drive_file_id=drive_file.id,
+            media_type=media_type,
+            cause="save_failed",
+            frame_ts=frame_ts if media.type == MediaType.VIDEO else None,
+        )
         return None
     face.thumbnail_path = path_str
     await session.flush()
@@ -184,27 +271,51 @@ async def _find_sibling_with_thumb(
             select(Face)
             .where(Face.cluster_id == face.cluster_id, Face.id != face.id)
             .order_by(Face.detection_confidence.desc())
-            .limit(20)
+            .limit(40)
         )
     elif face.person_id is not None:
         stmt = (
             select(Face)
             .where(Face.person_id == face.person_id, Face.id != face.id)
             .order_by(Face.detection_confidence.desc())
-            .limit(20)
+            .limit(40)
         )
     else:
         return None
 
-    siblings = (await session.execute(stmt)).scalars().all()
+    siblings = list((await session.execute(stmt)).scalars().all())
     settings = get_settings()
+
+    # Pass 1: disk-only
     for sib in siblings:
         if thumb_exists_on_disk(sib, settings):
             return sib, "sibling"
-        if try_regen:
-            regen = await _regen_face_thumbnail(session, sib, timeout_sec=timeout_sec)
-            if regen is not None:
-                return sib, "sibling"
+
+    if not try_regen:
+        return None
+
+    # Pass 2: regen siblings not in fail cache; prefer IMAGE media over VIDEO
+    async def _media_type_rank(sib: Face) -> int:
+        media = await session.get(Media, sib.media_id)
+        if media is None:
+            return 2
+        if media.type == MediaType.IMAGE:
+            return 0
+        if media.type == MediaType.VIDEO:
+            return 1
+        return 2
+
+    ranked: list[tuple[int, Face]] = []
+    for sib in siblings:
+        if face_fail_cached(sib.id):
+            continue
+        ranked.append((await _media_type_rank(sib), sib))
+    ranked.sort(key=lambda item: item[0])
+
+    for _, sib in ranked:
+        regen = await _regen_face_thumbnail(session, sib, timeout_sec=timeout_sec)
+        if regen is not None:
+            return sib, "sibling"
     return None
 
 
@@ -225,14 +336,21 @@ async def ensure_face_thumbnail_jpeg(
         path = Path(face.thumbnail_path) if face.thumbnail_path else face_thumbnail_path(face.id, settings)
         return path, face, "disk"
 
-    regen = await _regen_face_thumbnail(session, face, timeout_sec=timeout_sec)
-    if regen is not None:
-        path, source = regen
-        return path, face, source
+    # Recent regen failures: skip another slow Drive/ffmpeg attempt, but still
+    # allow a cheap sibling-on-disk stand-in so the UI is not blank forever.
+    recently_failed = face_fail_cached(face_id)
+    if not recently_failed:
+        regen = await _regen_face_thumbnail(session, face, timeout_sec=timeout_sec)
+        if regen is not None:
+            path, source = regen
+            return path, face, source
 
     if allow_fallback:
         fallback = await _find_sibling_with_thumb(
-            session, face, try_regen=True, timeout_sec=min(timeout_sec, 15.0)
+            session,
+            face,
+            try_regen=not recently_failed,
+            timeout_sec=min(timeout_sec, 15.0),
         )
         if fallback is not None:
             sib, source = fallback
@@ -253,13 +371,25 @@ async def ensure_face_thumbnail_jpeg(
 
     media = face.media if face.media is not None else await session.get(Media, face.media_id)
     drive_file_id = media.drive_file_id if media else None
+    media_type = media.type.value if media and media.type else None
+    face_fail_put(face.id)
+    if (
+        drive_file_id
+        and media
+        and media.type == MediaType.VIDEO
+        and face.frame_timestamp is not None
+    ):
+        frame_fail_put(drive_file_id, float(face.frame_timestamp))
     logger.warning(
-        "face thumb ensure failed face_id=%s cluster_id=%s person_id=%s media_id=%s drive_file_id=%s",
+        "face thumb regen failed face_id=%s drive_file_id=%s media_type=%s cause=%s "
+        "cluster_id=%s person_id=%s media_id=%s",
         face.id,
+        drive_file_id,
+        media_type,
+        "sibling_fallback_failed",
         face.cluster_id,
         face.person_id,
         face.media_id,
-        drive_file_id,
     )
     raise ValueError(f"Could not ensure thumbnail for face {face_id}")
 
