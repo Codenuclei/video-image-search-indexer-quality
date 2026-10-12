@@ -763,6 +763,7 @@ class CarouselSaveBody(BaseModel):
 class CarouselArtifactCopyBody(BaseModel):
     drive_file_id: str = Field(..., min_length=1, max_length=128)
     save_id: int | None = None
+    carousel_id: str = Field(default="", max_length=128)
     layout_mode: str = Field(default="single_1", pattern="^(single_1|split_2)$")
     slides: list[dict[str, Any]] = Field(default_factory=list, max_length=24)
     theme: dict[str, Any] = Field(default_factory=dict)
@@ -3647,6 +3648,145 @@ def _jsonb_safe(value: Any) -> Any:
     return json.loads(raw)
 
 
+def _safe_relative_preview_url(value: Any) -> str | None:
+    """Return a backend-relative preview path, or None for unsafe/external URLs."""
+    if not isinstance(value, str):
+        return None
+    url = value.strip()
+    if not url:
+        return None
+    # Prefer same-origin media/frame routes; never return raw external URLs.
+    if url.startswith("/media/") or url.startswith("/search/"):
+        return url
+    return None
+
+
+def _safe_carousel_preview_url(payload: Any) -> str | None:
+    """Best-effort first-slide preview from a save payload; never raises."""
+    try:
+        if not isinstance(payload, dict):
+            return None
+
+        def _from_slides(slides: Any) -> str | None:
+            if not isinstance(slides, list):
+                return None
+            for slide in slides:
+                if not isinstance(slide, dict):
+                    continue
+                preview = _safe_relative_preview_url(slide.get("preview_url"))
+                if preview:
+                    return preview
+                panels = slide.get("panels")
+                if isinstance(panels, list):
+                    for panel in panels:
+                        if not isinstance(panel, dict):
+                            continue
+                        preview = _safe_relative_preview_url(panel.get("preview_url"))
+                        if preview:
+                            return preview
+            return None
+
+        carousels = payload.get("carousels")
+        if isinstance(carousels, list):
+            for car in carousels:
+                if isinstance(car, dict):
+                    preview = _from_slides(car.get("slides"))
+                    if preview:
+                        return preview
+
+        layouts = payload.get("layouts")
+        if isinstance(layouts, dict):
+            for mode in ("single_1", "split_2"):
+                bundle = layouts.get(mode)
+                if not isinstance(bundle, dict):
+                    continue
+                for car in bundle.get("carousels") or []:
+                    if isinstance(car, dict):
+                        preview = _from_slides(car.get("slides"))
+                        if preview:
+                            return preview
+
+        return _from_slides(payload.get("slides"))
+    except Exception:
+        return None
+
+
+def _carousel_slide_count(payload: Any) -> int | None:
+    try:
+        if not isinstance(payload, dict):
+            return None
+        carousels = payload.get("carousels")
+        if isinstance(carousels, list) and carousels:
+            first = carousels[0]
+            if isinstance(first, dict):
+                slides = first.get("slides")
+                if isinstance(slides, list):
+                    return len(slides)
+                count = first.get("slide_count")
+                if isinstance(count, int):
+                    return count
+        slides = payload.get("slides")
+        if isinstance(slides, list):
+            return len(slides)
+        return None
+    except Exception:
+        return None
+
+
+@router.get("/pipeline/carousels")
+async def list_ready_carousels_global(
+    limit: int = Query(default=24, ge=1, le=50),
+    offset: int = Query(default=0, ge=0),
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Global gallery of ready final carousel generations (lightweight cards).
+
+    Newest first across all videos. Does not return the heavy payload.
+    """
+    limit = max(1, min(int(limit or 24), 50))
+    offset = max(0, int(offset or 0))
+    q = (
+        select(CarouselGenerationSave, DriveFile.name, DriveFile.path)
+        .outerjoin(DriveFile, DriveFile.id == CarouselGenerationSave.drive_file_id)
+        .where(
+            CarouselGenerationSave.kind == SAVE_KIND_CAROUSEL,
+            CarouselGenerationSave.status == "ready",
+        )
+        .order_by(
+            CarouselGenerationSave.created_at.desc(),
+            CarouselGenerationSave.id.desc(),
+        )
+        .offset(offset)
+        .limit(limit + 1)
+    )
+    rows = list((await session.execute(q)).all())
+    has_more = len(rows) > limit
+    items: list[dict[str, Any]] = []
+    for row, video_name, video_path in rows[:limit]:
+        payload = row.payload if isinstance(getattr(row, "payload", None), dict) else {}
+        items.append(
+            {
+                "id": row.id,
+                "drive_file_id": row.drive_file_id,
+                "video_name": video_name or None,
+                "video_path": video_path or None,
+                "label": row.label,
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+                "source": row.source,
+                "layout_mode": getattr(row, "layout_mode", None) or "single_1",
+                "copy_version": int(getattr(row, "copy_version", None) or 1),
+                "preview_url": _safe_carousel_preview_url(payload),
+                "slide_count": _carousel_slide_count(payload),
+            }
+        )
+    return {
+        "items": items,
+        "limit": limit,
+        "offset": offset,
+        "has_more": has_more,
+    }
+
+
 @router.get("/pipeline/saves")
 async def list_carousel_saves(
     drive_file_id: str,
@@ -3698,10 +3838,15 @@ async def list_carousel_saves(
 @router.get("/pipeline/saves/{save_id}")
 async def get_carousel_save(
     save_id: int,
+    drive_file_id: str | None = Query(default=None),
     session: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     row = await session.get(CarouselGenerationSave, save_id)
     if row is None:
+        raise HTTPException(status_code=404, detail="Save not found")
+    if drive_file_id is not None and row.drive_file_id != drive_file_id.strip():
+        # Do not reveal a save from another video through a malformed or stale
+        # deep link.
         raise HTTPException(status_code=404, detail="Save not found")
     return {
         "id": row.id,
@@ -3812,30 +3957,66 @@ async def _save_carousel_copy_impl(
     session: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     """Save theme/copy edits by reusing ranked slides from the current artifact."""
+    drive_file_id = body.drive_file_id.strip()
+    filters = [
+        CarouselGenerationSave.drive_file_id == drive_file_id,
+        CarouselGenerationSave.kind == SAVE_KIND_CAROUSEL,
+        CarouselGenerationSave.status == "ready",
+    ]
+    if body.save_id is not None:
+        filters.append(CarouselGenerationSave.id == body.save_id)
     current = await session.scalar(
         select(CarouselGenerationSave)
-        .where(
-            CarouselGenerationSave.drive_file_id == body.drive_file_id.strip(),
-            CarouselGenerationSave.kind == SAVE_KIND_CAROUSEL,
-            CarouselGenerationSave.status == "ready",
-        )
+        .where(*filters)
         .order_by(CarouselGenerationSave.created_at.desc())
     )
-    if current is None:
+    if current is None or current.drive_file_id != drive_file_id:
         raise HTTPException(status_code=404, detail="Carousel artifact not ready")
     payload = dict(current.payload or {})
-    payload["slides"] = _jsonb_safe(body.slides or payload.get("slides") or [])
+    edited_slides = _jsonb_safe(body.slides or payload.get("slides") or [])
+    payload["slides"] = edited_slides
+    carousels = [dict(c) for c in (payload.get("carousels") or []) if isinstance(c, dict)]
+    target = next(
+        (c for c in carousels if body.carousel_id and c.get("id") == body.carousel_id),
+        carousels[0] if carousels else None,
+    )
+    if target is not None:
+        target["slides"] = edited_slides
+        target["slide_count"] = len(edited_slides)
+        payload["carousels"] = carousels
+    layouts = payload.get("layouts")
+    if isinstance(layouts, dict):
+        layout_bundle = layouts.get(body.layout_mode)
+        if isinstance(layout_bundle, dict):
+            layout_carousels = [
+                dict(c) for c in (layout_bundle.get("carousels") or []) if isinstance(c, dict)
+            ]
+            layout_target = next(
+                (
+                    c
+                    for c in layout_carousels
+                    if body.carousel_id and c.get("id") == body.carousel_id
+                ),
+                layout_carousels[0] if layout_carousels else None,
+            )
+            if layout_target is not None:
+                layout_target["slides"] = edited_slides
+                layout_target["slide_count"] = len(edited_slides)
+                payload["layouts"] = {
+                    **layouts,
+                    body.layout_mode: {**layout_bundle, "carousels": layout_carousels},
+                }
     payload["theme"] = _jsonb_safe(body.theme)
     payload["references"] = _jsonb_safe(body.references)
     # Keep the prior ready artifact immutable. Layout/copy edits are a cheap
     # new version and reuse all existing frame URLs.
     payload["layout_mode"] = body.layout_mode
     next_version = int(current.copy_version or 1) + 1
-    next_hash = carousel_input_hash(body.drive_file_id, payload)
+    next_hash = carousel_input_hash(drive_file_id, payload)
     existing = await session.scalar(
         select(CarouselGenerationSave)
         .where(
-            CarouselGenerationSave.drive_file_id == body.drive_file_id.strip(),
+            CarouselGenerationSave.drive_file_id == drive_file_id,
             CarouselGenerationSave.kind == SAVE_KIND_CAROUSEL,
             CarouselGenerationSave.input_hash == next_hash,
         )
@@ -3849,7 +4030,7 @@ async def _save_carousel_copy_impl(
             "cache_hit": True,
         }
     replacement = CarouselGenerationSave(
-        drive_file_id=body.drive_file_id.strip(),
+        drive_file_id=drive_file_id,
         kind=SAVE_KIND_CAROUSEL,
         label=current.label,
         status="ready",
@@ -3879,18 +4060,20 @@ async def regenerate_carousel_slide(
     """Re-select one frame and publish a new immutable artifact version."""
     token = await _claim_carousel(session, body.drive_file_id)
     try:
+        drive_file_id = body.drive_file_id.strip()
+        filters = [
+            CarouselGenerationSave.drive_file_id == drive_file_id,
+            CarouselGenerationSave.kind == SAVE_KIND_CAROUSEL,
+            CarouselGenerationSave.status == "ready",
+        ]
+        if body.save_id is not None:
+            filters.append(CarouselGenerationSave.id == body.save_id)
         current = await session.scalar(
             select(CarouselGenerationSave)
-            .where(
-                CarouselGenerationSave.id == body.save_id
-                if body.save_id
-                else CarouselGenerationSave.drive_file_id == body.drive_file_id.strip(),
-                CarouselGenerationSave.kind == SAVE_KIND_CAROUSEL,
-                CarouselGenerationSave.status == "ready",
-            )
+            .where(*filters)
             .order_by(CarouselGenerationSave.created_at.desc())
         )
-        if current is None:
+        if current is None or current.drive_file_id != drive_file_id:
             raise HTTPException(status_code=404, detail="Carousel artifact not ready")
         payload = dict(current.payload or {})
         carousels = [dict(c) for c in (payload.get("carousels") or [])]
@@ -3940,7 +4123,7 @@ async def regenerate_carousel_slide(
             },
         }
         replacement = CarouselGenerationSave(
-            drive_file_id=body.drive_file_id.strip(),
+            drive_file_id=drive_file_id,
             kind=SAVE_KIND_CAROUSEL,
             label=current.label,
             status="ready",

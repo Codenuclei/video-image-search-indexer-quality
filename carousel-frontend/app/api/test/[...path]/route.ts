@@ -411,6 +411,48 @@ async function handle(req: NextRequest, ctx: Ctx) {
     });
   }
 
+  if (path === "search/carousel/pipeline/carousels" && method === "GET") {
+    const limit = Math.max(1, Math.min(Number(url.searchParams.get("limit") || 24) || 24, 50));
+    const offset = Math.max(0, Number(url.searchParams.get("offset") || 0) || 0);
+    const gen = mockGenerate(MOCK_VIDEO.id, [], []);
+    const all = [
+      {
+        id: 7001,
+        drive_file_id: MOCK_VIDEO.id,
+        video_name: MOCK_VIDEO.name,
+        video_path: MOCK_VIDEO.path,
+        label: "Demo carousel save",
+        created_at: "2026-08-11T12:00:00Z",
+        source: "generation",
+        layout_mode: "single_1",
+        copy_version: 1,
+        // Relative media path only (matches production gallery safety).
+        preview_url: `/media/video/${MOCK_VIDEO.id}/frame?ts=13.000&cache_only=1`,
+        slide_count: gen.slides?.length ?? 6,
+      },
+      {
+        id: 7002,
+        drive_file_id: MOCK_VIDEO_2.id,
+        video_name: MOCK_VIDEO_2.name,
+        video_path: MOCK_VIDEO_2.path,
+        label: "Second demo carousel",
+        created_at: "2026-08-10T09:00:00Z",
+        source: "copy_edit",
+        layout_mode: "single_1",
+        copy_version: 2,
+        preview_url: `/media/video/${MOCK_VIDEO_2.id}/frame?ts=20.000&cache_only=1`,
+        slide_count: 6,
+      },
+    ];
+    const slice = all.slice(offset, offset + limit);
+    return json({
+      items: slice,
+      limit,
+      offset,
+      has_more: offset + slice.length < all.length,
+    });
+  }
+
   if (path === "search/carousel/pipeline/carousel" && method === "GET") {
     const driveFileId = url.searchParams.get("drive_file_id") || MOCK_VIDEO.id;
     const gen = mockGenerate(driveFileId, [], []);
@@ -479,6 +521,8 @@ async function handle(req: NextRequest, ctx: Ctx) {
             created_at: "2026-08-11T12:00:00Z",
             status: "ready",
             layout_mode: "single_1",
+            copy_version: 1,
+            source: "generation",
           },
         ],
       });
@@ -503,6 +547,34 @@ async function handle(req: NextRequest, ctx: Ctx) {
 
   if (path.startsWith("search/carousel/pipeline/saves/") && method === "GET") {
     const id = Number(path.split("/").pop());
+    // Carousel generation saves (exact restore for deep links / history).
+    if (id === 7001 || id === 7002) {
+      const driveFileId = id === 7002 ? MOCK_VIDEO_2.id : MOCK_VIDEO.id;
+      const requestedDriveFileId = url.searchParams.get("drive_file_id");
+      if (requestedDriveFileId && requestedDriveFileId !== driveFileId) {
+        return json({ detail: "Save not found" }, 404);
+      }
+      const gen = mockGenerate(driveFileId, [], []);
+      return json({
+        id,
+        drive_file_id: driveFileId,
+        kind: "carousel",
+        theme_key: "all",
+        label: id === 7002 ? "Second demo carousel" : "Demo carousel save",
+        created_at: id === 7002 ? "2026-08-10T09:00:00Z" : "2026-08-11T12:00:00Z",
+        source: id === 7002 ? "copy_edit" : "generation",
+        layout_mode: "single_1",
+        copy_version: id === 7002 ? 2 : 1,
+        status: "ready",
+        payload: {
+          carousels: gen.carousels,
+          slides: gen.slides,
+          layouts: gen.layouts,
+          title: gen.title,
+          images_ready: true,
+        },
+      });
+    }
     const extract = mockExtract(MOCK_VIDEO.id);
     return json({
       id,

@@ -9,7 +9,8 @@
  * 5 Generate carousel cards
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import {
   ArrowRight,
   Check,
@@ -100,6 +101,11 @@ import {
   shouldHideQualityScore,
   type QualityUiStatus,
 } from "@/lib/carousel-quality";
+import {
+  parseSaveIdParam,
+  restoreCarouselSaveState,
+  saveMatchesVideo,
+} from "@/lib/carousel-save-restore";
 
 type Phase = 1 | 2 | 3 | 4 | 5;
 
@@ -269,7 +275,13 @@ function toggleTheme(
   return next.sort((a, b) => a.start_sec - b.start_sec);
 }
 
-export default function CarouselSearchPage() {
+function CarouselSearchInner() {
+  const searchParams = useSearchParams();
+  const videoParam = searchParams.get("video");
+  const saveParam = parseSaveIdParam(searchParams.get("save"));
+  const deepLinkRestoreRef = useRef<number | null>(null);
+  const deepLinkVideoTriedRef = useRef<string | null>(null);
+
   const [phase, setPhase] = useState<Phase>(1);
   const [recent, setRecent] = useState<CarouselRecentVideo[]>([]);
   const [persons, setPersons] = useState<Person[]>([]);
@@ -373,6 +385,7 @@ export default function CarouselSearchPage() {
   const qualityTimerRef = useRef<number | null>(null);
   const generatedCarouselsRef = useRef<CarouselGeneratedItem[]>([]);
   const [carouselSaves, setCarouselSaves] = useState<CarouselGenerationSaveListItem[]>([]);
+  const [activeCarouselSaveId, setActiveCarouselSaveId] = useState<number | null>(null);
   const [genHistoryOpen, setGenHistoryOpen] = useState(false);
   const genHistoryRef = useRef<HTMLDetailsElement>(null);
   useDismissible(genHistoryOpen, () => setGenHistoryOpen(false), genHistoryRef);
@@ -437,6 +450,7 @@ export default function CarouselSearchPage() {
 
   // User-driven only: do not auto-open a cached complete carousel (that jumped
   // straight to phase 5). History loads for the Saved list; restore is a click.
+  // Exception: an explicit `save` query param is user intent and restores once.
   useEffect(() => {
     if (!selectedVideo) {
       setCarouselSaves([]);
@@ -446,6 +460,169 @@ export default function CarouselSearchPage() {
       .then((res) => setCarouselSaves(res.items ?? []))
       .catch(() => setCarouselSaves([]));
   }, [selectedVideo]);
+
+  const applyRestoredCarouselSave = useCallback(
+    (restored: {
+      id: number;
+      drive_file_id: string;
+      label?: string | null;
+      layout_mode?: string;
+      payload: Parameters<typeof restoreCarouselSaveState>[0];
+    }) => {
+      const state = restoreCarouselSaveState(
+        restored.payload,
+        restored.label,
+        restored.layout_mode
+      );
+      if (!state) {
+        setOutlineError("That save has no carousel slides.");
+        toastApiError("That save has no carousel slides.");
+        return false;
+      }
+      const list = state.carousels as CarouselGeneratedItem[];
+      setGeneratedCarousels(list);
+      setActiveCarouselId(state.activeCarouselId);
+      setImagesReady(state.imagesReady);
+      setCarouselLayouts(state.layouts ? (state.layouts as CarouselLayouts) : null);
+      setCarouselLayout(restored.layout_mode === "split_2" ? "split_2" : "single_1");
+      setOutline({
+        source: "user_restore",
+        title: state.title,
+        slide_count: list[0]?.slide_count ?? list[0]?.slides?.length ?? 0,
+        hooks: [],
+        topics: [],
+        slides: list[0]?.slides ?? [],
+        carousels: list,
+        carousel_count: list.length,
+        images_ready: state.imagesReady,
+      });
+      setActiveCarouselSaveId(restored.id);
+      setPhase(5);
+      setOutlineError(null);
+      return true;
+    },
+    []
+  );
+
+  // Deep-link: select video from ?video= (and stub if not yet in lists).
+  useEffect(() => {
+    if (!videoParam) return;
+    if (selectedVideo?.id === videoParam) return;
+    const fromRecent = recent.find((v) => v.id === videoParam);
+    const fromAll = allVideos.find((v) => v.id === videoParam);
+    const hit = fromRecent || fromAll;
+    if (hit) {
+      setSelectedVideo(hit);
+      return;
+    }
+    if (loadingRecent) return;
+    if (deepLinkVideoTriedRef.current === videoParam) return;
+    deepLinkVideoTriedRef.current = videoParam;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await apiClient.carouselVideos({
+          limit: 50,
+          captionedOnly: false,
+        });
+        if (cancelled) return;
+        const found = (res.items ?? []).find((v) => v.id === videoParam);
+        if (found) {
+          setSelectedVideo(found);
+          setRecent((prev) =>
+            dedupeVideosByName(prependUniqueById([found], prev), { preferId: found.id })
+          );
+          return;
+        }
+      } catch {
+        /* fall through to stub */
+      }
+      if (cancelled) return;
+      // Still allow restore when the library list misses this id.
+      const stub: CarouselRecentVideo = {
+        id: videoParam,
+        name: videoParam,
+        mime_type: "video/mp4",
+        path: null,
+        size: null,
+        modified_time: null,
+        last_synced_at: null,
+        status: "ready",
+        has_captions: true,
+      };
+      setSelectedVideo(stub);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [videoParam, selectedVideo?.id, recent, allVideos, loadingRecent]);
+
+  // Exact save deep-link: restore once; never fall back to latest cache.
+  useEffect(() => {
+    if (!saveParam) return;
+    if (deepLinkRestoreRef.current === saveParam) return;
+    // Wait for video selection when ?video= is present.
+    if (videoParam && !selectedVideo) return;
+    if (videoParam && selectedVideo && selectedVideo.id !== videoParam) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const restored = await apiClient.carouselPipelineSaveGet(
+          saveParam,
+          videoParam || selectedVideo?.id
+        );
+        if (cancelled || deepLinkRestoreRef.current === saveParam) return;
+        if (videoParam && !saveMatchesVideo(restored.drive_file_id, videoParam)) {
+          deepLinkRestoreRef.current = saveParam;
+          setOutlineError(
+            "That saved carousel belongs to a different video. Check the link and try again."
+          );
+          toastApiError("Saved carousel does not match the selected video.");
+          return;
+        }
+        if (selectedVideo && !saveMatchesVideo(restored.drive_file_id, selectedVideo.id)) {
+          deepLinkRestoreRef.current = saveParam;
+          setOutlineError(
+            "That saved carousel belongs to a different video. Check the link and try again."
+          );
+          toastApiError("Saved carousel does not match the selected video.");
+          return;
+        }
+        if (!selectedVideo) {
+          const stub: CarouselRecentVideo = {
+            id: restored.drive_file_id,
+            name: restored.label || restored.drive_file_id,
+            mime_type: "video/mp4",
+            path: null,
+            size: null,
+            modified_time: null,
+            last_synced_at: null,
+            status: "ready",
+            has_captions: true,
+          };
+          setSelectedVideo(stub);
+        }
+        if (restored.kind && restored.kind !== "carousel") {
+          deepLinkRestoreRef.current = saveParam;
+          setOutlineError("That save is not a final carousel generation.");
+          toastApiError("That save is not a final carousel generation.");
+          return;
+        }
+        deepLinkRestoreRef.current = saveParam;
+        applyRestoredCarouselSave(restored);
+        setGenHistoryOpen(true);
+      } catch (e) {
+        if (!cancelled) {
+          deepLinkRestoreRef.current = saveParam;
+          setOutlineError(formatApiError(e, "Could not restore the linked carousel save"));
+          toastApiError(formatApiError(e, "Could not restore the linked carousel save"));
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [saveParam, selectedVideo, videoParam, applyRestoredCarouselSave]);
 
   useEffect(() => {
     if (!selectedVideo) {
@@ -688,6 +865,7 @@ export default function CarouselSearchPage() {
     setGeneratedCarousels([]);
     setCarouselLayouts(null);
     setActiveCarouselId(null);
+    setActiveCarouselSaveId(null);
     setOutlineError(null);
     setPersonNotFound(null);
   }, []);
@@ -1110,7 +1288,7 @@ export default function CarouselSearchPage() {
   async function restoreThemeSave(saveId: number) {
     setError(null);
     try {
-      const res = await apiClient.carouselPipelineSaveGet(saveId);
+      const res = await apiClient.carouselPipelineSaveGet(saveId, selectedVideo?.id);
       const themesPayload = (res.payload?.themes ?? []) as CarouselPipelineTheme[];
       if (!themesPayload.length) {
         setError("That save has no themes.");
@@ -1229,6 +1407,7 @@ export default function CarouselSearchPage() {
     setGeneratedCarousels([]);
     setCarouselLayouts(null);
     setActiveCarouselId(null);
+    setActiveCarouselSaveId(null);
     setOutlineError(null);
     if (phase > 2) setPhase(2);
   }
@@ -1540,6 +1719,7 @@ export default function CarouselSearchPage() {
       const normalized = merged.map((c, idx) => ({ ...c, id: `hook_${idx + 1}` }));
       const withPicks = applyHookFrameOverrides(normalized, hookFrames);
       setGeneratedCarousels(withPicks);
+      setActiveCarouselSaveId(null);
       setQualityUi("current");
       setActiveCarouselId(withPicks[0]?.id ?? null);
       setImagesReady(anyImages);
@@ -1638,6 +1818,7 @@ export default function CarouselSearchPage() {
         setActiveCarouselId(list[0]?.id ?? null);
       }
       setImagesReady(true);
+      setActiveCarouselSaveId(null);
       setOutline((prev) =>
         prev
           ? {
@@ -2735,42 +2916,28 @@ export default function CarouselSearchPage() {
                         type="button"
                         className="studio-btn studio-btn-ghost px-2 py-1 text-[11px]"
                         onClick={() => {
-                          void apiClient.carouselPipelineSaveGet(save.id).then((restored) => {
-                            const payload = restored.payload;
-                            const list = payload.carousels ?? (payload.slides?.length
-                              ? [{
-                                  id: "restored",
-                                  kind: "mixed",
-                                  title: restored.label || "Carousel",
-                                  topic_labels: [],
-                                  slide_count: payload.slides.length,
-                                  slides: payload.slides,
-                                  images_ready: true,
-                                }]
-                              : []);
-                            if (!list.length) {
-                              setOutlineError("That save has no carousel slides.");
-                              toastApiError("That save has no carousel slides.");
-                              return;
-                            }
-                            setGeneratedCarousels(list as CarouselGeneratedItem[]);
-                            setActiveCarouselId(list[0]?.id ?? null);
-                            setImagesReady(Boolean((list[0] as CarouselGeneratedItem)?.images_ready));
-                            setOutline({
-                              source: "user_restore",
-                              title: (list[0] as CarouselGeneratedItem)?.title || "Carousel",
-                              slide_count: (list[0] as CarouselGeneratedItem)?.slide_count ?? 0,
-                              hooks: [],
-                              topics: [],
-                              slides: (list[0] as CarouselGeneratedItem)?.slides ?? [],
-                              carousels: list as CarouselGeneratedItem[],
-                              carousel_count: list.length,
-                              images_ready: Boolean((list[0] as CarouselGeneratedItem)?.images_ready),
-                            });
-                            setPhase(5);
-                          }).catch((e) =>
-                            setOutlineError(formatApiError(e, "Could not restore generation"))
-                          );
+                          void apiClient
+                            .carouselPipelineSaveGet(save.id, selectedVideo?.id)
+                            .then((restored) => {
+                              if (
+                                selectedVideo &&
+                                !saveMatchesVideo(restored.drive_file_id, selectedVideo.id)
+                              ) {
+                                setOutlineError(
+                                  "That saved carousel belongs to a different video."
+                                );
+                                toastApiError(
+                                  "Saved carousel does not match the selected video."
+                                );
+                                return;
+                              }
+                              applyRestoredCarouselSave(restored);
+                            })
+                            .catch((e) =>
+                              setOutlineError(
+                                formatApiError(e, "Could not restore generation")
+                              )
+                            );
                         }}
                       >
                         Restore
@@ -2930,13 +3097,16 @@ export default function CarouselSearchPage() {
                       c.id === activeGeneratedCarousel.id ? { ...c, slides } : c
                     )
                   );
-                  await apiClient.carouselCopySave({
+                  const saved = await apiClient.carouselCopySave({
                     drive_file_id: selectedVideo.id,
+                    save_id: activeCarouselSaveId ?? undefined,
+                    carousel_id: activeGeneratedCarousel.id,
                     layout_mode: carouselLayout,
                     slides,
                     theme: { title: activeGeneratedCarousel.title },
                     references,
                   });
+                  setActiveCarouselSaveId(saved.id);
                   const saves = await apiClient.carouselPipelineSaves(selectedVideo.id, 12, "carousel");
                   setCarouselSaves(saves.items ?? []);
                 }}
@@ -2944,10 +3114,12 @@ export default function CarouselSearchPage() {
                   if (pipelineLocked) return;
                   const res = await apiClient.carouselRegenerateSlide({
                     drive_file_id: selectedVideo.id,
+                    save_id: activeCarouselSaveId ?? undefined,
                     carousel_id: activeGeneratedCarousel.id,
                     slide_index: index,
                     slide,
                   });
+                  setActiveCarouselSaveId(res.id);
                   setGeneratedCarousels((prev) =>
                     prev.map((c) =>
                       c.id === activeGeneratedCarousel.id
@@ -3006,6 +3178,20 @@ export default function CarouselSearchPage() {
         }}
       />
     </div>
+  );
+}
+
+export default function CarouselSearchPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="mx-auto max-w-5xl px-4 py-16 text-sm text-slate-500">
+          Loading studio…
+        </div>
+      }
+    >
+      <CarouselSearchInner />
+    </Suspense>
   );
 }
 

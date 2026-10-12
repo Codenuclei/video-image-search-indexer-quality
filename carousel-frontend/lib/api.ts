@@ -577,6 +577,28 @@ export type CarouselGenerationSaveListItem = {
   copy_version?: number;
 };
 
+/** Lightweight card for the global ready-carousel gallery (no heavy payload). */
+export type CarouselGalleryItem = {
+  id: number;
+  drive_file_id: string;
+  video_name?: string | null;
+  video_path?: string | null;
+  label?: string | null;
+  created_at?: string | null;
+  source?: string | null;
+  layout_mode?: "single_1" | "split_2" | string;
+  copy_version?: number;
+  preview_url?: string | null;
+  slide_count?: number | null;
+};
+
+export type CarouselGalleryResponse = {
+  items: CarouselGalleryItem[];
+  limit: number;
+  offset: number;
+  has_more: boolean;
+};
+
 export type CarouselTranscriptFrameItem = {
   start_sec: number;
   end_sec?: number | null;
@@ -1220,6 +1242,7 @@ export const apiClient = {
   carouselCopySave: (body: {
     drive_file_id: string;
     save_id?: number;
+    carousel_id?: string;
     layout_mode?: "single_1" | "split_2";
     slides?: CarouselOutlineSlide[];
     theme?: Record<string, unknown>;
@@ -1248,7 +1271,15 @@ export const apiClient = {
     api<{ items: CarouselGenerationSaveListItem[] }>(
       `/search/carousel/pipeline/saves?drive_file_id=${encodeURIComponent(driveFileId)}&limit=${limit}&kind=${encodeURIComponent(kind)}`
     ),
-  carouselPipelineSaveGet: (saveId: number) =>
+  /** Global ready final carousels (newest first). Lightweight cards only. */
+  carouselGallery: (opts?: { limit?: number; offset?: number }) => {
+    const limit = Math.max(1, Math.min(opts?.limit ?? 24, 50));
+    const offset = Math.max(0, opts?.offset ?? 0);
+    return api<CarouselGalleryResponse>(
+      `/search/carousel/pipeline/carousels?limit=${limit}&offset=${offset}`
+    );
+  },
+  carouselPipelineSaveGet: (saveId: number, driveFileId?: string) =>
     api<{
       id: number;
       drive_file_id: string;
@@ -1259,17 +1290,25 @@ export const apiClient = {
       source?: string | null;
       model?: string | null;
       transcript_hash?: string | null;
+      layout_mode?: "single_1" | "split_2" | string;
+      copy_version?: number;
       payload: CarouselPipelineExtractResponse & {
         carousels?: CarouselGeneratedItem[];
         slides?: CarouselOutlineSlide[];
+        layouts?: CarouselLayouts | null;
         title?: string;
         selected_hooks?: string[];
         selected_topics?: string[];
         themes?: CarouselPipelineTheme[];
         source?: string;
         cue_count?: number;
+        images_ready?: boolean;
       };
-    }>(`/search/carousel/pipeline/saves/${saveId}`),
+    }>(
+      `/search/carousel/pipeline/saves/${saveId}${
+        driveFileId ? `?drive_file_id=${encodeURIComponent(driveFileId)}` : ""
+      }`
+    ),
   carouselPipelineSaveCreate: (body: {
     drive_file_id: string;
     theme_key?: string;

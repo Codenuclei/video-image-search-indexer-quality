@@ -65,6 +65,11 @@ import {
 import { StageLlmGenerate } from "../stage-llm-generate";
 import { TestIgPost } from "../test-ig-post";
 import { TopicsHooksTree } from "../topics-hooks-tree";
+import {
+  parseSaveIdParam,
+  restoreCarouselSaveState,
+  saveMatchesVideo,
+} from "@/lib/carousel-save-restore";
 
 type Phase = 1 | 2 | 3 | 4 | 5;
 type StageState = "cache" | "generated" | null;
@@ -354,6 +359,9 @@ function CopyEditor({
 function TestStudioInner() {
   const searchParams = useSearchParams();
   const videoParam = searchParams.get("video");
+  const saveParam = parseSaveIdParam(searchParams.get("save"));
+  const deepLinkRestoreRef = useRef<number | null>(null);
+  const deepLinkVideoTriedRef = useRef<string | null>(null);
 
   const [phase, setPhase] = useState<Phase>(1);
   const [maxPhase, setMaxPhase] = useState<Phase>(1);
@@ -428,6 +436,19 @@ function TestStudioInner() {
   } | null>(null);
   const [carouselLayout, setCarouselLayout] = useState<"single_1" | "split_2">("single_1");
   const [copySource, setCopySource] = useState<string | null>(null);
+  const [activeCarouselSaveId, setActiveCarouselSaveId] = useState<number | null>(null);
+  const [carouselSaves, setCarouselSaves] = useState<
+    Array<{
+      id: number;
+      drive_file_id: string;
+      label?: string | null;
+      created_at?: string | null;
+      source?: string | null;
+      layout_mode?: string;
+      copy_version?: number;
+    }>
+  >([]);
+  const [genHistoryOpen, setGenHistoryOpen] = useState(false);
 
   const topics = useMemo(() => extract?.topics ?? [], [extract]);
   const hooks = useMemo(() => {
@@ -483,10 +504,12 @@ function TestStudioInner() {
   );
 
   const displayCarousels = useMemo(() => {
-    // One carousel version only — prefer single-image layout, then first item.
-    const fromLayout = layouts?.single_1?.length ? layouts.single_1 : carousels;
+    // One carousel version only — honor the saved/user-selected layout.
+    const selectedLayout =
+      carouselLayout === "split_2" ? layouts?.split_2 : layouts?.single_1;
+    const fromLayout = selectedLayout?.length ? selectedLayout : carousels;
     return fromLayout.slice(0, 1);
-  }, [layouts, carousels]);
+  }, [layouts, carousels, carouselLayout]);
 
   function applyGenerateResult(
     merged: TestCarousel[],
@@ -713,12 +736,165 @@ function TestStudioInner() {
 
   // Deep-link from library
   useEffect(() => {
-    if (!videoParam || !videos.length) return;
+    if (!videoParam) return;
     const hit = videos.find((v) => v.id === videoParam);
-    if (!hit) return;
-    const task = window.setTimeout(() => setSelected(hit), 0);
+    if (hit) {
+      const task = window.setTimeout(() => setSelected(hit), 0);
+      return () => window.clearTimeout(task);
+    }
+    if (loadingVideos || deepLinkVideoTriedRef.current === videoParam) return;
+    deepLinkVideoTriedRef.current = videoParam;
+    // Preserve exact-save deep links even when the paginated library list does
+    // not contain the source video.
+    const task = window.setTimeout(
+      () =>
+        setSelected({
+          id: videoParam,
+          name: videoParam,
+          mime_type: "video/mp4",
+          path: null,
+          size: null,
+          status: "ready",
+          has_captions: true,
+        }),
+      0
+    );
     return () => window.clearTimeout(task);
-  }, [videoParam, videos]);
+  }, [videoParam, videos, loadingVideos]);
+
+  const applyRestoredCarouselSave = useCallback(
+    (restored: {
+      id: number;
+      drive_file_id: string;
+      label?: string | null;
+      layout_mode?: string;
+      payload: {
+        carousels?: TestCarousel[];
+        slides?: TestSlide[];
+        layouts?: {
+          single_1?: { carousels?: TestCarousel[] };
+          split_2?: { carousels?: TestCarousel[] };
+        } | null;
+        title?: string;
+        images_ready?: boolean;
+      };
+    }) => {
+      const state = restoreCarouselSaveState(
+        restored.payload,
+        restored.label,
+        restored.layout_mode
+      );
+      if (!state) {
+        setError("That save has no carousel slides.");
+        toastApiError("That save has no carousel slides.");
+        return false;
+      }
+      const list = state.carousels as TestCarousel[];
+      const layoutBundle = state.layouts
+        ? {
+            single_1: state.layouts.single_1?.carousels as TestCarousel[] | undefined,
+            split_2: state.layouts.split_2?.carousels as TestCarousel[] | undefined,
+          }
+        : null;
+      applyGenerateResult(
+        list,
+        layoutBundle
+          ? {
+              single_1: layoutBundle.single_1
+                ? { carousels: layoutBundle.single_1 }
+                : undefined,
+              split_2: layoutBundle.split_2
+                ? { carousels: layoutBundle.split_2 }
+                : undefined,
+            }
+          : null,
+        "user_restore"
+      );
+      setCarouselLayout(
+        restored.layout_mode === "split_2" ? "split_2" : "single_1"
+      );
+      setCopyStage("cache");
+      setImageStage(state.imagesReady ? "cache" : null);
+      setActiveCarouselSaveId(restored.id);
+      raisePhase(5);
+      setError(null);
+      return true;
+    },
+    // applyGenerateResult / raisePhase are stable enough for restore; omit to avoid churn
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    []
+  );
+
+  useEffect(() => {
+    if (!selected) {
+      setCarouselSaves([]);
+      return;
+    }
+    void testApi
+      .carouselSaves(selected.id, 12)
+      .then((res) => setCarouselSaves(res.items ?? []))
+      .catch(() => setCarouselSaves([]));
+  }, [selected]);
+
+  // Exact save deep-link — restore once; never fall back to latest.
+  useEffect(() => {
+    if (!saveParam) return;
+    if (deepLinkRestoreRef.current === saveParam) return;
+    if (videoParam && !selected) return;
+    if (videoParam && selected && selected.id !== videoParam) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const restored = await testApi.carouselSaveGet(
+          saveParam,
+          videoParam || selected?.id
+        );
+        if (cancelled || deepLinkRestoreRef.current === saveParam) return;
+        if (videoParam && !saveMatchesVideo(restored.drive_file_id, videoParam)) {
+          deepLinkRestoreRef.current = saveParam;
+          setError("That saved carousel belongs to a different video.");
+          toastApiError("Saved carousel does not match the selected video.");
+          return;
+        }
+        if (selected && !saveMatchesVideo(restored.drive_file_id, selected.id)) {
+          deepLinkRestoreRef.current = saveParam;
+          setError("That saved carousel belongs to a different video.");
+          toastApiError("Saved carousel does not match the selected video.");
+          return;
+        }
+        if (!selected) {
+          const stub: TestVideo = {
+            id: restored.drive_file_id,
+            name: restored.label || restored.drive_file_id,
+            mime_type: "video/mp4",
+            path: null,
+            size: null,
+            status: "ready",
+            has_captions: true,
+          };
+          setSelected(stub);
+        }
+        if (restored.kind && restored.kind !== "carousel") {
+          deepLinkRestoreRef.current = saveParam;
+          setError("That save is not a final carousel generation.");
+          toastApiError("That save is not a final carousel generation.");
+          return;
+        }
+        deepLinkRestoreRef.current = saveParam;
+        applyRestoredCarouselSave(restored);
+        setGenHistoryOpen(true);
+      } catch (e) {
+        if (!cancelled) {
+          deepLinkRestoreRef.current = saveParam;
+          setError(formatApiError(e, "Could not restore the linked carousel save"));
+          toastApiError(formatApiError(e, "Could not restore the linked carousel save"));
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [saveParam, selected, videoParam, applyRestoredCarouselSave]);
 
   useEffect(() => {
     if (!selected) return;
@@ -1313,6 +1489,7 @@ function TestStudioInner() {
         return;
       }
 
+      setActiveCarouselSaveId(null);
       applyGenerateResult(merged, lastLayouts, lastCopySource);
       setImageStage(null);
       resetProgressTo(4);
@@ -1371,6 +1548,7 @@ function TestStudioInner() {
           }))
         )
       );
+      setActiveCarouselSaveId(null);
       applyGenerateResult(
         withImages,
         selectedImgs.layouts
@@ -1413,9 +1591,11 @@ function TestStudioInner() {
     setSavingFinal(true);
     setError(null);
     try {
-      await apiClient.carouselCopySave({
+      const saved = await apiClient.carouselCopySave({
         drive_file_id: selected.id,
-        layout_mode: "single_1",
+        save_id: activeCarouselSaveId ?? undefined,
+        carousel_id: carousel.id,
+        layout_mode: carouselLayout,
         slides: (carousel.slides || []).map((slide, index) => ({
           index: slide.index ?? index,
           hook_line: slide.hook_line,
@@ -1439,6 +1619,7 @@ function TestStudioInner() {
           moment_index: index,
         })),
       });
+      setActiveCarouselSaveId(saved.id);
       toast.success("Carousel saved");
     } catch (e) {
       setError(formatApiError(e, "Could not save the carousel. Please try again."));
@@ -2159,6 +2340,62 @@ function TestStudioInner() {
             <p className="mt-2 text-xs text-amber-700" data-testid="test-visual-prep-note">
               {visualPrepNote}
             </p>
+          )}
+
+          {carouselSaves.length > 0 && (
+            <details
+              className="mt-4 rounded-lg bg-white px-3 py-2 shadow-sm"
+              open={genHistoryOpen}
+              onToggle={(e) => setGenHistoryOpen(e.currentTarget.open)}
+            >
+              <summary className="cursor-pointer text-xs font-semibold text-foreground">
+                Generation history ({carouselSaves.length}) — restore is a click, never auto
+              </summary>
+              <div className="mt-2 max-h-[min(16rem,40vh)] space-y-1 overflow-y-auto">
+                {carouselSaves.map((save) => (
+                  <div
+                    key={save.id}
+                    className="flex items-center justify-between gap-2 text-xs"
+                  >
+                    <span className="text-muted-foreground">
+                      v{save.copy_version ?? 1} · {save.source || "generation"} ·{" "}
+                      {save.created_at ? new Date(save.created_at).toLocaleString() : ""}
+                      {save.label ? ` · ${save.label}` : ""}
+                    </span>
+                    <button
+                      type="button"
+                      className="studio-btn studio-btn-ghost px-2 py-1 text-[11px]"
+                      onClick={() => {
+                        void testApi
+                          .carouselSaveGet(save.id, selected?.id)
+                          .then((restored) => {
+                            if (
+                              selected &&
+                              !saveMatchesVideo(restored.drive_file_id, selected.id)
+                            ) {
+                              setError(
+                                "That saved carousel belongs to a different video."
+                              );
+                              toastApiError(
+                                "Saved carousel does not match the selected video."
+                              );
+                              return;
+                            }
+                            applyRestoredCarouselSave(restored);
+                          })
+                          .catch((e) =>
+                            setError(
+                              formatApiError(e, "Could not restore generation")
+                            )
+                          );
+                      }}
+                    >
+                      Restore
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </details>
           )}
 
           <div className="test-ig-stack mt-6" data-testid="carousel-image-preview">

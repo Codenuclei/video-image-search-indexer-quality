@@ -731,6 +731,72 @@ export const testApi = {
         llm_model: body.run_config?.model,
       }),
     }),
+  /** Per-video ready carousel saves (generation history). */
+  carouselSaves: (driveFileId: string, limit = 12) =>
+    api<{
+      items: Array<{
+        id: number;
+        drive_file_id: string;
+        kind?: string;
+        label?: string | null;
+        created_at?: string | null;
+        source?: string | null;
+        layout_mode?: string;
+        copy_version?: number;
+        status?: string;
+      }>;
+    }>(
+      `/search/carousel/pipeline/saves?drive_file_id=${encodeURIComponent(driveFileId)}&limit=${limit}&kind=carousel`
+    ),
+  /** Exact save restore (full payload). */
+  carouselSaveGet: (saveId: number, driveFileId?: string) =>
+    api<{
+      id: number;
+      drive_file_id: string;
+      kind?: string;
+      label?: string | null;
+      created_at?: string | null;
+      source?: string | null;
+      layout_mode?: string;
+      copy_version?: number;
+      payload: {
+        carousels?: TestCarousel[];
+        slides?: TestSlide[];
+        layouts?: {
+          single_1?: { carousels?: TestCarousel[] };
+          split_2?: { carousels?: TestCarousel[] };
+        } | null;
+        title?: string;
+        images_ready?: boolean;
+      };
+    }>(
+      `/search/carousel/pipeline/saves/${saveId}${
+        driveFileId ? `?drive_file_id=${encodeURIComponent(driveFileId)}` : ""
+      }`
+    ),
+  /** Global ready carousel gallery (lightweight). */
+  carouselGallery: (opts?: { limit?: number; offset?: number }) => {
+    const limit = Math.max(1, Math.min(opts?.limit ?? 24, 50));
+    const offset = Math.max(0, opts?.offset ?? 0);
+    return api<{
+      items: Array<{
+        id: number;
+        drive_file_id: string;
+        video_name?: string | null;
+        video_path?: string | null;
+        label?: string | null;
+        created_at?: string | null;
+        source?: string | null;
+        layout_mode?: string;
+        copy_version?: number;
+        preview_url?: string | null;
+        slide_count?: number | null;
+      }>;
+      limit: number;
+      offset: number;
+      has_more: boolean;
+    }>(`/search/carousel/pipeline/carousels?limit=${limit}&offset=${offset}`);
+  },
   transcriptFrames: (opts: {
     driveFileId: string;
     startSec: number;
