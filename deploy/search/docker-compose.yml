@@ -46,6 +46,8 @@ services:
     environment:
       GIT_SHA: ${GIT_SHA:-unknown}
       IMAGE_DIGEST: ${IMAGE_DIGEST:-unknown}
+      # Must equal the frontend value: Collections verify the sealed session cookie.
+      APP_SESSION_SECRET: ${APP_SESSION_SECRET}
       RUN_INDEXER: "false"
       # Dedicated indexer owns the shared background-leader lock. The API keeps
       # the RunPod face queue without competing for indexer leadership.
