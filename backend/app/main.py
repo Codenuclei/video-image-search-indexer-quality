@@ -32,6 +32,7 @@ from app.routers import (
     cache as cache_router,
     carousel_script,
     clusters,
+    collections,
     control_reader,
     diagnostics,
     drive,
@@ -564,6 +565,7 @@ app.include_router(faces.router)
 app.include_router(face_gpu_pull.router)
 app.include_router(media.router)
 app.include_router(folder_contexts.router)
+app.include_router(collections.router)
 app.include_router(fennec.router)
 app.include_router(qwen_vlm.router)
 app.include_router(youtube.router)

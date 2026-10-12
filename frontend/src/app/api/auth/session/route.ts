@@ -45,8 +45,12 @@ export async function GET() {
 
   const res = NextResponse.json({ email: session.email, isAdmin });
   if (isAdmin !== session.isAdmin) {
-    const token = await sealAppSession({ email: session.email, isAdmin });
-    res.cookies.set(APP_SESSION_COOKIE, token, cookieOptions(APP_SESSION_MAX_AGE_SEC));
+    try {
+      const token = await sealAppSession({ email: session.email, isAdmin });
+      res.cookies.set(APP_SESSION_COOKIE, token, cookieOptions(APP_SESSION_MAX_AGE_SEC));
+    } catch {
+      /* leave existing cookie if reseal fails (e.g. missing secret in prod) */
+    }
   }
   return res;
 }
@@ -97,10 +101,18 @@ export async function POST(request: Request) {
     return NextResponse.json({ detail: "Missing email from backend" }, { status: 502 });
   }
 
-  const token = await sealAppSession({
-    email,
-    isAdmin: Boolean(data.is_admin),
-  });
+  let token: string;
+  try {
+    token = await sealAppSession({
+      email,
+      isAdmin: Boolean(data.is_admin),
+    });
+  } catch (err) {
+    return NextResponse.json(
+      { detail: err instanceof Error ? err.message : "APP_SESSION_SECRET is not configured" },
+      { status: 503 }
+    );
+  }
   const res = NextResponse.json({ email, isAdmin: Boolean(data.is_admin) });
   res.cookies.set(APP_SESSION_COOKIE, token, cookieOptions(APP_SESSION_MAX_AGE_SEC));
   return res;
