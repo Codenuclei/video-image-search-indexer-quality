@@ -23,6 +23,7 @@ import {
   type FaceSearchResponse,
   type LeadershipPerson,
 } from "@/lib/api";
+import { AddToCollectionButton } from "@/components/add-to-collection";
 import { Button, Card, ConfirmDialog, FaceThumb, LoadingLabel } from "@/components/ui";
 import { cn } from "@/lib/utils";
 import {
@@ -122,18 +123,40 @@ function MatchRow({ match }: { match: FaceSearchMatch }) {
   );
 }
 
+function appearanceMimeType(item: FaceSearchAppearance): string {
+  const mt = (item.media_type || "").trim().toLowerCase();
+  if (mt.includes("/")) return mt;
+  if (mt === "video") return "video/mp4";
+  if (mt === "image") return "image/jpeg";
+  if (mt === "pdf") return "application/pdf";
+  const name = (item.name || item.path || "").toLowerCase();
+  if (/\.(mp4|mov|webm|mkv|avi|m4v)$/.test(name)) return "video/mp4";
+  if (/\.(png|jpe?g|gif|webp|heic)$/.test(name)) return "image/jpeg";
+  return "image/jpeg";
+}
+
+function appearanceFileName(item: FaceSearchAppearance): string {
+  const named = (item.name || "").trim();
+  if (named) return named;
+  const fromPath = (item.path || "").split("/").filter(Boolean).pop();
+  if (fromPath) return fromPath;
+  return item.drive_file_id;
+}
+
 function ResultsSidePanel({
   result,
   leader,
   tagging,
   tagMessage,
   onNameTag,
+  uploadedFileName,
 }: {
   result: FaceSearchResponse;
   leader: LeadershipPerson | null;
   tagging: boolean;
   tagMessage: string | null;
   onNameTag: () => void;
+  uploadedFileName?: string | null;
 }) {
   const clusters = useMemo(() => collectClusters(result.matches), [result.matches]);
   const initialFiles = useMemo(() => collectAppearances(result.matches), [result.matches]);
@@ -325,25 +348,49 @@ function ResultsSidePanel({
             <p className="text-xs text-muted-foreground">No Drive files linked to these matches yet.</p>
           ) : (
             <ul className="max-h-[28rem] space-y-0.5 overflow-y-auto pr-1">
-              {files.map((f) => (
-                <li key={f.drive_file_id}>
-                  <a
-                    href={driveFilePreviewUrl(f.drive_file_id)}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="flex items-start gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-muted/50"
+              {files.map((f) => {
+                const saveQuery = uploadedFileName
+                  ? `Reverse face search · ${uploadedFileName}`
+                  : "Reverse face search";
+                return (
+                  <li
+                    key={f.drive_file_id}
+                    className="flex items-start gap-1 rounded-md hover:bg-muted/50"
                   >
-                    <ExternalLink size={12} className="mt-0.5 shrink-0 text-muted-foreground" aria-hidden />
-                    <span className="min-w-0">
-                      <span className="block text-xs font-medium leading-snug text-foreground">{f.name}</span>
-                      <span className="block break-all text-[10px] text-muted-foreground">
-                        {f.path || f.media_type}
-                        {f.frame_timestamp != null ? ` · ${f.frame_timestamp.toFixed(1)}s` : ""}
+                    <a
+                      href={driveFilePreviewUrl(f.drive_file_id)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex min-w-0 flex-1 items-start gap-2 px-2 py-1.5 text-left transition-colors"
+                    >
+                      <ExternalLink size={12} className="mt-0.5 shrink-0 text-muted-foreground" aria-hidden />
+                      <span className="min-w-0">
+                        <span className="block text-xs font-medium leading-snug text-foreground">
+                          {appearanceFileName(f)}
+                        </span>
+                        <span className="block break-all text-[10px] text-muted-foreground">
+                          {f.path || f.media_type}
+                          {f.frame_timestamp != null ? ` · ${f.frame_timestamp.toFixed(1)}s` : ""}
+                          {(f.media_type || "").toLowerCase() === "video" ||
+                          appearanceMimeType(f).startsWith("video/")
+                            ? " · video"
+                            : ""}
+                        </span>
                       </span>
-                    </span>
-                  </a>
-                </li>
-              ))}
+                    </a>
+                    <div className="shrink-0 py-1 pr-1">
+                      <AddToCollectionButton
+                        file={{
+                          drive_file_id: f.drive_file_id,
+                          name: appearanceFileName(f),
+                          mime_type: appearanceMimeType(f),
+                        }}
+                        query={saveQuery}
+                      />
+                    </div>
+                  </li>
+                );
+              })}
             </ul>
           )}
           {nextAppearanceMatch && (
@@ -595,6 +642,7 @@ export function ReverseFaceLabPage({ embedded = false }: { embedded?: boolean } 
             tagging={tagging}
             tagMessage={tagMessage}
             onNameTag={() => patchReverseFaceSession({ confirmTagOpen: true })}
+            uploadedFileName={file?.name ?? null}
           />
         </div>
       )}

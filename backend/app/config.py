@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     google_redirect_uri: str = "http://localhost:8000/auth/google/callback"
     # Browser API key for Google Picker (setDeveloperKey). Not a Gemini / AI Studio key.
     google_api_key: str = ""
+    # HMAC secret for the frontend sealed session cookie (dfi_app_session). Must match
+    # APP_SESSION_SECRET on the Next.js service. Empty → forgeable fallback from client id.
+    app_session_secret: str = ""
 
     # URL of the Next.js frontend — used to redirect after OAuth
     frontend_url: str = "http://localhost:3001"

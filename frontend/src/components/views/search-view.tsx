@@ -11,6 +11,7 @@ import {
   type ObjectEvidence,
   type SearchMoment,
 } from "@/lib/api";
+import { AddToCollectionButton } from "@/components/add-to-collection";
 import { Button, DownloadButton, FilePreview, IconButton, IconLink, Input, LoadingLabel, PersonTags } from "@/components/ui";
 import { FilterDropdown } from "@/components/filter-dropdown";
 import { ModalOverlay } from "@/components/modal";
@@ -372,6 +373,14 @@ export function SearchPage({
                           label="Open in Drive"
                           target="_blank"
                           rel="noopener noreferrer"
+                        />
+                        <AddToCollectionButton
+                          file={{
+                            drive_file_id: file.drive_file_id,
+                            name: file.name,
+                            mime_type: file.mime_type,
+                          }}
+                          query={q}
                         />
                       </div>
                     </div>

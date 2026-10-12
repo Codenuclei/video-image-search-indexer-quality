@@ -13,6 +13,9 @@
 import { sanitizeUserFacingError } from "./index-errors";
 import { toastApiError } from "./toast-api-error";
 
+/** Same-origin BFF for collections (httpOnly cookie → Bearer on the server). */
+const COLLECTIONS_API = { baseUrl: "", credentials: "same-origin" as const };
+
 const LOOPBACK_API = (process.env.NEXT_PUBLIC_API_URL_LOCAL ?? "http://127.0.0.1:8000").replace(/\/+$/, "");
 const PUBLIC_API = (process.env.NEXT_PUBLIC_API_URL ?? "").replace(/\/+$/, "");
 const API_PORT = process.env.NEXT_PUBLIC_API_PORT ?? "8000";
@@ -930,6 +933,59 @@ export type FolderContext = {
   description: string;
 };
 
+export type CollectionItem = {
+  id: number;
+  drive_file_id: string;
+  name: string;
+  mime_type: string;
+  query: string | null;
+  added_at: string | null;
+};
+
+export type CollectionSummary = {
+  id: string;
+  name: string;
+  owner_email: string;
+  created_at: string | null;
+  item_count: number;
+  cover_drive_file_ids: string[];
+  contains_file?: boolean;
+};
+
+/** Error thrown by `api()`; optional `status` is the HTTP status when known. */
+export type ApiError = Error & { status?: number };
+
+export function getApiErrorStatus(error: unknown): number | undefined {
+  if (!error || typeof error !== "object") return undefined;
+  const status = (error as { status?: unknown }).status;
+  return typeof status === "number" ? status : undefined;
+}
+
+export type SharedCollectionSummary = CollectionSummary & {
+  last_seen_at: string | null;
+};
+
+export type CollectionList = {
+  mine: CollectionSummary[];
+  shared: SharedCollectionSummary[];
+};
+
+export type Collection = {
+  id: string;
+  name: string;
+  owner_email: string;
+  created_at: string | null;
+  is_owner: boolean;
+  items: CollectionItem[];
+};
+
+export type CollectionItemInput = {
+  drive_file_id: string;
+  name: string;
+  mime_type: string;
+  query?: string | null;
+};
+
 export type DriveSession = {
   connected: boolean;
   email?: string;
@@ -1075,9 +1131,26 @@ async function api<T>(
     if (!res.ok) {
       const text = await res.text();
       if (res.status >= 500) {
-        throw new Error(SERVICE_UNAVAILABLE_MESSAGE);
+        const serverErr = new Error(SERVICE_UNAVAILABLE_MESSAGE) as ApiError;
+        serverErr.status = res.status;
+        throw serverErr;
       }
-      throw new Error(formatApiError(new Error(text || res.statusText)));
+      let detail = text || res.statusText;
+      try {
+        const parsed = JSON.parse(text) as { detail?: unknown };
+        if (typeof parsed.detail === "string" && parsed.detail.trim()) {
+          detail = parsed.detail.trim();
+        }
+      } catch {
+        /* keep raw text */
+      }
+      const message =
+        res.status === 401
+          ? detail || "Session expired — please sign out and sign in again"
+          : formatApiError(new Error(detail || res.statusText));
+      const err = new Error(message) as ApiError;
+      err.status = res.status;
+      throw err;
     }
     if (res.status === 204) return undefined as T;
     return res.json();
@@ -1092,6 +1165,11 @@ async function api<T>(
         if (!silent) toastApiError(msg);
         throw new Error(msg);
       }
+      throw error;
+    }
+    // Preserve HTTP status from the !res.ok path above (avoid double-wrapping).
+    if (error instanceof Error && typeof (error as ApiError).status === "number") {
+      if (!silent) toastApiError(error.message);
       throw error;
     }
     const msg = formatApiError(error);
@@ -1958,3 +2036,66 @@ export const apiClient = {
     }),
   driveLogout: () => api<{ ok: boolean }>("/api/logout", { method: "POST" }),
 };
+
+export async function listCollections(fileId?: string) {
+  const params = new URLSearchParams();
+  if (fileId?.trim()) params.set("file_id", fileId.trim());
+  const qs = params.toString();
+  return api<CollectionList>(`/api/collections${qs ? `?${qs}` : ""}`, {
+    ...COLLECTIONS_API,
+  });
+}
+
+export async function createCollection(name: string) {
+  return api<Collection>("/api/collections", {
+    method: "POST",
+    body: JSON.stringify({ name }),
+    ...COLLECTIONS_API,
+  });
+}
+
+export async function getCollection(id: string) {
+  return api<Collection>(`/api/collections/${encodeURIComponent(id)}`, {
+    ...COLLECTIONS_API,
+  });
+}
+
+export async function renameCollection(id: string, name: string) {
+  return api<Collection>(`/api/collections/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ name }),
+    ...COLLECTIONS_API,
+  });
+}
+
+export async function deleteCollection(id: string) {
+  return api<void>(`/api/collections/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    ...COLLECTIONS_API,
+  });
+}
+
+export async function addCollectionItems(id: string, items: CollectionItemInput[]) {
+  return api<Collection>(`/api/collections/${encodeURIComponent(id)}/items`, {
+    method: "POST",
+    body: JSON.stringify({ items }),
+    ...COLLECTIONS_API,
+  });
+}
+
+export async function removeCollectionItem(id: string, driveFileId: string) {
+  return api<Collection>(
+    `/api/collections/${encodeURIComponent(id)}/items/${encodeURIComponent(driveFileId)}`,
+    {
+      method: "DELETE",
+      ...COLLECTIONS_API,
+    }
+  );
+}
+
+export async function removeCollectionView(id: string) {
+  return api<void>(`/api/collections/${encodeURIComponent(id)}/view`, {
+    method: "DELETE",
+    ...COLLECTIONS_API,
+  });
+}

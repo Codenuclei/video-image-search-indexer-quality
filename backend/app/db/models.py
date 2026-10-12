@@ -977,3 +977,61 @@ class SearchQueryCache(Base):
     cluster_ids: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
+
+class Collection(Base):
+    """Named shareable collection of Drive files, owned by one user email."""
+
+    __tablename__ = "collections"
+
+    id: Mapped[str] = mapped_column(String(24), primary_key=True)  # secrets.token_urlsafe(9)
+    owner_email: Mapped[str] = mapped_column(String(320), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    items: Mapped[list["CollectionItem"]] = relationship(
+        back_populates="collection",
+        cascade="all, delete-orphan",
+    )
+
+
+class CollectionItem(Base):
+    """A Drive file saved into a collection (metadata only; no media copy)."""
+
+    __tablename__ = "collection_items"
+    __table_args__ = (
+        UniqueConstraint("collection_id", "drive_file_id", name="uq_collection_item_file"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    collection_id: Mapped[str] = mapped_column(
+        ForeignKey("collections.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    drive_file_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(512), nullable=False)
+    mime_type: Mapped[str] = mapped_column(String(128), nullable=False)
+    query: Mapped[str | None] = mapped_column(Text, nullable=True)
+    added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    collection: Mapped[Collection] = relationship(back_populates="items")
+
+
+class CollectionView(Base):
+    """Per-user memory of a shared collection link they opened (read-only)."""
+
+    __tablename__ = "collection_views"
+    __table_args__ = (
+        UniqueConstraint("collection_id", "viewer_email", name="uq_collection_view_viewer"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    collection_id: Mapped[str] = mapped_column(
+        ForeignKey("collections.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    viewer_email: Mapped[str] = mapped_column(String(320), nullable=False, index=True)
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+

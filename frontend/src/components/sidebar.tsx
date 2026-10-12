@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
 import {
+  Bookmark,
   CircleHelp,
   FolderOpen,
   HardDrive,
@@ -47,6 +48,7 @@ const links: NavLink[] = [
   { href: "/labs/search-v2", label: "Search demo v2", icon: Search, mobile: false, section: "find" },
   // Video Carousel disabled on main app — lives on dfi-carousel (carousel-frontend).
   { href: "/labs/reverse-face", label: "Reverse Face", icon: ScanFace, mobile: false, section: "find" },
+  { href: "/collections", label: "Collections", icon: Bookmark, mobile: true, section: "find" },
   { href: "/library", label: "Library", icon: HardDrive, mobile: true },
   { href: "/folders", label: "Folders", icon: FolderOpen, mobile: true },
   { href: "/admin", label: "Admin", icon: Shield, mobile: false, adminOnly: true },

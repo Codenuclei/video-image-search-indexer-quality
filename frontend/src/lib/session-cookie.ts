@@ -14,8 +14,13 @@ export type AppSession = {
 function sessionSecret(): string {
   const explicit = (process.env.APP_SESSION_SECRET || "").trim();
   if (explicit) return explicit;
-  // Stable fallback so local/dev works without an extra secret; production
-  // should set APP_SESSION_SECRET on the frontend service.
+  // Never use a forgeable public-client-id fallback in production.
+  if (process.env.NODE_ENV === "production") {
+    throw new Error(
+      "APP_SESSION_SECRET is not configured. Set it on the frontend service (same value as the backend)."
+    );
+  }
+  // Stable local/dev fallback only.
   const cid = (process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID || "").trim();
   return `dfi-session:${cid || "dev"}`;
 }
@@ -77,8 +82,10 @@ export async function unsealAppSession(token: string | undefined | null): Promis
   if (!token || !token.includes(".")) return null;
   const [body, sig] = token.split(".", 2);
   if (!body || !sig) return null;
-  if (!(await hmacVerify(body, sig))) return null;
   try {
+    // Catch missing APP_SESSION_SECRET in production (and any crypto errors) so
+    // middleware treats the request as unauthenticated instead of crashing.
+    if (!(await hmacVerify(body, sig))) return null;
     const raw = new TextDecoder().decode(b64urlDecode(body));
     const parsed = JSON.parse(raw) as AppSession;
     if (!parsed?.email || typeof parsed.isAdmin !== "boolean") return null;
