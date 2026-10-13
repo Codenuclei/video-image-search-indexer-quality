@@ -16,17 +16,26 @@ type CacheRevisionEntry = {
 
 const LIBRARY_SHELL_CACHE_KEY = "driveLibraryShell";
 
+/** Fetch persons, write cache, and keep search-session in sync. */
+export async function refreshPersonsCache(): Promise<void> {
+  hydrateKeyFromDisk("persons");
+  const rev = await apiClient.personsRevision().catch(() => null);
+  const persons = await apiClient.persons();
+  writeCache("persons", persons, rev?.revision ?? personsRevision(persons), true);
+  patchSearchSession({ persons });
+}
+
+/** Drop stale persons cache then refetch so Indexed People updates immediately. */
+export async function forceRefreshPersonsCache(): Promise<void> {
+  invalidateCache("persons");
+  await refreshPersonsCache();
+}
+
 const CACHE_REVISION_ENTRIES: CacheRevisionEntry[] = [
   {
     key: "persons",
     fetchRevision: () => apiClient.personsRevision(),
-    refresh: async () => {
-      hydrateKeyFromDisk("persons");
-      const rev = await apiClient.personsRevision().catch(() => null);
-      const persons = await apiClient.persons();
-      writeCache("persons", persons, rev?.revision ?? personsRevision(persons), true);
-      patchSearchSession({ persons });
-    },
+    refresh: refreshPersonsCache,
   },
   {
     key: "folderContexts",

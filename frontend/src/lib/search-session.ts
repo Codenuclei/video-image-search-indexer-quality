@@ -94,6 +94,22 @@ export function patchSearchSession(patch: Partial<SearchSession>) {
   emit();
 }
 
+/**
+ * If the typed query exactly matches a different indexed person than the active
+ * person filter, clear the filter so runSearch does not send both q and person.
+ * Returns true when the filter was cleared.
+ */
+export function clearConflictingPersonFilter(query?: string): boolean {
+  const q = (query ?? state.q).trim().toLowerCase();
+  const active = state.person.trim();
+  if (!q || !active) return false;
+  if (active.toLowerCase() === q) return false;
+  const match = state.persons.some((p) => p.name.trim().toLowerCase() === q);
+  if (!match) return false;
+  patchSearchSession({ person: "" });
+  return true;
+}
+
 function subscribe(listener: () => void) {
   listeners.add(listener);
   return () => listeners.delete(listener);

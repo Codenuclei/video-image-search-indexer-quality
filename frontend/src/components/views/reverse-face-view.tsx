@@ -432,6 +432,7 @@ function ResultsSidePanel({
 
 export function ReverseFaceLabPage({ embedded = false }: { embedded?: boolean } = {}) {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const resultsAreaRef = useRef<HTMLDivElement>(null);
   const {
     dragOver,
     file,
@@ -450,6 +451,7 @@ export function ReverseFaceLabPage({ embedded = false }: { embedded?: boolean } 
     confirmTagOpen,
   } = useReverseFaceSession();
   const [showSlowHint, setShowSlowHint] = useState(false);
+  const hasUploadedFile = !!(file || previewUrl);
 
   useEffect(() => {
     void hydrateLeadershipRoster();
@@ -473,6 +475,7 @@ export function ReverseFaceLabPage({ embedded = false }: { embedded?: boolean } 
   }
 
   async function selectLeader(person: LeadershipPerson) {
+    resultsAreaRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
     await selectReverseFaceLeader(person);
   }
 
@@ -591,6 +594,51 @@ export function ReverseFaceLabPage({ embedded = false }: { embedded?: boolean } 
         )}
       </section>
 
+      <div ref={resultsAreaRef}>
+        {searching && !result && (
+          <div className="py-6 text-center text-sm text-muted-foreground">
+            <LoadingLabel>
+              {selectedLeader ? `Searching for ${selectedLeader.name}…` : "Searching faces…"}
+            </LoadingLabel>
+            {showSlowHint && (
+              <p className="mt-2 text-xs text-muted-foreground">
+                Still working. The face engine may be starting up.
+              </p>
+            )}
+          </div>
+        )}
+
+        {result && (
+          <div className="relative">
+            <div className="mb-3 flex justify-end">
+              <button
+                type="button"
+                onClick={clearReverseFaceSearch}
+                title="Clear search"
+                aria-label="Clear search"
+                className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-border/70 bg-card text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              >
+                <X size={16} aria-hidden />
+              </button>
+            </div>
+            {(result.faces_detected === 0 ||
+              (result.matches.length === 0 && !!result.message)) && (
+              <p className="mb-3 text-sm text-amber-700 dark:text-amber-400">
+                {result.message ?? "No face detected in upload"}
+              </p>
+            )}
+            <ResultsSidePanel
+              result={result}
+              leader={selectedLeader}
+              tagging={tagging}
+              tagMessage={tagMessage}
+              onNameTag={() => patchReverseFaceSession({ confirmTagOpen: true })}
+              uploadedFileName={file?.name ?? null}
+            />
+          </div>
+        )}
+      </div>
+
       <section className="space-y-3">
         <h3 className="text-sm font-medium">Upload face photo</h3>
         <p className="text-xs text-muted-foreground">
@@ -631,9 +679,9 @@ export function ReverseFaceLabPage({ embedded = false }: { embedded?: boolean } 
               Choose file
             </Button>
             <Button onClick={() => runSearch()} disabled={!file || searching}>
-              {searching && !selectedLeader ? <LoadingLabel>Searching…</LoadingLabel> : "Search faces"}
+              {searching && hasUploadedFile ? <LoadingLabel>Searching…</LoadingLabel> : "Search faces"}
             </Button>
-            {(file || previewUrl || result) && (
+            {hasUploadedFile && (
               <Button
                 variant="secondary"
                 onClick={() => {
@@ -659,49 +707,6 @@ export function ReverseFaceLabPage({ embedded = false }: { embedded?: boolean } 
           />
         </div>
       </section>
-
-      {searching && !result && (
-        <div className="py-6 text-center text-sm text-muted-foreground">
-          <LoadingLabel>
-            {selectedLeader ? `Searching for ${selectedLeader.name}…` : "Searching faces…"}
-          </LoadingLabel>
-          {showSlowHint && (
-            <p className="mt-2 text-xs text-muted-foreground">
-              Still working. The face engine may be starting up.
-            </p>
-          )}
-        </div>
-      )}
-
-      {result && (
-        <div className="relative">
-          <div className="mb-3 flex justify-end">
-            <button
-              type="button"
-              onClick={clearReverseFaceSearch}
-              title="Clear search"
-              aria-label="Clear search"
-              className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-border/70 bg-card text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-            >
-              <X size={16} aria-hidden />
-            </button>
-          </div>
-          {(result.faces_detected === 0 ||
-            (result.matches.length === 0 && !!result.message)) && (
-            <p className="mb-3 text-sm text-amber-700 dark:text-amber-400">
-              {result.message ?? "No face detected in upload"}
-            </p>
-          )}
-          <ResultsSidePanel
-            result={result}
-            leader={selectedLeader}
-            tagging={tagging}
-            tagMessage={tagMessage}
-            onNameTag={() => patchReverseFaceSession({ confirmTagOpen: true })}
-            uploadedFileName={file?.name ?? null}
-          />
-        </div>
-      )}
 
       <ConfirmDialog
         open={confirmTagOpen && !!selectedLeader}
@@ -752,16 +757,19 @@ export function ReverseFaceLabPage({ embedded = false }: { embedded?: boolean } 
                       ? `${(item.error || "Failed").slice(0, 117)}…`
                       : item.error || "Failed"}
                   </p>
-                ) : (
-                  <div className="mt-2 space-y-2">
-                    <p className="text-xs text-muted-foreground">
-                      {item.search?.faces_detected ?? 0} face(s) ·{" "}
-                      {totalMatchFileCount(item.search?.matches ?? [])} match(es)
-                    </p>
-                    {(item.search?.matches ?? []).slice(0, 5).map((m) => (
-                      <MatchRow key={`${item.url}-${m.face_id}`} match={m} />
-                    ))}
+                ) : item.search ? (
+                  <div className="mt-2">
+                    <ResultsSidePanel
+                      result={item.search}
+                      leader={null}
+                      tagging={false}
+                      tagMessage={null}
+                      onNameTag={() => {}}
+                      uploadedFileName={null}
+                    />
                   </div>
+                ) : (
+                  <p className="mt-1 text-xs text-muted-foreground">No search result for this URL.</p>
                 )}
               </div>
             ))}

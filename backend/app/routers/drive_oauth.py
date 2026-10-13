@@ -18,7 +18,7 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import httpx
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -46,6 +46,14 @@ _SCOPES = " ".join([
 _TOKEN_URI = "https://oauth2.googleapis.com/token"
 _AUTH_URI = "https://accounts.google.com/o/oauth2/v2/auth"
 _USERINFO_URI = "https://www.googleapis.com/oauth2/v2/userinfo"
+_DRIVE_FILES_PREFLIGHT_URL = "https://www.googleapis.com/drive/v3/files"
+
+# Returned to the frontend when the Browser API key fails for the request origin.
+# Keep this exact wording — folders-view / drive-session-bar match it to avoid double-toast.
+PICKER_API_KEY_ORIGIN_DETAIL = (
+    "Google Picker API key is invalid for this site origin. Use a Browser key with "
+    "Drive + Picker APIs enabled and add this origin to HTTP referrer restrictions."
+)
 
 
 def _oauth_allowed_origins(settings: Settings) -> set[str]:
@@ -231,6 +239,7 @@ async def get_session(session: AsyncSession = Depends(get_db)):
 
 @router.get("/api/drive-token")
 async def get_drive_token(
+    request: Request,
     session: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ):
@@ -258,7 +267,8 @@ async def get_drive_token(
         user.token_expiry = new_expiry
         await session.commit()
 
-    if not (settings.google_api_key or "").strip():
+    api_key = (settings.google_api_key or "").strip()
+    if not api_key:
         raise HTTPException(
             status_code=503,
             detail=(
@@ -269,9 +279,12 @@ async def get_drive_token(
             ),
         )
 
+    origin = _client_origin_from_request(request)
+    await preflight_google_browser_api_key(api_key, origin)
+
     return {
         "accessToken": user.access_token,
-        "apiKey": settings.google_api_key,
+        "apiKey": api_key,
         "appId": _google_app_id_from_client_id(settings.google_client_id),
     }
 
@@ -282,6 +295,115 @@ def _google_app_id_from_client_id(client_id: str) -> str | None:
         return None
     match = re.match(r"^(\d+)-", client_id)
     return match.group(1) if match else None
+
+
+def _client_origin_from_request(request: Request) -> str | None:
+    """Best-effort browser origin from Origin or Referer (for API key referrer checks)."""
+    origin = (request.headers.get("origin") or "").strip()
+    if origin:
+        return origin.rstrip("/")
+    referer = (request.headers.get("referer") or "").strip()
+    if not referer:
+        return None
+    parsed = urlparse(referer)
+    if parsed.scheme and parsed.netloc:
+        return f"{parsed.scheme}://{parsed.netloc}"
+    return None
+
+
+def _google_error_reasons(payload: object) -> set[str]:
+    """Collect Google JSON error reasons (top-level errors[] and details[].reason)."""
+    reasons: set[str] = set()
+    if not isinstance(payload, dict):
+        return reasons
+    err = payload.get("error")
+    if not isinstance(err, dict):
+        return reasons
+    for item in err.get("errors") or []:
+        if isinstance(item, dict):
+            reason = item.get("reason")
+            if isinstance(reason, str) and reason:
+                reasons.add(reason)
+    for item in err.get("details") or []:
+        if isinstance(item, dict):
+            reason = item.get("reason")
+            if isinstance(reason, str) and reason:
+                reasons.add(reason)
+    status = err.get("status")
+    if isinstance(status, str) and status:
+        reasons.add(status)
+    message = err.get("message")
+    if isinstance(message, str) and message:
+        reasons.add(message)
+    return reasons
+
+
+def _is_invalid_browser_api_key_response(status_code: int, payload: object, body_text: str) -> bool:
+    """True when Google rejected the key itself (vs missing OAuth)."""
+    reasons = _google_error_reasons(payload)
+    blocked = {
+        "API_KEY_INVALID",
+        "API_KEY_HTTP_REFERRER_BLOCKED",
+        "API_KEY_IP_ADDRESS_BLOCKED",
+        "API_KEY_ANDROID_APP_BLOCKED",
+        "API_KEY_IOS_APP_BLOCKED",
+    }
+    if reasons & blocked:
+        return True
+    blob = " ".join(sorted(reasons)) + " " + (body_text or "")
+    lower = blob.lower()
+    if "api_key_invalid" in lower or "api key not valid" in lower:
+        return True
+    if "api_key_http_referrer_blocked" in lower:
+        return True
+    if status_code == 400 and "api key" in lower and ("invalid" in lower or "not valid" in lower):
+        return True
+    if "referer" in lower and "block" in lower:
+        return True
+    if "referrer" in lower and "block" in lower:
+        return True
+    return False
+
+
+async def preflight_google_browser_api_key(api_key: str, origin: str | None) -> None:
+    """Lightweight Drive call with key= + Referer to catch invalid/referrer-blocked keys.
+
+    Missing OAuth typically yields 401/403 with a distinct reason — that is OK.
+    Invalid or referrer-blocked keys raise HTTP 400 with PICKER_API_KEY_ORIGIN_DETAIL.
+    Network failures are logged and skipped so a transient outage does not block the picker.
+    """
+    headers: dict[str, str] = {}
+    if origin:
+        # Google HTTP referrer restrictions match the browser Referer.
+        headers["Referer"] = origin if origin.endswith("/") else f"{origin}/"
+
+    params = {"pageSize": "1", "fields": "files(id)", "key": api_key}
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                _DRIVE_FILES_PREFLIGHT_URL,
+                params=params,
+                headers=headers,
+            )
+    except httpx.HTTPError as exc:
+        logger.warning("Google API key preflight network error (allowing token): %s", exc)
+        return
+
+    payload: object = None
+    body_text = ""
+    try:
+        payload = resp.json()
+        body_text = str(payload)
+    except Exception:
+        body_text = (resp.text or "")[:800]
+
+    if _is_invalid_browser_api_key_response(resp.status_code, payload, body_text):
+        logger.warning(
+            "Google Browser API key rejected for origin=%r status=%s",
+            origin,
+            resp.status_code,
+        )
+        raise HTTPException(status_code=400, detail=PICKER_API_KEY_ORIGIN_DETAIL)
 
 
 # ── Folder selection ──────────────────────────────────────────────────────────

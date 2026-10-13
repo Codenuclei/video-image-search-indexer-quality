@@ -6,13 +6,21 @@ import { Bookmark, Check, Plus } from "lucide-react";
 import {
   addCollectionItems,
   createCollection,
+  formatApiError,
+  isAbortError,
   listCollections,
   removeCollectionItem,
   type CollectionSummary,
 } from "@/lib/api";
 import { localGet, localSet } from "@/lib/local-store";
 import { cn } from "@/lib/utils";
+import { toastApiError } from "@/lib/toast-api-error";
 import { toast } from "sonner";
+
+function toastCollectionError(error: unknown, fallback: string) {
+  if (isAbortError(error)) return;
+  toastApiError(formatApiError(error, fallback));
+}
 
 const LAST_COLLECTION_KEY = "dfi_last_collection_id";
 const POPOVER_WIDTH = 256; // w-64
@@ -131,7 +139,7 @@ export function AddToCollectionButton({
       }
       setMembership(memberMap);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not load collections");
+      toastCollectionError(error, "Could not load collections");
       setOpen(false);
     } finally {
       setLoading(false);
@@ -171,7 +179,7 @@ export function AddToCollectionButton({
         localSet(LAST_COLLECTION_KEY, collectionId);
       }
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not update collection");
+      toastCollectionError(error, "Could not update collection");
     } finally {
       setBusyId(null);
     }
@@ -208,7 +216,7 @@ export function AddToCollectionButton({
       setNewName("");
       toast.success(`Saved to “${created.name}”`);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not create collection");
+      toastCollectionError(error, "Could not create collection");
     } finally {
       setCreating(false);
     }

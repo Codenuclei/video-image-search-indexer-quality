@@ -394,28 +394,43 @@ export async function runReverseFaceNameTag(opts: {
       tagMessage: `Tagged as “${res.person.name}” (person #${res.person.id}) · ${okCount} action(s) · ${res.person.file_count ?? res.person.occurrence_count} files`,
     });
 
+    // Indexed People is revision-gated / 60s-polled — invalidate+refetch so the new
+    // person shows without a full page reload (fire-and-forget; do not block spinner).
+    // Dynamic import avoids reverse-face ↔ search-session ↔ cache-revisions cycles.
+    void import("@/lib/cache-revisions")
+      .then(({ forceRefreshPersonsCache }) => forceRefreshPersonsCache())
+      .catch(() => {
+        /* best-effort — People tab will catch up on next poll */
+      });
+
     // Refresh matches in the background so name-tag does not feel blocked on reverse search.
+    // Tie the refresh AbortSignal to searchAbort so bumpSearchGeneration cancels cleanly.
     const refreshGen = searchGeneration;
     const leaderUrl = state.selectedLeader?.image_url;
     const upload = state.file;
     const isStaleRefresh = () => refreshGen !== searchGeneration;
     void (async () => {
+      const refreshAbort = new AbortController();
+      searchAbort = refreshAbort;
+      const signal = refreshAbort.signal;
       try {
         if (leaderUrl) {
           const refreshed = await withNetworkRetry(
-            () => apiClient.searchFaceByUrl(leaderUrl, 20),
-            { isStale: isStaleRefresh }
+            () => apiClient.searchFaceByUrl(leaderUrl, 20, signal),
+            { signal, isStale: isStaleRefresh }
           );
           if (!isStaleRefresh()) patchReverseFaceSession({ result: refreshed });
         } else if (upload) {
           const refreshed = await withNetworkRetry(
-            () => apiClient.searchUploadedFace(upload, 20),
-            { isStale: isStaleRefresh }
+            () => apiClient.searchUploadedFace(upload, 20, signal),
+            { signal, isStale: isStaleRefresh }
           );
           if (!isStaleRefresh()) patchReverseFaceSession({ result: refreshed });
         }
       } catch {
-        /* keep tagged message; refresh is best-effort */
+        /* keep tagged message; refresh is best-effort (incl. abort) */
+      } finally {
+        if (searchAbort?.signal === signal) searchAbort = null;
       }
     })();
     return true;

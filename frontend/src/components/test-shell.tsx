@@ -26,6 +26,7 @@ import { ThemeToggle } from "@/components/theme-toggle";
 import { Spinner } from "@/components/ui";
 import {
   cancelSearch,
+  clearConflictingPersonFilter,
   hydrateSearchCatalogs,
   hydrateSearchSettings,
   patchSearchSession,
@@ -41,6 +42,7 @@ import {
   useReverseFaceSession,
 } from "@/lib/reverse-face-session";
 import { useTestShellChrome } from "@/lib/test-shell-chrome";
+import { toast } from "sonner";
 
 const libraryLinks = [
   { href: "/test/folders", label: "Indexed Folders", icon: FolderOpen },
@@ -176,10 +178,28 @@ export function TestShell({ children }: { children: React.ReactNode }) {
   function submitHeaderSearch(event: React.FormEvent) {
     event.preventDefault();
     patchSearchSession({ q: headerQuery });
+    if (clearConflictingPersonFilter(headerQuery)) {
+      toast.message("Person filter cleared");
+    }
     clearReverseFaceSearch();
     // runSearch reads session state after the sync patch above.
     void runSearch();
   }
+
+  function clearFilterAndSearch(patch: Partial<{ mime: string; person: string; folderPath: string }>) {
+    patchSearchSession({ ...patch, q: headerQuery });
+    if (headerQuery.trim()) void runSearch();
+  }
+
+  const mimeLabel =
+    mimeValue === "image" ? "Images" : mimeValue === "video" ? "Videos" : mimeValue === "pdf" ? "PDFs" : mimeValue;
+  const folderChipLabel =
+    folderPath
+      ? libraryFolders.find((f) => f.value === folderPath)?.label ??
+        folderContexts.find((f) => f.folder_path === folderPath)?.description ??
+        folderPath
+      : "";
+  const hasActiveFilters = Boolean(person || folderPath || mimeValue !== "all");
 
   function onUploadPicked(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -491,6 +511,44 @@ export function TestShell({ children }: { children: React.ReactNode }) {
           </div>
           </div>
         </header>
+
+        {searchActive && hasActiveFilters && (
+          <div className="flex flex-wrap items-center gap-1.5 border-b border-border bg-card px-4 py-2 md:px-6">
+            {mimeValue !== "all" && (
+              <button
+                type="button"
+                onClick={() => clearFilterAndSearch({ mime: "all" })}
+                className="inline-flex max-w-full items-center gap-1 rounded-full border border-border bg-muted/60 px-2.5 py-1 text-xs text-foreground transition-colors hover:bg-accent"
+                title="Clear type filter"
+              >
+                <span className="truncate">Type: {mimeLabel}</span>
+                <X size={12} className="shrink-0 opacity-70" aria-hidden />
+              </button>
+            )}
+            {folderPath && (
+              <button
+                type="button"
+                onClick={() => clearFilterAndSearch({ folderPath: "" })}
+                className="inline-flex max-w-full items-center gap-1 rounded-full border border-border bg-muted/60 px-2.5 py-1 text-xs text-foreground transition-colors hover:bg-accent"
+                title="Clear folder filter"
+              >
+                <span className="truncate">Folder: {folderChipLabel}</span>
+                <X size={12} className="shrink-0 opacity-70" aria-hidden />
+              </button>
+            )}
+            {person && (
+              <button
+                type="button"
+                onClick={() => clearFilterAndSearch({ person: "" })}
+                className="inline-flex max-w-full items-center gap-1 rounded-full border border-border bg-muted/60 px-2.5 py-1 text-xs text-foreground transition-colors hover:bg-accent"
+                title="Clear person filter"
+              >
+                <span className="truncate">Person: {person}</span>
+                <X size={12} className="shrink-0 opacity-70" aria-hidden />
+              </button>
+            )}
+          </div>
+        )}
 
         <nav
           className={cn(

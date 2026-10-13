@@ -18,6 +18,7 @@ import { ModalOverlay } from "@/components/modal";
 import { clearReverseFaceSearch } from "@/lib/reverse-face-session";
 import {
   cancelSearch,
+  clearConflictingPersonFilter,
   getSearchSession,
   hydrateSearchCatalogs,
   hydrateSearchSettings,
@@ -28,6 +29,7 @@ import {
   runSearch,
   useSearchSession,
 } from "@/lib/search-session";
+import { toast } from "sonner";
 
 const SEARCH_RESULTS_PAGE_SIZE = 30;
 
@@ -131,9 +133,27 @@ export function SearchPage({
   }, [previewFile?.drive_file_id]);
 
   function search() {
+    if (clearConflictingPersonFilter()) {
+      toast.message("Person filter cleared");
+    }
     clearReverseFaceSearch();
     void runSearch();
   }
+
+  function clearFilterAndSearch(patch: Partial<{ mime: string; person: string; folderPath: string }>) {
+    patchSearchSession(patch);
+    if (getSearchSession().q.trim()) void runSearch();
+  }
+
+  const mimeValue = mime || "all";
+  const mimeLabel =
+    mimeValue === "image" ? "Images" : mimeValue === "video" ? "Videos" : mimeValue === "pdf" ? "PDFs" : mimeValue;
+  const folderChipLabel = folderPath
+    ? folderContexts.find((f) => f.folder_path === folderPath)?.description ||
+      libraryFolders.find((f) => f.value === folderPath)?.label ||
+      folderPath
+    : "";
+  const hasActiveFilters = Boolean(person || folderPath || mimeValue !== "all");
 
   const files = (results?.files ?? []).filter((f) => {
     // Defense in depth: never show mismatched types when a mime filter is active.
@@ -289,6 +309,43 @@ export function SearchPage({
           Re-rank
           </button>
         </div>
+        {hasActiveFilters && (
+          <div className="flex flex-wrap items-center gap-1.5">
+            {mimeValue !== "all" && (
+              <button
+                type="button"
+                onClick={() => clearFilterAndSearch({ mime: "all" })}
+                className="inline-flex max-w-full items-center gap-1 rounded-full border border-border bg-muted/60 px-2.5 py-1 text-xs text-foreground transition-colors hover:bg-accent"
+                title="Clear type filter"
+              >
+                <span className="truncate">Type: {mimeLabel}</span>
+                <X size={12} className="shrink-0 opacity-70" aria-hidden />
+              </button>
+            )}
+            {folderPath && (
+              <button
+                type="button"
+                onClick={() => clearFilterAndSearch({ folderPath: "" })}
+                className="inline-flex max-w-full items-center gap-1 rounded-full border border-border bg-muted/60 px-2.5 py-1 text-xs text-foreground transition-colors hover:bg-accent"
+                title="Clear folder filter"
+              >
+                <span className="truncate">Folder: {folderChipLabel}</span>
+                <X size={12} className="shrink-0 opacity-70" aria-hidden />
+              </button>
+            )}
+            {person && (
+              <button
+                type="button"
+                onClick={() => clearFilterAndSearch({ person: "" })}
+                className="inline-flex max-w-full items-center gap-1 rounded-full border border-border bg-muted/60 px-2.5 py-1 text-xs text-foreground transition-colors hover:bg-accent"
+                title="Clear person filter"
+              >
+                <span className="truncate">Person: {person}</span>
+                <X size={12} className="shrink-0 opacity-70" aria-hidden />
+              </button>
+            )}
+          </div>
+        )}
       </div>
       )}
 

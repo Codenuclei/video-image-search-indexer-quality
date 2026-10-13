@@ -7,14 +7,22 @@ import { ArrowLeft, Check, Copy, Film, Link2, Pencil, Trash2, X } from "lucide-r
 import {
   driveFileDownloadUrl,
   driveFileThumbnailUrl,
+  formatApiError,
   getApiErrorStatus,
   getCollection,
+  isAbortError,
   removeCollectionItem,
   renameCollection,
   type Collection,
 } from "@/lib/api";
 import { Button, ConfirmDialog, DownloadButton, Input, LoadingLabel } from "@/components/ui";
+import { toastApiError } from "@/lib/toast-api-error";
 import { toast } from "sonner";
+
+function toastCollectionError(error: unknown, fallback: string) {
+  if (isAbortError(error)) return;
+  toastApiError(formatApiError(error, fallback));
+}
 
 export default function CollectionDetailPage() {
   const params = useParams<{ id: string }>();
@@ -66,7 +74,7 @@ export default function CollectionDetailPage() {
       setEditing(false);
       toast.success("Renamed");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not rename");
+      toastCollectionError(error, "Could not rename");
     } finally {
       setSavingName(false);
     }
@@ -92,7 +100,7 @@ export default function CollectionDetailPage() {
       setCollection(updated);
       setRemoveFileId(null);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not remove item");
+      toastCollectionError(error, "Could not remove item");
     } finally {
       setRemoving(false);
     }

@@ -7,13 +7,21 @@ import {
   createCollection,
   deleteCollection,
   driveFileThumbnailUrl,
+  formatApiError,
+  isAbortError,
   listCollections,
   removeCollectionView,
   type CollectionSummary,
   type SharedCollectionSummary,
 } from "@/lib/api";
 import { Button, ConfirmDialog, Input, LoadingLabel } from "@/components/ui";
+import { toastApiError } from "@/lib/toast-api-error";
 import { toast } from "sonner";
+
+function toastCollectionError(error: unknown, fallback: string) {
+  if (isAbortError(error)) return;
+  toastApiError(formatApiError(error, fallback));
+}
 
 function CoverGrid({ ids }: { ids: string[] }) {
   return (
@@ -80,7 +88,7 @@ export default function CollectionsPage() {
       await load();
       toast.success("Collection created");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not create collection");
+      toastCollectionError(error, "Could not create collection");
     } finally {
       setCreating(false);
     }
@@ -95,7 +103,7 @@ export default function CollectionsPage() {
       await load();
       toast.success("Collection deleted");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not delete collection");
+      toastCollectionError(error, "Could not delete collection");
     } finally {
       setDeleting(false);
     }
@@ -110,7 +118,7 @@ export default function CollectionsPage() {
       await load();
       toast.success("Removed from Shared with me");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not remove");
+      toastCollectionError(error, "Could not remove");
     } finally {
       setRemovingView(false);
     }

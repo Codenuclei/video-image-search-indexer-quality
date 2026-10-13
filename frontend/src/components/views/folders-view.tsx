@@ -271,12 +271,17 @@ export function FoldersPage({
       builder.build().setVisible(true);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e ?? "");
-      if (/developer key|api[- ]?key|invalid/i.test(msg)) {
+      // driveToken (api()) already toasts HTTP errors, including key-origin preflight.
+      // Catch Google Picker iframe errors that never reach fetch — do not open picker.
+      const fromPreflight = /Picker API key is invalid for this site origin/i.test(msg);
+      if (
+        !fromPreflight &&
+        /developer key|api[- ]?key|invalid|API_KEY_INVALID|referr?er.*(block|restrict)/i.test(msg)
+      ) {
         toastApiError(
-          "Google Picker rejected the API developer key. Use a Browser key (not a server key), enable Drive API + Picker API, and allow this page’s HTTPS origin in the key’s HTTP referrer restrictions."
+          "Google Picker API key is invalid for this site origin. Use a Browser key with Drive + Picker APIs enabled and add this origin to HTTP referrer restrictions."
         );
       }
-      /* driveToken already toasted for auth failures */
     } finally {
       setPickerBusy(false);
     }
