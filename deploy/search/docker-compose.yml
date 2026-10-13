@@ -27,6 +27,8 @@ services:
     environment:
       API_INTERNAL_URL: http://backend:8000
       APP_SESSION_SECRET: ${APP_SESSION_SECRET}
+      DEMO_LOGIN_EMAIL: ${DEMO_LOGIN_EMAIL:-}
+      DEMO_LOGIN_PASSWORD_HASH: ${DEMO_LOGIN_PASSWORD_HASH:-}
     expose:
       - "3001"
     depends_on:

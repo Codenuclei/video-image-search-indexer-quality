@@ -6,6 +6,7 @@ import {
   useContext,
   useEffect,
   useState,
+  type FormEvent,
   type ReactNode,
 } from "react";
 import Script from "next/script";
@@ -144,6 +145,9 @@ export function AuthGate({ children }: { children: ReactNode }) {
   const [error, setError] = useState<string | null>(null);
   const [gsiReady, setGsiReady] = useState(false);
   const [mounted, setMounted] = useState(false);
+  const [demoEmail, setDemoEmail] = useState("");
+  const [demoPassword, setDemoPassword] = useState("");
+  const [demoLoading, setDemoLoading] = useState(false);
 
   const applyEmail = useCallback((next: string | null, admin = false) => {
     cachedEmail = next;
@@ -157,6 +161,36 @@ export function AuthGate({ children }: { children: ReactNode }) {
     cachedIsAdmin = admin;
     setIsAdmin(admin);
   }, []);
+
+  async function submitDemoLogin(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (demoLoading) return;
+    setDemoLoading(true);
+    setError(null);
+    try {
+      const response = await fetch("/api/auth/demo", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: demoEmail, password: demoPassword }),
+      });
+      const data = (await response.json().catch(() => ({}))) as {
+        email?: string;
+        detail?: string;
+      };
+      if (!response.ok || !data.email) {
+        setError(data.detail || "Demo sign-in failed.");
+        return;
+      }
+      writeStoredAuth(data.email);
+      applyEmail(data.email, false);
+      setDemoPassword("");
+    } catch {
+      setError("Demo sign-in is temporarily unavailable.");
+    } finally {
+      setDemoLoading(false);
+    }
+  }
 
   useEffect(() => {
     setMounted(true);
@@ -266,8 +300,46 @@ export function AuthGate({ children }: { children: ReactNode }) {
         )}
         <div id="gsi-button" className="flex justify-center" />
 
+        <div className="flex w-full items-center gap-3 text-xs text-muted-foreground">
+          <span className="h-px flex-1 bg-border" />
+          <span>or use demo access</span>
+          <span className="h-px flex-1 bg-border" />
+        </div>
+
+        <form className="w-full space-y-3 text-left" onSubmit={submitDemoLogin}>
+          <label className="block space-y-1">
+            <span className="text-xs font-medium text-foreground">Demo email</span>
+            <input
+              type="email"
+              autoComplete="username"
+              value={demoEmail}
+              onChange={(event) => setDemoEmail(event.target.value)}
+              required
+              className="h-10 w-full rounded-lg border border-input bg-background px-3 text-sm outline-none focus:border-ring focus:ring-2 focus:ring-ring/20"
+            />
+          </label>
+          <label className="block space-y-1">
+            <span className="text-xs font-medium text-foreground">Password</span>
+            <input
+              type="password"
+              autoComplete="current-password"
+              value={demoPassword}
+              onChange={(event) => setDemoPassword(event.target.value)}
+              required
+              className="h-10 w-full rounded-lg border border-input bg-background px-3 text-sm outline-none focus:border-ring focus:ring-2 focus:ring-ring/20"
+            />
+          </label>
+          <button
+            type="submit"
+            disabled={demoLoading}
+            className="flex h-10 w-full items-center justify-center rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground transition-opacity disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {demoLoading ? <LoadingLabel size={14}>Signing in…</LoadingLabel> : "Sign in as demo user"}
+          </button>
+        </form>
+
         <p className="text-xs text-muted-foreground">
-          Only <span className="font-medium">@{ALLOWED_DOMAIN}</span> emails are allowed access.
+          Google access is limited to <span className="font-medium">@{ALLOWED_DOMAIN}</span> accounts.
         </p>
       </div>
     </div>
