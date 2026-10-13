@@ -4,13 +4,24 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { Film, RefreshCw } from "lucide-react";
 import { formatApiError } from "@/lib/api";
-import { testApi, type TestVideo } from "@/lib/test-api";
+import { testApi, testAssetUrl, type TestVideo } from "@/lib/test-api";
+import { ProjectsWorkspace } from "@/components/projects-workspace";
 
 export default function TestLibraryPage() {
   const [videos, setVideos] = useState<TestVideo[]>([]);
   const [youtube, setYoutube] = useState<TestVideo[]>([]);
   const [loading, setLoading] = useState(true);
   const [, setError] = useState<string | null>(null);
+  const [projectsRefreshToken, setProjectsRefreshToken] = useState(0);
+
+  const listProjects = useCallback(
+    (opts: { limit: number; offset: number; q?: string }) => testApi.carouselProjects(opts),
+    []
+  );
+  const deleteDraft = useCallback(
+    (driveFileId: string) => testApi.carouselDraftDelete(driveFileId),
+    []
+  );
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -40,21 +51,33 @@ export default function TestLibraryPage() {
           Test · Library
         </p>
         <h1 className="mt-2 font-serif text-3xl tracking-tight text-slate-900 sm:text-4xl">
-          Add existing project
+          Project workspace
         </h1>
         <p className="mt-2 max-w-xl text-sm text-slate-500">
-          Pick an indexed video to open in the redesigned studio flow.
+          Resume drafts, open finished carousels, or start from an indexed video in the redesigned
+          studio.
         </p>
         <button
           type="button"
-          onClick={() => void load()}
+          onClick={() => {
+            void load();
+            setProjectsRefreshToken((n) => n + 1);
+          }}
           disabled={loading}
           className="mt-4 inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-60"
         >
           <RefreshCw size={14} className={loading ? "animate-spin" : undefined} />
           {loading ? "Refreshing…" : "Refresh"}
-          </button>
+        </button>
       </header>
+
+      <ProjectsWorkspace
+        studioBasePath="/test/studio"
+        listProjects={listProjects}
+        deleteDraft={deleteDraft}
+        assetUrl={testAssetUrl}
+        refreshToken={projectsRefreshToken}
+      />
 
       {youtube.length > 0 && (
         <section className="mb-10">
@@ -80,7 +103,7 @@ export default function TestLibraryPage() {
       )}
 
       <section>
-        <h2 className="mb-3 text-sm font-semibold text-slate-800">All videos</h2>
+        <h2 className="mb-3 text-sm font-semibold text-slate-800">Start from a video</h2>
         {loading && videos.length === 0 ? (
           <div className="studio-empty">
             <p>Loading library…</p>

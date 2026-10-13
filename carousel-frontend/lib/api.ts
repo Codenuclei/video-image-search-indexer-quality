@@ -561,7 +561,7 @@ export type CarouselPipelineExtractResponse = {
 export type CarouselGenerationSaveListItem = {
   id: number;
   drive_file_id: string;
-  kind?: "topics_hooks" | "themes" | "carousel" | string;
+  kind?: "topics_hooks" | "themes" | "carousel" | "draft" | string;
   theme_key: string;
   label?: string | null;
   created_at?: string | null;
@@ -575,6 +575,73 @@ export type CarouselGenerationSaveListItem = {
   input_hash?: string | null;
   layout_mode?: "single_1" | "split_2" | string;
   copy_version?: number;
+};
+
+export type CarouselProjectFinished = {
+  id: number;
+  label?: string | null;
+  copy_version?: number;
+  layout_mode?: string;
+  preview_url?: string | null;
+  slide_count?: number | null;
+  created_at?: string | null;
+  source?: string | null;
+};
+
+export type CarouselProjectCard = {
+  drive_file_id: string;
+  video_name?: string | null;
+  video_path?: string | null;
+  has_draft: boolean;
+  draft_phase?: number | null;
+  draft_updated_at?: string | null;
+  draft_id?: number | null;
+  finished_count: number;
+  latest_finished: CarouselProjectFinished | null;
+  last_activity_at?: string | null;
+};
+
+export type CarouselProjectsResponse = {
+  items: CarouselProjectCard[];
+  limit: number;
+  offset: number;
+  has_more: boolean;
+};
+
+export type CarouselDraftUpsertBody = {
+  drive_file_id: string;
+  phase: number;
+  selected_themes?: unknown[];
+  selected_topics?: unknown[];
+  selected_hooks?: unknown[];
+  intent?: string | null;
+  intent_score?: number | null;
+  themes?: unknown[];
+  topic_tree?: unknown[];
+  hooks?: unknown[];
+  topics?: unknown[];
+  carousels?: unknown[];
+  slides?: unknown[];
+  layouts?: Record<string, unknown> | null;
+  layout_mode?: string;
+  images_ready?: boolean;
+  base_save_id?: number | null;
+  client_updated_at?: string | null;
+  label?: string | null;
+};
+
+export type CarouselDraftRecord = {
+  id: number;
+  drive_file_id: string;
+  kind?: string;
+  label?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  source?: string | null;
+  status?: string;
+  layout_mode?: string;
+  copy_version?: number;
+  payload: Record<string, unknown>;
 };
 
 /** Lightweight card for the global ready-carousel gallery (no heavy payload). */
@@ -1266,7 +1333,7 @@ export const apiClient = {
   carouselPipelineSaves: (
     driveFileId: string,
     limit = 20,
-    kind: "topics_hooks" | "themes" | "carousel" = "topics_hooks"
+    kind: "topics_hooks" | "themes" | "carousel" | "draft" = "topics_hooks"
   ) =>
     api<{ items: CarouselGenerationSaveListItem[] }>(
       `/search/carousel/pipeline/saves?drive_file_id=${encodeURIComponent(driveFileId)}&limit=${limit}&kind=${encodeURIComponent(kind)}`
@@ -1279,6 +1346,38 @@ export const apiClient = {
       `/search/carousel/pipeline/carousels?limit=${limit}&offset=${offset}`
     );
   },
+  /** Project workspace cards (draft and/or finished carousel per video). */
+  carouselProjects: (opts?: { limit?: number; offset?: number; q?: string }) => {
+    const limit = Math.max(1, Math.min(opts?.limit ?? 24, 50));
+    const offset = Math.max(0, opts?.offset ?? 0);
+    const params = new URLSearchParams({
+      limit: String(limit),
+      offset: String(offset),
+    });
+    if (opts?.q?.trim()) params.set("q", opts.q.trim());
+    return api<CarouselProjectsResponse>(
+      `/search/carousel/pipeline/projects?${params}`
+    );
+  },
+  carouselDraftGet: (driveFileId: string) =>
+    api<CarouselDraftRecord>(
+      `/search/carousel/pipeline/drafts/${encodeURIComponent(driveFileId)}`
+    ),
+  carouselDraftUpsert: (body: CarouselDraftUpsertBody) =>
+    api<{
+      id: number;
+      drive_file_id: string;
+      updated_at?: string | null;
+      created_at?: string | null;
+    }>("/search/carousel/pipeline/drafts", {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
+  carouselDraftDelete: (driveFileId: string) =>
+    api<{ ok: boolean; deleted?: number }>(
+      `/search/carousel/pipeline/drafts/${encodeURIComponent(driveFileId)}`,
+      { method: "DELETE" }
+    ),
   carouselPipelineSaveGet: (saveId: number, driveFileId?: string) =>
     api<{
       id: number;

@@ -106,6 +106,8 @@ import {
   restoreCarouselSaveState,
   saveMatchesVideo,
 } from "@/lib/carousel-save-restore";
+import { deserializeStudioDraft, parseDraftParam } from "@/lib/carousel-draft";
+import { useStudioDraftAutosave } from "@/lib/use-studio-draft";
 
 type Phase = 1 | 2 | 3 | 4 | 5;
 
@@ -279,8 +281,15 @@ function CarouselSearchInner() {
   const searchParams = useSearchParams();
   const videoParam = searchParams.get("video");
   const saveParam = parseSaveIdParam(searchParams.get("save"));
+  const draftParam = parseDraftParam(searchParams.get("draft"));
   const deepLinkRestoreRef = useRef<number | null>(null);
+  const deepLinkDraftRestoreRef = useRef<string | null>(null);
   const deepLinkVideoTriedRef = useRef<string | null>(null);
+  const [draftHydrating, setDraftHydrating] = useState(false);
+  const draftAutosaveNoteRef = useRef<
+    ((id: number, updatedAt?: string | null, clientUpdatedAt?: string | null) => void) | null
+  >(null);
+  const draftClearRef = useRef<(() => void) | null>(null);
 
   const [phase, setPhase] = useState<Phase>(1);
   const [recent, setRecent] = useState<CarouselRecentVideo[]>([]);
@@ -623,6 +632,150 @@ function CarouselSearchInner() {
       cancelled = true;
     };
   }, [saveParam, selectedVideo, videoParam, applyRestoredCarouselSave]);
+
+  const applyStudioDraft = useCallback(
+    (draft: NonNullable<ReturnType<typeof deserializeStudioDraft>>) => {
+      const nextPhase = draft.phase as Phase;
+      setPhase(nextPhase);
+      if (Array.isArray(draft.themes) && draft.themes.length) {
+        setThemes(draft.themes as CarouselPipelineTheme[]);
+      }
+      if (Array.isArray(draft.selected_themes)) {
+        setSelectedThemes(draft.selected_themes as CarouselPipelineTheme[]);
+      }
+      const hasExtractBits =
+        (Array.isArray(draft.hooks) && draft.hooks.length > 0) ||
+        (Array.isArray(draft.topics) && draft.topics.length > 0) ||
+        (Array.isArray(draft.topic_tree) && draft.topic_tree.length > 0);
+      if (hasExtractBits) {
+        setExtract((prev) => {
+          const base: CarouselPipelineExtractResponse = prev ?? {
+            drive_file_id: draft.drive_file_id,
+            hooks: [],
+            topics: [],
+            previews: [],
+            verbatim: true,
+          };
+          return {
+            ...base,
+            hooks: (Array.isArray(draft.hooks)
+              ? draft.hooks
+              : base.hooks) as CarouselPipelineExtractResponse["hooks"],
+            topics: (Array.isArray(draft.topics)
+              ? draft.topics
+              : base.topics) as CarouselPipelineExtractResponse["topics"],
+            topic_tree: (Array.isArray(draft.topic_tree)
+              ? draft.topic_tree
+              : base.topic_tree) as CarouselPipelineExtractResponse["topic_tree"],
+            intent: draft.intent ?? base.intent ?? null,
+            intent_score: draft.intent_score ?? base.intent_score ?? null,
+          };
+        });
+      }
+      setSelectedTopics(
+        Array.isArray(draft.selected_topics)
+          ? draft.selected_topics.map((t) => String(t))
+          : []
+      );
+      setSelectedHooks(
+        Array.isArray(draft.selected_hooks)
+          ? draft.selected_hooks.map((h) => String(h))
+          : []
+      );
+      setPhaseIntent(draft.intent ?? null);
+      setPhaseIntentScore(draft.intent_score ?? null);
+      setCarouselLayout(draft.layout_mode === "split_2" ? "split_2" : "single_1");
+      if (draft.layouts && typeof draft.layouts === "object") {
+        setCarouselLayouts(draft.layouts as CarouselLayouts);
+      }
+      if (Array.isArray(draft.carousels) && draft.carousels.length) {
+        const list = draft.carousels as CarouselGeneratedItem[];
+        setGeneratedCarousels(list);
+        setActiveCarouselId(list[0]?.id ? String(list[0].id) : null);
+        setOutline({
+          source: "draft",
+          title: String(list[0]?.title || draft.label || "Draft"),
+          slide_count: list[0]?.slide_count ?? list[0]?.slides?.length ?? 0,
+          hooks: [],
+          topics: [],
+          slides: list[0]?.slides ?? [],
+          carousels: list,
+          carousel_count: list.length,
+          images_ready: Boolean(draft.images_ready),
+        });
+      } else if (Array.isArray(draft.slides) && draft.slides.length) {
+        const slides = draft.slides as CarouselGeneratedItem["slides"];
+        const list: CarouselGeneratedItem[] = [
+          {
+            id: "draft",
+            kind: "mixed",
+            title: String(draft.label || "Draft"),
+            topic_labels: [],
+            slide_count: slides.length,
+            slides,
+            images_ready: Boolean(draft.images_ready),
+          },
+        ];
+        setGeneratedCarousels(list);
+        setActiveCarouselId("draft");
+      }
+      setImagesReady(Boolean(draft.images_ready));
+      if (typeof draft.base_save_id === "number") {
+        setActiveCarouselSaveId(draft.base_save_id);
+      }
+    },
+    []
+  );
+
+  // Explicit draft resume via ?draft=1 (once per video).
+  useEffect(() => {
+    if (!draftParam || saveParam) return;
+    if (!videoParam && !selectedVideo) return;
+    const targetId = videoParam || selectedVideo?.id;
+    if (!targetId) return;
+    if (deepLinkDraftRestoreRef.current === targetId) return;
+    if (videoParam && selectedVideo && selectedVideo.id !== videoParam) return;
+    if (videoParam && !selectedVideo) return;
+
+    let cancelled = false;
+    setDraftHydrating(true);
+    void (async () => {
+      try {
+        const record = await apiClient.carouselDraftGet(targetId);
+        if (cancelled || deepLinkDraftRestoreRef.current === targetId) return;
+        if (!saveMatchesVideo(record.drive_file_id, targetId)) {
+          deepLinkDraftRestoreRef.current = targetId;
+          toastApiError("Draft does not match the selected video.");
+          return;
+        }
+        const draft = deserializeStudioDraft(record);
+        if (!draft) {
+          deepLinkDraftRestoreRef.current = targetId;
+          toastApiError("Draft payload could not be restored.");
+          return;
+        }
+        deepLinkDraftRestoreRef.current = targetId;
+        applyStudioDraft(draft);
+        draftAutosaveNoteRef.current?.(
+          record.id,
+          record.updated_at,
+          typeof record.payload?.client_updated_at === "string"
+            ? record.payload.client_updated_at
+            : record.updated_at
+        );
+      } catch (e) {
+        if (!cancelled) {
+          deepLinkDraftRestoreRef.current = targetId;
+          toastApiError(formatApiError(e, "Could not resume draft"));
+        }
+      } finally {
+        if (!cancelled) setDraftHydrating(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [applyStudioDraft, draftParam, saveParam, selectedVideo, videoParam]);
 
   useEffect(() => {
     if (!selectedVideo) {
@@ -1854,6 +2007,67 @@ function CarouselSearchInner() {
     }
   }
 
+  const draftRevisionKey = selectedVideo
+    ? [
+        selectedVideo.id,
+        phase,
+        selectedThemes.map((t) => t.theme_id).join(","),
+        selectedTopics.join("|"),
+        selectedHooks.join("|"),
+        carouselLayout,
+        imagesReady ? "1" : "0",
+        generatedCarousels.length,
+        generatedCarousels[0]?.slides?.length ?? 0,
+        themes.length,
+        extract?.hooks?.length ?? 0,
+        phaseIntent || "",
+      ].join("::")
+    : "";
+
+  const draftHasProgress =
+    phase >= 2 ||
+    selectedThemes.length > 0 ||
+    selectedTopics.length > 0 ||
+    selectedHooks.length > 0 ||
+    generatedCarousels.length > 0 ||
+    Boolean(extract?.hooks?.length) ||
+    Boolean(themes.length);
+
+  const draftAutosave = useStudioDraftAutosave({
+    driveFileId: selectedVideo?.id ?? null,
+    enabled:
+      Boolean(selectedVideo) && !draftHydrating && !pipelineLocked && draftHasProgress,
+    debounceMs: 1500,
+    revisionKey: draftRevisionKey,
+    buildBody: () => {
+      if (!selectedVideo) return null;
+      return {
+        drive_file_id: selectedVideo.id,
+        phase,
+        selected_themes: selectedThemes,
+        selected_topics: selectedTopics,
+        selected_hooks: selectedHooks,
+        intent: phaseIntent,
+        intent_score: phaseIntentScore,
+        themes,
+        topic_tree: extract?.topic_tree ?? [],
+        hooks: extract?.hooks ?? [],
+        topics: extract?.topics ?? [],
+        carousels: generatedCarousels,
+        slides: generatedCarousels[0]?.slides ?? outline?.slides ?? [],
+        layouts: carouselLayouts,
+        layout_mode: carouselLayout,
+        images_ready: imagesReady,
+        base_save_id: activeCarouselSaveId,
+        label: selectedVideo.name || "Draft",
+      };
+    },
+    upsert: (body) => apiClient.carouselDraftUpsert(body),
+    fetchDraft: (id) => apiClient.carouselDraftGet(id),
+  });
+  draftAutosaveNoteRef.current = draftAutosave.noteServerDraft;
+  draftClearRef.current = draftAutosave.clearDraftIndicator;
+
   return (
     <div className="mx-auto max-w-5xl space-y-10 pb-8">
       <header className="studio-rise">
@@ -1864,7 +2078,52 @@ function CarouselSearchInner() {
           polished slide layouts ready for Instagram.
         </p>
         <PhaseRail phase={phase} onNavigate={setPhase} locked={pipelineLocked} />
+        {draftAutosave.statusLabel ? (
+          <p className="mt-2 text-xs text-slate-500" data-testid="draft-save-status" role="status">
+            {draftAutosave.statusLabel}
+            {draftAutosave.draftId != null ? ` · draft #${draftAutosave.draftId}` : ""}
+          </p>
+        ) : null}
       </header>
+
+      {draftAutosave.conflict ? (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950" role="alert">
+          <p className="font-medium">Server draft is newer than this tab.</p>
+          <p className="mt-1 text-xs text-amber-900/80">
+            Keep your local edits, or load the server draft. Autosave is paused until you choose.
+          </p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            <button
+              type="button"
+              className="rounded-md bg-slate-900 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-slate-800"
+              onClick={() => draftAutosave.keepLocal()}
+            >
+              Keep local
+            </button>
+            <button
+              type="button"
+              className="rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+              onClick={() => {
+                const draft = deserializeStudioDraft(draftAutosave.conflict!.serverDraft);
+                if (draft) {
+                  applyStudioDraft(draft);
+                  draftAutosave.noteServerDraft(
+                    draftAutosave.conflict!.serverDraft.id,
+                    draftAutosave.conflict!.serverUpdatedAt,
+                    typeof draftAutosave.conflict!.serverDraft.payload?.client_updated_at ===
+                      "string"
+                      ? String(draftAutosave.conflict!.serverDraft.payload.client_updated_at)
+                      : draftAutosave.conflict!.serverUpdatedAt
+                  );
+                }
+                draftAutosave.setConflict(null);
+              }}
+            >
+              Load server draft
+            </button>
+          </div>
+        </div>
+      ) : null}
 
       {pipelineLocked && (
         <div className="studio-callout" role="status">
@@ -3107,6 +3366,7 @@ function CarouselSearchInner() {
                     references,
                   });
                   setActiveCarouselSaveId(saved.id);
+                  draftClearRef.current?.();
                   const saves = await apiClient.carouselPipelineSaves(selectedVideo.id, 12, "carousel");
                   setCarouselSaves(saves.items ?? []);
                 }}
@@ -3120,6 +3380,7 @@ function CarouselSearchInner() {
                     slide,
                   });
                   setActiveCarouselSaveId(res.id);
+                  draftClearRef.current?.();
                   setGeneratedCarousels((prev) =>
                     prev.map((c) =>
                       c.id === activeGeneratedCarousel.id

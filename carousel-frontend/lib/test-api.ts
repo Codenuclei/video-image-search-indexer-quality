@@ -797,6 +797,68 @@ export const testApi = {
       has_more: boolean;
     }>(`/search/carousel/pipeline/carousels?limit=${limit}&offset=${offset}`);
   },
+  carouselProjects: (opts?: { limit?: number; offset?: number; q?: string }) => {
+    const limit = Math.max(1, Math.min(opts?.limit ?? 24, 50));
+    const offset = Math.max(0, opts?.offset ?? 0);
+    const params = new URLSearchParams({
+      limit: String(limit),
+      offset: String(offset),
+    });
+    if (opts?.q?.trim()) params.set("q", opts.q.trim());
+    return api<{
+      items: Array<{
+        drive_file_id: string;
+        video_name?: string | null;
+        video_path?: string | null;
+        has_draft: boolean;
+        draft_phase?: number | null;
+        draft_updated_at?: string | null;
+        draft_id?: number | null;
+        finished_count: number;
+        latest_finished: {
+          id: number;
+          label?: string | null;
+          copy_version?: number;
+          layout_mode?: string;
+          preview_url?: string | null;
+          slide_count?: number | null;
+          created_at?: string | null;
+          source?: string | null;
+        } | null;
+        last_activity_at?: string | null;
+      }>;
+      limit: number;
+      offset: number;
+      has_more: boolean;
+    }>(`/search/carousel/pipeline/projects?${params}`);
+  },
+  carouselDraftGet: (driveFileId: string) =>
+    api<{
+      id: number;
+      drive_file_id: string;
+      kind?: string;
+      label?: string | null;
+      created_at?: string | null;
+      updated_at?: string | null;
+      source?: string | null;
+      layout_mode?: string;
+      payload: Record<string, unknown>;
+    }>(`/search/carousel/pipeline/drafts/${encodeURIComponent(driveFileId)}`),
+  carouselDraftUpsert: (body: Record<string, unknown>) =>
+    api<{
+      id: number;
+      drive_file_id: string;
+      updated_at?: string | null;
+      created_at?: string | null;
+    }>("/search/carousel/pipeline/drafts", {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
+  carouselDraftDelete: (driveFileId: string) =>
+    api<{ ok: boolean; deleted?: number }>(
+      `/search/carousel/pipeline/drafts/${encodeURIComponent(driveFileId)}`,
+      { method: "DELETE" }
+    ),
   transcriptFrames: (opts: {
     driveFileId: string;
     startSec: number;

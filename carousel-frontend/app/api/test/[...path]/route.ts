@@ -411,6 +411,174 @@ async function handle(req: NextRequest, ctx: Ctx) {
     });
   }
 
+  // In-memory draft store for mock API (one draft per drive_file_id).
+  // Module-level so PUT/GET/DELETE share state within the Node process.
+  // (Declared once via globalThis to survive hot reload.)
+  const g = globalThis as typeof globalThis & {
+    __carouselMockDrafts?: Map<string, Record<string, unknown>>;
+  };
+  if (!g.__carouselMockDrafts) g.__carouselMockDrafts = new Map();
+  const mockDrafts = g.__carouselMockDrafts;
+
+  if (path === "search/carousel/pipeline/projects" && method === "GET") {
+    const limit = Math.max(1, Math.min(Number(url.searchParams.get("limit") || 24) || 24, 50));
+    const offset = Math.max(0, Number(url.searchParams.get("offset") || 0) || 0);
+    const q = (url.searchParams.get("q") || "").trim().toLowerCase();
+    const gen = mockGenerate(MOCK_VIDEO.id, [], []);
+    type MockProject = {
+      drive_file_id: string;
+      video_name: string | null;
+      video_path: string | null;
+      has_draft: boolean;
+      draft_phase: number | null;
+      draft_updated_at: string | null;
+      draft_id: number | null;
+      finished_count: number;
+      latest_finished: {
+        id: number;
+        label: string;
+        copy_version: number;
+        layout_mode: string;
+        preview_url: string;
+        slide_count: number;
+        created_at: string;
+        source: string;
+      } | null;
+      last_activity_at: string;
+    };
+    const all: MockProject[] = [
+      {
+        drive_file_id: MOCK_VIDEO.id,
+        video_name: MOCK_VIDEO.name,
+        video_path: MOCK_VIDEO.path,
+        has_draft: mockDrafts.has(MOCK_VIDEO.id),
+        draft_phase: mockDrafts.has(MOCK_VIDEO.id)
+          ? Number((mockDrafts.get(MOCK_VIDEO.id)?.payload as { phase?: number })?.phase || 2)
+          : null,
+        draft_updated_at: mockDrafts.has(MOCK_VIDEO.id)
+          ? String(mockDrafts.get(MOCK_VIDEO.id)?.updated_at || null)
+          : null,
+        draft_id: mockDrafts.has(MOCK_VIDEO.id)
+          ? Number(mockDrafts.get(MOCK_VIDEO.id)?.id || 5001)
+          : null,
+        finished_count: 1,
+        latest_finished: {
+          id: 7001,
+          label: "Demo carousel save",
+          copy_version: 1,
+          layout_mode: "single_1",
+          preview_url: `/media/video/${MOCK_VIDEO.id}/frame?ts=13.000&cache_only=1`,
+          slide_count: gen.slides?.length ?? 6,
+          created_at: "2026-08-11T12:00:00Z",
+          source: "generation",
+        },
+        last_activity_at: mockDrafts.has(MOCK_VIDEO.id)
+          ? String(mockDrafts.get(MOCK_VIDEO.id)?.updated_at || "2026-08-12T12:00:00Z")
+          : "2026-08-11T12:00:00Z",
+      },
+      {
+        drive_file_id: MOCK_VIDEO_2.id,
+        video_name: MOCK_VIDEO_2.name,
+        video_path: MOCK_VIDEO_2.path,
+        has_draft: mockDrafts.has(MOCK_VIDEO_2.id),
+        draft_phase: mockDrafts.has(MOCK_VIDEO_2.id)
+          ? Number((mockDrafts.get(MOCK_VIDEO_2.id)?.payload as { phase?: number })?.phase || 1)
+          : null,
+        draft_updated_at: mockDrafts.has(MOCK_VIDEO_2.id)
+          ? String(mockDrafts.get(MOCK_VIDEO_2.id)?.updated_at || null)
+          : null,
+        draft_id: mockDrafts.has(MOCK_VIDEO_2.id)
+          ? Number(mockDrafts.get(MOCK_VIDEO_2.id)?.id || 5002)
+          : null,
+        finished_count: 1,
+        latest_finished: {
+          id: 7002,
+          label: "Second demo carousel",
+          copy_version: 2,
+          layout_mode: "single_1",
+          preview_url: `/media/video/${MOCK_VIDEO_2.id}/frame?ts=20.000&cache_only=1`,
+          slide_count: 6,
+          created_at: "2026-08-10T09:00:00Z",
+          source: "copy_edit",
+        },
+        last_activity_at: "2026-08-10T09:00:00Z",
+      },
+    ].filter((item) => {
+      if (!q) return true;
+      const hay = `${item.video_name} ${item.drive_file_id} ${item.latest_finished?.label || ""}`.toLowerCase();
+      return hay.includes(q);
+    });
+    // Prefer draft-only entries that aren't in the finished demos.
+    for (const [fid, draft] of mockDrafts.entries()) {
+      if (all.some((a) => a.drive_file_id === fid)) continue;
+      all.unshift({
+        drive_file_id: fid,
+        video_name: String(draft.label || fid),
+        video_path: null,
+        has_draft: true,
+        draft_phase: Number((draft.payload as { phase?: number })?.phase || 1),
+        draft_updated_at: String(draft.updated_at || null),
+        draft_id: Number(draft.id || 5099),
+        finished_count: 0,
+        latest_finished: null,
+        last_activity_at: String(draft.updated_at || new Date().toISOString()),
+      });
+    }
+    const slice = all.slice(offset, offset + limit);
+    return json({
+      items: slice,
+      limit,
+      offset,
+      has_more: offset + slice.length < all.length,
+    });
+  }
+
+  if (path === "search/carousel/pipeline/drafts" && method === "PUT") {
+    const body = await readBody(req);
+    const driveFileId = String(body.drive_file_id || "").trim();
+    if (!driveFileId) return json({ detail: "drive_file_id is required" }, 400);
+    const now = new Date().toISOString();
+    const existing = mockDrafts.get(driveFileId);
+    const id = existing ? Number(existing.id) : 5000 + mockDrafts.size + 1;
+    const payload = {
+      ...body,
+      drive_file_id: driveFileId,
+      updated_at: now,
+    };
+    const record = {
+      id,
+      drive_file_id: driveFileId,
+      kind: "draft",
+      label: String(body.label || "Draft"),
+      created_at: existing ? String(existing.created_at) : now,
+      updated_at: now,
+      source: "draft_autosave",
+      status: "ready",
+      layout_mode: String(body.layout_mode || "single_1"),
+      payload,
+    };
+    mockDrafts.set(driveFileId, record);
+    return json({
+      id,
+      drive_file_id: driveFileId,
+      updated_at: now,
+      created_at: record.created_at,
+    });
+  }
+
+  if (path.startsWith("search/carousel/pipeline/drafts/") && method === "GET") {
+    const driveFileId = decodeURIComponent(path.split("/").pop() || "");
+    const record = mockDrafts.get(driveFileId);
+    if (!record) return json({ detail: "Draft not found" }, 404);
+    return json(record);
+  }
+
+  if (path.startsWith("search/carousel/pipeline/drafts/") && method === "DELETE") {
+    const driveFileId = decodeURIComponent(path.split("/").pop() || "");
+    const had = mockDrafts.delete(driveFileId);
+    return json({ ok: true, deleted: had ? 1 : 0 });
+  }
+
   if (path === "search/carousel/pipeline/carousels" && method === "GET") {
     const limit = Math.max(1, Math.min(Number(url.searchParams.get("limit") || 24) || 24, 50));
     const offset = Math.max(0, Number(url.searchParams.get("offset") || 0) || 0);

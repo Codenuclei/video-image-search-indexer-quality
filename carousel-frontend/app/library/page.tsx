@@ -2,51 +2,35 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { Clapperboard, Film, RefreshCw } from "lucide-react";
+import { Film, RefreshCw } from "lucide-react";
 import {
   apiAssetUrl,
   apiClient,
   driveFileDownloadUrl,
   formatApiError,
-  type CarouselGalleryItem,
   type CarouselRecentVideo,
   type YoutubeDriveFile,
 } from "@/lib/api";
 import { downloadFromUrl } from "@/lib/download";
 import StudioLogo from "@/components/StudioLogo";
-import { FrameImg } from "@/components/frame-img";
+import { ProjectsWorkspace } from "@/components/projects-workspace";
 import { LoadingLabel } from "@/components/ui";
-
-const GALLERY_PAGE = 24;
-
-function safeGalleryPreview(url: string | null | undefined): string | null {
-  if (!url || typeof url !== "string") return null;
-  const trimmed = url.trim();
-  if (!trimmed.startsWith("/media/") && !trimmed.startsWith("/search/")) return null;
-  return apiAssetUrl(trimmed);
-}
-
-function formatWhen(iso: string | null | undefined): string {
-  if (!iso) return "";
-  try {
-    return new Date(iso).toLocaleString();
-  } catch {
-    return iso;
-  }
-}
 
 export default function LibraryPage() {
   const [videos, setVideos] = useState<CarouselRecentVideo[]>([]);
   const [youtube, setYoutube] = useState<YoutubeDriveFile[]>([]);
   const [loading, setLoading] = useState(true);
   const [, setError] = useState<string | null>(null);
+  const [projectsRefreshToken, setProjectsRefreshToken] = useState(0);
 
-  const [saves, setSaves] = useState<CarouselGalleryItem[]>([]);
-  const [savesLoading, setSavesLoading] = useState(true);
-  const [savesLoadingMore, setSavesLoadingMore] = useState(false);
-  const [savesError, setSavesError] = useState<string | null>(null);
-  const [savesHasMore, setSavesHasMore] = useState(false);
-  const [savesOffset, setSavesOffset] = useState(0);
+  const listProjects = useCallback(
+    (opts: { limit: number; offset: number; q?: string }) => apiClient.carouselProjects(opts),
+    []
+  );
+  const deleteDraft = useCallback(
+    (driveFileId: string) => apiClient.carouselDraftDelete(driveFileId),
+    []
+  );
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -65,42 +49,9 @@ export default function LibraryPage() {
     }
   }, []);
 
-  const loadSaves = useCallback(async (opts?: { append?: boolean; offset?: number }) => {
-    const append = Boolean(opts?.append);
-    const offset = opts?.offset ?? 0;
-    if (append) setSavesLoadingMore(true);
-    else {
-      setSavesLoading(true);
-      setSavesError(null);
-    }
-    try {
-      const res = await apiClient.carouselGallery({ limit: GALLERY_PAGE, offset });
-      const items = res.items ?? [];
-      setSaves((prev) => (append ? [...prev, ...items] : items));
-      setSavesHasMore(Boolean(res.has_more));
-      setSavesOffset(offset + items.length);
-    } catch (e) {
-      if (!append) {
-        setSaves([]);
-        setSavesHasMore(false);
-        setSavesOffset(0);
-      }
-      setSavesError(formatApiError(e, "Could not load saved carousels"));
-    } finally {
-      setSavesLoading(false);
-      setSavesLoadingMore(false);
-    }
-  }, []);
-
   useEffect(() => {
     void load();
-    void loadSaves();
-  }, [load, loadSaves]);
-
-  function refreshAll() {
-    void load();
-    void loadSaves();
-  }
+  }, [load]);
 
   return (
     <div className="relative min-h-screen overflow-x-hidden text-slate-900">
@@ -134,163 +85,32 @@ export default function LibraryPage() {
             Library
           </p>
           <h1 className="mt-2 font-serif text-3xl tracking-tight text-slate-900 sm:text-4xl">
-            Captioned &amp; YouTube videos
+            Project workspace
           </h1>
           <p className="mt-2 max-w-xl text-sm text-slate-500">
-            Browse indexed videos for carousel studio, reopen past ready generations, or open a
-            YouTube download from the shared library.
+            Resume drafts, open finished carousels, or start a new project from an indexed video.
           </p>
           <button
             type="button"
-            onClick={() => refreshAll()}
-            disabled={loading || savesLoading}
+            onClick={() => {
+              void load();
+              setProjectsRefreshToken((n) => n + 1);
+            }}
+            disabled={loading}
             className="mt-4 inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-60"
           >
-            <RefreshCw
-              size={14}
-              className={loading || savesLoading ? "animate-spin" : undefined}
-            />
-            {loading || savesLoading ? <LoadingLabel>Refreshing…</LoadingLabel> : "Refresh"}
+            <RefreshCw size={14} className={loading ? "animate-spin" : undefined} />
+            {loading ? <LoadingLabel>Refreshing…</LoadingLabel> : "Refresh"}
           </button>
         </header>
 
-        <section className="mb-10" aria-labelledby="saved-carousels-heading">
-          <div className="mb-3 flex flex-wrap items-end justify-between gap-2">
-            <div>
-              <h2
-                id="saved-carousels-heading"
-                className="text-sm font-semibold text-slate-800"
-              >
-                Saved carousels
-              </h2>
-              <p className="mt-0.5 text-xs text-slate-500">
-                Ready generations across all videos — open the exact save in studio.
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={() => void loadSaves()}
-              disabled={savesLoading}
-              className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-60"
-            >
-              <RefreshCw size={12} className={savesLoading ? "animate-spin" : undefined} />
-              {savesLoading ? "Loading…" : "Refresh gallery"}
-            </button>
-          </div>
-
-          {savesLoading && saves.length === 0 ? (
-            <div className="flex flex-col items-center justify-center gap-2 rounded-xl bg-slate-50 px-4 py-8 text-center">
-              <p className="text-sm text-slate-500">
-                <LoadingLabel>Loading saved carousels…</LoadingLabel>
-              </p>
-            </div>
-          ) : savesError && saves.length === 0 ? (
-            <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-6 text-center">
-              <p className="text-sm text-red-800">{savesError}</p>
-              <button
-                type="button"
-                className="mt-3 rounded-md bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800"
-                onClick={() => void loadSaves()}
-              >
-                Try again
-              </button>
-            </div>
-          ) : saves.length === 0 ? (
-            <div className="flex flex-col items-center justify-center gap-2 rounded-xl bg-slate-50 px-4 py-8 text-center">
-              <Clapperboard size={20} className="text-slate-400" />
-              <p className="text-sm text-slate-500">
-                No ready carousel generations yet. Create one in studio, then it will show up here.
-              </p>
-              <Link
-                href="/carousel"
-                className="mt-1 text-xs font-medium text-slate-700 underline-offset-2 hover:underline"
-              >
-                Open studio
-              </Link>
-            </div>
-          ) : (
-            <>
-              <ul className="grid gap-3 sm:grid-cols-2">
-                {saves.map((item) => {
-                  const thumb = safeGalleryPreview(item.preview_url);
-                  const title =
-                    item.label?.trim() ||
-                    item.video_name?.trim() ||
-                    `Carousel #${item.id}`;
-                  const studioHref = `/carousel?video=${encodeURIComponent(item.drive_file_id)}&save=${item.id}`;
-                  const testHref = `/test/studio?video=${encodeURIComponent(item.drive_file_id)}&save=${item.id}`;
-                  return (
-                    <li
-                      key={item.id}
-                      className="flex gap-3 overflow-hidden rounded-xl border border-slate-200 bg-white/90 p-3"
-                    >
-                      <div className="relative h-20 w-14 shrink-0 overflow-hidden rounded-md bg-slate-100">
-                        {thumb ? (
-                          <FrameImg
-                            src={thumb}
-                            alt=""
-                            className="h-full w-full object-cover"
-                          />
-                        ) : (
-                          <div className="flex h-full w-full items-center justify-center text-slate-400">
-                            <Clapperboard size={18} />
-                          </div>
-                        )}
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-sm font-medium text-slate-900">{title}</p>
-                        <p className="mt-0.5 truncate text-xs text-slate-500">
-                          {item.video_name || item.drive_file_id}
-                        </p>
-                        <p className="mt-1 text-[11px] text-slate-500">
-                          v{item.copy_version ?? 1}
-                          {item.layout_mode ? ` · ${item.layout_mode}` : ""}
-                          {item.slide_count != null ? ` · ${item.slide_count} slides` : ""}
-                          {item.created_at ? ` · ${formatWhen(item.created_at)}` : ""}
-                        </p>
-                        <div className="mt-2 flex flex-wrap gap-2">
-                          <Link
-                            href={studioHref}
-                            className="rounded-md bg-slate-900 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-slate-800"
-                          >
-                            Open / Edit
-                          </Link>
-                          <Link
-                            href={testHref}
-                            className="rounded-md border border-slate-200 px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
-                          >
-                            Test studio
-                          </Link>
-                        </div>
-                      </div>
-                    </li>
-                  );
-                })}
-              </ul>
-              {savesError ? (
-                <p className="mt-2 text-xs text-red-700" role="alert">
-                  {savesError}
-                </p>
-              ) : null}
-              {savesHasMore ? (
-                <div className="mt-4 flex justify-center">
-                  <button
-                    type="button"
-                    disabled={savesLoadingMore}
-                    onClick={() => void loadSaves({ append: true, offset: savesOffset })}
-                    className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-60"
-                  >
-                    {savesLoadingMore ? (
-                      <LoadingLabel>Loading more…</LoadingLabel>
-                    ) : (
-                      "Load more"
-                    )}
-                  </button>
-                </div>
-              ) : null}
-            </>
-          )}
-        </section>
+        <ProjectsWorkspace
+          studioBasePath="/carousel"
+          listProjects={listProjects}
+          deleteDraft={deleteDraft}
+          assetUrl={apiAssetUrl}
+          refreshToken={projectsRefreshToken}
+        />
 
         {youtube.length > 0 && (
           <section className="mb-10">
@@ -328,7 +148,7 @@ export default function LibraryPage() {
         )}
 
         <section>
-          <h2 className="mb-3 text-sm font-semibold text-slate-800">All videos</h2>
+          <h2 className="mb-3 text-sm font-semibold text-slate-800">Start from a video</h2>
           {loading && videos.length === 0 ? (
             <div className="flex flex-col items-center justify-center gap-2 rounded-xl bg-slate-50 px-4 py-8 text-center">
               <p className="text-sm text-slate-500">

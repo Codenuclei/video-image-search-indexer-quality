@@ -241,9 +241,16 @@ async def test_copy_uses_exact_base_and_updates_nested_carousel():
     added: list[object] = []
     session = SimpleNamespace(
         scalar=scalar,
+        # Finished copy now clears any draft row via session.execute().
+        execute=AsyncMock(
+            return_value=SimpleNamespace(
+                scalars=lambda: SimpleNamespace(all=lambda: [])
+            )
+        ),
         add=MagicMock(side_effect=added.append),
         commit=AsyncMock(),
         refresh=AsyncMock(),
+        delete=AsyncMock(),
     )
     body = CarouselArtifactCopyBody(
         drive_file_id="video-a",

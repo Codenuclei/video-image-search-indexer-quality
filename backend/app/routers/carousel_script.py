@@ -200,9 +200,12 @@ class PipelineThemesRequest(CarouselRunLlmFields):
 SAVE_KIND_TOPICS = "topics_hooks"
 SAVE_KIND_THEMES = "themes"
 SAVE_KIND_CAROUSEL = "carousel"
+SAVE_KIND_DRAFT = "draft"
 CAROUSEL_ALGORITHM_VERSION = "p0-fast-grouped-v3-quality-diversity-p1-crafted-copy-mu-verbs"
 CAROUSEL_STATUS_PROCESSING = "processing"
 CAROUSEL_STATUS_IDLE = "idle"
+# Studio draft autosave payload cap (JSON dumps size after _jsonb_safe).
+DRAFT_PAYLOAD_MAX_BYTES = int(1.5 * 1024 * 1024)
 
 
 async def _steal_stale_carousel_lock(session: AsyncSession, drive_file_id: str) -> bool:
@@ -758,6 +761,30 @@ class CarouselSaveBody(BaseModel):
     intent: str | None = None
     intent_score: float | None = None
     themes: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class CarouselDraftUpsertBody(BaseModel):
+    """Server-side studio draft autosave (one draft row per video)."""
+
+    drive_file_id: str = Field(..., min_length=1, max_length=128)
+    phase: int = Field(default=1, ge=1, le=5)
+    selected_themes: list[Any] = Field(default_factory=list)
+    selected_topics: list[Any] = Field(default_factory=list)
+    selected_hooks: list[Any] = Field(default_factory=list)
+    intent: str | None = None
+    intent_score: float | None = None
+    themes: list[Any] = Field(default_factory=list)
+    topic_tree: list[Any] = Field(default_factory=list)
+    hooks: list[Any] = Field(default_factory=list)
+    topics: list[Any] = Field(default_factory=list)
+    carousels: list[Any] = Field(default_factory=list)
+    slides: list[Any] = Field(default_factory=list)
+    layouts: dict[str, Any] | None = None
+    layout_mode: str = Field(default="single_1", max_length=32)
+    images_ready: bool = False
+    base_save_id: int | None = None
+    client_updated_at: str | None = Field(default=None, max_length=64)
+    label: str | None = Field(default=None, max_length=240)
 
 
 class CarouselArtifactCopyBody(BaseModel):
@@ -3733,6 +3760,349 @@ def _carousel_slide_count(payload: Any) -> int | None:
         return None
 
 
+def _draft_updated_at_iso(row: CarouselGenerationSave) -> str | None:
+    """Prefer payload.updated_at (draft upserts in place; no DB updated_at column)."""
+    try:
+        payload = row.payload if isinstance(getattr(row, "payload", None), dict) else {}
+        raw = payload.get("updated_at") if isinstance(payload, dict) else None
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip()
+    except Exception:
+        pass
+    created = getattr(row, "created_at", None)
+    return created.isoformat() if created else None
+
+
+def _draft_phase(payload: Any) -> int | None:
+    try:
+        if not isinstance(payload, dict):
+            return None
+        phase = payload.get("phase")
+        if isinstance(phase, bool):
+            return None
+        if isinstance(phase, (int, float)):
+            n = int(phase)
+            if 1 <= n <= 5:
+                return n
+        if isinstance(phase, str) and phase.strip().isdigit():
+            n = int(phase.strip())
+            if 1 <= n <= 5:
+                return n
+    except Exception:
+        return None
+    return None
+
+
+async def _clear_draft_for_video(session: AsyncSession, drive_file_id: str) -> int:
+    """Delete draft row(s) after a finished carousel is published.
+
+    Prefer delete over "clean" flags so the projects library no longer shows a
+    stale Draft chip once an immutable finished version exists from copy/regen.
+    """
+    fid = (drive_file_id or "").strip()
+    if not fid:
+        return 0
+    rows = list(
+        (
+            await session.execute(
+                select(CarouselGenerationSave).where(
+                    CarouselGenerationSave.drive_file_id == fid,
+                    CarouselGenerationSave.kind == SAVE_KIND_DRAFT,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for row in rows:
+        await session.delete(row)
+    if rows:
+        await session.commit()
+    return len(rows)
+
+
+def _draft_response(row: CarouselGenerationSave) -> dict[str, Any]:
+    payload = row.payload if isinstance(getattr(row, "payload", None), dict) else {}
+    if not isinstance(payload, dict):
+        payload = {}
+    return {
+        "id": row.id,
+        "drive_file_id": row.drive_file_id,
+        "kind": SAVE_KIND_DRAFT,
+        "theme_key": getattr(row, "theme_key", None) or "draft",
+        "label": row.label,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "updated_at": _draft_updated_at_iso(row),
+        "source": row.source,
+        "status": getattr(row, "status", "ready"),
+        "layout_mode": getattr(row, "layout_mode", None) or "single_1",
+        "copy_version": int(getattr(row, "copy_version", None) or 1),
+        "payload": payload,
+    }
+
+
+@router.put("/pipeline/drafts")
+async def upsert_carousel_draft(
+    body: CarouselDraftUpsertBody,
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Upsert exactly one studio draft per drive_file_id (kind=draft)."""
+    import json
+
+    drive_file_id = body.drive_file_id.strip()
+    if not drive_file_id:
+        raise HTTPException(status_code=400, detail="drive_file_id is required")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    layout_mode = body.layout_mode if body.layout_mode in {"single_1", "split_2"} else "single_1"
+    label = (body.label or "").strip() or "Draft"
+    payload_raw: dict[str, Any] = {
+        "drive_file_id": drive_file_id,
+        "phase": int(body.phase),
+        "selected_themes": body.selected_themes or [],
+        "selected_topics": body.selected_topics or [],
+        "selected_hooks": body.selected_hooks or [],
+        "intent": body.intent,
+        "intent_score": body.intent_score,
+        "themes": body.themes or [],
+        "topic_tree": body.topic_tree or [],
+        "hooks": body.hooks or [],
+        "topics": body.topics or [],
+        "carousels": body.carousels or [],
+        "slides": body.slides or [],
+        "layouts": body.layouts,
+        "layout_mode": layout_mode,
+        "images_ready": bool(body.images_ready),
+        "base_save_id": body.base_save_id,
+        "client_updated_at": body.client_updated_at,
+        "updated_at": now_iso,
+    }
+    try:
+        safe_payload = _jsonb_safe(payload_raw)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Draft payload could not be normalized") from None
+    if not isinstance(safe_payload, dict):
+        raise HTTPException(status_code=400, detail="Draft payload must be an object")
+
+    try:
+        dumped = json.dumps(safe_payload, ensure_ascii=True, default=str)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Draft payload is not JSON-serializable") from None
+    if len(dumped.encode("utf-8")) > DRAFT_PAYLOAD_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="Draft payload exceeds size limit")
+
+    existing_rows = list(
+        (
+            await session.execute(
+                select(CarouselGenerationSave)
+                .where(
+                    CarouselGenerationSave.drive_file_id == drive_file_id,
+                    CarouselGenerationSave.kind == SAVE_KIND_DRAFT,
+                )
+                .order_by(CarouselGenerationSave.created_at.desc(), CarouselGenerationSave.id.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    save = existing_rows[0] if existing_rows else None
+    # Keep exactly one draft row per video.
+    for extra in existing_rows[1:]:
+        await session.delete(extra)
+
+    if save is None:
+        save = CarouselGenerationSave(
+            drive_file_id=drive_file_id,
+            kind=SAVE_KIND_DRAFT,
+            theme_key="draft",
+            label=_jsonb_safe(label)[:240],
+            status="ready",
+            source="draft_autosave",
+            layout_mode=layout_mode,
+            copy_version=1,
+            algorithm_version=(CAROUSEL_ALGORITHM_VERSION or "p0")[:64],
+            payload=safe_payload,
+        )
+        session.add(save)
+    else:
+        save.label = _jsonb_safe(label)[:240]
+        save.status = "ready"
+        save.source = "draft_autosave"
+        save.theme_key = "draft"
+        save.layout_mode = layout_mode
+        save.payload = safe_payload
+
+    await session.commit()
+    await session.refresh(save)
+    return {
+        "id": save.id,
+        "drive_file_id": save.drive_file_id,
+        "updated_at": _draft_updated_at_iso(save),
+        "created_at": save.created_at.isoformat() if save.created_at else None,
+    }
+
+
+@router.get("/pipeline/drafts/{drive_file_id}")
+async def get_carousel_draft(
+    drive_file_id: str,
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    fid = drive_file_id.strip()
+    row = await session.scalar(
+        select(CarouselGenerationSave)
+        .where(
+            CarouselGenerationSave.drive_file_id == fid,
+            CarouselGenerationSave.kind == SAVE_KIND_DRAFT,
+        )
+        .order_by(CarouselGenerationSave.created_at.desc(), CarouselGenerationSave.id.desc())
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    return _draft_response(row)
+
+
+@router.delete("/pipeline/drafts/{drive_file_id}")
+async def delete_carousel_draft(
+    drive_file_id: str,
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    deleted = await _clear_draft_for_video(session, drive_file_id)
+    if deleted == 0:
+        # Idempotent: missing draft is still ok for Discard.
+        return {"ok": True, "deleted": 0}
+    return {"ok": True, "deleted": deleted}
+
+
+@router.get("/pipeline/projects")
+async def list_carousel_projects(
+    limit: int = Query(default=24, ge=1, le=50),
+    offset: int = Query(default=0, ge=0),
+    q: str | None = Query(default=None, max_length=200),
+    session: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """One lightweight project card per video that has a draft and/or finished carousel."""
+    limit = max(1, min(int(limit or 24), 50))
+    offset = max(0, int(offset or 0))
+    q_norm = (q or "").strip().lower()
+
+    rows = list(
+        (
+            await session.execute(
+                select(CarouselGenerationSave, DriveFile.name, DriveFile.path)
+                .outerjoin(DriveFile, DriveFile.id == CarouselGenerationSave.drive_file_id)
+                .where(
+                    or_(
+                        CarouselGenerationSave.kind == SAVE_KIND_DRAFT,
+                        (
+                            (CarouselGenerationSave.kind == SAVE_KIND_CAROUSEL)
+                            & (CarouselGenerationSave.status == "ready")
+                        ),
+                    )
+                )
+                .order_by(
+                    CarouselGenerationSave.created_at.desc(),
+                    CarouselGenerationSave.id.desc(),
+                )
+            )
+        ).all()
+    )
+
+    by_video: dict[str, dict[str, Any]] = {}
+    for row, video_name, video_path in rows:
+        fid = getattr(row, "drive_file_id", None) or ""
+        if not fid:
+            continue
+        card = by_video.get(fid)
+        if card is None:
+            card = {
+                "drive_file_id": fid,
+                "video_name": video_name or None,
+                "video_path": video_path or None,
+                "has_draft": False,
+                "draft_phase": None,
+                "draft_updated_at": None,
+                "draft_id": None,
+                "finished_count": 0,
+                "latest_finished": None,
+                "last_activity_at": None,
+                "_labels": [],
+            }
+            by_video[fid] = card
+        if video_name and not card.get("video_name"):
+            card["video_name"] = video_name
+        if video_path and not card.get("video_path"):
+            card["video_path"] = video_path
+        if row.label:
+            card["_labels"].append(str(row.label))
+
+        kind = getattr(row, "kind", None)
+        payload = row.payload if isinstance(getattr(row, "payload", None), dict) else {}
+        if not isinstance(payload, dict):
+            payload = {}
+
+        if kind == SAVE_KIND_DRAFT:
+            # First draft row wins (query is newest-first).
+            if not card["has_draft"]:
+                card["has_draft"] = True
+                card["draft_id"] = row.id
+                card["draft_phase"] = _draft_phase(payload)
+                card["draft_updated_at"] = _draft_updated_at_iso(row)
+                activity = card["draft_updated_at"] or (
+                    row.created_at.isoformat() if row.created_at else None
+                )
+                if activity and (
+                    card["last_activity_at"] is None or activity > card["last_activity_at"]
+                ):
+                    card["last_activity_at"] = activity
+        elif kind == SAVE_KIND_CAROUSEL and getattr(row, "status", None) == "ready":
+            card["finished_count"] = int(card["finished_count"] or 0) + 1
+            if card["latest_finished"] is None:
+                created = row.created_at.isoformat() if row.created_at else None
+                card["latest_finished"] = {
+                    "id": row.id,
+                    "label": row.label,
+                    "copy_version": int(getattr(row, "copy_version", None) or 1),
+                    "layout_mode": getattr(row, "layout_mode", None) or "single_1",
+                    "preview_url": _safe_carousel_preview_url(payload),
+                    "slide_count": _carousel_slide_count(payload),
+                    "created_at": created,
+                    "source": row.source,
+                }
+                if created and (
+                    card["last_activity_at"] is None or created > card["last_activity_at"]
+                ):
+                    card["last_activity_at"] = created
+
+    items_all: list[dict[str, Any]] = []
+    for card in by_video.values():
+        if q_norm:
+            hay = " ".join(
+                [
+                    str(card.get("video_name") or ""),
+                    str(card.get("drive_file_id") or ""),
+                    " ".join(card.get("_labels") or []),
+                    str((card.get("latest_finished") or {}).get("label") or ""),
+                ]
+            ).lower()
+            if q_norm not in hay:
+                continue
+        card.pop("_labels", None)
+        items_all.append(card)
+
+    items_all.sort(
+        key=lambda c: c.get("last_activity_at") or "",
+        reverse=True,
+    )
+    page = items_all[offset : offset + limit]
+    has_more = offset + len(page) < len(items_all)
+    return {
+        "items": page,
+        "limit": limit,
+        "offset": offset,
+        "has_more": has_more,
+    }
+
+
 @router.get("/pipeline/carousels")
 async def list_ready_carousels_global(
     limit: int = Query(default=24, ge=1, le=50),
@@ -3791,7 +4161,10 @@ async def list_ready_carousels_global(
 async def list_carousel_saves(
     drive_file_id: str,
     limit: int = 20,
-    kind: str = Query(default=SAVE_KIND_TOPICS, pattern="^(topics_hooks|themes|carousel)$"),
+    kind: str = Query(
+        default=SAVE_KIND_TOPICS,
+        pattern="^(topics_hooks|themes|carousel|draft)$",
+    ),
     session: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     """Previous autosaved generations for a video (filter by kind)."""
@@ -4023,6 +4396,9 @@ async def _save_carousel_copy_impl(
         .order_by(CarouselGenerationSave.created_at.desc())
     )
     if existing is not None:
+        # Publishing a finished version clears the in-progress draft so the
+        # projects library does not keep a stale Draft chip.
+        await _clear_draft_for_video(session, drive_file_id)
         return {
             "id": existing.id,
             "copy_version": existing.copy_version,
@@ -4044,6 +4420,8 @@ async def _save_carousel_copy_impl(
     session.add(replacement)
     await session.commit()
     await session.refresh(replacement)
+    # Finished copy is immutable; drop the draft so Resume no longer offers it.
+    await _clear_draft_for_video(session, drive_file_id)
     return {
         "id": replacement.id,
         "copy_version": replacement.copy_version,
@@ -4137,6 +4515,8 @@ async def regenerate_carousel_slide(
         session.add(replacement)
         await session.commit()
         await session.refresh(replacement)
+        # Regenerated finished artifact supersedes the working draft.
+        await _clear_draft_for_video(session, drive_file_id)
         return {
             "id": replacement.id,
             "copy_version": replacement.copy_version,

@@ -70,6 +70,8 @@ import {
   restoreCarouselSaveState,
   saveMatchesVideo,
 } from "@/lib/carousel-save-restore";
+import { deserializeStudioDraft, parseDraftParam } from "@/lib/carousel-draft";
+import { useStudioDraftAutosave } from "@/lib/use-studio-draft";
 
 type Phase = 1 | 2 | 3 | 4 | 5;
 type StageState = "cache" | "generated" | null;
@@ -360,8 +362,15 @@ function TestStudioInner() {
   const searchParams = useSearchParams();
   const videoParam = searchParams.get("video");
   const saveParam = parseSaveIdParam(searchParams.get("save"));
+  const draftParam = parseDraftParam(searchParams.get("draft"));
   const deepLinkRestoreRef = useRef<number | null>(null);
+  const deepLinkDraftRestoreRef = useRef<string | null>(null);
   const deepLinkVideoTriedRef = useRef<string | null>(null);
+  const [draftHydrating, setDraftHydrating] = useState(false);
+  const draftAutosaveNoteRef = useRef<
+    ((id: number, updatedAt?: string | null, clientUpdatedAt?: string | null) => void) | null
+  >(null);
+  const draftClearRef = useRef<(() => void) | null>(null);
 
   const [phase, setPhase] = useState<Phase>(1);
   const [maxPhase, setMaxPhase] = useState<Phase>(1);
@@ -895,6 +904,127 @@ function TestStudioInner() {
       cancelled = true;
     };
   }, [saveParam, selected, videoParam, applyRestoredCarouselSave]);
+
+  const applyStudioDraft = useCallback((draft: NonNullable<ReturnType<typeof deserializeStudioDraft>>) => {
+    setPhase(draft.phase as Phase);
+    setMaxPhase((m) => (m < draft.phase ? (draft.phase as Phase) : m));
+    if (Array.isArray(draft.themes) && draft.themes.length) {
+      setThemes(draft.themes as TestTheme[]);
+    }
+    if (Array.isArray(draft.selected_themes)) {
+      setSelectedThemes(draft.selected_themes as TestTheme[]);
+    }
+    const hasExtractBits =
+      (Array.isArray(draft.hooks) && draft.hooks.length > 0) ||
+      (Array.isArray(draft.topics) && draft.topics.length > 0) ||
+      (Array.isArray(draft.topic_tree) && draft.topic_tree.length > 0);
+    if (hasExtractBits) {
+      setExtract((prev) => ({
+        ...(prev || {
+          drive_file_id: draft.drive_file_id,
+          source: "draft",
+          hooks: [],
+          topics: [],
+        }),
+        hooks: (Array.isArray(draft.hooks) ? draft.hooks : []) as TestExtract["hooks"],
+        topics: (Array.isArray(draft.topics) ? draft.topics : []) as TestExtract["topics"],
+        topic_tree: (Array.isArray(draft.topic_tree)
+          ? draft.topic_tree
+          : []) as TestExtract["topic_tree"],
+        intent: draft.intent ?? prev?.intent ?? null,
+        intent_score: draft.intent_score ?? prev?.intent_score ?? null,
+      }));
+    }
+    setSelectedTopics(
+      Array.isArray(draft.selected_topics) ? draft.selected_topics.map((t) => String(t)) : []
+    );
+    setSelectedHooks(
+      Array.isArray(draft.selected_hooks) ? draft.selected_hooks.map((h) => String(h)) : []
+    );
+    setIntent(draft.intent ?? null);
+    setCarouselLayout(draft.layout_mode === "split_2" ? "split_2" : "single_1");
+    if (draft.layouts && typeof draft.layouts === "object") {
+      const layoutsObj = draft.layouts as {
+        single_1?: { carousels?: TestCarousel[] };
+        split_2?: { carousels?: TestCarousel[] };
+      };
+      setLayouts({
+        single_1: layoutsObj.single_1?.carousels,
+        split_2: layoutsObj.split_2?.carousels,
+      });
+    }
+    if (Array.isArray(draft.carousels) && draft.carousels.length) {
+      setCarousels(draft.carousels as TestCarousel[]);
+      setCopySource("draft");
+      setCopyStage("cache");
+      setImageStage(draft.images_ready ? "cache" : null);
+    } else if (Array.isArray(draft.slides) && draft.slides.length) {
+      setCarousels([
+        {
+          id: "draft",
+          kind: "mixed",
+          title: String(draft.label || "Draft"),
+          topic_labels: [],
+          slide_count: draft.slides.length,
+          slides: draft.slides as TestSlide[],
+          images_ready: Boolean(draft.images_ready),
+        },
+      ]);
+      setCopySource("draft");
+    }
+    if (typeof draft.base_save_id === "number") {
+      setActiveCarouselSaveId(draft.base_save_id);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!draftParam || saveParam) return;
+    if (!videoParam && !selected) return;
+    const targetId = videoParam || selected?.id;
+    if (!targetId) return;
+    if (deepLinkDraftRestoreRef.current === targetId) return;
+    if (videoParam && selected && selected.id !== videoParam) return;
+    if (videoParam && !selected) return;
+
+    let cancelled = false;
+    setDraftHydrating(true);
+    void (async () => {
+      try {
+        const record = await testApi.carouselDraftGet(targetId);
+        if (cancelled || deepLinkDraftRestoreRef.current === targetId) return;
+        if (!saveMatchesVideo(record.drive_file_id, targetId)) {
+          deepLinkDraftRestoreRef.current = targetId;
+          toastApiError("Draft does not match the selected video.");
+          return;
+        }
+        const draft = deserializeStudioDraft(record);
+        if (!draft) {
+          deepLinkDraftRestoreRef.current = targetId;
+          toastApiError("Draft payload could not be restored.");
+          return;
+        }
+        deepLinkDraftRestoreRef.current = targetId;
+        applyStudioDraft(draft);
+        draftAutosaveNoteRef.current?.(
+          record.id,
+          record.updated_at,
+          typeof record.payload?.client_updated_at === "string"
+            ? record.payload.client_updated_at
+            : record.updated_at
+        );
+      } catch (e) {
+        if (!cancelled) {
+          deepLinkDraftRestoreRef.current = targetId;
+          toastApiError(formatApiError(e, "Could not resume draft"));
+        }
+      } finally {
+        if (!cancelled) setDraftHydrating(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [applyStudioDraft, draftParam, saveParam, selected, videoParam]);
 
   useEffect(() => {
     if (!selected) return;
@@ -1620,6 +1750,7 @@ function TestStudioInner() {
         })),
       });
       setActiveCarouselSaveId(saved.id);
+      draftClearRef.current?.();
       toast.success("Carousel saved");
     } catch (e) {
       setError(formatApiError(e, "Could not save the carousel. Please try again."));
@@ -1720,6 +1851,72 @@ function TestStudioInner() {
   const transcriptBusy = transcriptModal.open && !transcriptModal.error;
   const currentStep = PHASE_STEPS[phase - 1];
 
+  const draftRevisionKey = selected
+    ? [
+        selected.id,
+        phase,
+        selectedThemes.map((t) => t.theme_id).join(","),
+        selectedTopics.join("|"),
+        selectedHooks.join("|"),
+        carouselLayout,
+        carousels.length,
+        carousels[0]?.slides?.length ?? 0,
+        themes.length,
+        extract?.hooks?.length ?? 0,
+        intent || "",
+      ].join("::")
+    : "";
+
+  const draftHasProgress =
+    phase >= 2 ||
+    selectedThemes.length > 0 ||
+    selectedTopics.length > 0 ||
+    selectedHooks.length > 0 ||
+    carousels.length > 0 ||
+    Boolean(extract?.hooks?.length) ||
+    Boolean(themes.length);
+
+  const draftAutosave = useStudioDraftAutosave({
+    driveFileId: selected?.id ?? null,
+    enabled: Boolean(selected) && !draftHydrating && draftHasProgress,
+    debounceMs: 1500,
+    revisionKey: draftRevisionKey,
+    buildBody: () => {
+      if (!selected) return null;
+      return {
+        drive_file_id: selected.id,
+        phase,
+        selected_themes: selectedThemes,
+        selected_topics: selectedTopics,
+        selected_hooks: selectedHooks,
+        intent,
+        intent_score: extract?.intent_score ?? null,
+        themes,
+        topic_tree: Array.isArray(extract?.topic_tree) ? extract.topic_tree : [],
+        hooks: extract?.hooks ?? [],
+        topics: extract?.topics ?? [],
+        carousels,
+        slides: carousels[0]?.slides ?? [],
+        layouts: layouts
+          ? {
+              ...(layouts.single_1
+                ? { single_1: { carousels: layouts.single_1 } }
+                : {}),
+              ...(layouts.split_2 ? { split_2: { carousels: layouts.split_2 } } : {}),
+            }
+          : null,
+        layout_mode: carouselLayout,
+        images_ready: Boolean(imageStage),
+        base_save_id: activeCarouselSaveId,
+        label: selected.name || "Draft",
+      };
+    },
+    upsert: (body) => testApi.carouselDraftUpsert(body),
+    fetchDraft: (id) => testApi.carouselDraftGet(id),
+  });
+  draftAutosaveNoteRef.current = draftAutosave.noteServerDraft;
+  draftClearRef.current = draftAutosave.clearDraftIndicator;
+
   useEffect(() => {
     window.scrollTo({ top: 0, behavior: "smooth" });
   }, [phase]);
@@ -1736,8 +1933,48 @@ function TestStudioInner() {
         <PhaseRail phase={phase} canVisit={canVisitPhase} onNavigate={goToPhase} />
         <p className="studio-step-caption">
           Step {phase} of 5 · {currentStep.title}
+          {draftAutosave.statusLabel ? ` · ${draftAutosave.statusLabel}` : ""}
         </p>
       </header>
+
+      {draftAutosave.conflict ? (
+        <div
+          className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950"
+          role="alert"
+        >
+          <p className="font-medium">Server draft is newer than this tab.</p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            <button
+              type="button"
+              className="rounded-md bg-slate-900 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-slate-800"
+              onClick={() => draftAutosave.keepLocal()}
+            >
+              Keep local
+            </button>
+            <button
+              type="button"
+              className="rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+              onClick={() => {
+                const draft = deserializeStudioDraft(draftAutosave.conflict!.serverDraft);
+                if (draft) {
+                  applyStudioDraft(draft);
+                  draftAutosave.noteServerDraft(
+                    draftAutosave.conflict!.serverDraft.id,
+                    draftAutosave.conflict!.serverUpdatedAt,
+                    typeof draftAutosave.conflict!.serverDraft.payload?.client_updated_at ===
+                      "string"
+                      ? String(draftAutosave.conflict!.serverDraft.payload.client_updated_at)
+                      : draftAutosave.conflict!.serverUpdatedAt
+                  );
+                }
+                draftAutosave.setConflict(null);
+              }}
+            >
+              Load server draft
+            </button>
+          </div>
+        </div>
+      ) : null}
 
       {/* Step 1 — Video */}
       {phase === 1 && (
