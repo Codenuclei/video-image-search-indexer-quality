@@ -188,7 +188,11 @@ export function TestShell({ children }: { children: React.ReactNode }) {
 
   function clearFilterAndSearch(patch: Partial<{ mime: string; person: string; folderPath: string }>) {
     patchSearchSession({ ...patch, q: headerQuery });
-    if (headerQuery.trim()) void runSearch();
+    if (headerQuery.trim()) {
+      void runSearch();
+    } else if (patch.person === "") {
+      cancelSearch({ clearResults: true });
+    }
   }
 
   const mimeLabel =
@@ -367,7 +371,11 @@ export function TestShell({ children }: { children: React.ReactNode }) {
                     disabled={persons.length === 0}
                     onChange={(v) => {
                       patchSearchSession({ person: v, q: headerQuery });
-                      if (headerQuery.trim()) void runSearch();
+                      if (v || headerQuery.trim()) {
+                        void runSearch();
+                      } else {
+                        cancelSearch({ clearResults: true });
+                      }
                     }}
                     options={[
                       { value: "", label: "All people" },

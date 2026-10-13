@@ -99,6 +99,16 @@ function ClusterFileTile({
 
 const CLUSTER_FACE_PREVIEW_LIMIT = 12;
 
+function sampleThumbFallback(file: ClusterFile | undefined | null) {
+  if (!file?.drive_file_id) return null;
+  return {
+    driveFileId: file.drive_file_id,
+    name: file.name,
+    isVideo: isVideoFile(file),
+    frameTimestamp: file.frame_timestamp,
+  };
+}
+
 function ClusterGallery({
   files,
   faceIds,
@@ -124,6 +134,7 @@ function ClusterGallery({
     showAllFaces || faceIds.length <= CLUSTER_FACE_PREVIEW_LIMIT
       ? faceIds
       : faceIds.slice(0, CLUSTER_FACE_PREVIEW_LIMIT);
+  const faceFallback = sampleThumbFallback(files[0]);
 
   if (loading && files.length === 0 && faceIds.length === 0) {
     return (
@@ -156,7 +167,11 @@ function ClusterGallery({
                   }}
                   className="cursor-pointer rounded-lg transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
-                  <FaceThumb faceId={faceId} className="h-14 w-14 rounded-lg" />
+                  <FaceThumb
+                    faceId={faceId}
+                    className="h-14 w-14 rounded-lg"
+                    fallback={faceFallback}
+                  />
                 </div>
               </li>
             ))}
@@ -198,7 +213,11 @@ function ClusterGallery({
       )}
       <ModalOverlay open={previewFaceId != null} onClose={() => setPreviewFaceId(null)}>
         <div className="mx-auto flex max-w-sm flex-col items-center gap-3 rounded-xl bg-card p-4 shadow-2xl">
-          <FaceThumb faceId={previewFaceId} className="h-48 w-48 rounded-xl" />
+          <FaceThumb
+            faceId={previewFaceId}
+            className="h-48 w-48 rounded-xl"
+            fallback={faceFallback}
+          />
           <Button type="button" variant="secondary" onClick={() => setPreviewFaceId(null)}>
             Close
           </Button>
@@ -240,7 +259,7 @@ function SuggestionPicker({
   if (!selected) return null;
 
   const selectedFaceId = selected.representative_face_id;
-  const selectedSample = selected.sample_files[0];
+  const selectedFallback = sampleThumbFallback(selected.sample_files[0]);
 
   return (
     <div ref={rootRef} className="relative w-full">
@@ -254,20 +273,11 @@ function SuggestionPicker({
           open && "border-ring ring-2 ring-ring/20"
         )}
       >
-        {selectedFaceId ? (
-          <FaceThumb faceId={selectedFaceId} className="h-7 w-7 shrink-0 rounded-full" />
-        ) : selectedSample ? (
-          <span className="h-7 w-7 shrink-0 overflow-hidden rounded-full border border-border bg-muted/40">
-            <DriveMediaThumb
-              driveFileId={selectedSample.drive_file_id}
-              name={selectedSample.name}
-              isVideo={isVideoFile(selectedSample)}
-              frameTimestamp={selectedSample.frame_timestamp}
-            />
-          </span>
-        ) : (
-          <FaceThumb faceId={null} className="h-7 w-7 shrink-0 rounded-full" />
-        )}
+        <FaceThumb
+          faceId={selectedFaceId}
+          className="h-7 w-7 shrink-0 rounded-full"
+          fallback={selectedFallback}
+        />
         <span className="min-w-0 flex-1 truncate text-xs text-foreground">
           {matchSummary(selected)}
         </span>
@@ -315,23 +325,11 @@ function SuggestionPicker({
                         : "text-foreground hover:bg-accent"
                     )}
                   >
-                    {item.representative_face_id ? (
-                      <FaceThumb
-                        faceId={item.representative_face_id}
-                        className="h-8 w-8 shrink-0 rounded-full"
-                      />
-                    ) : item.sample_files[0] ? (
-                      <span className="h-8 w-8 shrink-0 overflow-hidden rounded-full border border-border bg-muted/40">
-                        <DriveMediaThumb
-                          driveFileId={item.sample_files[0].drive_file_id}
-                          name={item.sample_files[0].name}
-                          isVideo={isVideoFile(item.sample_files[0])}
-                          frameTimestamp={item.sample_files[0].frame_timestamp}
-                        />
-                      </span>
-                    ) : (
-                      <FaceThumb faceId={null} className="h-8 w-8 shrink-0 rounded-full" />
-                    )}
+                    <FaceThumb
+                      faceId={item.representative_face_id}
+                      className="h-8 w-8 shrink-0 rounded-full"
+                      fallback={sampleThumbFallback(item.sample_files[0])}
+                    />
                     <span className="min-w-0 flex-1">
                       <span className="block truncate">
                         {percent}% match
@@ -833,9 +831,9 @@ export default function PersonDetailPage() {
               </div>
             )}
             {(suggestionError || suggestions.length < suggestionTotal) && (
-              <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border/70 bg-muted/30 px-3 py-2.5">
+              <div className="flex flex-col items-center gap-2 pt-1 text-center">
                 {suggestionError ? (
-                  <p className="text-sm text-destructive">{suggestionError}</p>
+                  <p className="max-w-md text-sm text-destructive">{suggestionError}</p>
                 ) : (
                   <p className="text-xs text-muted-foreground">
                     Showing {suggestions.length} of {suggestionTotal} potential matches

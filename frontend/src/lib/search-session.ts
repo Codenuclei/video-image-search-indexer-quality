@@ -313,9 +313,16 @@ function newSearchId(): string {
   return `s-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+/** Typed query, or selected person name when the search box is empty. Does not mutate session.q. */
+export function effectiveSearchQuery(session: Pick<SearchSession, "q" | "person"> = state): string {
+  const typed = session.q.trim();
+  if (typed) return typed;
+  return session.person.trim();
+}
+
 export function runSearch() {
   const current = getSearchSession();
-  const q = current.q.trim();
+  const q = effectiveSearchQuery(current);
   if (!q) return inFlight;
 
   // Text search and reverse-face share the Search page — drop leftover face results/spinners.

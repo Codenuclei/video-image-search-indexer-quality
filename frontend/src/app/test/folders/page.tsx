@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   ChevronRight,
   FileImage,
@@ -61,6 +61,9 @@ function FolderTile({
   const [reasonsOpen, setReasonsOpen] = useState(false);
   const [reasonsLoading, setReasonsLoading] = useState(false);
   const [reasons, setReasons] = useState<SkipReasonCount[] | null>(null);
+  const [popoverPos, setPopoverPos] = useState<{ top: number; left: number; width: number } | null>(
+    null
+  );
   const reasonRootRef = useRef<HTMLDivElement>(null);
   const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -122,8 +125,33 @@ function FolderTile({
     };
   }, [reasonsOpen]);
 
+  useLayoutEffect(() => {
+    if (!reasonsOpen) {
+      setPopoverPos(null);
+      return;
+    }
+    function placePopover() {
+      const anchor = reasonRootRef.current;
+      if (!anchor) return;
+      const rect = anchor.getBoundingClientRect();
+      const width = Math.min(256, window.innerWidth - 16);
+      const left = Math.max(
+        8,
+        Math.min(rect.left + rect.width / 2 - width / 2, window.innerWidth - width - 8)
+      );
+      setPopoverPos({ top: rect.bottom + 6, left, width });
+    }
+    placePopover();
+    window.addEventListener("resize", placePopover);
+    window.addEventListener("scroll", placePopover, true);
+    return () => {
+      window.removeEventListener("resize", placePopover);
+      window.removeEventListener("scroll", placePopover, true);
+    };
+  }, [reasonsOpen]);
+
   return (
-    <div className="group relative min-w-0">
+    <div className="group relative flex min-w-0 flex-col overflow-visible">
       <button
         type="button"
         onClick={() => onOpen(folder.path)}
@@ -161,7 +189,7 @@ function FolderTile({
       {folder.skipped_count > 0 && (
         <div
           ref={reasonRootRef}
-          className="absolute left-1/2 top-1.5 z-30 translate-x-3"
+          className="relative z-30 -mt-1 mb-1.5 flex justify-center px-1"
           onMouseEnter={openReasons}
           onMouseLeave={scheduleClose}
         >
@@ -184,12 +212,17 @@ function FolderTile({
             {folder.skipped_count > 99 ? "99+" : formatCount(folder.skipped_count)} skipped
           </button>
 
-          {reasonsOpen && (
+          {reasonsOpen && popoverPos && (
             <div
               id={`skip-reasons-${folder.path.replace(/[^a-z0-9]+/gi, "-")}`}
               role="dialog"
               aria-label={`Skip reasons for ${folder.name}`}
-              className="absolute left-1/2 top-full z-50 mt-2 w-64 max-w-[78vw] -translate-x-1/2 overflow-hidden rounded-xl border border-border bg-card text-left shadow-lg"
+              className="fixed z-50 overflow-hidden rounded-xl border border-border bg-card text-left shadow-lg"
+              style={{
+                top: popoverPos.top,
+                left: popoverPos.left,
+                width: popoverPos.width,
+              }}
             >
               <div className="border-b border-border/70 px-3 py-2.5">
                 <p className="text-xs font-semibold text-foreground">

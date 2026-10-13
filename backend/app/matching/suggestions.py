@@ -22,7 +22,12 @@ MIN_SUGGESTION_SIMILARITY = 0.5
 
 
 async def _display_thumb_id(session: AsyncSession, cluster: FaceCluster) -> int | None:
-    """Prefer a cluster face whose JPEG actually exists on disk."""
+    """Return a face id only when its JPEG exists on disk.
+
+    Returning an id without a thumb makes the UI hit /faces/{id}/thumbnail,
+    fail (common for video-sourced faces), and show a blank User/"?" placeholder.
+    Prefer None so clients can fall back to sample-file DriveMediaThumb.
+    """
     fid = cluster.representative_face_id
     if fid is not None:
         thumb_id, _ = await resolve_face_thumbnail_id(session, int(fid))
@@ -44,7 +49,7 @@ async def _display_thumb_id(session: AsyncSession, cluster: FaceCluster) -> int 
         resolved = await session.get(Face, thumb_id)
         if resolved is not None and thumb_exists_on_disk(resolved):
             return thumb_id
-    return fid
+    return None
 
 
 async def ranked_cluster_suggestions(

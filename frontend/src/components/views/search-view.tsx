@@ -142,7 +142,11 @@ export function SearchPage({
 
   function clearFilterAndSearch(patch: Partial<{ mime: string; person: string; folderPath: string }>) {
     patchSearchSession(patch);
-    if (getSearchSession().q.trim()) void runSearch();
+    if (getSearchSession().q.trim()) {
+      void runSearch();
+    } else if (patch.person === "") {
+      cancelSearch({ clearResults: true });
+    }
   }
 
   const mimeValue = mime || "all";
@@ -229,7 +233,11 @@ export function SearchPage({
             disabled={persons.length === 0}
             onChange={(v) => {
               patchSearchSession({ person: v });
-              if (getSearchSession().q.trim()) void runSearch();
+              if (v || getSearchSession().q.trim()) {
+                void runSearch();
+              } else {
+                cancelSearch({ clearResults: true });
+              }
             }}
             options={[
               { value: "", label: "All people" },

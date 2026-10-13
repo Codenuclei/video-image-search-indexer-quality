@@ -58,18 +58,27 @@ export function FilterDropdown({
     const trigger = rootRef.current;
     if (!trigger) return null;
     const rect = trigger.getBoundingClientRect();
-    const spaceBelow = window.innerHeight - rect.bottom - MENU_GAP - 8;
-    const spaceAbove = rect.top - MENU_GAP - 8;
+    const edge = 8;
+    const vh = window.innerHeight;
+    const vw = window.innerWidth;
+    const spaceBelow = vh - rect.bottom - MENU_GAP - edge;
+    const spaceAbove = rect.top - MENU_GAP - edge;
     const openUp = spaceBelow < MENU_MIN && spaceAbove > spaceBelow;
-    const available = Math.max(MENU_MIN, openUp ? spaceAbove : spaceBelow);
-    const maxHeight = Math.min(MENU_IDEAL, available);
+    const available = openUp ? spaceAbove : spaceBelow;
+    // Prefer ideal height, but never exceed remaining viewport space (incl. bottom edge).
+    const maxHeight = Math.min(MENU_IDEAL, Math.max(48, available));
+    let top = openUp ? rect.top - MENU_GAP - maxHeight : rect.bottom + MENU_GAP;
+    top = Math.max(edge, Math.min(top, vh - edge - maxHeight));
+    const width = Math.max(rect.width, 224);
+    const cappedWidth = Math.min(width, vw * 0.7, 18 * 16);
+    const left = Math.max(edge, Math.min(rect.left, vw - cappedWidth - edge));
     return {
       openUp,
       maxHeight,
       fixed: true,
-      top: openUp ? Math.max(8, rect.top - MENU_GAP - maxHeight) : rect.bottom + MENU_GAP,
-      left: Math.min(rect.left, window.innerWidth - Math.max(rect.width, 224) - 8),
-      width: Math.max(rect.width, 224),
+      top,
+      left,
+      width,
     };
   }
 
@@ -186,7 +195,7 @@ export function FilterDropdown({
                       setOpen(false);
                     }}
                     className={cn(
-                      "flex w-full items-center gap-2 px-3 py-2 text-left text-xs transition-colors",
+                      "flex w-full min-w-0 items-center gap-2 overflow-hidden px-3 py-2 text-left text-xs transition-colors",
                       isSel
                         ? "bg-primary/10 font-medium text-primary"
                         : "text-foreground hover:bg-accent"
@@ -203,7 +212,9 @@ export function FilterDropdown({
                       </span>
                     ) : null}
                     <span className="min-w-0 flex-1 truncate">{o.label}</span>
-                    {isSel && <Check size={13} className="shrink-0" aria-hidden />}
+                    <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center" aria-hidden>
+                      {isSel ? <Check size={13} /> : null}
+                    </span>
                   </button>
                 </li>
               );

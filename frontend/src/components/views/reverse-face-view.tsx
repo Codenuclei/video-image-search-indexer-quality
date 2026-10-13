@@ -365,7 +365,7 @@ function ResultsSidePanel({
           {files.length === 0 ? (
             <p className="text-xs text-muted-foreground">No Drive files linked to these matches yet.</p>
           ) : (
-            <ul className="max-h-[28rem] space-y-0.5 overflow-y-auto pr-1">
+            <ul className="scrollbar-autohide max-h-[28rem] space-y-0.5 overflow-y-auto pr-1">
               {files.map((f) => {
                 const saveQuery = uploadedFileName
                   ? `Reverse face search · ${uploadedFileName}`

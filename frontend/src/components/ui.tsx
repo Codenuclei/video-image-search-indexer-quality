@@ -363,7 +363,23 @@ export function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {
   );
 }
 
-export function FaceThumb({ faceId, className }: { faceId: number | null; className?: string }) {
+export type FaceThumbFallback = {
+  driveFileId: string;
+  name: string;
+  isVideo?: boolean;
+  frameTimestamp?: number | null;
+};
+
+export function FaceThumb({
+  faceId,
+  className,
+  fallback,
+}: {
+  faceId: number | null;
+  className?: string;
+  /** When face id is missing or /faces/{id}/thumbnail fails, show a sample frame. */
+  fallback?: FaceThumbFallback | null;
+}) {
   const [broken, setBroken] = useState(false);
   const [retryToken, setRetryToken] = useState(0);
   const autoRetriedFor = useRef<number | null>(null);
@@ -383,6 +399,22 @@ export function FaceThumb({ faceId, className }: { faceId: number | null; classN
       }
     };
   }, [faceId]);
+
+  const useFallback = (!faceId || broken) && fallback?.driveFileId;
+  if (useFallback && fallback) {
+    return (
+      <span className={cn("block overflow-hidden rounded-md bg-muted/40", className)}>
+        <DriveMediaThumb
+          driveFileId={fallback.driveFileId}
+          name={fallback.name}
+          isVideo={fallback.isVideo}
+          frameTimestamp={fallback.frameTimestamp}
+          className="h-full w-full"
+        />
+      </span>
+    );
+  }
+
   if (!faceId) {
     return (
       <div
@@ -426,6 +458,11 @@ export function FaceThumb({ faceId, className }: { faceId: number | null; classN
       decoding="async"
       className={cn("rounded-md object-cover", className)}
       onError={() => {
+        // Prefer sample-file frame over a blank User/"?" placeholder.
+        if (fallback?.driveFileId) {
+          setBroken(true);
+          return;
+        }
         if (autoRetriedFor.current !== faceId) {
           autoRetriedFor.current = faceId;
           autoRetryTimer.current = window.setTimeout(() => {

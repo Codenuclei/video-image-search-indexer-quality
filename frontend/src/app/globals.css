@@ -193,3 +193,45 @@ body {
 .dfi-scroll::-webkit-scrollbar-thumb:hover {
   background-color: color-mix(in oklab, var(--muted-foreground) 65%, transparent);
 }
+
+/* Thin overlay scrollbar: transparent at rest, visible on hover/focus/scroll interaction */
+.scrollbar-autohide {
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+.scrollbar-autohide:hover,
+.scrollbar-autohide:focus,
+.scrollbar-autohide:focus-within,
+.scrollbar-autohide:active {
+  scrollbar-color: color-mix(in oklab, var(--muted-foreground) 45%, transparent) transparent;
+}
+
+.scrollbar-autohide::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.scrollbar-autohide::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.scrollbar-autohide::-webkit-scrollbar-thumb {
+  background-color: transparent;
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+  transition: background-color 0.2s ease;
+}
+
+.scrollbar-autohide:hover::-webkit-scrollbar-thumb,
+.scrollbar-autohide:focus::-webkit-scrollbar-thumb,
+.scrollbar-autohide:focus-within::-webkit-scrollbar-thumb,
+.scrollbar-autohide:active::-webkit-scrollbar-thumb {
+  background-color: color-mix(in oklab, var(--muted-foreground) 40%, transparent);
+}
+
+.scrollbar-autohide:hover::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in oklab, var(--muted-foreground) 65%, transparent);
+}
