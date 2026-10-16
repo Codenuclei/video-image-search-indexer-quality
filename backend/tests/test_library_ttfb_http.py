@@ -58,7 +58,7 @@ async def test_http_library_revision_shell_folder(db_session):
             name="deep.jpg",
             mime_type="image/jpeg",
             path="/Album/Sub/deep.jpg",
-            status=DriveFileStatus.PROCESSED,
+            status=DriveFileStatus.SKIPPED,
             last_synced_at=datetime.now(timezone.utc),
         )
     )
@@ -142,9 +142,12 @@ async def test_http_library_revision_shell_folder(db_session):
                 )
                 assert skipped.status_code == 200
                 skipped_page = skipped.json()
-                assert skipped_page["total"] == 1
+                assert skipped_page["total"] == 2
                 assert skipped_page["next_cursor"] is None
-                assert [item["id"] for item in skipped_page["files"]] == ["shell-1"]
+                assert {item["id"] for item in skipped_page["files"]} == {
+                    "nested-1",
+                    "shell-1",
+                }
     finally:
         app.dependency_overrides.pop(get_db, None)
         get_library_shell_cache().invalidate()

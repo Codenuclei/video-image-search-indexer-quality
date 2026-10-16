@@ -392,11 +392,22 @@ def _drive_library_folder_sync(
     from app.drive.library_filters import is_apple_junk_row, is_folder_marker_row
     from app.qdrant.image_captions import valid_caption_ids_sync
     from app.qdrant.images import existing_image_ids_sync
-    from sqlalchemy import and_, func, not_, or_
+    from sqlalchemy import and_, func, not_, or_, true
 
     folder = normalize_folder_path(path)
 
-    if folder == "/":
+    if status is not None:
+        # Status views correspond to aggregate folder badges, so include the
+        # whole subtree rather than only direct children.
+        if folder == "/":
+            path_filter = true()
+        else:
+            relative_folder = folder.lstrip("/")
+            path_filter = or_(
+                DriveFile.path.like(f"{folder}/%"),
+                DriveFile.path.like(f"{relative_folder}/%"),
+            )
+    elif folder == "/":
         # Historical rows exist both with and without a leading slash.
         # Direct root children are "/name" or "name", with no nested slash.
         path_filter = or_(
@@ -434,7 +445,7 @@ def _drive_library_folder_sync(
                 continue
             if is_folder_marker_row(mime_type=df.mime_type, error_message=df.error_message):
                 continue
-            if is_direct_child_of_folder(df.path, folder):
+            if status is not None or is_direct_child_of_folder(df.path, folder):
                 children.append(df)
 
         children.sort(key=lambda d: (d.name or "").lower())
