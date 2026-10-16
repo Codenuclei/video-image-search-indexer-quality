@@ -117,12 +117,12 @@ def test_jpeg_scale_zero_is_full_res() -> None:
     assert jpeg_scale(4000, 3000, 1600) < 1.0
 
 
-def test_serverless_scale_min_one_under_load_zero_when_idle() -> None:
-    assert serverless_worker_scale(active=True) == {"workersMin": 1, "workersMax": 1}
+def test_serverless_scale_never_requires_an_always_on_worker() -> None:
+    assert serverless_worker_scale(active=True) == {"workersMin": 0, "workersMax": 1}
     assert serverless_worker_scale(active=False) == {"workersMin": 0, "workersMax": 0}
 
 
-def test_set_face_workers_patches_min_one_on_load() -> None:
+def test_set_face_workers_keeps_min_zero_on_load() -> None:
     import asyncio
 
     from app.faces import runpod_gpu as gpu
@@ -160,7 +160,7 @@ def test_set_face_workers_patches_min_one_on_load() -> None:
         asyncio.run(gpu.set_face_workers_max(settings, 0))
     gpu._scaled = None
     assert patches == [
-        {"workersMin": 1, "workersMax": 1},
+        {"workersMin": 0, "workersMax": 1},
         {"workersMin": 0, "workersMax": 0},
     ]
 

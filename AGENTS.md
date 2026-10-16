@@ -92,3 +92,10 @@ railway service status --service dfi-frontend
 ```bash
 scripts/auto-deploy.sh --force   # backend + frontend + carousel for current HEAD
 ```
+
+## RunPod face scaling cost invariant
+
+Automatic code and deployment scripts must never set `workersMin` above `0`.
+Only the user may manually enable always-on workers. Under load use
+`workersMin=0, workersMax=1`; let RunPod flex workers start on demand.
+Keep regression tests for both active and idle scaling paths.

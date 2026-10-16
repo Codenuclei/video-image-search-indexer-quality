@@ -237,11 +237,12 @@ def payload_contains_drive_url(payload: dict[str, Any]) -> bool:
 def serverless_worker_scale(*, active: bool) -> dict[str, int]:
     """Serverless endpoint size: one worker under load, scale to zero when idle.
 
-    Never uses a dedicated pod. ``workersMin=1`` keeps a worker while jobs run;
-    idle sets min and max to 0 so RunPod can autoscale off.
+    Never uses a dedicated pod. Minimum workers must always remain zero;
+    only the user may opt into always-on workers manually. RunPod starts flex
+    workers on demand and releases them after the endpoint idle timeout.
     """
     if active:
-        return {"workersMin": 1, "workersMax": 1}
+        return {"workersMin": 0, "workersMax": 1}
     return {"workersMin": 0, "workersMax": 0}
 
 

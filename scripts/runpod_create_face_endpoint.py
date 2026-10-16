@@ -2,7 +2,7 @@
 """Create a RunPod **serverless** template + endpoint for buffalo_l.
 
 Never a dedicated pod. Rest: workersMin=0 workersMax=0. Under load the API
-PATCHes workersMin=1 (and max=1), then scales both back to 0 when idle.
+PATCHes workersMax=1 with workersMin=0, then sets max=0 when idle.
 """
 
 from __future__ import annotations

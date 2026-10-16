@@ -101,7 +101,7 @@ class Settings(BaseSettings):
     face_job_lease_seconds: int = 3600
     face_job_max_attempts: int = 3
     # RunPod **serverless** buffalo_l (dfi-face-buffalo). Never a dedicated pod.
-    # workersMin=1 while jobs run, then both min/max autoscale to 0 when idle.
+    # Minimum workers always stays 0; only maximum capacity changes under load.
     runpod_api_key: str = ""
     runpod_face_endpoint_id: str = "0zub88paibpsf3"
     runpod_qwen_endpoint_id: str = ""
