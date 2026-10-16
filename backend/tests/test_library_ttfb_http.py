@@ -41,7 +41,13 @@ async def test_http_library_revision_shell_folder(db_session):
                 name=f"img-{i}.jpg",
                 mime_type="image/jpeg",
                 path=f"/Album/img-{i}.jpg",
-                status=DriveFileStatus.PROCESSED if i % 2 == 0 else DriveFileStatus.PENDING,
+                status=(
+                    DriveFileStatus.SKIPPED
+                    if i == 1
+                    else DriveFileStatus.PROCESSED
+                    if i % 2 == 0
+                    else DriveFileStatus.PENDING
+                ),
                 last_synced_at=datetime.now(timezone.utc),
             )
         )
@@ -129,6 +135,16 @@ async def test_http_library_revision_shell_folder(db_session):
                 assert page2.status_code == 200
                 assert len(page2.json()["files"]) == 2
                 assert page2.json()["next_cursor"] is None
+
+                skipped = await ac.get(
+                    "/drive/library/folder",
+                    params={"path": "/Album", "status": "skipped"},
+                )
+                assert skipped.status_code == 200
+                skipped_page = skipped.json()
+                assert skipped_page["total"] == 1
+                assert skipped_page["next_cursor"] is None
+                assert [item["id"] for item in skipped_page["files"]] == ["shell-1"]
     finally:
         app.dependency_overrides.pop(get_db, None)
         get_library_shell_cache().invalidate()

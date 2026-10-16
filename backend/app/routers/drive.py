@@ -375,16 +375,18 @@ async def drive_library_folder(
     path: str = Query(default="/"),
     limit: int = Query(default=150, ge=1, le=500),
     cursor: str | None = Query(default=None),
+    status: DriveFileStatus | None = Query(default=None),
 ) -> dict[str, object]:
     """Serve one folder entirely on the reserved Library thread + DB connection."""
     reader = get_library_reader_runtime()
-    return await reader.run(_drive_library_folder_sync, path, limit, cursor)
+    return await reader.run(_drive_library_folder_sync, path, limit, cursor, status)
 
 
 def _drive_library_folder_sync(
     path: str,
     limit: int,
     cursor: str | None,
+    status: DriveFileStatus | None,
 ) -> dict[str, object]:
     """Blocking folder read. Runs only on LibraryReaderRuntime's single thread."""
     from app.drive.library_filters import is_apple_junk_row, is_folder_marker_row
@@ -417,9 +419,12 @@ def _drive_library_folder_sync(
 
     reader = get_library_reader_runtime()
     with reader.session() as session:
+        filters = [path_filter]
+        if status is not None:
+            filters.append(DriveFile.status == status)
         rows = list(
             session.execute(
-                select(DriveFile).where(path_filter).order_by(DriveFile.name)
+                select(DriveFile).where(*filters).order_by(DriveFile.name)
             ).scalars().all()
         )
 

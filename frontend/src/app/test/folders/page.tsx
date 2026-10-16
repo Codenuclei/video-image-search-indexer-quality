@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
   ChevronRight,
   FileImage,
@@ -30,12 +31,22 @@ import { hydrateKeyFromDisk, readCache, writeCache } from "@/lib/data-cache";
 import { findLibraryFolder, librarySubfoldersAtPath } from "@/lib/library-folders";
 import { useRegisterTestShellChrome } from "@/lib/test-shell-chrome";
 
+type FolderFilter = "all" | "skipped";
+
+function foldersHref(path: string, filter: FolderFilter = "all") {
+  const params = new URLSearchParams();
+  if (path && path !== "/") params.set("path", path);
+  if (filter === "skipped") params.set("filter", "skipped");
+  const qs = params.toString();
+  return qs ? `/test/folders?${qs}` : "/test/folders";
+}
+
 const PAGE_SIZE = 120;
 const SHELL_CACHE_KEY = "driveLibraryShell";
 const FOLDER_CACHE_PREFIX = "driveLibrary:folder:";
 
-function folderCacheKey(path: string) {
-  return `${FOLDER_CACHE_PREFIX}${path}`;
+function folderCacheKey(path: string, filter: FolderFilter) {
+  return `${FOLDER_CACHE_PREFIX}${filter}:${path}`;
 }
 
 function indexedCount(f: LibraryFolder): number {
@@ -50,10 +61,12 @@ type SkipReasonCount = { reason: string; count: number };
 function FolderTile({
   folder,
   onOpen,
+  onViewSkipped,
   loadSkipReasons,
 }: {
   folder: LibraryFolder;
   onOpen: (path: string) => void;
+  onViewSkipped: (path: string) => void;
   loadSkipReasons: (path: string) => Promise<SkipReasonCount[]>;
 }) {
   const indexed = indexedCount(folder);
@@ -260,7 +273,12 @@ function FolderTile({
                 )}
               </div>
               <a
-                href="/admin"
+                href={foldersHref(folder.path, "skipped")}
+                onClick={(e) => {
+                  e.preventDefault();
+                  setReasonsOpen(false);
+                  onViewSkipped(folder.path);
+                }}
                 className="block border-t border-border/70 px-3 py-2 text-[11px] font-medium text-primary hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
               >
                 View skipped files
@@ -317,10 +335,17 @@ function FileTile({
   );
 }
 
-export default function TestFoldersPage() {
+function TestFoldersPageInner() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const filter: FolderFilter =
+    searchParams.get("filter") === "skipped" ? "skipped" : "all";
   const [shell, setShell] = useState<LibraryResponse | null>(null);
   const [loading, setLoading] = useState(true);
-  const [path, setPath] = useState("/");
+  const [path, setPath] = useState(() => {
+    const raw = searchParams.get("path");
+    return raw && raw.startsWith("/") ? raw : "/";
+  });
   const [files, setFiles] = useState<LibraryFile[]>([]);
   const [filesLoading, setFilesLoading] = useState(false);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
@@ -329,6 +354,20 @@ export default function TestFoldersPage() {
   const [previewVideoError, setPreviewVideoError] = useState<string | null>(null);
   const reasonLibraryRef = useRef<LibraryResponse | null>(null);
   const reasonLibraryRequestRef = useRef<Promise<LibraryResponse | null> | null>(null);
+
+  const navigateFolder = useCallback(
+    (nextPath: string, nextFilter: FolderFilter = "all") => {
+      setPath(nextPath);
+      router.replace(foldersHref(nextPath, nextFilter));
+    },
+    [router]
+  );
+
+  useEffect(() => {
+    const raw = searchParams.get("path");
+    const nextPath = raw && raw.startsWith("/") ? raw : "/";
+    setPath((prev) => (prev === nextPath ? prev : nextPath));
+  }, [searchParams]);
 
   const loadSkipReasons = useCallback(async (folderPath: string): Promise<SkipReasonCount[]> => {
     let library = reasonLibraryRef.current;
@@ -393,7 +432,7 @@ export default function TestFoldersPage() {
         setFilesLoading(false);
         return;
       }
-      const key = folderCacheKey(folderPath);
+      const key = folderCacheKey(folderPath, filter);
       if (!opts?.append && !opts?.force) {
         const fromDisk = hydrateKeyFromDisk(key) as
           | import("@/lib/data-cache").CacheEntry<{
@@ -419,6 +458,7 @@ export default function TestFoldersPage() {
         const page: LibraryFolderPage = await apiClient.driveLibraryFolder(folderPath, {
           limit: PAGE_SIZE,
           cursor: opts?.append ? nextCursor : null,
+          status: filter === "skipped" ? "skipped" : undefined,
         });
         setFiles((prev) => {
           const next = opts?.append ? [...prev, ...page.files] : page.files;
@@ -438,7 +478,7 @@ export default function TestFoldersPage() {
         setFilesLoading(false);
       }
     },
-    [nextCursor]
+    [filter, nextCursor]
   );
 
   useEffect(() => {
@@ -458,11 +498,15 @@ export default function TestFoldersPage() {
     setNextCursor(null);
     void loadFiles(path, { force: false });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [path]);
+  }, [path, filter]);
 
   const subfolders = useMemo(
-    () => librarySubfoldersAtPath(shell?.tree, path),
-    [shell, path]
+    () => (filter === "skipped" ? [] : librarySubfoldersAtPath(shell?.tree, path)),
+    [shell, path, filter]
+  );
+  const visibleFiles = useMemo(
+    () => files,
+    [files, filter]
   );
   const totalFiles = shell?.summary?.total_files ?? 0;
 
@@ -511,10 +555,12 @@ export default function TestFoldersPage() {
             {i > 0 && <ChevronRight size={13} className="text-muted-foreground" />}
             <button
               type="button"
-              onClick={() => setPath(c.path)}
+              onClick={() => navigateFolder(c.path)}
               className={cn(
                 "flex items-center gap-1.5 rounded-md px-1.5 py-0.5 transition-colors hover:bg-accent",
-                c.path === path ? "font-semibold text-foreground" : "text-muted-foreground"
+                c.path === path && filter === "all"
+                  ? "font-semibold text-foreground"
+                  : "text-muted-foreground"
               )}
             >
               {i === 0 && <Home size={13} />}
@@ -522,7 +568,30 @@ export default function TestFoldersPage() {
             </button>
           </span>
         ))}
+        {filter === "skipped" && (
+          <span className="ml-1 flex shrink-0 items-center gap-1">
+            <ChevronRight size={13} className="text-muted-foreground" />
+            <span className="rounded-md bg-amber-500/15 px-1.5 py-0.5 text-xs font-semibold text-amber-800 dark:text-amber-200">
+              Skipped
+            </span>
+          </span>
+        )}
       </nav>
+
+      {filter === "skipped" && (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm">
+          <p className="text-amber-900 dark:text-amber-100">
+            Showing skipped files in this folder
+          </p>
+          <button
+            type="button"
+            onClick={() => navigateFolder(path)}
+            className="rounded-full border border-amber-500/40 bg-card px-3 py-1 text-xs font-medium text-foreground transition-colors hover:bg-accent"
+          >
+            Show all files
+          </button>
+        </div>
+      )}
 
       {loading && !shell ? (
         <p className="py-16 text-center text-sm text-muted-foreground">
@@ -530,19 +599,22 @@ export default function TestFoldersPage() {
         </p>
       ) : (
         <div className="rounded-2xl border border-border bg-card p-4 shadow-sm">
-          {subfolders.length === 0 && files.length === 0 && !filesLoading ? (
-            <p className="py-16 text-center text-sm text-muted-foreground">This folder is empty</p>
+          {subfolders.length === 0 && visibleFiles.length === 0 && !filesLoading ? (
+            <p className="py-16 text-center text-sm text-muted-foreground">
+              {filter === "skipped" ? "No skipped files in this folder" : "This folder is empty"}
+            </p>
           ) : (
             <div className="grid grid-cols-3 gap-1 sm:grid-cols-4 md:grid-cols-6 xl:grid-cols-8">
               {subfolders.map((f) => (
                 <FolderTile
                   key={f.path}
                   folder={f}
-                  onOpen={setPath}
+                  onOpen={(next) => navigateFolder(next)}
+                  onViewSkipped={(next) => navigateFolder(next, "skipped")}
                   loadSkipReasons={loadSkipReasons}
                 />
               ))}
-              {files.map((file) => (
+              {visibleFiles.map((file) => (
                 <FileTile
                   key={file.id}
                   file={file}
@@ -637,5 +709,19 @@ export default function TestFoldersPage() {
         )}
       </ModalOverlay>
     </div>
+  );
+}
+
+export default function TestFoldersPage() {
+  return (
+    <Suspense
+      fallback={
+        <p className="py-16 text-center text-sm text-muted-foreground">
+          <LoadingLabel size={16}>Loading library…</LoadingLabel>
+        </p>
+      }
+    >
+      <TestFoldersPageInner />
+    </Suspense>
   );
 }

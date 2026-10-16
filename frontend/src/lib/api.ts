@@ -81,10 +81,14 @@ export function formatApiError(
   // AbortController / fetch cancel — never surface raw DOMException text.
   if (
     lower === "aborterror" ||
+    lower.startsWith("aborterror:") ||
     lower.includes("signal is aborted") ||
+    lower.includes("aborted without reason") ||
     lower.includes("the operation was aborted") ||
     lower.includes("the user aborted a request") ||
-    lower.includes("request aborted")
+    lower.includes("request aborted") ||
+    lower.includes("fetch aborted") ||
+    lower === "aborted"
   ) {
     return "Search cancelled.";
   }
@@ -115,10 +119,14 @@ export function isAbortError(error: unknown): boolean {
           : "";
   const lower = message.toLowerCase();
   return (
+    lower.startsWith("aborterror:") ||
     lower.includes("signal is aborted") ||
+    lower.includes("aborted without reason") ||
     lower.includes("the operation was aborted") ||
     lower.includes("the user aborted a request") ||
     lower.includes("request aborted") ||
+    lower.includes("fetch aborted") ||
+    lower === "aborted" ||
     lower === "search cancelled."
   );
 }
@@ -1143,6 +1151,7 @@ async function api<T>(
   const { timeoutMs, silent, baseUrl = API_BASE, signal: external, ...rest } = init ?? {};
   let controller: AbortController | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
   let signal = external;
   if (typeof timeoutMs === "number" && timeoutMs > 0) {
     controller = new AbortController();
@@ -1151,7 +1160,10 @@ async function api<T>(
       else external.addEventListener("abort", () => controller!.abort(), { once: true });
     }
     signal = controller.signal;
-    timer = setTimeout(() => controller!.abort(), timeoutMs);
+    timer = setTimeout(() => {
+      timedOut = true;
+      controller!.abort();
+    }, timeoutMs);
   }
   try {
     const headers = new Headers(rest.headers);
@@ -1193,13 +1205,10 @@ async function api<T>(
     if (res.status === 204) return undefined as T;
     return res.json();
   } catch (error) {
-    // Preserve abort so callers can ignore cancelled requests.
-    if (
-      (error instanceof DOMException || error instanceof Error) &&
-      error.name === "AbortError"
-    ) {
-      if (typeof timeoutMs === "number" && timeoutMs > 0 && !external?.aborted) {
-        const msg = `Request timed out after ${Math.round(timeoutMs / 1000)}s. The API may be busy — retry in a moment.`;
+    // Cancelled in-flight requests (AbortController / navigation) — never toast.
+    if (isAbortError(error) || external?.aborted) {
+      if (timedOut && !external?.aborted) {
+        const msg = `Request timed out after ${Math.round((timeoutMs ?? 0) / 1000)}s. The API may be busy — retry in a moment.`;
         if (!silent) toastApiError(msg);
         throw new Error(msg);
       }
@@ -1207,15 +1216,31 @@ async function api<T>(
     }
     // Preserve HTTP status from the !res.ok path above (avoid double-wrapping).
     if (error instanceof Error && typeof (error as ApiError).status === "number") {
-      if (!silent) toastApiError(error.message);
+      if (!silent && !looksLikeAbortErrorMessage(error.message)) toastApiError(error.message);
       throw error;
     }
     const msg = formatApiError(error);
-    if (!silent) toastApiError(msg);
+    if (!silent && !looksLikeAbortErrorMessage(msg)) toastApiError(msg);
     throw new Error(msg);
   } finally {
     if (timer) clearTimeout(timer);
   }
+}
+
+function looksLikeAbortErrorMessage(message: string): boolean {
+  const lower = (message || "").toLowerCase();
+  return (
+    lower === "aborterror" ||
+    lower.startsWith("aborterror:") ||
+    lower.includes("signal is aborted") ||
+    lower.includes("aborted without reason") ||
+    lower.includes("the operation was aborted") ||
+    lower.includes("the user aborted a request") ||
+    lower.includes("request aborted") ||
+    lower.includes("fetch aborted") ||
+    lower === "aborted" ||
+    lower === "search cancelled."
+  );
 }
 
 export const faceThumbnailUrl = (faceId: number | null) =>
@@ -1486,11 +1511,15 @@ export const apiClient = {
       silent: true,
       baseUrl: LIBRARY_READER_BASE,
     }),
-  driveLibraryFolder: (path: string, opts?: { limit?: number; cursor?: string | null }) => {
+  driveLibraryFolder: (
+    path: string,
+    opts?: { limit?: number; cursor?: string | null; status?: string }
+  ) => {
     const params = new URLSearchParams();
     params.set("path", path || "/");
     if (opts?.limit) params.set("limit", String(opts.limit));
     if (opts?.cursor) params.set("cursor", opts.cursor);
+    if (opts?.status) params.set("status", opts.status);
     return api<LibraryFolderPage>(`/drive/library/folder?${params}`, {
       silent: true,
       baseUrl: LIBRARY_READER_BASE,
@@ -1882,7 +1911,11 @@ export const apiClient = {
     form.append("file", file);
     const controller = new AbortController();
     const timeoutMs = 90_000;
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
     if (signal) {
       if (signal.aborted) controller.abort();
       else signal.addEventListener("abort", () => controller.abort(), { once: true });
@@ -1919,11 +1952,12 @@ export const apiClient = {
     } catch (error) {
       if (signal?.aborted || isAbortError(error)) {
         // Timer fired (not an external/user cancel) — toast and surface a clear message.
-        if (!signal?.aborted && controller.signal.aborted) {
+        if (timedOut && !signal?.aborted) {
           const msg = "Face search took too long. Please try again.";
           toastApiError(msg);
           throw new Error(msg);
         }
+        // Cancelled in-flight face search — never toast DOMException text.
         throw error;
       }
       // In-panel UI shows the error; avoid duplicate toasts.

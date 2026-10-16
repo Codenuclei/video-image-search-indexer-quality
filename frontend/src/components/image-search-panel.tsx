@@ -182,7 +182,7 @@ function ClusterRow({
             <Linkedin size={13} />
           </a>
         )}
-        {profileHref && scope !== "cluster" && (
+        {profileHref && (
           <Link
             href={profileHref}
             title="Profile"

@@ -452,14 +452,10 @@ async def _run_search(
     )
     person_action = bool(effective_persons and is_action_query(visual_query or query))
     combined_person_student = person_student_funnel_active(effective_persons, role_ctx)
-    use_captions = (
-        captions
-        or not effective_persons
-        or action_query
-        or role_context_active(role_ctx)
-        or person_action
-        or combined_person_student
-    )
+    # Honor the Captions toggle. person+action may still need captions for the
+    # action half even when the toggle is off (see test_person_name_search_captions).
+    # Do NOT force captions on for every non-person query — that made Captions OFF a no-op.
+    use_captions = bool(captions or person_action)
     use_rerank = rerank and get_runtime_settings().search_rerank_enabled
 
     person_focused = bool(

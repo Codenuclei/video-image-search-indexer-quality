@@ -95,17 +95,18 @@ export function patchSearchSession(patch: Partial<SearchSession>) {
 }
 
 /**
- * If the typed query exactly matches a different indexed person than the active
- * person filter, clear the filter so runSearch does not send both q and person.
- * Returns true when the filter was cleared.
+ * Clear the person face filter when the typed query is a different search intent.
+ * Keeps the filter only when the box is empty (person-only search) or the typed
+ * text still matches / refines the selected person name. Returns true when cleared.
  */
 export function clearConflictingPersonFilter(query?: string): boolean {
   const q = (query ?? state.q).trim().toLowerCase();
   const active = state.person.trim();
   if (!q || !active) return false;
-  if (active.toLowerCase() === q) return false;
-  const match = state.persons.some((p) => p.name.trim().toLowerCase() === q);
-  if (!match) return false;
+  const activeLower = active.toLowerCase();
+  if (activeLower === q) return false;
+  // Still refining the selected person (prefix of their name, or extending it).
+  if (activeLower.startsWith(q) || q.startsWith(activeLower)) return false;
   patchSearchSession({ person: "" });
   return true;
 }
@@ -321,6 +322,9 @@ export function effectiveSearchQuery(session: Pick<SearchSession, "q" | "person"
 }
 
 export function runSearch() {
+  // Typed text that is not refining the selected person must not keep the old face filter.
+  clearConflictingPersonFilter();
+
   const current = getSearchSession();
   const q = effectiveSearchQuery(current);
   if (!q) return inFlight;
@@ -332,12 +336,13 @@ export function runSearch() {
   abortInFlightHttp();
 
   const mime = current.mime;
+  const person = current.person.trim();
   const searchId = newSearchId();
   activeSearchId = searchId;
   searchAbort = new AbortController();
   const signal = searchAbort.signal;
   const params = new URLSearchParams({ q, search_id: searchId });
-  if (current.person) params.set("person", current.person);
+  if (person) params.set("person", person);
   if (mime !== "all") params.set("mime", mime);
   if (current.folderPath) params.set("folder_path", current.folderPath);
   if (!current.rerank) params.set("rerank", "false");
@@ -345,7 +350,7 @@ export function runSearch() {
 
   // Cache key must ignore ephemeral search_id.
   const cacheParams = new URLSearchParams({ q });
-  if (current.person) cacheParams.set("person", current.person);
+  if (person) cacheParams.set("person", person);
   if (mime !== "all") cacheParams.set("mime", mime);
   if (current.folderPath) cacheParams.set("folder_path", current.folderPath);
   if (!current.rerank) cacheParams.set("rerank", "false");

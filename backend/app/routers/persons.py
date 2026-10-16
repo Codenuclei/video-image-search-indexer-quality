@@ -208,15 +208,50 @@ async def search_persons(
     if not query:
         return []
     limit = max(1, min(limit, 50))
+    # Escape LIKE metacharacters so literal user input cannot broaden/narrow oddly.
+    like_pattern = "%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
     persons = (
         await session.execute(
             select(Person)
-            .where(Person.name.ilike(f"%{query}%"))
+            .where(Person.name.ilike(like_pattern, escape="\\"))
             .order_by(Person.name)
             .limit(limit)
         )
     ).scalars().all()
-    return await _serialize_persons(session, list(persons))
+    # Lightweight serialization: skip thumbnail ensure (can 500/hang the merge picker).
+    person_list = list(persons)
+    if not person_list:
+        return []
+    person_ids = [person.id for person in person_list]
+    identity_person_id = func.coalesce(Face.person_id, FaceCluster.person_id)
+    rows = (
+        await session.execute(
+            select(
+                identity_person_id.label("person_id"),
+                func.count(Face.id),
+                func.count(func.distinct(Media.drive_file_id)),
+            )
+            .outerjoin(FaceCluster, FaceCluster.id == Face.cluster_id)
+            .join(Media, Media.id == Face.media_id)
+            .where(identity_person_id.in_(person_ids))
+            .group_by(identity_person_id)
+        )
+    ).all()
+    counts = {
+        int(person_id): (int(face_count), int(file_count))
+        for person_id, face_count, file_count in rows
+        if person_id is not None
+    }
+    return [
+        _person_out(
+            session,
+            person,
+            counts.get(person.id, (0, 0))[0],
+            person.representative_face_id,
+            counts.get(person.id, (0, 0))[1],
+        )
+        for person in person_list
+    ]
 
 
 @router.get("/suggestion-counts")

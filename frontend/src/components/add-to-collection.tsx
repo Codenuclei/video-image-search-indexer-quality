@@ -80,6 +80,13 @@ export function AddToCollectionButton({
     setMounted(true);
   }, []);
 
+  // Drop stale membership when the button is reused for another file.
+  useEffect(() => {
+    setMembership({});
+    setCollections([]);
+    setOpen(false);
+  }, [file.drive_file_id]);
+
   useLayoutEffect(() => {
     if (!open || !buttonRef.current) return;
     const place = () => {
@@ -222,6 +229,8 @@ export function AddToCollectionButton({
     }
   }
 
+  const isSaved = Object.values(membership).some(Boolean);
+
   const popup =
     open && mounted
       ? createPortal(
@@ -311,16 +320,21 @@ export function AddToCollectionButton({
         onClick={() => (open ? setOpen(false) : void openPanel())}
         className={cn(
           "inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
-          open
+          open || isSaved
             ? "bg-amber-500/15 text-amber-800 dark:text-amber-200"
             : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
         )}
         aria-expanded={open}
         aria-haspopup="dialog"
-        aria-label="Add to collection"
+        aria-label={isSaved ? "Saved to collection" : "Add to collection"}
       >
-        <Bookmark size={14} className="shrink-0" aria-hidden />
-        <span>Save</span>
+        <Bookmark
+          size={14}
+          className="shrink-0"
+          aria-hidden
+          fill={isSaved ? "currentColor" : "none"}
+        />
+        <span>{isSaved ? "Saved" : "Save"}</span>
       </button>
       {popup}
     </>

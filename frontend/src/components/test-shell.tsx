@@ -37,6 +37,7 @@ import {
 } from "@/lib/search-session";
 import {
   clearReverseFaceSearch,
+  getReverseFaceSession,
   runReverseFaceSearch,
   setReverseFaceFile,
   useReverseFaceSession,
@@ -143,18 +144,24 @@ export function TestShell({ children }: { children: React.ReactNode }) {
     if (searchActive) setHeaderQuery(q);
   }, [searchActive, q]);
 
-  // Reverse-face upload lives on People + Search; clear when leaving those routes
-  // so the preview does not persist on Folders/Admin/etc. Keep it when moving
-  // between /test/people and /test/search (shell image-search navigates there).
+  // Reverse-face lives on People + Search. Clear when leaving those routes.
+  // On Search, also drop leftover People/MU face results unless this is an
+  // intentional handoff (#reverse-face) or a face search is still in flight.
   useEffect(() => {
-    const keepReverseFace =
-      pathname === "/test/search" ||
-      pathname === "/test" ||
-      pathname === "/test/people" ||
-      pathname.startsWith("/test/people/");
-    if (!keepReverseFace) {
-      clearReverseFaceSearch();
+    const onPeople =
+      pathname === "/test/people" || pathname.startsWith("/test/people/");
+    const onSearch = pathname === "/test/search" || pathname === "/test";
+    if (onPeople) return;
+    if (onSearch) {
+      const hash = typeof window !== "undefined" ? window.location.hash : "";
+      const session = getReverseFaceSession();
+      if (hash === "#reverse-face" || session.searching) return;
+      if (session.result || session.file || session.previewUrl) {
+        clearReverseFaceSearch();
+      }
+      return;
     }
+    clearReverseFaceSearch();
   }, [pathname]);
 
   useEffect(() => {
