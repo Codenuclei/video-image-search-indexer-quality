@@ -7,13 +7,16 @@ import {
   formatApiError,
   type Cluster,
   type ClusterListResponse,
-  type Person,
 } from "@/lib/api";
 import { Button, FaceThumb, Input, LoadingLabel } from "@/components/ui";
-import { PersonMergeSearch } from "@/components/person-merge-search";
+import {
+  PersonMergeSearch,
+  type PersonMergeCandidate,
+} from "@/components/person-merge-search";
 import { AnimatedTrash } from "@/components/animated-trash";
 import { cn } from "@/lib/utils";
 import { hydrateKeyFromDisk, readCache, writeCache } from "@/lib/data-cache";
+import { forceRefreshPersonsCache } from "@/lib/cache-revisions";
 
 function confidenceBadgeClass(pct: number) {
   if (pct >= 90) return "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300";
@@ -152,7 +155,7 @@ export function ReviewPage({ embedded = false }: { embedded?: boolean } = {}) {
     }
   }
 
-  async function mergeCluster(id: number, person: Person) {
+  async function mergeCluster(id: number, person: PersonMergeCandidate) {
     if (action) return;
     const cluster = clusters.find((c) => c.id === id);
     if (!cluster) return;
@@ -161,7 +164,21 @@ export function ReviewPage({ embedded = false }: { embedded?: boolean } = {}) {
     setError(null);
     setSuccessMessage(null);
     try {
-      const updated = await apiClient.mergeCluster(id, person.id);
+      const updated =
+        person.source === "indexed" && person.id != null
+          ? await apiClient.mergeCluster(id, person.id)
+          : (
+              await apiClient.leadershipNameTag({
+                name: person.name,
+                role: person.role,
+                cluster_ids: [id],
+              })
+            ).person;
+      if (person.source === "mu") {
+        void forceRefreshPersonsCache().catch(() => {
+          /* best-effort; the revision poll will refresh Indexed People */
+        });
+      }
       setSuccessMessage(
         `Merged ${cluster.member_count} face${cluster.member_count === 1 ? "" : "s"} from cluster #${id} into ${updated.name} — now ${updated.occurrence_count} appearance${updated.occurrence_count === 1 ? "" : "s"}.`
       );

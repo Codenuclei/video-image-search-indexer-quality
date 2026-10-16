@@ -17,12 +17,15 @@ import {
   formatApiError,
   type FaceSearchAppearance,
   type FaceSearchMatch,
-  type Person,
   type SuggestedClusterMatch,
 } from "@/lib/api";
 import { Button, ConfirmDialog, DriveMediaThumb, FaceThumb, Input, LoadingLabel, Spinner } from "@/components/ui";
 import { ModalOverlay } from "@/components/modal";
-import { PersonMergeSearch } from "@/components/person-merge-search";
+import {
+  PersonMergeSearch,
+  type PersonMergeCandidate,
+} from "@/components/person-merge-search";
+import { forceRefreshPersonsCache } from "@/lib/cache-revisions";
 import { cn, formatMediaClock } from "@/lib/utils";
 import {
   clearReverseFaceSearch,
@@ -291,12 +294,23 @@ function ClusterGalleryDialog({
     }
   }
 
-  async function mergeInto(person: Person) {
+  async function mergeInto(person: PersonMergeCandidate) {
     if (match.cluster_id == null || merging) return;
     setMerging(true);
     setActionError(null);
     try {
-      await apiClient.mergeCluster(match.cluster_id, person.id);
+      if (person.source === "indexed" && person.id != null) {
+        await apiClient.mergeCluster(match.cluster_id, person.id);
+      } else {
+        await apiClient.leadershipNameTag({
+          name: person.name,
+          role: person.role,
+          cluster_ids: [match.cluster_id],
+        });
+        void forceRefreshPersonsCache().catch(() => {
+          /* best-effort; the revision poll will refresh Indexed People */
+        });
+      }
       patchReverseFaceSession({
         tagMessage: `Merged cluster #${match.cluster_id} into ${person.name}.`,
       });
