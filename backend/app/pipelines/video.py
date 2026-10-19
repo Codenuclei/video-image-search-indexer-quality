@@ -201,6 +201,26 @@ async def _whisper_cues_for_video(
     ]
 
 
+def _evenly_downsample_times(times: list[float], max_frames: int) -> list[float]:
+    """Return at most ``max_frames`` timestamps, evenly spaced across ``times``."""
+    if max_frames <= 0:
+        return []
+    if len(times) <= max_frames:
+        return times
+    if max_frames == 1:
+        return [times[0]]
+    n = len(times)
+    # Pick distinct indices spanning [0, n-1] so we never exceed max_frames.
+    indices: list[int] = []
+    seen: set[int] = set()
+    for i in range(max_frames):
+        idx = int(round(i * (n - 1) / (max_frames - 1)))
+        if idx not in seen:
+            seen.add(idx)
+            indices.append(idx)
+    return [times[i] for i in indices]
+
+
 def _merge_sample_times(
     duration: float,
     interval_sec: float,
@@ -211,7 +231,7 @@ def _merge_sample_times(
     for t in cue_starts:
         if 0 <= t < duration:
             times.add(round(t, 3))
-    return sorted(times)[: max_frames + len(cue_starts)]
+    return _evenly_downsample_times(sorted(times), max_frames)
 
 
 async def _detect_faces_on_frame(
@@ -304,6 +324,9 @@ async def apply_faces_to_prepared_video(
     if not timestamps:
         logger.info("Video face job: no segment timestamps for %s", drive_file.id[:12])
         return media
+    timestamps = _evenly_downsample_times(
+        timestamps, max(1, int(settings.runpod_face_video_max_frames))
+    )
 
     cache_path = await _ensure_video_bytes_for_faces(
         client, drive_file, settings, session=session
@@ -332,11 +355,10 @@ async def apply_faces_to_prepared_video(
                         frame_size=size,
                     )
             except RunPodFaceError:
-                logger.exception("face_gpu_video_failed_fallback_cpu file=%s", drive_file.id[:12])
-                use_gpu = False
-        if not use_gpu:
+                logger.exception("face_gpu_video_failed file=%s", drive_file.id[:12])
+                raise
+        else:
             engine = engine or get_face_engine()
-            extracted: list[tuple[float, np.ndarray]] = []
             with tempfile.TemporaryDirectory(prefix="dfi-vfaces-") as tmpdir:
                 for ts in timestamps:
                     partial = os.path.join(tmpdir, f"{ts:.3f}.partial.jpg")
@@ -346,9 +368,8 @@ async def apply_faces_to_prepared_video(
                         continue
                     os.replace(partial, frame_path)
                     image_bgr = cv2.imread(frame_path)
-                    if image_bgr is not None:
-                        extracted.append((ts, image_bgr))
-                for ts, image_bgr in extracted:
+                    if image_bgr is None:
+                        continue
                     await _detect_faces_on_frame(
                         session, media, image_bgr, ts, engine, settings, tracker
                     )
@@ -626,37 +647,42 @@ async def process_video_file(
     if not settings.face_jobs_enabled:
         from app.faces.runpod_gpu import RunPodFaceError, detect_faces_runpod_batch, runpod_face_configured
 
-        extracted = []
-        for ts, frame_path in frame_paths.items():
-            image_bgr = cv2.imread(frame_path)
-            if image_bgr is not None:
-                extracted.append((ts, image_bgr))
+        face_cap = max(1, int(settings.runpod_face_video_max_frames))
+        face_times = _evenly_downsample_times(sorted(frame_paths.keys()), face_cap)
         use_gpu = runpod_face_configured(settings)
-        batched = None
         if use_gpu:
-            try:
-                batched = await detect_faces_runpod_batch(
-                    [image for _ts, image in extracted],
-                    drive_file_id=drive_file.id,
-                    settings=settings,
-                )
-            except RunPodFaceError:
-                logger.exception("face_gpu_video_frames_failed_fallback_cpu file=%s", drive_file.id[:12])
-        if batched is not None:
-            for (ts, image_bgr), detections in zip(extracted, batched, strict=True):
-                await _detect_faces_on_frame(
-                    session,
-                    media,
-                    image_bgr,
-                    ts,
-                    None,
-                    settings,
-                    tracker,
-                    detections=detections,
-                )
+            extracted: list[tuple[float, np.ndarray]] = []
+            for ts in face_times:
+                image_bgr = cv2.imread(frame_paths[ts])
+                if image_bgr is not None:
+                    extracted.append((ts, image_bgr))
+            if extracted:
+                try:
+                    batched = await detect_faces_runpod_batch(
+                        [image for _ts, image in extracted],
+                        drive_file_id=drive_file.id,
+                        settings=settings,
+                    )
+                except RunPodFaceError:
+                    logger.exception("face_gpu_video_frames_failed file=%s", drive_file.id[:12])
+                    raise
+                for (ts, image_bgr), detections in zip(extracted, batched, strict=True):
+                    await _detect_faces_on_frame(
+                        session,
+                        media,
+                        image_bgr,
+                        ts,
+                        None,
+                        settings,
+                        tracker,
+                        detections=detections,
+                    )
         else:
             engine = engine or get_face_engine()
-            for ts, image_bgr in extracted:
+            for ts in face_times:
+                image_bgr = cv2.imread(frame_paths[ts])
+                if image_bgr is None:
+                    continue
                 await _detect_faces_on_frame(
                     session, media, image_bgr, ts, engine, settings, tracker
                 )

@@ -2,6 +2,9 @@
  * Same-origin search proxy: forwards GET /api/search to backend /search and
  * attaches Authorization: Bearer from the httpOnly session cookie when present
  * so production search can attribute the caller in audit logs.
+ *
+ * Upstream uses AbortSignal.timeout(60s). AbortSignal.any is not assumed
+ * (Node/Next 14); client disconnect still ends when the timeout fires.
  */
 import { cookies } from "next/headers";
 import { NextRequest, NextResponse } from "next/server";
@@ -12,6 +15,14 @@ import {
 } from "@/lib/session-cookie";
 
 export const dynamic = "force-dynamic";
+
+const UPSTREAM_TIMEOUT_MS = 60_000;
+
+function isAbortError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const name = (err as { name?: string }).name;
+  return name === "AbortError" || name === "TimeoutError";
+}
 
 export async function GET(request: NextRequest) {
   const search = new URL(request.url).search;
@@ -41,8 +52,12 @@ export async function GET(request: NextRequest) {
       method: "GET",
       headers,
       cache: "no-store",
+      signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
     });
   } catch (err) {
+    if (isAbortError(err)) {
+      return NextResponse.json({ detail: "Upstream timeout" }, { status: 504 });
+    }
     return NextResponse.json(
       { detail: `Backend unreachable: ${String(err)}` },
       { status: 502 }

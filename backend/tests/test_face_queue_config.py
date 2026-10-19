@@ -16,6 +16,7 @@ def test_face_worker_defaults_are_sequential_and_off() -> None:
     assert settings.runpod_face_max_edge == 0
     assert settings.runpod_face_jpeg_quality == 95
     assert settings.runpod_face_video_max_bytes == 10 * 1024 * 1024 * 1024
+    assert settings.runpod_face_video_max_frames == 80
     assert settings.runpod_face_timeout_seconds == 3600.0
     assert settings.face_job_lease_seconds == 3600
 

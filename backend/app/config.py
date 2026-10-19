@@ -113,6 +113,8 @@ class Settings(BaseSettings):
     runpod_face_jpeg_quality: int = 95
     # Hard cap (10GiB). Worker pulls via signed HTTPS Range GET — never JSON/base64.
     runpod_face_video_max_bytes: int = 10 * 1024 * 1024 * 1024
+    # Cap RunPod video face timestamps (segment starts / sample merge) before submit.
+    runpod_face_video_max_frames: int = 80
     runpod_face_video_pull_ttl_seconds: int = 3600
     # Interactive reverse face search only (indexing keeps runpod_face_timeout_seconds).
     face_search_max_edge: int = 1600  # long-edge cap for interactive reverse face search only

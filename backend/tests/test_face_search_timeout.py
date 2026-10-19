@@ -1,15 +1,13 @@
-"""Interactive reverse face search: downscale + GPU→CPU timeout fallback."""
+"""Interactive reverse face search: downscale + GPU busy (no CPU fallback)."""
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock
 
 import numpy as np
 import pytest
 
 from app.config import Settings
-from app.db.models import EMBEDDING_DIM
-from app.faces.engine import DetectedFace
+from app.faces.runpod_gpu import RunPodFaceError
 from app.reid.face_search import (
     FaceSearchBusyError,
     _detect_query_faces,
@@ -33,7 +31,7 @@ def test_downscale_leaves_small_images() -> None:
 
 
 @pytest.mark.asyncio
-async def test_search_falls_back_to_cpu_on_gpu_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_search_raises_busy_on_gpu_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
     settings = Settings(
         _env_file=None,  # type: ignore[call-arg]
         runpod_api_key="rp_test",
@@ -47,19 +45,12 @@ async def test_search_falls_back_to_cpu_on_gpu_timeout(monkeypatch: pytest.Monke
         await asyncio.sleep(5.0)
         return []
 
-    fake_face = DetectedFace(
-        bbox_x=0.0,
-        bbox_y=0.0,
-        bbox_width=10.0,
-        bbox_height=10.0,
-        confidence=0.99,
-        embedding=[0.0] * EMBEDDING_DIM,
-        thumbnail_jpeg=b"",
-    )
+    cpu_called = {"n": 0}
 
     class _FakeEngine:
-        def detect_faces(self, _image_bgr: np.ndarray) -> list[DetectedFace]:
-            return [fake_face]
+        def detect_faces(self, _image_bgr: np.ndarray) -> list:
+            cpu_called["n"] += 1
+            return []
 
     monkeypatch.setattr(
         "app.faces.runpod_gpu.runpod_face_configured",
@@ -73,20 +64,46 @@ async def test_search_falls_back_to_cpu_on_gpu_timeout(monkeypatch: pytest.Monke
         "app.reid.face_search.get_face_engine",
         lambda: _FakeEngine(),
     )
-    monkeypatch.setattr(
-        "app.reid.face_search.run_cpu_bound",
-        AsyncMock(side_effect=lambda fn, *args, **kwargs: fn(*args, **kwargs)),
-    )
 
     image = np.zeros((64, 64, 3), dtype=np.uint8)
     t0 = asyncio.get_event_loop().time()
-    detections, engine = await _detect_query_faces(image, settings=settings)
+    with pytest.raises(FaceSearchBusyError, match="Face search is busy"):
+        await _detect_query_faces(image, settings=settings)
     elapsed = asyncio.get_event_loop().time() - t0
-
-    assert engine == "cpu"
-    assert len(detections) == 1
-    assert detections[0].confidence == 0.99
+    assert cpu_called["n"] == 0
     assert elapsed < 2.0
+
+
+@pytest.mark.asyncio
+async def test_search_raises_busy_on_gpu_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = Settings(
+        _env_file=None,  # type: ignore[call-arg]
+        runpod_api_key="rp_test",
+        runpod_face_endpoint_id="0zub88paibpsf3",
+        runpod_face_gpu_enabled=True,
+        face_search_gpu_timeout_seconds=5.0,
+        face_search_cpu_timeout_seconds=5.0,
+    )
+
+    async def _fail_gpu(_image_bgr, **_kwargs):
+        raise RunPodFaceError("gpu down")
+
+    monkeypatch.setattr(
+        "app.faces.runpod_gpu.runpod_face_configured",
+        lambda _settings=None: True,
+    )
+    monkeypatch.setattr(
+        "app.faces.runpod_gpu.detect_faces_runpod",
+        _fail_gpu,
+    )
+    monkeypatch.setattr(
+        "app.reid.face_search.get_face_engine",
+        lambda: (_ for _ in ()).throw(AssertionError("CPU must not run")),
+    )
+
+    image = np.zeros((64, 64, 3), dtype=np.uint8)
+    with pytest.raises(FaceSearchBusyError, match="Face search is busy"):
+        await _detect_query_faces(image, settings=settings)
 
 
 @pytest.mark.asyncio
@@ -102,7 +119,7 @@ async def test_detect_raises_busy_when_cpu_also_times_out(
     )
 
     class _FakeEngine:
-        def detect_faces(self, _image_bgr: np.ndarray) -> list[DetectedFace]:
+        def detect_faces(self, _image_bgr: np.ndarray) -> list:
             return []
 
     monkeypatch.setattr(

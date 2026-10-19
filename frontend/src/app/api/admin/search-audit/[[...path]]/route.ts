@@ -14,6 +14,14 @@ export const dynamic = "force-dynamic";
 
 type RouteContext = { params: { path?: string[] } };
 
+const UPSTREAM_TIMEOUT_MS = 15_000;
+
+function isAbortError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const name = (err as { name?: string }).name;
+  return name === "AbortError" || name === "TimeoutError";
+}
+
 async function proxySearchAudit(request: NextRequest, context: RouteContext) {
   const method = request.method.toUpperCase();
   if (method !== "GET") {
@@ -49,8 +57,12 @@ async function proxySearchAudit(request: NextRequest, context: RouteContext) {
         Accept: "application/json",
       },
       cache: "no-store",
+      signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
     });
   } catch (err) {
+    if (isAbortError(err)) {
+      return NextResponse.json({ detail: "Upstream timeout" }, { status: 504 });
+    }
     return NextResponse.json(
       { detail: `Backend unreachable: ${String(err)}` },
       { status: 502 }

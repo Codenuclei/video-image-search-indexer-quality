@@ -42,13 +42,14 @@ def test_handler_swallows_runtime_init_errors(monkeypatch) -> None:
     assert "Insufficient Permissions" in out["error"]
 
 
-def test_image_pipeline_falls_back_to_cpu_on_gpu_error() -> None:
+def test_image_pipeline_reraises_on_gpu_error() -> None:
     from app.pipelines import image as image_mod
     import inspect
 
     src = inspect.getsource(image_mod.apply_faces_to_prepared_image)
     assert "RunPodFaceError" in src
-    assert "face_gpu_failed_fallback_cpu" in src
+    assert "face_gpu_failed_fallback_cpu" not in src
+    assert "raise" in src
     assert "detect_faces_async" in src
 
 

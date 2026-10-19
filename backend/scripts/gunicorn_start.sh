@@ -30,6 +30,8 @@ exec gunicorn app.main:app \
   --timeout "${TIMEOUT}" \
   --graceful-timeout "${GRACEFUL}" \
   --keep-alive "${KEEPALIVE}" \
+  --max-requests 1000 \
+  --max-requests-jitter 200 \
   --access-logfile - \
   --error-logfile - \
   --capture-output \

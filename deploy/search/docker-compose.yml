@@ -15,6 +15,12 @@ services:
     depends_on:
       - frontend
       - backend
+    mem_limit: 256m
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
 
   frontend:
     build:
@@ -29,10 +35,17 @@ services:
       APP_SESSION_SECRET: ${APP_SESSION_SECRET}
       DEMO_LOGIN_EMAIL: ${DEMO_LOGIN_EMAIL:-}
       DEMO_LOGIN_PASSWORD_HASH: ${DEMO_LOGIN_PASSWORD_HASH:-}
+      NODE_OPTIONS: --max-old-space-size=768
     expose:
       - "3001"
     depends_on:
       - backend
+    mem_limit: 1g
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
 
   backend:
     build:
@@ -53,7 +66,7 @@ services:
       RUNPOD_FACE_VIDEO_MAX_BYTES: "10737418240"
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-https://api.165.245.170.117.sslip.io}
       FACE_JOB_LEASE_SECONDS: "3600"
-      GUNICORN_TIMEOUT: "3600"
+      GUNICORN_TIMEOUT: "900"
       WEB_CONCURRENCY: "2"
       GUNICORN_WORKERS: "2"
       OPENBLAS_NUM_THREADS: "1"
@@ -68,6 +81,22 @@ services:
       - "8000"
     depends_on:
       - connector
+    mem_limit: 5g
+    memswap_limit: 5g
+    pids_limit: 1024
+    labels:
+      autoheal: "true"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
 
   connector:
     build:
@@ -80,6 +109,27 @@ services:
       - connector_data:/app/data
     expose:
       - "3000"
+    mem_limit: 512m
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  autoheal:
+    image: willfarrell/autoheal:latest
+    restart: unless-stopped
+    environment:
+      AUTOHEAL_CONTAINER_LABEL: autoheal
+      AUTOHEAL_INTERVAL: "30"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    mem_limit: 64m
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
 
 volumes:
   caddy_data:

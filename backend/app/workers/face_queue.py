@@ -10,7 +10,7 @@ import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import func, select, text, update
+from sqlalchemy import and_, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import Settings, get_settings
@@ -58,12 +58,39 @@ async def claim_face_jobs(
     limit: int = 1,
     lease_seconds: int = 900,
     worker_token: str | None = None,
+    max_attempts: int | None = None,
 ) -> list[FaceJob]:
     """Atomically claim up to ``limit`` PENDING (or expired PROCESSING) jobs."""
     limit = max(1, min(int(limit), 8))
     token = worker_token or uuid.uuid4().hex
     now = datetime.now(timezone.utc)
     stale_before = now - timedelta(seconds=max(60, int(lease_seconds)))
+    attempts_cap = max(
+        1,
+        int(max_attempts if max_attempts is not None else get_settings().face_job_max_attempts),
+    )
+
+    # Poison exhausted jobs before reclaim/claim so they cannot loop forever.
+    await session.execute(
+        update(FaceJob)
+        .where(
+            FaceJob.attempts >= attempts_cap,
+            or_(
+                FaceJob.status == FaceJobStatus.PENDING,
+                and_(
+                    FaceJob.status == FaceJobStatus.PROCESSING,
+                    FaceJob.locked_at.is_not(None),
+                    FaceJob.locked_at < stale_before,
+                ),
+            ),
+        )
+        .values(
+            status=FaceJobStatus.ERROR,
+            error_message="lease_expired_max_attempts",
+            lock_token=None,
+            locked_at=None,
+        )
+    )
 
     # Reclaim expired leases first.
     await session.execute(
@@ -330,7 +357,7 @@ class FaceWorkerLoop:
         from app.faces.runpod_gpu import runpod_face_configured
 
         if runpod_face_configured(self._settings):
-            n = min(16, max(4, n))
+            n = min(4, max(1, n))
         else:
             n = min(4, n)
         for i in range(n):
@@ -372,6 +399,7 @@ class FaceWorkerLoop:
                             limit=1,
                             lease_seconds=settings.face_job_lease_seconds,
                             worker_token=f"{self._token}:{slot}",
+                            max_attempts=settings.face_job_max_attempts,
                         )
                         await session.commit()
                 if paused or not jobs:

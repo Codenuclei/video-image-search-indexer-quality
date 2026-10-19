@@ -158,7 +158,6 @@ async def apply_faces_to_prepared_image(
 
     img_h, img_w = image_bgr.shape[:2]
     use_gpu = bool(use_runpod) and runpod_face_configured(settings)
-    detections = None
     if use_gpu:
         try:
             detections = await detect_faces_runpod(
@@ -167,8 +166,9 @@ async def apply_faces_to_prepared_image(
                 settings=settings,
             )
         except RunPodFaceError:
-            logger.exception("face_gpu_failed_fallback_cpu file=%s", drive_file.id[:12])
-    if detections is None:
+            logger.exception("face_gpu_failed file=%s", drive_file.id[:12])
+            raise
+    else:
         engine = engine or get_face_engine()
         detections = await detect_faces_async(engine, image_bgr)
 

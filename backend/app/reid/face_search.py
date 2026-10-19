@@ -243,11 +243,9 @@ def downscale_bgr_for_search(image_bgr: np.ndarray, max_edge: int) -> np.ndarray
 async def _detect_query_faces(
     image_bgr: np.ndarray, *, settings: Settings
 ) -> tuple[list[DetectedFace], str]:
-    """GPU detect with short timeout, then CPU fallback. Raises FaceSearchBusyError."""
+    """GPU detect when configured; CPU only if GPU was never configured. Raises FaceSearchBusyError."""
     from app.faces.runpod_gpu import RunPodFaceError, detect_faces_runpod, runpod_face_configured
 
-    detections: list[DetectedFace] | None = None
-    engine_name = "cpu"
     t0 = time.monotonic()
 
     if runpod_face_configured(settings):
@@ -256,37 +254,35 @@ async def _detect_query_faces(
                 detect_faces_runpod(image_bgr, settings=settings),
                 timeout=settings.face_search_gpu_timeout_seconds,
             )
-            engine_name = "gpu"
-        except asyncio.TimeoutError:
+            return detections, "gpu"
+        except asyncio.TimeoutError as exc:
             elapsed_ms = (time.monotonic() - t0) * 1000.0
             logger.warning(
                 "face_search cause=gpu_timeout elapsed_ms=%.0f",
                 elapsed_ms,
             )
-            detections = None
-        except RunPodFaceError:
+            raise FaceSearchBusyError("Face search is busy, please try again") from exc
+        except RunPodFaceError as exc:
             elapsed_ms = (time.monotonic() - t0) * 1000.0
             logger.warning(
                 "face_search cause=gpu_error elapsed_ms=%.0f",
                 elapsed_ms,
                 exc_info=True,
             )
-            detections = None
-
-    if detections is None:
-        engine_name = "cpu"
-        try:
-            engine = get_face_engine()
-            detections = await asyncio.wait_for(
-                run_cpu_bound(engine.detect_faces, image_bgr),
-                timeout=settings.face_search_cpu_timeout_seconds,
-            )
-        except asyncio.TimeoutError as exc:
-            raise FaceSearchBusyError("Face search is busy, please try again") from exc
-        except Exception as exc:  # noqa: BLE001
             raise FaceSearchBusyError("Face search is busy, please try again") from exc
 
-    return detections, engine_name
+    try:
+        engine = get_face_engine()
+        detections = await asyncio.wait_for(
+            run_cpu_bound(engine.detect_faces, image_bgr),
+            timeout=settings.face_search_cpu_timeout_seconds,
+        )
+    except asyncio.TimeoutError as exc:
+        raise FaceSearchBusyError("Face search is busy, please try again") from exc
+    except Exception as exc:  # noqa: BLE001
+        raise FaceSearchBusyError("Face search is busy, please try again") from exc
+
+    return detections, "cpu"
 
 
 async def search_faces_by_image_bytes(
