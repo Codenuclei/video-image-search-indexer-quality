@@ -15,6 +15,8 @@ import { toastApiError } from "./toast-api-error";
 
 /** Same-origin BFF for collections (httpOnly cookie → Bearer on the server). */
 const COLLECTIONS_API = { baseUrl: "", credentials: "same-origin" as const };
+/** Same-origin BFF for admin search audit (requires isAdmin session). */
+const SEARCH_AUDIT_API = { baseUrl: "", credentials: "same-origin" as const };
 
 const LOOPBACK_API = (process.env.NEXT_PUBLIC_API_URL_LOCAL ?? "http://127.0.0.1:8000").replace(/\/+$/, "");
 const PUBLIC_API = (process.env.NEXT_PUBLIC_API_URL ?? "").replace(/\/+$/, "");
@@ -1179,10 +1181,12 @@ async function api<T>(
     if (!res.ok) {
       const text = await res.text();
       let detail = text || res.statusText;
+      let hasJsonDetail = false;
       try {
         const parsed = JSON.parse(text) as { detail?: unknown };
         if (typeof parsed.detail === "string" && parsed.detail.trim()) {
           detail = parsed.detail.trim();
+          hasJsonDetail = true;
         }
       } catch {
         /* keep raw text */
@@ -1192,6 +1196,9 @@ async function api<T>(
       if (res.status === 401) {
         message = detail || "Session expired — please sign out and sign in again";
       } else if (res.status === 503 && /busy|try again/i.test(detail)) {
+        message = detail;
+      } else if ((res.status === 500 || res.status === 502) && hasJsonDetail) {
+        // Backend gave a real reason (e.g. "Face search failed") — not an outage.
         message = detail;
       } else if (res.status >= 500) {
         message = SERVICE_UNAVAILABLE_MESSAGE;
@@ -1409,10 +1416,11 @@ export type FaceReverseSearchResult = {
 export const apiClient = {
   health: () =>
     api<{ status: string; search?: string; fennec_enabled?: boolean; fennec_ready?: boolean }>("/health"),
-  persons: () => api<Person[]>("/persons"),
-  searchPersons: (q: string, limit = 20) => {
+  persons: (opts?: { silent?: boolean }) =>
+    api<Person[]>("/persons", { silent: opts?.silent }),
+  searchPersons: (q: string, limit = 20, opts?: { silent?: boolean }) => {
     const params = new URLSearchParams({ q, limit: String(limit) });
-    return api<Person[]>(`/persons/search?${params}`);
+    return api<Person[]>(`/persons/search?${params}`, { silent: opts?.silent });
   },
   personSuggestionCounts: () => api<Record<number, number>>("/persons/suggestion-counts"),
   person: (id: number) => api<Person>(`/persons/${id}`),
@@ -1966,13 +1974,19 @@ export const apiClient = {
       clearTimeout(timer);
     }
   },
-  searchFaceByUrl: (imageUrl: string, limit = 20, signal?: AbortSignal) =>
+  searchFaceByUrl: (
+    imageUrl: string,
+    limit = 20,
+    signal?: AbortSignal,
+    opts?: { silent?: boolean }
+  ) =>
     api<FaceSearchResponse>("/reid/faces/search-by-url", {
       method: "POST",
       body: JSON.stringify({ image_url: imageUrl, limit }),
       signal,
       // Backend caps GPU+CPU (~80s); keep client slightly above that.
       timeoutMs: 90_000,
+      silent: opts?.silent,
     }),
   faceMatchAppearances: (opts: {
     personId?: number | null;
@@ -2011,8 +2025,10 @@ export const apiClient = {
       method: "POST",
       body: JSON.stringify({ urls }),
     }),
-  leadershipRoster: (tab = "executive") =>
-    api<LeadershipRoster>(`/reid/leadership/roster?tab=${encodeURIComponent(tab)}`),
+  leadershipRoster: (tab = "executive", opts?: { silent?: boolean }) =>
+    api<LeadershipRoster>(`/reid/leadership/roster?tab=${encodeURIComponent(tab)}`, {
+      silent: opts?.silent,
+    }),
   leadershipScan: (opts?: {
     tab?: string;
     run_web_reverse?: boolean;
@@ -2052,8 +2068,10 @@ export const apiClient = {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 900_000);
     try {
-      const res = await fetch(`${API_BASE}/search?${params}`, {
+      // Same-origin BFF attaches Bearer from the httpOnly session for audit attribution.
+      const res = await fetch(`/api/search?${params}`, {
         headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
         cache: "no-store",
         signal: controller.signal,
       });
@@ -2155,12 +2173,83 @@ export const apiClient = {
   driveLogout: () => api<{ ok: boolean }>("/api/logout", { method: "POST" }),
 };
 
+export type SearchAuditSummary = {
+  id: number;
+  created_at?: string | null;
+  tat_ms: number;
+  status: string;
+  http_status?: number | null;
+  error_detail?: string | null;
+  query_text: string;
+  person?: string | null;
+  mime?: string | null;
+  folder_path?: string | null;
+  source?: string | null;
+  rerank?: string | null;
+  captions?: string | null;
+  retrieval_policy?: string | null;
+  cache?: string | null;
+  search_id?: string | null;
+  user_email?: string | null;
+  client_host?: string | null;
+  file_count: number;
+  moment_count: number;
+};
+
+export type SearchAuditListResponse = {
+  items: SearchAuditSummary[];
+  total: number;
+  limit: number;
+  offset: number;
+};
+
+export type SearchAuditDetail = SearchAuditSummary & {
+  results_json?: SearchResponse | null;
+};
+
+export async function listSearchAudits(params?: {
+  limit?: number;
+  offset?: number;
+  q?: string;
+  status?: string;
+  since?: string;
+}) {
+  const search = new URLSearchParams();
+  if (params?.limit != null) search.set("limit", String(params.limit));
+  if (params?.offset != null) search.set("offset", String(params.offset));
+  if (params?.q?.trim()) search.set("q", params.q.trim());
+  if (params?.status?.trim()) search.set("status", params.status.trim());
+  if (params?.since?.trim()) search.set("since", params.since.trim());
+  const qs = search.toString();
+  return api<SearchAuditListResponse>(`/api/admin/search-audit${qs ? `?${qs}` : ""}`, {
+    ...SEARCH_AUDIT_API,
+  });
+}
+
+export async function getSearchAudit(id: number) {
+  return api<SearchAuditDetail>(`/api/admin/search-audit/${id}`, {
+    ...SEARCH_AUDIT_API,
+  });
+}
+
 export async function listCollections(fileId?: string) {
   const params = new URLSearchParams();
   if (fileId?.trim()) params.set("file_id", fileId.trim());
   const qs = params.toString();
   return api<CollectionList>(`/api/collections${qs ? `?${qs}` : ""}`, {
     ...COLLECTIONS_API,
+  });
+}
+
+/** Which of the given drive file ids are saved in any of the caller's collections. */
+export async function savedFileIds(ids: string[]) {
+  const unique = Array.from(new Set(ids.map((id) => id.trim()).filter(Boolean))).slice(0, 200);
+  if (unique.length === 0) return { saved_file_ids: [] as string[] };
+  const params = new URLSearchParams();
+  params.set("file_ids", unique.join(","));
+  return api<{ saved_file_ids: string[] }>(`/api/collections/saved-files?${params}`, {
+    ...COLLECTIONS_API,
+    silent: true,
   });
 }
 

@@ -858,8 +858,8 @@ export default function PersonDetailPage() {
         )}
       </Card>
 
-      <Card className="flex min-h-0 min-w-0 max-h-[min(28rem,calc(100dvh-14rem))] flex-col overflow-hidden p-0">
-        <div className="flex shrink-0 items-baseline justify-between gap-2 border-b border-border px-4 py-3">
+      <Card className="min-w-0 overflow-hidden p-0">
+        <div className="flex items-baseline justify-between gap-2 border-b border-border px-4 py-3">
           <h3 className="font-medium">Appears in</h3>
           {media.length > 0 && (
             <p className="text-xs tabular-nums text-muted-foreground">
@@ -870,7 +870,7 @@ export default function PersonDetailPage() {
         {media.length === 0 ? (
           <p className="px-4 py-6 text-sm text-muted-foreground">No media linked yet.</p>
         ) : (
-          <div className="dfi-scroll min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-4 py-3">
+          <div className="px-4 py-3">
             <ul className="grid grid-cols-[repeat(auto-fill,minmax(4.5rem,1fr))] gap-2">
               {media.slice(0, appearsInVisible).map((m) => {
                 const isVideo = (m.media_type || "").toLowerCase() === "video";

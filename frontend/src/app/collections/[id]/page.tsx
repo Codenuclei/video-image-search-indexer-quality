@@ -15,12 +15,15 @@ import {
   renameCollection,
   type Collection,
 } from "@/lib/api";
+import { forgetSavedFileId } from "@/components/add-to-collection";
 import { Button, ConfirmDialog, DownloadButton, Input, LoadingLabel } from "@/components/ui";
+import { requestReauth, SESSION_RESTORED_EVENT } from "@/lib/app-session";
 import { toastApiError } from "@/lib/toast-api-error";
 import { toast } from "sonner";
 
 function toastCollectionError(error: unknown, fallback: string) {
   if (isAbortError(error)) return;
+  if (getApiErrorStatus(error) === 401) requestReauth();
   toastApiError(formatApiError(error, fallback));
 }
 
@@ -49,6 +52,7 @@ export default function CollectionDetailPage() {
       setNameDraft(row.name);
     } catch (error) {
       setCollection(null);
+      if (getApiErrorStatus(error) === 401) requestReauth();
       const message = error instanceof Error ? error.message : "Could not load this collection";
       if (getApiErrorStatus(error) === 404) {
         setNotFound(true);
@@ -62,6 +66,12 @@ export default function CollectionDetailPage() {
 
   useEffect(() => {
     void load();
+  }, [load]);
+
+  useEffect(() => {
+    const onRestored = () => void load();
+    window.addEventListener(SESSION_RESTORED_EVENT, onRestored);
+    return () => window.removeEventListener(SESSION_RESTORED_EVENT, onRestored);
   }, [load]);
 
   async function saveName() {
@@ -97,6 +107,8 @@ export default function CollectionDetailPage() {
     setRemoving(true);
     try {
       const updated = await removeCollectionItem(collection.id, removeFileId);
+      // The file may still be in other collections; the next menu open re-learns that.
+      forgetSavedFileId(removeFileId);
       setCollection(updated);
       setRemoveFileId(null);
     } catch (error) {

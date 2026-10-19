@@ -28,6 +28,12 @@ export async function GET() {
   }
 
   // Refresh is_admin from Postgres so allowlist edits apply without re-login.
+  // Password-admin sessions keep isAdmin when the sealed claim matches ADMIN_LOGIN_EMAIL.
+  const configuredAdminEmail = (
+    process.env.ADMIN_LOGIN_EMAIL || "admintech@mastersunion.org"
+  )
+    .trim()
+    .toLowerCase();
   let isAdmin = session.isAdmin;
   try {
     const api = backendApiBaseForServer();
@@ -42,15 +48,21 @@ export async function GET() {
   } catch {
     /* keep sealed claim if backend briefly unreachable */
   }
+  if (
+    !isAdmin &&
+    session.isAdmin &&
+    session.email.trim().toLowerCase() === configuredAdminEmail
+  ) {
+    isAdmin = true;
+  }
 
   const res = NextResponse.json({ email: session.email, isAdmin });
-  if (isAdmin !== session.isAdmin) {
-    try {
-      const token = await sealAppSession({ email: session.email, isAdmin });
-      res.cookies.set(APP_SESSION_COOKIE, token, cookieOptions(APP_SESSION_MAX_AGE_SEC));
-    } catch {
-      /* leave existing cookie if reseal fails (e.g. missing secret in prod) */
-    }
+  // Sliding expiry: always re-seal so active users never hit a stale exp.
+  try {
+    const token = await sealAppSession({ email: session.email, isAdmin });
+    res.cookies.set(APP_SESSION_COOKIE, token, cookieOptions(APP_SESSION_MAX_AGE_SEC));
+  } catch {
+    /* leave existing cookie if reseal fails (e.g. missing secret in prod) */
   }
   return res;
 }

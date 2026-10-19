@@ -4,6 +4,8 @@ import { useEffect, useId, useRef, useState } from "react";
 import { GitMerge, Search, UserRoundSearch } from "lucide-react";
 import {
   apiClient,
+  formatApiError,
+  getApiErrorStatus,
   type LeadershipRoster,
   type Person,
 } from "@/lib/api";
@@ -21,6 +23,10 @@ type PersonMergeSearchProps = {
   disabled?: boolean;
   busy?: boolean;
   busyLabel?: string;
+  /** Input placeholder when idle (defaults to merge wording). */
+  placeholder?: string;
+  /** Hover chip on a result row (defaults to "Merge"). */
+  actionLabel?: string;
   onSelect: (person: PersonMergeCandidate) => void;
 };
 
@@ -35,7 +41,29 @@ export type PersonMergeCandidate = {
   image_url?: string | null;
 };
 
+type IndexedResolve = {
+  people: Person[];
+  error: string | null;
+  /** True when an indexed search/list call returned HTTP 401. */
+  authFailed: boolean;
+};
+
+type MergeResolve = {
+  candidates: PersonMergeCandidate[];
+  error: string | null;
+};
+
 const LEADERSHIP_ROSTER_CACHE_KEY = "leadershipRoster:executive";
+
+function personSearchErrorMessage(error: unknown, fallback: string): string {
+  const status = getApiErrorStatus(error);
+  if (status === 401) {
+    return error instanceof Error && error.message.trim()
+      ? error.message.trim()
+      : "Session expired — please sign out and sign in again";
+  }
+  return formatApiError(error, fallback);
+}
 
 function filterPersonsByName(people: Person[], needle: string, limit = 20): Person[] {
   const q = needle.trim().toLowerCase();
@@ -47,19 +75,21 @@ function filterPersonsByName(people: Person[], needle: string, limit = 20): Pers
 }
 
 /** Prefer API search; fall back to Indexed People list (cache / session / full list). */
-async function resolveIndexedPersonMatches(query: string): Promise<Person[]> {
+async function resolveIndexedPersonMatches(query: string): Promise<IndexedResolve> {
   const trimmed = query.trim();
-  if (!trimmed) return [];
+  if (!trimmed) return { people: [], error: null, authFailed: false };
 
   let apiItems: Person[] | null = null;
+  let apiError: unknown = null;
   try {
-    const items = await apiClient.searchPersons(trimmed);
+    // silent: caller owns messaging — empty matches must not toast "session expired"
+    const items = await apiClient.searchPersons(trimmed, 20, { silent: true });
     if (Array.isArray(items)) {
       apiItems = items;
-      if (items.length > 0) return items;
+      if (items.length > 0) return { people: items, error: null, authFailed: false };
     }
-  } catch {
-    /* fall through to local Indexed People */
+  } catch (error) {
+    apiError = error;
   }
 
   const localPools: Person[][] = [];
@@ -70,18 +100,46 @@ async function resolveIndexedPersonMatches(query: string): Promise<Person[]> {
 
   for (const pool of localPools) {
     const hits = filterPersonsByName(pool, trimmed);
-    if (hits.length > 0) return hits;
+    // Prefer local hits — do not surface session-expired when the catalog already matched.
+    if (hits.length > 0) {
+      return {
+        people: hits,
+        error: null,
+        authFailed: false,
+      };
+    }
   }
 
   try {
-    const all = await apiClient.persons();
+    const all = await apiClient.persons({ silent: true });
     const hits = filterPersonsByName(all, trimmed);
-    if (hits.length > 0) return hits;
-  } catch {
-    /* ignore */
+    if (hits.length > 0) {
+      return {
+        people: hits,
+        error: null,
+        // Local/catalog hits satisfy the query; do not label as session expiry.
+        authFailed: false,
+      };
+    }
+  } catch (error) {
+    if (!apiError) apiError = error;
   }
 
-  return apiItems ?? [];
+  if (apiError) {
+    const status = getApiErrorStatus(apiError);
+    // Empty person search with a non-auth failure → generic message, not session expiry.
+    return {
+      people: apiItems ?? [],
+      error:
+        status === 401
+          ? personSearchErrorMessage(apiError, "Could not search names")
+          : personSearchErrorMessage(apiError, "No matching names"),
+      authFailed: status === 401,
+    };
+  }
+
+  // Empty results with a successful API → "no match", not an auth error.
+  return { people: apiItems ?? [], error: null, authFailed: false };
 }
 
 async function leadershipRoster(): Promise<LeadershipRoster> {
@@ -90,7 +148,7 @@ async function leadershipRoster(): Promise<LeadershipRoster> {
   if (cached) return cached;
 
   return withInFlight(LEADERSHIP_ROSTER_CACHE_KEY, async () => {
-    const roster = await apiClient.leadershipRoster("executive");
+    const roster = await apiClient.leadershipRoster("executive", { silent: true });
     writeCache(
       LEADERSHIP_ROSTER_CACHE_KEY,
       roster,
@@ -101,9 +159,13 @@ async function leadershipRoster(): Promise<LeadershipRoster> {
   });
 }
 
-async function resolvePersonMatches(query: string): Promise<PersonMergeCandidate[]> {
+async function resolvePersonMatches(query: string): Promise<MergeResolve> {
   const trimmed = query.trim();
-  const indexed = await resolveIndexedPersonMatches(trimmed);
+  const {
+    people: indexed,
+    error: indexedError,
+    authFailed,
+  } = await resolveIndexedPersonMatches(trimmed);
   const candidates: PersonMergeCandidate[] = indexed.map((person) => ({
     source: "indexed",
     id: person.id,
@@ -114,6 +176,7 @@ async function resolvePersonMatches(query: string): Promise<PersonMergeCandidate
     file_count: person.file_count,
   }));
 
+  let rosterError: string | null = null;
   try {
     const roster = await leadershipRoster();
     const q = trimmed.toLowerCase();
@@ -132,17 +195,38 @@ async function resolvePersonMatches(query: string): Promise<PersonMergeCandidate
         image_url: person.image_url,
       });
     }
-  } catch {
+  } catch (error) {
     // Indexed People search remains usable if the live MU roster is unavailable.
+    rosterError = personSearchErrorMessage(error, "Could not load MU People");
   }
 
-  return candidates.slice(0, 20);
+  const limited = candidates.slice(0, 20);
+  if (limited.length === 0) {
+    // Empty search → no match (or a real transport/auth error from above).
+    return {
+      candidates: limited,
+      error: indexedError || rosterError || null,
+    };
+  }
+  // Matches found — only keep an auth warning when every indexed path was 401
+  // and we relied solely on MU roster fallback.
+  if (authFailed && indexed.length === 0) {
+    return {
+      candidates: limited,
+      error:
+        indexedError ||
+        "Session expired — please sign out and sign in again",
+    };
+  }
+  return { candidates: limited, error: null };
 }
 
 export function PersonMergeSearch({
   disabled = false,
   busy = false,
   busyLabel = "Merging…",
+  placeholder = "Merge into existing person…",
+  actionLabel = "Merge",
   onSelect,
 }: PersonMergeSearchProps) {
   const listId = useId();
@@ -165,20 +249,22 @@ export function PersonMergeSearch({
     }
 
     const requestId = ++requestIdRef.current;
+    // Mark searching before the debounce so the empty state never flashes
+    // "No matching names" while the request is still pending.
+    setSearching(true);
+    setSearchError(null);
     const timer = setTimeout(() => {
-      setSearching(true);
-      setSearchError(null);
       void resolvePersonMatches(trimmed)
-        .then((items) => {
+        .then(({ candidates, error }) => {
           if (requestId !== requestIdRef.current) return;
-          setResults(items);
+          setResults(candidates);
           setOpen(true);
-          setSearchError(null);
+          setSearchError(error);
         })
-        .catch(() => {
+        .catch((error) => {
           if (requestId !== requestIdRef.current) return;
           setResults([]);
-          setSearchError("Could not search names");
+          setSearchError(personSearchErrorMessage(error, "Could not search names"));
         })
         .finally(() => {
           if (requestId === requestIdRef.current) setSearching(false);
@@ -220,7 +306,7 @@ export function PersonMergeSearch({
         <input
           value={query}
           disabled={disabled || busy}
-          placeholder={busy ? busyLabel : "Merge into existing person…"}
+          placeholder={busy ? busyLabel : placeholder}
           aria-expanded={showDropdown}
           aria-controls={listId}
           aria-autocomplete="list"
@@ -287,9 +373,9 @@ export function PersonMergeSearch({
                           }`}
                     </span>
                   </span>
-                  <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-amber-500/15 px-2 py-1 text-[11px] font-semibold text-amber-700 opacity-0 transition-opacity group-hover:opacity-100 dark:text-amber-300">
-                    <GitMerge size={12} aria-hidden />
-                    Merge
+                  <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-amber-500/15 px-2 py-1 text-[11px] font-semibold text-amber-700 dark:text-amber-300">
+                    {actionLabel === "Merge" ? <GitMerge size={12} aria-hidden /> : null}
+                    {actionLabel}
                   </span>
                 </button>
               </li>

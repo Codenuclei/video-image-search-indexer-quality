@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     # HMAC secret for the frontend sealed session cookie (dfi_app_session). Must match
     # APP_SESSION_SECRET on the Next.js service. Empty → forgeable fallback from client id.
     app_session_secret: str = ""
+    # Password-admin email (sealed session isAdmin claim). Must match frontend ADMIN_LOGIN_EMAIL.
+    admin_login_email: str = "admintech@mastersunion.org"
 
     # URL of the Next.js frontend — used to redirect after OAuth
     frontend_url: str = "http://localhost:3001"

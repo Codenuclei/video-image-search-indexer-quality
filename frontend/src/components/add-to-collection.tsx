@@ -7,11 +7,14 @@ import {
   addCollectionItems,
   createCollection,
   formatApiError,
+  getApiErrorStatus,
   isAbortError,
   listCollections,
   removeCollectionItem,
+  savedFileIds as fetchSavedFileIds,
   type CollectionSummary,
 } from "@/lib/api";
+import { requestReauth, SESSION_RESTORED_EVENT } from "@/lib/app-session";
 import { localGet, localSet } from "@/lib/local-store";
 import { cn } from "@/lib/utils";
 import { toastApiError } from "@/lib/toast-api-error";
@@ -19,6 +22,7 @@ import { toast } from "sonner";
 
 function toastCollectionError(error: unknown, fallback: string) {
   if (isAbortError(error)) return;
+  if (getApiErrorStatus(error) === 401) requestReauth();
   toastApiError(formatApiError(error, fallback));
 }
 
@@ -26,6 +30,113 @@ const LAST_COLLECTION_KEY = "dfi_last_collection_id";
 const POPOVER_WIDTH = 256; // w-64
 const VIEWPORT_MARGIN = 8;
 const GAP = 8;
+const SAVED_HYDRATE_DEBOUNCE_MS = 40;
+const SAVED_HYDRATE_BATCH = 200;
+
+/** Session-level cache so Saved tint survives row remounts after the menu closes. */
+const savedFileIds = new Set<string>();
+/** Ids we have already asked the server about (saved or not). */
+const checkedFileIds = new Set<string>();
+const pendingCheckIds = new Set<string>();
+const savedListeners = new Set<() => void>();
+let hydrateTimer: ReturnType<typeof setTimeout> | null = null;
+let hydrateInFlight = false;
+/** Pause batch flushes after a 401 until SESSION_RESTORED (avoids a 401 loop). */
+let hydratePausedForAuth = false;
+
+function notifySavedListeners() {
+  savedListeners.forEach((fn) => fn());
+}
+
+function rememberSaved(fileId: string, saved: boolean) {
+  checkedFileIds.add(fileId);
+  if (saved) savedFileIds.add(fileId);
+  else savedFileIds.delete(fileId);
+}
+
+/** Drop one file's Saved tint (e.g. after removing it from a collection elsewhere). */
+export function forgetSavedFileId(fileId: string) {
+  savedFileIds.delete(fileId);
+  checkedFileIds.add(fileId);
+  notifySavedListeners();
+}
+
+/** Clear in-memory Saved tints on logout / account switch. */
+export function clearSavedFileIdsCache() {
+  savedFileIds.clear();
+  checkedFileIds.clear();
+  pendingCheckIds.clear();
+  hydratePausedForAuth = false;
+  if (hydrateTimer) {
+    clearTimeout(hydrateTimer);
+    hydrateTimer = null;
+  }
+}
+
+function scheduleSavedFlush() {
+  if (hydratePausedForAuth) return;
+  if (hydrateTimer) clearTimeout(hydrateTimer);
+  hydrateTimer = setTimeout(() => {
+    hydrateTimer = null;
+    void flushSavedChecks();
+  }, SAVED_HYDRATE_DEBOUNCE_MS);
+}
+
+function queueSavedCheck(fileId: string) {
+  const id = fileId.trim();
+  if (!id || checkedFileIds.has(id) || pendingCheckIds.has(id)) return;
+  pendingCheckIds.add(id);
+  scheduleSavedFlush();
+}
+
+async function flushSavedChecks() {
+  if (hydrateInFlight || hydratePausedForAuth) return;
+  const batch = Array.from(pendingCheckIds).filter((id) => !checkedFileIds.has(id));
+  pendingCheckIds.clear();
+  if (batch.length === 0) return;
+
+  hydrateInFlight = true;
+  let hitAuth = false;
+  try {
+    for (let i = 0; i < batch.length; i += SAVED_HYDRATE_BATCH) {
+      const chunk = batch.slice(i, i + SAVED_HYDRATE_BATCH);
+      try {
+        const result = await fetchSavedFileIds(chunk);
+        const hit = new Set(result.saved_file_ids ?? []);
+        for (const id of chunk) {
+          checkedFileIds.add(id);
+          if (hit.has(id)) savedFileIds.add(id);
+        }
+      } catch (error) {
+        // Re-queue so SESSION_RESTORED can hydrate the Saved tint after cookie mint.
+        for (const id of chunk) pendingCheckIds.add(id);
+        if (getApiErrorStatus(error) === 401) {
+          hitAuth = true;
+          hydratePausedForAuth = true;
+          requestReauth();
+          break;
+        }
+      }
+    }
+    notifySavedListeners();
+  } finally {
+    hydrateInFlight = false;
+    if (!hitAuth && pendingCheckIds.size > 0) {
+      scheduleSavedFlush();
+    }
+  }
+}
+
+/** After silent/banner re-auth, retry any Saved-tint ids left pending from a 401. */
+function onSessionRestoredHydrate() {
+  hydratePausedForAuth = false;
+  if (pendingCheckIds.size === 0) return;
+  scheduleSavedFlush();
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener(SESSION_RESTORED_EVENT, onSessionRestoredHydrate);
+}
 
 type FileRef = {
   drive_file_id: string;
@@ -69,6 +180,7 @@ export function AddToCollectionButton({
   const [busyId, setBusyId] = useState<string | null>(null);
   const [collections, setCollections] = useState<CollectionSummary[]>([]);
   const [membership, setMembership] = useState<Record<string, boolean>>({});
+  const [knownSaved, setKnownSaved] = useState(() => savedFileIds.has(file.drive_file_id));
   const [newName, setNewName] = useState("");
   const [creating, setCreating] = useState(false);
   const [coords, setCoords] = useState<PopoverCoords>({ top: 0, left: 0 });
@@ -85,6 +197,19 @@ export function AddToCollectionButton({
     setMembership({});
     setCollections([]);
     setOpen(false);
+    setKnownSaved(savedFileIds.has(file.drive_file_id));
+  }, [file.drive_file_id]);
+
+  // Batched first-load hydrator: register id, one fetch per tick for unchecked ids.
+  useEffect(() => {
+    const id = file.drive_file_id;
+    const sync = () => setKnownSaved(savedFileIds.has(id));
+    savedListeners.add(sync);
+    queueSavedCheck(id);
+    sync();
+    return () => {
+      savedListeners.delete(sync);
+    };
   }, [file.drive_file_id]);
 
   useLayoutEffect(() => {
@@ -113,18 +238,26 @@ export function AddToCollectionButton({
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") setOpen(false);
     };
-    const onScrollOrResize = () => setOpen(false);
+    const onResize = () => setOpen(false);
+    const onScroll = (event: Event) => {
+      const target = event.target;
+      if (target instanceof Node && popupRef.current?.contains(target)) {
+        // Scrolling the collections list itself should not close the popover.
+        return;
+      }
+      setOpen(false);
+    };
 
     document.addEventListener("mousedown", onDoc);
     document.addEventListener("keydown", onKey);
-    window.addEventListener("resize", onScrollOrResize);
+    window.addEventListener("resize", onResize);
     // Capture so scrolling an overflow list (e.g. reverse-face) still closes.
-    window.addEventListener("scroll", onScrollOrResize, true);
+    window.addEventListener("scroll", onScroll, true);
     return () => {
       document.removeEventListener("mousedown", onDoc);
       document.removeEventListener("keydown", onKey);
-      window.removeEventListener("resize", onScrollOrResize);
-      window.removeEventListener("scroll", onScrollOrResize, true);
+      window.removeEventListener("resize", onResize);
+      window.removeEventListener("scroll", onScroll, true);
     };
   }, [open]);
 
@@ -145,6 +278,9 @@ export function AddToCollectionButton({
         memberMap[row.id] = Boolean(row.contains_file);
       }
       setMembership(memberMap);
+      const saved = Object.values(memberMap).some(Boolean);
+      rememberSaved(file.drive_file_id, saved);
+      setKnownSaved(saved);
     } catch (error) {
       toastCollectionError(error, "Could not load collections");
       setOpen(false);
@@ -158,7 +294,13 @@ export function AddToCollectionButton({
     try {
       if (checked) {
         await removeCollectionItem(collectionId, file.drive_file_id);
-        setMembership((prev) => ({ ...prev, [collectionId]: false }));
+        setMembership((prev) => {
+          const next = { ...prev, [collectionId]: false };
+          const saved = Object.values(next).some(Boolean);
+          rememberSaved(file.drive_file_id, saved);
+          setKnownSaved(saved);
+          return next;
+        });
         setCollections((prev) =>
           prev.map((row) =>
             row.id === collectionId
@@ -175,7 +317,12 @@ export function AddToCollectionButton({
             query: query?.trim() || null,
           },
         ]);
-        setMembership((prev) => ({ ...prev, [collectionId]: true }));
+        setMembership((prev) => {
+          const next = { ...prev, [collectionId]: true };
+          rememberSaved(file.drive_file_id, true);
+          setKnownSaved(true);
+          return next;
+        });
         setCollections((prev) =>
           prev.map((row) =>
             row.id === collectionId
@@ -219,7 +366,12 @@ export function AddToCollectionButton({
         },
         ...prev,
       ]);
-      setMembership((prev) => ({ ...prev, [created.id]: true }));
+      setMembership((prev) => {
+        const next = { ...prev, [created.id]: true };
+        rememberSaved(file.drive_file_id, true);
+        setKnownSaved(true);
+        return next;
+      });
       setNewName("");
       toast.success(`Saved to “${created.name}”`);
     } catch (error) {
@@ -229,7 +381,7 @@ export function AddToCollectionButton({
     }
   }
 
-  const isSaved = Object.values(membership).some(Boolean);
+  const isSaved = knownSaved || Object.values(membership).some(Boolean);
 
   const popup =
     open && mounted

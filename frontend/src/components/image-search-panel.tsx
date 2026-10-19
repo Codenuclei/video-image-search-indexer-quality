@@ -26,6 +26,7 @@ import {
   type PersonMergeCandidate,
 } from "@/components/person-merge-search";
 import { forceRefreshPersonsCache } from "@/lib/cache-revisions";
+import { formatClusterStatusLabel } from "@/lib/index-errors";
 import { cn, formatMediaClock } from "@/lib/utils";
 import {
   clearReverseFaceSearch,
@@ -158,7 +159,7 @@ function ClusterRow({
                 statusBadgeClass(status)
               )}
             >
-              {status}
+              {formatClusterStatusLabel(status)}
             </span>
           )}
         </p>
@@ -190,9 +191,10 @@ function ClusterRow({
             href={profileHref}
             title="Profile"
             onClick={(e) => e.stopPropagation()}
-            className="flex h-7 w-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+            className="inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
           >
-            <ExternalLink size={13} />
+            Profile
+            <ExternalLink size={10} aria-hidden />
           </Link>
         )}
         <ChevronRight size={15} className="text-muted-foreground" aria-hidden />
@@ -365,7 +367,7 @@ function ClusterGalleryDialog({
                   statusBadgeClass(status)
                 )}
               >
-                {status}
+                {formatClusterStatusLabel(status)}
               </span>
             </p>
             <p className="mt-0.5 text-[11px] text-muted-foreground">
@@ -759,12 +761,25 @@ export function ImageSearchPanel() {
             value={bulkName}
             onChange={(e) => setBulkName(e.target.value)}
             placeholder={`Name all ${unknownCount} unknown${unknownCount === 1 ? "" : "s"}`}
-            className="h-8 min-w-[12rem] flex-1 text-xs"
+            className="h-8 min-w-[10rem] flex-1 text-xs"
             disabled={tagging}
             onKeyDown={(e) => {
               if (e.key === "Enter" && bulkName.trim()) setConfirmBulkOpen(true);
             }}
           />
+          <div className="min-w-[12rem] flex-1">
+            <PersonMergeSearch
+              disabled={tagging}
+              busy={tagging}
+              busyLabel="Naming…"
+              placeholder="Pick from Indexed / MU People…"
+              actionLabel="Use"
+              onSelect={(person) => {
+                setBulkName(person.name);
+                setConfirmBulkOpen(true);
+              }}
+            />
+          </div>
           <Button
             type="button"
             className="h-8 px-3 text-xs"

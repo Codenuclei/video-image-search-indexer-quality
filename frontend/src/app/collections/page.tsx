@@ -8,18 +8,22 @@ import {
   deleteCollection,
   driveFileThumbnailUrl,
   formatApiError,
+  getApiErrorStatus,
   isAbortError,
   listCollections,
   removeCollectionView,
   type CollectionSummary,
   type SharedCollectionSummary,
 } from "@/lib/api";
+import { clearSavedFileIdsCache } from "@/components/add-to-collection";
 import { Button, ConfirmDialog, Input, LoadingLabel } from "@/components/ui";
+import { requestReauth, SESSION_RESTORED_EVENT } from "@/lib/app-session";
 import { toastApiError } from "@/lib/toast-api-error";
 import { toast } from "sonner";
 
 function toastCollectionError(error: unknown, fallback: string) {
   if (isAbortError(error)) return;
+  if (getApiErrorStatus(error) === 401) requestReauth();
   toastApiError(formatApiError(error, fallback));
 }
 
@@ -65,6 +69,7 @@ export default function CollectionsPage() {
       setMine(listed.mine);
       setShared(listed.shared);
     } catch (error) {
+      if (getApiErrorStatus(error) === 401) requestReauth();
       const message = error instanceof Error ? error.message : "Could not load collections";
       setLoadError(message);
       setMine([]);
@@ -76,6 +81,12 @@ export default function CollectionsPage() {
 
   useEffect(() => {
     void load();
+  }, [load]);
+
+  useEffect(() => {
+    const onRestored = () => void load();
+    window.addEventListener(SESSION_RESTORED_EVENT, onRestored);
+    return () => window.removeEventListener(SESSION_RESTORED_EVENT, onRestored);
   }, [load]);
 
   async function onCreate() {
@@ -99,6 +110,8 @@ export default function CollectionsPage() {
     setDeleting(true);
     try {
       await deleteCollection(deleteId);
+      // Files in the deleted collection may no longer be saved anywhere.
+      clearSavedFileIdsCache();
       setDeleteId(null);
       await load();
       toast.success("Collection deleted");

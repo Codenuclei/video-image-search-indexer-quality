@@ -7,6 +7,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import {
   Bookmark,
   CircleHelp,
+  ClipboardList,
   FolderOpen,
   HardDrive,
   Home,
@@ -52,6 +53,13 @@ const links: NavLink[] = [
   { href: "/library", label: "Library", icon: HardDrive, mobile: true },
   { href: "/folders", label: "Folders", icon: FolderOpen, mobile: true },
   { href: "/admin", label: "Admin", icon: Shield, mobile: false, adminOnly: true },
+  {
+    href: "/admin/search-audit",
+    label: "Search audit",
+    icon: ClipboardList,
+    mobile: false,
+    adminOnly: true,
+  },
   { href: "/help", label: "How to / FAQ", icon: CircleHelp, mobile: false },
   { href: "/settings", label: "Settings", icon: Settings, mobile: false },
   { href: "/test/search", label: "UI Test", icon: ScanFace, mobile: false },
@@ -60,6 +68,10 @@ const links: NavLink[] = [
 function navActive(pathname: string, href: string): boolean {
   if (href === "/") return pathname === "/";
   if (href === "/search") return pathname === "/search";
+  if (href === "/admin") return pathname === "/admin";
+  if (href === "/admin/search-audit") {
+    return pathname === "/admin/search-audit" || pathname.startsWith("/admin/search-audit/");
+  }
   if (href === "/test/search") return pathname.startsWith("/test");
   return pathname === href || pathname.startsWith(`${href}/`);
 }

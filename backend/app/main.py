@@ -48,6 +48,7 @@ from app.routers import (
     qwen_vlm,
     reid,
     search,
+    search_audit,
     settings,
     transcripts,
     webhooks,
@@ -556,6 +557,7 @@ app.include_router(control_reader.router)
 app.include_router(cache_router.router)
 app.include_router(index.router)
 app.include_router(search.router)
+app.include_router(search_audit.router)
 app.include_router(carousel_script.router)
 app.include_router(webhooks.router)
 app.include_router(settings.router)

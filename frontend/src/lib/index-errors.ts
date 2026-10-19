@@ -1,3 +1,15 @@
+import { toTitleCase } from "@/lib/utils";
+
+/** Title-case display for face cluster status values (named, unknown, …). */
+export function formatClusterStatusLabel(status: string): string {
+  const key = (status || "").trim().toLowerCase();
+  if (key === "named" || key === "unknown" || key === "ignored" || key === "auto") {
+    return toTitleCase(key);
+  }
+  if (!status.trim()) return status;
+  return toTitleCase(status.trim());
+}
+
 /** Human-readable labels for indexer skip-reason keys from /index/skip-stats. */
 const SKIP_REASON_META: Record<
   string,

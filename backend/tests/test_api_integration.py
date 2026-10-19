@@ -8,12 +8,16 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
+import app.auth_session as auth_session
+from app.auth_session import seal_app_session
+from app.config import get_settings
 from app.db.models import DriveFile, DriveFileStatus, Face, FaceCluster, FaceEmbedding, Media, MediaType
 from app.db.session import get_db
 from app.main import app
 from tests.conftest import requires_postgres
 
 EMBEDDING_DIM = 512
+TEST_SESSION_SECRET = "test-app-session-secret-ok"  # >= 16 chars
 
 
 def _unit_vector(hot_index: int) -> list[float]:
@@ -157,6 +161,13 @@ async def test_search_persons_endpoint(client, override_db):
     assert len(match.json()) == 1
     assert match.json()[0]["name"] == "Diana Adams"
 
+    # First-name substring (Search Index #95 / merge picker "Nikhil" → "Nikhil Mittal").
+    _, _, nikhil_cluster = await _seed_unknown_cluster(override_db)
+    named = await client.post(f"/clusters/{nikhil_cluster.id}/name", json={"name": "Nikhil Mittal"})
+    assert named.status_code == 200
+    first_name = await client.get("/persons/search", params={"q": "Nikhil"})
+    assert any(row["name"] == "Nikhil Mittal" for row in first_name.json())
+
     miss = await client.get("/persons/search", params={"q": "nobody"})
     assert miss.json() == []
 
@@ -212,3 +223,64 @@ async def test_search_finds_named_person_and_matching_file(client, override_db):
 
     file_search = await client.get("/search", params={"q": "beach"})
     assert any(m["name"] == "beach-trip.jpg" for m in file_search.json()["media"])
+
+
+@requires_postgres
+@pytest.mark.asyncio
+async def test_collections_saved_files_returns_owned_subset(client, monkeypatch):
+    monkeypatch.setenv("APP_SESSION_SECRET", TEST_SESSION_SECRET)
+    get_settings.cache_clear()
+    monkeypatch.setattr(auth_session, "_missing_warned", False)
+
+    headers = {"Authorization": f"Bearer {seal_app_session('owner@mastersunion.org')}"}
+    other = {"Authorization": f"Bearer {seal_app_session('other@mastersunion.org')}"}
+
+    create = await client.post("/collections", json={"name": "Saved tint"}, headers=headers)
+    assert create.status_code == 201
+    collection_id = create.json()["id"]
+
+    add = await client.post(
+        f"/collections/{collection_id}/items",
+        headers=headers,
+        json={
+            "items": [
+                {
+                    "drive_file_id": "file-saved",
+                    "name": "a.jpg",
+                    "mime_type": "image/jpeg",
+                },
+                {
+                    "drive_file_id": "file-also",
+                    "name": "b.jpg",
+                    "mime_type": "image/jpeg",
+                },
+            ]
+        },
+    )
+    assert add.status_code == 200
+
+    owned = await client.get(
+        "/collections/saved-files",
+        params={"file_ids": "file-saved,missing,file-also,file-saved"},
+        headers=headers,
+    )
+    assert owned.status_code == 200
+    assert set(owned.json()["saved_file_ids"]) == {"file-saved", "file-also"}
+
+    stranger = await client.get(
+        "/collections/saved-files",
+        params={"file_ids": "file-saved,file-also"},
+        headers=other,
+    )
+    assert stranger.status_code == 200
+    assert stranger.json()["saved_file_ids"] == []
+
+    empty = await client.get("/collections/saved-files", headers=headers)
+    assert empty.status_code == 200
+    assert empty.json()["saved_file_ids"] == []
+
+    missing_auth = await client.get(
+        "/collections/saved-files",
+        params={"file_ids": "file-saved"},
+    )
+    assert missing_auth.status_code == 401

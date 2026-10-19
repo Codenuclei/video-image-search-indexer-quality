@@ -5,7 +5,9 @@ import {
   API_BASE,
   apiClient,
   formatApiError,
+  getApiErrorStatus,
   isAbortError,
+  type ApiError,
   type FolderContext,
   type LibraryResponse,
   type Person,
@@ -20,7 +22,10 @@ import {
   indexedFolderPickerOptions,
   type LibraryFolderOption,
 } from "@/lib/library-folders";
-import { clearReverseFaceSearch } from "@/lib/reverse-face-session";
+import {
+  clearReverseFaceSearch,
+  getReverseFaceSession,
+} from "@/lib/reverse-face-session";
 
 const SEARCH_RESULTS_CACHE_KEY = "searchResults";
 const LIBRARY_SHELL_CACHE_KEY = "driveLibraryShell";
@@ -120,6 +125,32 @@ export function useSearchSession(): SearchSession {
   return useSyncExternalStore(subscribe, getSearchSession, getSearchSession);
 }
 
+let personsCatalogInFlight: Promise<void> | null = null;
+
+/** Re-fetch Indexed People when the catalog is empty so the person filter is not stuck disabled. */
+export function ensurePersonsCatalog() {
+  if (state.persons.length > 0) return;
+  hydrateKeyFromDisk("persons");
+  const cachedPersons = readCache<Person[]>("persons");
+  if (cachedPersons?.data?.length) {
+    patchSearchSession({ persons: cachedPersons.data });
+    return;
+  }
+  if (personsCatalogInFlight) return;
+  personsCatalogInFlight = (async () => {
+    try {
+      const rev = await apiClient.personsRevision().catch(() => null);
+      const persons = await apiClient.persons({ silent: true });
+      writeCache("persons", persons, rev?.revision ?? personsRevision(persons), true);
+      patchSearchSession({ persons });
+    } catch {
+      /* ignore — dropdown stays empty until next retry */
+    } finally {
+      personsCatalogInFlight = null;
+    }
+  })();
+}
+
 export function hydrateSearchCatalogs() {
   if (state.catalogsHydrated) return;
   patchSearchSession({ catalogsHydrated: true });
@@ -155,6 +186,8 @@ export function hydrateSearchCatalogs() {
         const persons = await apiClient.persons();
         writeCache("persons", persons, rev?.revision ?? personsRevision(persons), true);
         patchSearchSession({ persons });
+      } else if (!state.persons.length && cachedPersons?.data?.length) {
+        patchSearchSession({ persons: cachedPersons.data });
       }
     } catch {
       /* ignore */
@@ -321,7 +354,31 @@ export function effectiveSearchQuery(session: Pick<SearchSession, "q" | "person"
   return session.person.trim();
 }
 
-export function runSearch() {
+export function isReverseFaceActive(): boolean {
+  const s = getReverseFaceSession();
+  return Boolean(
+    s.result || s.file || s.previewUrl || s.searching || s.selectedLeader
+  );
+}
+
+export type RunSearchOptions = {
+  /**
+   * Keep reverse-face UI when the search is person-filter driven (retarget path).
+   * Default: clear reverse-face for caption/text submits.
+   */
+  preserveReverseFace?: boolean;
+};
+
+function searchErrorToastMessage(error: unknown): string {
+  const status = getApiErrorStatus(error);
+  if (status === 401) {
+    return "Session expired — please sign out and sign in again";
+  }
+  // 5xx wording is already decided in api.ts (outage vs. real backend detail).
+  return formatApiError(error, "Search failed");
+}
+
+export function runSearch(options?: RunSearchOptions) {
   // Typed text that is not refining the selected person must not keep the old face filter.
   clearConflictingPersonFilter();
 
@@ -329,14 +386,25 @@ export function runSearch() {
   const q = effectiveSearchQuery(current);
   if (!q) return inFlight;
 
-  // Text search and reverse-face share the Search page — drop leftover face results/spinners.
-  clearReverseFaceSearch();
+  const reverseActive = isReverseFaceActive();
+  const person = current.person.trim();
+  const typed = current.q.trim();
+  const personDriven =
+    Boolean(person) &&
+    (!typed || typed.toLowerCase() === person.toLowerCase());
+  const preserveFace =
+    options?.preserveReverseFace === true ||
+    (options?.preserveReverseFace !== false && reverseActive && personDriven);
+
+  // Caption/text submits clear face state; person-filter retarget keeps it.
+  if (!preserveFace) {
+    clearReverseFaceSearch();
+  }
 
   // Drop any prior request without clearing the query / cached preview results.
   abortInFlightHttp();
 
   const mime = current.mime;
-  const person = current.person.trim();
   const searchId = newSearchId();
   activeSearchId = searchId;
   searchAbort = new AbortController();
@@ -372,11 +440,26 @@ export function runSearch() {
   let job!: Promise<void>;
   job = (async () => {
     try {
-      const res = await fetch(`${API_BASE}/search?${params}`, {
+      const res = await fetch(`/api/search?${params}`, {
         cache: "no-store",
+        credentials: "same-origin",
         signal,
       });
-      if (!res.ok) throw new Error(await res.text());
+      if (!res.ok) {
+        const text = await res.text();
+        let detail = text || res.statusText;
+        try {
+          const parsed = JSON.parse(text) as { detail?: unknown };
+          if (typeof parsed.detail === "string" && parsed.detail.trim()) {
+            detail = parsed.detail.trim();
+          }
+        } catch {
+          /* keep raw text */
+        }
+        const err = new Error(detail || `Search failed (${res.status})`) as ApiError;
+        err.status = res.status;
+        throw err;
+      }
       const results = (await res.json()) as SearchResponse;
       const previous = readCache<SearchResultsCache>(SEARCH_RESULTS_CACHE_KEY)?.data ?? {};
       const entries = Object.entries({
@@ -401,9 +484,13 @@ export function runSearch() {
       }
       if (cached) {
         patchSearchSession({ loading: false });
+        // Stale-while-revalidate keeps results, but auth failures must still surface.
+        if (getApiErrorStatus(e) === 401) {
+          toastApiError(searchErrorToastMessage(e));
+        }
         return;
       }
-      toastApiError(formatApiError(e, "Search failed"));
+      toastApiError(searchErrorToastMessage(e));
       patchSearchSession({ results: null, loading: false });
     } finally {
       if (inFlight === job) inFlight = null;

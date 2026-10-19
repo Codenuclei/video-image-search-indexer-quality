@@ -144,7 +144,7 @@ async def stamp_completed_at_ids(
     try:
         from app.db.session import get_session_factory
 
-        async with get_session_factory() as session:
+        async with get_session_factory()() as session:
             stamped = await stamp_completed_at(
                 session, ids, reason=reason, force=force
             )

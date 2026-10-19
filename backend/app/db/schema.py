@@ -810,6 +810,7 @@ _DEFAULT_APP_ADMINS = (
     "dhananjay.jain@mastersunion.org",
     "sudeep.purwar@mastersunion.org",
     "abhishek.ghosh1@mastersunion.org",
+    "admintech@mastersunion.org",
 )
 
 

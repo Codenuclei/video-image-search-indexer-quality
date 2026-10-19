@@ -26,6 +26,7 @@ import {
 } from "@/lib/api";
 import { AddToCollectionButton } from "@/components/add-to-collection";
 import { Button, Card, ConfirmDialog, FaceThumb, LoadingLabel } from "@/components/ui";
+import { formatClusterStatusLabel } from "@/lib/index-errors";
 import { cn, toTitleCase } from "@/lib/utils";
 import {
   clearReverseFaceSearch,
@@ -267,7 +268,9 @@ function ResultsSidePanel({
                 <p className="max-w-[9rem] truncate text-[11px] font-medium text-foreground">
                   {leader.name}
                 </p>
-                <p className="max-w-[9rem] truncate text-[10px] text-muted-foreground">{leader.role}</p>
+                <p className="line-clamp-2 max-w-[12rem] text-[10px] text-muted-foreground" title={leader.role || undefined}>
+                  {leader.role ? toTitleCase(leader.role) : ""}
+                </p>
               </div>
             </div>
           )}
@@ -339,7 +342,7 @@ function ResultsSidePanel({
                   <div className="min-w-0 flex-1">
                     <p className="text-sm font-medium">Cluster #{c.cluster_id}</p>
                     <p className="text-[11px] text-muted-foreground">
-                      {c.status ?? "unknown"}
+                      {formatClusterStatusLabel(c.status ?? "unknown")}
                       {c.member_count != null ? ` · ${c.member_count} faces` : ""}
                       {c.file_count != null && c.file_count > 0
                         ? ` · ${c.file_count} file${c.file_count === 1 ? "" : "s"}`
@@ -365,7 +368,7 @@ function ResultsSidePanel({
           {files.length === 0 ? (
             <p className="text-xs text-muted-foreground">No Drive files linked to these matches yet.</p>
           ) : (
-            <ul className="scrollbar-autohide max-h-[28rem] space-y-0.5 overflow-y-auto pr-1">
+            <ul className="max-h-[28rem] space-y-0.5 overflow-y-auto dfi-scroll">
               {files.map((f) => {
                 const saveQuery = uploadedFileName
                   ? `Reverse face search · ${uploadedFileName}`
@@ -582,7 +585,10 @@ export function ReverseFaceLabPage({ embedded = false }: { embedded?: boolean } 
                   <span className="line-clamp-2 w-full text-[10px] font-medium leading-tight text-foreground sm:text-[11px]">
                     {person.name}
                   </span>
-                  <span className="line-clamp-1 w-full text-[9px] text-muted-foreground">
+                  <span
+                    className="line-clamp-2 w-full text-[9px] leading-tight text-muted-foreground"
+                    title={person.role || undefined}
+                  >
                     {person.role ? toTitleCase(person.role) : ""}
                   </span>
                 </button>
@@ -676,10 +682,10 @@ export function ReverseFaceLabPage({ embedded = false }: { embedded?: boolean } 
           </p>
           <div className="mt-3 flex flex-wrap justify-center gap-2">
             <Button variant="secondary" onClick={() => fileInputRef.current?.click()}>
-              Choose file
+              Choose File
             </Button>
             <Button onClick={() => runSearch()} disabled={!file || searching}>
-              {searching && hasUploadedFile ? <LoadingLabel>Searching…</LoadingLabel> : "Search faces"}
+              {searching && hasUploadedFile ? <LoadingLabel>Searching…</LoadingLabel> : "Search Faces"}
             </Button>
             {hasUploadedFile && (
               <Button

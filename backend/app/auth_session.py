@@ -83,9 +83,9 @@ def seal_app_session(
     return f"{body}.{_b64url_encode(sig)}"
 
 
-def verify_app_session_token(token: str | None) -> str | None:
+def verify_app_session_claims(token: str | None) -> dict[str, Any] | None:
     """
-    Return the lowercased email if the token is valid, else None.
+    Return ``{"email": str, "isAdmin": bool}`` if the token is valid, else None.
 
     Returns None (fail closed) when APP_SESSION_SECRET is not configured.
     """
@@ -121,7 +121,27 @@ def verify_app_session_token(token: str | None) -> str | None:
         return None
     if "isAdmin" not in parsed or not isinstance(parsed["isAdmin"], bool):
         return None
-    return email
+    return {"email": email, "isAdmin": bool(parsed["isAdmin"])}
+
+
+def verify_app_session_token(token: str | None) -> str | None:
+    """
+    Return the lowercased email if the token is valid, else None.
+
+    Returns None (fail closed) when APP_SESSION_SECRET is not configured.
+    """
+    claims = verify_app_session_claims(token)
+    return None if claims is None else str(claims["email"])
+
+
+def optional_bearer_email(authorization: str | None) -> str | None:
+    """Best-effort email from an Authorization header (no raise)."""
+    if not isinstance(authorization, str) or not authorization.strip():
+        return None
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not token.strip():
+        return None
+    return verify_app_session_token(token.strip())
 
 
 async def current_user_email(
@@ -139,3 +159,20 @@ async def current_user_email(
     if not email:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
     return email
+
+
+async def current_user_claims(
+    creds: HTTPAuthorizationCredentials | None = Depends(_bearer),
+) -> dict[str, Any]:
+    """FastAPI dependency: require a valid Bearer token; return email + isAdmin."""
+    if configured_session_secret() is None:
+        raise HTTPException(
+            status_code=503,
+            detail="APP_SESSION_SECRET is not configured on the server",
+        )
+    if creds is None or (creds.scheme or "").lower() != "bearer" or not (creds.credentials or "").strip():
+        raise HTTPException(status_code=401, detail="Authorization Bearer token required")
+    claims = verify_app_session_claims(creds.credentials.strip())
+    if not claims:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    return claims

@@ -859,6 +859,39 @@ class CarouselItemReference(Base):
     )
 
 
+class SearchAuditLog(Base):
+    """Append-only snapshot of production GET /search requests for admin review."""
+
+    __tablename__ = "search_audit_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
+    )
+    tat_ms: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    error_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    query_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    person: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    mime: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    folder_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    rerank: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    captions: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    retrieval_policy: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    cache: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    search_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+    user_email: Mapped[str | None] = mapped_column(String(320), nullable=True, index=True)
+    client_host: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+    file_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    moment_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    results_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+
 class SearchQueryCache(Base):
     """Folder-scoped search result cache shared across Gunicorn workers."""
 

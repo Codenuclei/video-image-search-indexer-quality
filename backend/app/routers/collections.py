@@ -26,6 +26,7 @@ router = APIRouter(prefix="/collections", tags=["collections"])
 MAX_NAME_LEN = 120
 MAX_ITEMS_PER_REQUEST = 100
 MAX_QUERY_LEN = 500
+MAX_SAVED_FILE_IDS = 200
 
 
 # ── Schemas ──────────────────────────────────────────────────────────────────
@@ -86,6 +87,10 @@ class CollectionDetailOut(BaseModel):
     created_at: datetime | None
     is_owner: bool
     items: list[CollectionItemOut]
+
+
+class SavedFilesOut(BaseModel):
+    saved_file_ids: list[str]
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -259,6 +264,29 @@ async def create_collection(
         is_owner=True,
         items=[],
     )
+
+
+@router.get("/saved-files", response_model=SavedFilesOut)
+async def saved_files(
+    session: AsyncSession = Depends(get_db),
+    email: str = Depends(current_user_email),
+    file_ids: str = Query(default=""),
+):
+    """Return which of the given drive file ids appear in any of the caller's collections."""
+    ids = [part.strip() for part in (file_ids or "").split(",") if part.strip()][:MAX_SAVED_FILE_IDS]
+    if not ids:
+        return SavedFilesOut(saved_file_ids=[])
+
+    rows = (
+        await session.execute(
+            select(CollectionItem.drive_file_id)
+            .join(Collection, Collection.id == CollectionItem.collection_id)
+            .where(func.lower(Collection.owner_email) == email)
+            .where(CollectionItem.drive_file_id.in_(ids))
+            .distinct()
+        )
+    ).scalars().all()
+    return SavedFilesOut(saved_file_ids=list(rows))
 
 
 @router.get("/{collection_id}", response_model=CollectionDetailOut)

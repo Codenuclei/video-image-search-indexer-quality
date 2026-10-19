@@ -27,8 +27,10 @@ import { Spinner } from "@/components/ui";
 import {
   cancelSearch,
   clearConflictingPersonFilter,
+  ensurePersonsCatalog,
   hydrateSearchCatalogs,
   hydrateSearchSettings,
+  isReverseFaceActive,
   patchSearchSession,
   persistSearchCaptions,
   persistSearchRerank,
@@ -38,6 +40,7 @@ import {
 import {
   clearReverseFaceSearch,
   getReverseFaceSession,
+  retargetReverseFaceToPerson,
   runReverseFaceSearch,
   setReverseFaceFile,
   useReverseFaceSession,
@@ -118,6 +121,7 @@ export function TestShell({ children }: { children: React.ReactNode }) {
     setAuthEmail(getAuthEmail());
     hydrateSearchCatalogs();
     hydrateSearchSettings();
+    ensurePersonsCatalog();
     void apiClient
       .driveSession()
       .then((s) => setDriveSession(s))
@@ -188,9 +192,30 @@ export function TestShell({ children }: { children: React.ReactNode }) {
     if (clearConflictingPersonFilter(headerQuery)) {
       toast.message("Person filter cleared");
     }
-    clearReverseFaceSearch();
-    // runSearch reads session state after the sync patch above.
+    // runSearch decides: free text clears reverse-face, but typing exactly the selected
+    // person's name keeps the face results.
     void runSearch();
+  }
+
+  /** Person filter pick: set chip + query, then person-aware search (retarget face if active). */
+  function onPersonFilterChange(nextPerson: string) {
+    const selected = persons.find((p) => p.name === nextPerson);
+    // Sync typed box to the selected name so the Person chip cannot drift from q.
+    setHeaderQuery(nextPerson);
+    patchSearchSession({ person: nextPerson, q: nextPerson });
+    if (!nextPerson) {
+      cancelSearch({ clearResults: true });
+      return;
+    }
+    if (isReverseFaceActive()) {
+      const preserved = retargetReverseFaceToPerson({
+        name: nextPerson,
+        representativeFaceId: selected?.representative_face_id,
+      });
+      void runSearch({ preserveReverseFace: preserved });
+      return;
+    }
+    void runSearch({ preserveReverseFace: false });
   }
 
   function clearFilterAndSearch(patch: Partial<{ mime: string; person: string; folderPath: string }>) {
@@ -375,22 +400,26 @@ export function TestShell({ children }: { children: React.ReactNode }) {
                     title={person ? `Person: ${person}` : "All people"}
                     value={person}
                     active={person !== ""}
-                    disabled={persons.length === 0}
+                    disabled={false}
+                    onOpenChange={(open) => {
+                      if (open && persons.length === 0) ensurePersonsCatalog();
+                    }}
                     onChange={(v) => {
-                      patchSearchSession({ person: v, q: headerQuery });
-                      if (v || headerQuery.trim()) {
-                        void runSearch();
-                      } else {
-                        cancelSearch({ clearResults: true });
+                      if (v === "__loading__") {
+                        ensurePersonsCatalog();
+                        return;
                       }
+                      onPersonFilterChange(v);
                     }}
                     options={[
                       { value: "", label: "All people" },
-                      ...persons.map((p) => ({
-                        value: p.name,
-                        label: p.name,
-                        faceId: p.representative_face_id,
-                      })),
+                      ...(persons.length === 0
+                        ? [{ value: "__loading__", label: "Loading people…", hint: "Catalog is hydrating" }]
+                        : persons.map((p) => ({
+                            value: p.name,
+                            label: p.name,
+                            faceId: p.representative_face_id,
+                          }))),
                     ]}
                   />
                   <IconToggle
@@ -603,7 +632,9 @@ export function TestShell({ children }: { children: React.ReactNode }) {
         <main
           ref={mainRef}
           className={cn(
-            "scrollbar-hidden min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-4 md:px-8",
+            // Single scroll owner under the test shell — visible thumb tracks page content
+            // (nested People lists no longer use a second capped scroller).
+            "dfi-scroll min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-4 md:px-8",
             compactHeader ? "pb-6 pt-2" : "py-6"
           )}
         >

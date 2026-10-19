@@ -75,9 +75,15 @@ async def test_search_handler_returns_499_when_cancelled(monkeypatch: pytest.Mon
     async def boom(**_kwargs):
         raise SearchCancelled()
 
+    async def noop_audit(**_kwargs):
+        return None
+
     monkeypatch.setattr(search_router, "_run_search", boom)
+    monkeypatch.setattr(search_router, "record_search_audit", noop_audit)
     request = MagicMock()
     request.is_disconnected = AsyncMock(return_value=False)
+    request.headers = {}
+    request.client = MagicMock(host="127.0.0.1")
     with pytest.raises(HTTPException) as exc:
         await search_router.search(
             request=request,

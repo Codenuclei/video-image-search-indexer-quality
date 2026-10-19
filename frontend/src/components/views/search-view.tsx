@@ -15,13 +15,17 @@ import { AddToCollectionButton } from "@/components/add-to-collection";
 import { Button, DownloadButton, FilePreview, IconButton, IconLink, Input, LoadingLabel, PersonTags } from "@/components/ui";
 import { FilterDropdown } from "@/components/filter-dropdown";
 import { ModalOverlay } from "@/components/modal";
-import { clearReverseFaceSearch } from "@/lib/reverse-face-session";
+import {
+  retargetReverseFaceToPerson,
+} from "@/lib/reverse-face-session";
 import {
   cancelSearch,
   clearConflictingPersonFilter,
+  ensurePersonsCatalog,
   getSearchSession,
   hydrateSearchCatalogs,
   hydrateSearchSettings,
+  isReverseFaceActive,
   patchSearchSession,
   persistSearchCaptions,
   persistSearchRerank,
@@ -136,7 +140,7 @@ export function SearchPage({
     if (clearConflictingPersonFilter()) {
       toast.message("Person filter cleared");
     }
-    clearReverseFaceSearch();
+    // runSearch clears reverse-face for free text and keeps it when q matches the person.
     void runSearch();
   }
 
@@ -230,22 +234,41 @@ export function SearchPage({
           <FilterDropdown
             title="Person"
             value={person}
-            disabled={persons.length === 0}
+            disabled={false}
+            onOpenChange={(open) => {
+              if (open && persons.length === 0) ensurePersonsCatalog();
+            }}
             onChange={(v) => {
-              patchSearchSession({ person: v });
-              if (v || getSearchSession().q.trim()) {
-                void runSearch();
-              } else {
-                cancelSearch({ clearResults: true });
+              if (v === "__loading__") {
+                ensurePersonsCatalog();
+                return;
               }
+              const selected = persons.find((p) => p.name === v);
+              // Keep typed query aligned with the Person chip.
+              patchSearchSession({ person: v, q: v || getSearchSession().q });
+              if (!v) {
+                cancelSearch({ clearResults: true });
+                return;
+              }
+              if (isReverseFaceActive()) {
+                const preserved = retargetReverseFaceToPerson({
+                  name: v,
+                  representativeFaceId: selected?.representative_face_id,
+                });
+                void runSearch({ preserveReverseFace: preserved });
+                return;
+              }
+              void runSearch({ preserveReverseFace: false });
             }}
             options={[
               { value: "", label: "All people" },
-              ...persons.map((p) => ({
-                value: p.name,
-                label: p.name,
-                faceId: p.representative_face_id,
-              })),
+              ...(persons.length === 0
+                ? [{ value: "__loading__", label: "Loading people…" }]
+                : persons.map((p) => ({
+                    value: p.name,
+                    label: p.name,
+                    faceId: p.representative_face_id,
+                  }))),
             ]}
           />
           <FilterDropdown

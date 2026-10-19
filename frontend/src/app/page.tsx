@@ -110,11 +110,26 @@ export default function DashboardPage() {
     );
   }, [indexStatus]);
 
-  const topSkipReasons = useMemo(
-    () => (skipStats?.by_reason ?? []).slice(0, 8),
+  /** Dashboard shows retryable skip reasons (corrupt first); non-retryable collapse to Admin. */
+  const topSkipReasons = useMemo(() => {
+    const rows = (skipStats?.by_reason ?? []).filter(
+      (r) => r.count > 0 && skipReasonMeta(r.reason).retryable
+    );
+    return [...rows].sort((a, b) => {
+      if (a.reason === "corrupt_file") return -1;
+      if (b.reason === "corrupt_file") return 1;
+      return 0;
+    });
+  }, [skipStats]);
+  const otherSkipTotal = useMemo(
+    () =>
+      (skipStats?.by_reason ?? [])
+        .filter((r) => r.count > 0 && !skipReasonMeta(r.reason).retryable)
+        .reduce((sum, r) => sum + r.count, 0),
     [skipStats]
   );
   const maxSkipCount = Math.max(1, ...topSkipReasons.map((r) => r.count));
+  const retryableSkipTotal = topSkipReasons.reduce((sum, r) => sum + r.count, 0);
 
   const indexerHint = indexStatus?.last_run
     ? `Last: ${indexStatus.last_run.processed} processed, ${indexStatus.last_run.errored} errors`
@@ -181,17 +196,18 @@ export default function DashboardPage() {
                 </span>
               ))}
             </div>
-            <div className="h-52 w-full max-w-xl">
+            <div className="h-36 w-full max-w-md">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart
                   data={chartData}
-                  margin={{ top: 8, right: 8, left: 0, bottom: 0 }}
-                  barCategoryGap="28%"
+                  margin={{ top: 4, right: 4, left: 0, bottom: 0 }}
+                  barCategoryGap="18%"
                 >
                   <XAxis
                     dataKey="label"
                     stroke="var(--muted-foreground)"
                     fontSize={11}
+                    interval={0}
                     tickLine={false}
                     axisLine={false}
                   />
@@ -219,7 +235,7 @@ export default function DashboardPage() {
                     formatter={(value: number) => [String(value), "Files"]}
                     labelFormatter={(label) => String(label)}
                   />
-                  <Bar dataKey="count" radius={[4, 4, 0, 0]} barSize={56} maxBarSize={72} minPointSize={3}>
+                  <Bar dataKey="count" radius={[4, 4, 0, 0]} barSize={48} maxBarSize={56} minPointSize={3}>
                     {chartData.map((row) => (
                       <Cell key={row.status} fill={row.fill} />
                     ))}
@@ -236,15 +252,30 @@ export default function DashboardPage() {
           <div>
             <h3 className="font-medium">Skip reasons</h3>
             <p className="text-xs text-muted-foreground">
-              Why files were skipped
-              {skipStats?.total_skipped != null
-                ? ` · ${formatCount(skipStats.total_skipped)} total`
-                : ""}
+              Retryable skips that need attention
+              {retryableSkipTotal > 0 ? ` · ${formatCount(retryableSkipTotal)}` : ""}
+              {" · "}
+              <Link href="/admin" className="font-medium text-foreground underline-offset-2 hover:underline">
+                All reasons on Admin
+              </Link>
             </p>
           </div>
         </div>
-        {topSkipReasons.length === 0 ? (
+        {topSkipReasons.length === 0 && otherSkipTotal === 0 ? (
           <p className="text-sm text-muted-foreground">No skipped media yet.</p>
+        ) : topSkipReasons.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            No retryable skips right now
+            {otherSkipTotal > 0 ? (
+              <>
+                {" · "}
+                <Link href="/admin" className="font-medium text-foreground underline-offset-2 hover:underline">
+                  {formatCount(otherSkipTotal)} other skipped
+                </Link>
+              </>
+            ) : null}
+            .
+          </p>
         ) : (
           <ul className="divide-y divide-border/50 overflow-hidden rounded-lg border border-border/60 bg-muted/10">
             {topSkipReasons.map((r) => {
@@ -286,6 +317,14 @@ export default function DashboardPage() {
                 </li>
               );
             })}
+            {otherSkipTotal > 0 ? (
+              <li className="px-3 py-2.5 text-xs text-muted-foreground">
+                <Link href="/admin" className="font-medium text-foreground underline-offset-2 hover:underline">
+                  +{formatCount(otherSkipTotal)} other skipped
+                </Link>
+                {" · full breakdown on Admin"}
+              </li>
+            ) : null}
           </ul>
         )}
       </Card>

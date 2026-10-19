@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Check, ChevronDown, type LucideIcon } from "lucide-react";
 import { FaceThumb } from "@/components/ui";
 import { cn } from "@/lib/utils";
@@ -15,9 +16,8 @@ export type FilterDropdownOption = {
 type MenuPlacement = {
   openUp: boolean;
   maxHeight: number;
-  /** Fixed positioning when the trigger is near a scroll edge. */
-  fixed: boolean;
-  top: number;
+  top?: number;
+  bottom?: number;
   left: number;
   width: number;
 };
@@ -25,6 +25,7 @@ type MenuPlacement = {
 const MENU_GAP = 6;
 const MENU_MIN = 120;
 const MENU_IDEAL = 256;
+const VIEWPORT_EDGE = 8;
 
 export function FilterDropdown({
   icon: Icon,
@@ -36,6 +37,7 @@ export function FilterDropdown({
   iconOnly = false,
   active,
   className,
+  onOpenChange,
 }: {
   icon?: LucideIcon;
   value: string;
@@ -48,37 +50,65 @@ export function FilterDropdown({
   /** Force the active tint in iconOnly mode (defaults to non-default value). */
   active?: boolean;
   className?: string;
+  /** Fires when the menu opens/closes (e.g. hydrate a catalog on open). */
+  onOpenChange?: (open: boolean) => void;
 }) {
   const [open, setOpen] = useState(false);
+
+  function setMenuOpen(next: boolean) {
+    setOpen(next);
+    onOpenChange?.(next);
+  }
   const [placement, setPlacement] = useState<MenuPlacement | null>(null);
+  const [mounted, setMounted] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   function measurePlacement(): MenuPlacement | null {
     const trigger = rootRef.current;
     if (!trigger) return null;
     const rect = trigger.getBoundingClientRect();
-    const edge = 8;
     const vh = window.innerHeight;
     const vw = window.innerWidth;
-    const spaceBelow = vh - rect.bottom - MENU_GAP - edge;
-    const spaceAbove = rect.top - MENU_GAP - edge;
+
+    // Trigger scrolled fully off-screen — close rather than float orphaned.
+    if (rect.bottom < VIEWPORT_EDGE || rect.top > vh - VIEWPORT_EDGE) {
+      return null;
+    }
+
+    const spaceBelow = vh - rect.bottom - MENU_GAP - VIEWPORT_EDGE;
+    const spaceAbove = rect.top - MENU_GAP - VIEWPORT_EDGE;
     const openUp = spaceBelow < MENU_MIN && spaceAbove > spaceBelow;
     const available = openUp ? spaceAbove : spaceBelow;
-    // Prefer ideal height, but never exceed remaining viewport space (incl. bottom edge).
     const maxHeight = Math.min(MENU_IDEAL, Math.max(48, available));
-    let top = openUp ? rect.top - MENU_GAP - maxHeight : rect.bottom + MENU_GAP;
-    top = Math.max(edge, Math.min(top, vh - edge - maxHeight));
+
     const width = Math.max(rect.width, 224);
     const cappedWidth = Math.min(width, vw * 0.7, 18 * 16);
-    const left = Math.max(edge, Math.min(rect.left, vw - cappedWidth - edge));
+    const left = Math.max(
+      VIEWPORT_EDGE,
+      Math.min(rect.left, vw - cappedWidth - VIEWPORT_EDGE)
+    );
+
+    if (openUp) {
+      // Anchor to the trigger from below so short lists don't leave a gap.
+      return {
+        openUp: true,
+        maxHeight,
+        bottom: vh - rect.top + MENU_GAP,
+        left,
+        width: cappedWidth,
+      };
+    }
     return {
-      openUp,
+      openUp: false,
       maxHeight,
-      fixed: true,
-      top,
+      top: rect.bottom + MENU_GAP,
       left,
-      width,
+      width: cappedWidth,
     };
   }
 
@@ -87,21 +117,31 @@ export function FilterDropdown({
       setPlacement(null);
       return;
     }
-    setPlacement(measurePlacement());
-  }, [open]);
+    const next = measurePlacement();
+    if (!next) {
+      setMenuOpen(false);
+      return;
+    }
+    setPlacement(next);
+  }, [open, options.length]);
 
   useEffect(() => {
     if (!open) return;
     function onDocClick(e: MouseEvent) {
       if (!rootRef.current?.contains(e.target as Node) && !menuRef.current?.contains(e.target as Node)) {
-        setOpen(false);
+        setMenuOpen(false);
       }
     }
     function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") setOpen(false);
+      if (e.key === "Escape") setMenuOpen(false);
     }
     function onReposition() {
-      setPlacement(measurePlacement());
+      const next = measurePlacement();
+      if (!next) {
+        setMenuOpen(false);
+        return;
+      }
+      setPlacement(next);
     }
     document.addEventListener("mousedown", onDocClick);
     document.addEventListener("keydown", onKey);
@@ -119,6 +159,71 @@ export function FilterDropdown({
   const isActive = active ?? (iconOnly ? value !== options[0]?.value : false);
   const selectedFaceId = selected?.faceId ?? null;
 
+  const menu =
+    open && placement && mounted
+      ? createPortal(
+          <div
+            ref={menuRef}
+            className="z-[60] overflow-hidden rounded-xl border border-border bg-card py-1 shadow-lg"
+            style={{
+              position: "fixed",
+              top: placement.top,
+              bottom: placement.bottom,
+              left: placement.left,
+              width: placement.width,
+              maxWidth: "min(70vw, 18rem)",
+            }}
+          >
+            <ul
+              role="listbox"
+              aria-label={title}
+              className="overflow-y-auto overscroll-contain"
+              style={{ maxHeight: placement.maxHeight }}
+            >
+              {options.map((o) => {
+                const isSel = o.value === value;
+                return (
+                  <li key={o.value === "" ? "__default__" : o.value}>
+                    <button
+                      type="button"
+                      role="option"
+                      aria-selected={isSel}
+                      title={o.hint}
+                      onClick={() => {
+                        onChange(o.value);
+                        setMenuOpen(false);
+                      }}
+                      className={cn(
+                        "flex w-full min-w-0 items-center gap-2 overflow-hidden px-3 py-2 text-left text-xs transition-colors",
+                        isSel
+                          ? "bg-primary/10 font-medium text-primary"
+                          : "text-foreground hover:bg-accent"
+                      )}
+                    >
+                      {o.faceId ? (
+                        <FaceThumb
+                          faceId={o.faceId}
+                          className="h-6 w-6 shrink-0 rounded-full object-cover ring-1 ring-border/60"
+                        />
+                      ) : o.value === "" ? (
+                        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-muted text-[10px] text-muted-foreground">
+                          ···
+                        </span>
+                      ) : null}
+                      <span className="min-w-0 flex-1 truncate">{o.label}</span>
+                      <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center" aria-hidden>
+                        {isSel ? <Check size={13} /> : null}
+                      </span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>,
+          document.body
+        )
+      : null;
+
   return (
     <div ref={rootRef} className={cn("relative", className)}>
       <button
@@ -127,7 +232,7 @@ export function FilterDropdown({
         disabled={disabled}
         aria-haspopup="listbox"
         aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => setMenuOpen(!open)}
         className={cn(
           iconOnly
             ? cn(
@@ -163,65 +268,7 @@ export function FilterDropdown({
           </>
         )}
       </button>
-      {open && placement && (
-        <div
-          ref={menuRef}
-          className="z-[60] overflow-hidden rounded-xl border border-border bg-card py-1 shadow-lg"
-          style={{
-            position: "fixed",
-            top: placement.top,
-            left: placement.left,
-            width: placement.width,
-            maxWidth: "min(70vw, 18rem)",
-          }}
-        >
-          <ul
-            role="listbox"
-            aria-label={title}
-            className="overflow-y-auto overscroll-contain"
-            style={{ maxHeight: placement.maxHeight }}
-          >
-            {options.map((o) => {
-              const isSel = o.value === value;
-              return (
-                <li key={o.value === "" ? "__default__" : o.value}>
-                  <button
-                    type="button"
-                    role="option"
-                    aria-selected={isSel}
-                    title={o.hint}
-                    onClick={() => {
-                      onChange(o.value);
-                      setOpen(false);
-                    }}
-                    className={cn(
-                      "flex w-full min-w-0 items-center gap-2 overflow-hidden px-3 py-2 text-left text-xs transition-colors",
-                      isSel
-                        ? "bg-primary/10 font-medium text-primary"
-                        : "text-foreground hover:bg-accent"
-                    )}
-                  >
-                    {o.faceId ? (
-                      <FaceThumb
-                        faceId={o.faceId}
-                        className="h-6 w-6 shrink-0 rounded-full object-cover ring-1 ring-border/60"
-                      />
-                    ) : o.value === "" ? (
-                      <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-muted text-[10px] text-muted-foreground">
-                        ···
-                      </span>
-                    ) : null}
-                    <span className="min-w-0 flex-1 truncate">{o.label}</span>
-                    <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center" aria-hidden>
-                      {isSel ? <Check size={13} /> : null}
-                    </span>
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
-        </div>
-      )}
+      {menu}
     </div>
   );
 }

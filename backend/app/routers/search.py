@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth_session import optional_bearer_email
 from app.config import get_settings
 from app.db.app_settings_store import refresh_runtime_settings_from_db
 from app.db.session import get_db, get_session_factory
@@ -15,6 +17,7 @@ from app.schemas import SearchMoment, SearchResponse, SearchResultFile
 from app.gemini.service import SearchCitation, get_gemini_service
 from app.gemini.caption_filter import filter_images_by_caption_llm
 from app.gemini.rerank import rerank_image_files
+from app.search.audit_log import record_search_audit
 from app.search.cancel import (
     SearchCancelled,
     cancel_search,
@@ -222,42 +225,90 @@ async def search(
     session: AsyncSession = Depends(get_db),
 ) -> SearchResponse:
     """Return matching indexed Drive files. Set captions=true to fuse caption vectors at search time."""
-    query = q.strip()
-    if not query:
-        raise HTTPException(status_code=400, detail="Query cannot be empty")
-
+    started = time.perf_counter()
+    audit_status = "ok"
+    audit_http: int | None = 200
+    audit_error: str | None = None
+    audit_response: SearchResponse | None = None
+    query = (q or "").strip()
     mime_filter = (mime or "all").strip().lower()
-    if mime_filter not in ("all", "image", "pdf", "video"):
-        raise HTTPException(status_code=400, detail="mime must be all, image, pdf, or video")
-
-    source_filter = (source or "all").strip().lower()
-    if source_filter not in ("all", "youtube", "drive"):
-        raise HTTPException(status_code=400, detail="source must be all, youtube, or drive")
-    if source_filter == "all":
-        source_filter = None
-
+    source_raw = (source or "all").strip().lower()
+    source_filter: str | None = source_raw
     active_search_id = (search_id or "").strip() or None
-    await register_search(active_search_id)
+    user_email = optional_bearer_email(request.headers.get("authorization"))
+    forwarded = (request.headers.get("x-forwarded-for") or "").split(",", 1)[0].strip()
+    client_host = forwarded or (request.client.host if request.client else None)
 
     async def _checkpoint() -> None:
         await ensure_search_active(request, active_search_id)
 
     try:
-        return await _run_search(
-            session=session,
-            query=query,
-            person=person,
-            mime_filter=mime_filter,
-            folder_path=folder_path,
-            source_filter=source_filter,
-            rerank=rerank,
-            captions=captions,
-            checkpoint=_checkpoint,
-        )
+        if not query:
+            raise HTTPException(status_code=400, detail="Query cannot be empty")
+
+        if mime_filter not in ("all", "image", "pdf", "video"):
+            raise HTTPException(status_code=400, detail="mime must be all, image, pdf, or video")
+
+        if source_raw not in ("all", "youtube", "drive"):
+            raise HTTPException(status_code=400, detail="source must be all, youtube, or drive")
+        if source_raw == "all":
+            source_filter = None
+
+        await register_search(active_search_id)
+        try:
+            audit_response = await _run_search(
+                session=session,
+                query=query,
+                person=person,
+                mime_filter=mime_filter,
+                folder_path=folder_path,
+                source_filter=source_filter,
+                rerank=rerank,
+                captions=captions,
+                checkpoint=_checkpoint,
+            )
+            return audit_response
+        finally:
+            await clear_search(active_search_id)
     except SearchCancelled:
+        audit_status = "cancelled"
+        audit_http = 499
+        audit_error = "Search cancelled"
         raise cancelled_http_exception() from None
+    except HTTPException as exc:
+        audit_http = int(exc.status_code)
+        audit_status = "validation_error" if exc.status_code == 400 else "error"
+        audit_error = str(exc.detail)
+        raise
+    except Exception as exc:  # noqa: BLE001
+        audit_status = "error"
+        audit_http = 500
+        audit_error = f"{type(exc).__name__}: {exc}"
+        raise
     finally:
-        await clear_search(active_search_id)
+        tat_ms = int((time.perf_counter() - started) * 1000)
+        try:
+            await record_search_audit(
+                tat_ms=tat_ms,
+                status=audit_status,
+                http_status=audit_http,
+                error_detail=audit_error,
+                query_text=query,
+                person=person,
+                mime=mime_filter,
+                folder_path=folder_path,
+                source=source_raw,
+                rerank=str(bool(rerank)).lower(),
+                captions=str(bool(captions)).lower(),
+                retrieval_policy="default",
+                cache=audit_response.cache if audit_response is not None else None,
+                search_id=active_search_id,
+                user_email=user_email,
+                client_host=client_host,
+                response=audit_response,
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning("search audit instrumentation failed", exc_info=True)
 
 
 @router.get("/testv1", response_model=SearchResponse)

@@ -1,6 +1,7 @@
 "use client";
 
 import { Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   ChevronRight,
@@ -26,7 +27,7 @@ import { Button, DownloadButton, LoadingLabel, DriveMediaThumb } from "@/compone
 import { DriveSessionBar } from "@/components/drive-session-bar";
 import { ModalOverlay } from "@/components/modal";
 import { cn } from "@/lib/utils";
-import { formatCount, skipReasonMeta } from "@/lib/index-errors";
+import { formatCount, formatIndexStatusLabel, skipReasonMeta } from "@/lib/index-errors";
 import { hydrateKeyFromDisk, readCache, writeCache } from "@/lib/data-cache";
 import { findLibraryFolder, librarySubfoldersAtPath } from "@/lib/library-folders";
 import { useRegisterTestShellChrome } from "@/lib/test-shell-chrome";
@@ -74,17 +75,38 @@ function FolderTile({
   const [reasonsOpen, setReasonsOpen] = useState(false);
   const [reasonsLoading, setReasonsLoading] = useState(false);
   const [reasons, setReasons] = useState<SkipReasonCount[] | null>(null);
-  const [popoverPos, setPopoverPos] = useState<{ top: number; left: number; width: number } | null>(
-    null
-  );
+  const [popoverPos, setPopoverPos] = useState<{
+    top?: number;
+    bottom?: number;
+    left: number;
+    width: number;
+    maxHeight: number;
+  } | null>(null);
+  const [mounted, setMounted] = useState(false);
   const reasonRootRef = useRef<HTMLDivElement>(null);
+  const badgeRef = useRef<HTMLButtonElement>(null);
+  const popoverRef = useRef<HTMLDivElement>(null);
   const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Avoid hover→click double-toggle that instantly closes the popover on touch. */
+  const openedByPointerRef = useRef(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   const clearCloseTimer = useCallback(() => {
     if (closeTimerRef.current) {
       clearTimeout(closeTimerRef.current);
       closeTimerRef.current = null;
     }
+  }, []);
+
+  const focusInsideReasons = useCallback(() => {
+    const active = document.activeElement;
+    return Boolean(
+      (active && reasonRootRef.current?.contains(active)) ||
+        (active && popoverRef.current?.contains(active))
+    );
   }, []);
 
   const openReasons = useCallback(() => {
@@ -95,6 +117,7 @@ function FolderTile({
     setReasonsLoading(true);
     void loadSkipReasons(folder.path)
       .then(setReasons)
+      .catch(() => setReasons([]))
       .finally(() => setReasonsLoading(false));
   }, [
     clearCloseTimer,
@@ -108,11 +131,11 @@ function FolderTile({
   const scheduleClose = useCallback(() => {
     clearCloseTimer();
     closeTimerRef.current = setTimeout(() => {
-      if (!reasonRootRef.current?.contains(document.activeElement)) {
+      if (!focusInsideReasons()) {
         setReasonsOpen(false);
       }
     }, 180);
-  }, [clearCloseTimer]);
+  }, [clearCloseTimer, focusInsideReasons]);
 
   useEffect(() => {
     return clearCloseTimer;
@@ -121,9 +144,14 @@ function FolderTile({
   useEffect(() => {
     if (!reasonsOpen) return;
     function onDocumentPointerDown(event: MouseEvent) {
-      if (!reasonRootRef.current?.contains(event.target as Node)) {
-        setReasonsOpen(false);
+      const target = event.target as Node;
+      if (
+        reasonRootRef.current?.contains(target) ||
+        popoverRef.current?.contains(target)
+      ) {
+        return;
       }
+      setReasonsOpen(false);
     }
     function onDocumentKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape") {
@@ -144,24 +172,53 @@ function FolderTile({
       return;
     }
     function placePopover() {
-      const anchor = reasonRootRef.current;
+      const anchor = badgeRef.current;
       if (!anchor) return;
       const rect = anchor.getBoundingClientRect();
-      const width = Math.min(256, window.innerWidth - 16);
-      const left = Math.max(
-        8,
-        Math.min(rect.left + rect.width / 2 - width / 2, window.innerWidth - width - 8)
-      );
-      setPopoverPos({ top: rect.bottom + 6, left, width });
+      const edge = 8;
+      const gap = 6;
+      const vh = window.innerHeight;
+      const vw = window.innerWidth;
+      const width = Math.min(256, vw - edge * 2);
+      // Prefer left-align to the badge; flip if it would overflow the right edge.
+      let left = rect.left;
+      if (left + width > vw - edge) {
+        left = Math.max(edge, rect.right - width);
+      }
+      left = Math.max(edge, Math.min(left, vw - width - edge));
+
+      const estimatedHeight = popoverRef.current?.offsetHeight ?? 180;
+      const spaceBelow = vh - rect.bottom - gap - edge;
+      const spaceAbove = rect.top - gap - edge;
+      const openUp = spaceBelow < estimatedHeight && spaceAbove > spaceBelow;
+      const maxHeight = Math.min(280, Math.max(120, openUp ? spaceAbove : spaceBelow));
+
+      if (openUp) {
+        setPopoverPos({
+          bottom: vh - rect.top + gap,
+          left,
+          width,
+          maxHeight,
+        });
+      } else {
+        setPopoverPos({
+          top: rect.bottom + gap,
+          left,
+          width,
+          maxHeight,
+        });
+      }
     }
     placePopover();
+    const raf = requestAnimationFrame(placePopover);
     window.addEventListener("resize", placePopover);
     window.addEventListener("scroll", placePopover, true);
     return () => {
+      cancelAnimationFrame(raf);
       window.removeEventListener("resize", placePopover);
       window.removeEventListener("scroll", placePopover, true);
     };
-  }, [reasonsOpen]);
+  }, [reasonsOpen, reasonsLoading, reasons]);
 
   return (
     <div className="group relative flex min-w-0 flex-col overflow-visible">
@@ -203,17 +260,49 @@ function FolderTile({
         <div
           ref={reasonRootRef}
           className="relative z-30 -mt-1 mb-1.5 flex justify-center px-1"
-          onMouseEnter={openReasons}
+          onMouseEnter={() => {
+            openedByPointerRef.current = true;
+            openReasons();
+          }}
           onMouseLeave={scheduleClose}
         >
           <button
+            ref={badgeRef}
             type="button"
             aria-haspopup="dialog"
             aria-expanded={reasonsOpen}
             aria-controls={`skip-reasons-${folder.path.replace(/[^a-z0-9]+/gi, "-")}`}
             aria-label={`${formatCount(folder.skipped_count)} skipped files in ${folder.name}`}
             onFocus={openReasons}
+            onBlur={() => {
+              // Portaled content is outside this button — only close if focus left both.
+              requestAnimationFrame(() => {
+                if (!focusInsideReasons()) setReasonsOpen(false);
+              });
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "ArrowDown" || (event.key === "Tab" && !event.shiftKey)) {
+                if (!reasonsOpen) {
+                  // onFocus normally opened it already; open now if not.
+                  openReasons();
+                  return;
+                }
+                // Move into the portaled "View skipped files" link synchronously so
+                // preventDefault actually stops the native Tab.
+                const link = popoverRef.current?.querySelector<HTMLElement>("a[href],button");
+                if (link) {
+                  event.preventDefault();
+                  link.focus();
+                }
+              }
+            }}
             onClick={() => {
+              // Hover/touch already opened via pointerenter — don't immediately toggle closed.
+              if (reasonsOpen && openedByPointerRef.current) {
+                openedByPointerRef.current = false;
+                return;
+              }
+              openedByPointerRef.current = false;
               if (reasonsOpen) {
                 setReasonsOpen(false);
               } else {
@@ -225,66 +314,85 @@ function FolderTile({
             {folder.skipped_count > 99 ? "99+" : formatCount(folder.skipped_count)} skipped
           </button>
 
-          {reasonsOpen && popoverPos && (
-            <div
-              id={`skip-reasons-${folder.path.replace(/[^a-z0-9]+/gi, "-")}`}
-              role="dialog"
-              aria-label={`Skip reasons for ${folder.name}`}
-              className="fixed z-50 overflow-hidden rounded-xl border border-border bg-card text-left shadow-lg"
-              style={{
-                top: popoverPos.top,
-                left: popoverPos.left,
-                width: popoverPos.width,
-              }}
-            >
-              <div className="border-b border-border/70 px-3 py-2.5">
-                <p className="text-xs font-semibold text-foreground">
-                  Skipped files · {formatCount(folder.skipped_count)}
-                </p>
-              </div>
-              <div className="py-1">
-                {reasonsLoading ? (
-                  <p className="px-3 py-3 text-xs text-muted-foreground">
-                    <LoadingLabel size={13}>Loading reasons…</LoadingLabel>
-                  </p>
-                ) : reasons && reasons.length > 0 ? (
-                  reasons.slice(0, 3).map((item) => {
-                    const meta = skipReasonMeta(item.reason);
-                    return (
-                      <div key={item.reason} className="px-3 py-2">
-                        <div className="flex items-baseline justify-between gap-3">
-                          <p className="truncate text-xs font-medium text-foreground">
-                            {meta.label}
-                          </p>
-                          <span className="shrink-0 text-xs font-semibold tabular-nums text-foreground">
-                            {formatCount(item.count)}
-                          </span>
-                        </div>
-                        <p className="mt-0.5 line-clamp-1 text-[10px] text-muted-foreground">
-                          {meta.hint}
-                        </p>
-                      </div>
-                    );
-                  })
-                ) : (
-                  <p className="px-3 py-3 text-xs text-muted-foreground">
-                    No detailed reasons available.
-                  </p>
-                )}
-              </div>
-              <a
-                href={foldersHref(folder.path, "skipped")}
-                onClick={(e) => {
-                  e.preventDefault();
-                  setReasonsOpen(false);
-                  onViewSkipped(folder.path);
-                }}
-                className="block border-t border-border/70 px-3 py-2 text-[11px] font-medium text-primary hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
-              >
-                View skipped files
-              </a>
-            </div>
-          )}
+          {reasonsOpen && popoverPos && mounted
+            ? createPortal(
+                <div
+                  ref={popoverRef}
+                  id={`skip-reasons-${folder.path.replace(/[^a-z0-9]+/gi, "-")}`}
+                  role="dialog"
+                  aria-label={`Skip reasons for ${folder.name}`}
+                  className="fixed z-50 overflow-hidden rounded-xl border border-border bg-card text-left shadow-lg"
+                  style={{
+                    top: popoverPos.top,
+                    bottom: popoverPos.bottom,
+                    left: popoverPos.left,
+                    width: popoverPos.width,
+                    maxHeight: popoverPos.maxHeight,
+                  }}
+                  onMouseEnter={() => {
+                    openedByPointerRef.current = true;
+                    openReasons();
+                  }}
+                  onMouseLeave={scheduleClose}
+                  onKeyDown={(event) => {
+                    // Return focus to the badge so Escape / Shift+Tab don't strand keyboard users.
+                    if (event.key === "Escape" || (event.key === "Tab" && event.shiftKey)) {
+                      event.preventDefault();
+                      badgeRef.current?.focus();
+                      if (event.key === "Escape") setReasonsOpen(false);
+                    }
+                  }}
+                >
+                  <div className="border-b border-border/70 px-3 py-2.5">
+                    <p className="text-xs font-semibold text-foreground">
+                      Skipped files · {formatCount(folder.skipped_count)}
+                    </p>
+                  </div>
+                  <div className="overflow-y-auto py-1" style={{ maxHeight: popoverPos.maxHeight - 88 }}>
+                    {reasonsLoading ? (
+                      <p className="px-3 py-3 text-xs text-muted-foreground">
+                        <LoadingLabel size={13}>Loading reasons…</LoadingLabel>
+                      </p>
+                    ) : reasons && reasons.length > 0 ? (
+                      reasons.slice(0, 3).map((item) => {
+                        const meta = skipReasonMeta(item.reason);
+                        return (
+                          <div key={item.reason} className="px-3 py-2">
+                            <div className="flex items-baseline justify-between gap-3">
+                              <p className="truncate text-xs font-medium text-foreground">
+                                {meta.label}
+                              </p>
+                              <span className="shrink-0 text-xs font-semibold tabular-nums text-foreground">
+                                {formatCount(item.count)}
+                              </span>
+                            </div>
+                            <p className="mt-0.5 line-clamp-1 text-[10px] text-muted-foreground">
+                              {meta.hint}
+                            </p>
+                          </div>
+                        );
+                      })
+                    ) : (
+                      <p className="px-3 py-3 text-xs text-muted-foreground">
+                        No detailed reasons available.
+                      </p>
+                    )}
+                  </div>
+                  <a
+                    href={foldersHref(folder.path, "skipped")}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      setReasonsOpen(false);
+                      onViewSkipped(folder.path);
+                    }}
+                    className="block border-t border-border/70 px-3 py-2 text-[11px] font-medium text-primary hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+                  >
+                    View skipped files
+                  </a>
+                </div>,
+                document.body
+              )
+            : null}
         </div>
       )}
     </div>
@@ -329,7 +437,7 @@ function FileTile({
               ? "bg-red-500"
               : "bg-amber-500"
         )}
-        title={file.status}
+        title={formatIndexStatusLabel(file.status)}
       />
     </button>
   );

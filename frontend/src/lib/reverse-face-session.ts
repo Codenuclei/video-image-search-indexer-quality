@@ -3,7 +3,9 @@
 import { useSyncExternalStore } from "react";
 import {
   apiClient,
+  faceThumbnailUrl,
   formatApiError,
+  getApiErrorStatus,
   isAbortError,
   isServiceUnavailableMessage,
   type FaceCrawlResponse,
@@ -12,6 +14,7 @@ import {
   type LeadershipPerson,
   type LeadershipRoster,
 } from "@/lib/api";
+import { ensureAppSession } from "@/lib/app-session";
 import { hydrateKeyFromDisk, readCache, writeCache } from "@/lib/data-cache";
 import { stableJsonHash } from "@/lib/fingerprints";
 
@@ -116,8 +119,18 @@ export function useReverseFaceSession(): ReverseFaceSession {
   return useSyncExternalStore(subscribe, getReverseFaceSession, getReverseFaceSession);
 }
 
+function reverseFaceErrorMessage(error: unknown, fallback: string): string {
+  const status = getApiErrorStatus(error);
+  if (status === 401) {
+    return "Session expired — please sign out and sign in again";
+  }
+  return formatApiError(error, fallback);
+}
+
 export async function hydrateLeadershipRoster(force = false) {
   if (state.rosterHydrated && !force) return;
+  // Sync httpOnly app session before roster / leader face calls (collections BFFs share it).
+  await ensureAppSession();
   let cachedRoster: LeadershipRoster | null = null;
   if (!force) {
     hydrateKeyFromDisk(LEADERSHIP_ROSTER_CACHE_KEY);
@@ -130,7 +143,8 @@ export async function hydrateLeadershipRoster(force = false) {
     error: null,
   });
   try {
-    const roster = await apiClient.leadershipRoster("executive");
+    // silent: panel owns errors — avoid spurious global session-expired toasts
+    const roster = await apiClient.leadershipRoster("executive", { silent: true });
     writeCache(
       LEADERSHIP_ROSTER_CACHE_KEY,
       roster,
@@ -140,7 +154,7 @@ export async function hydrateLeadershipRoster(force = false) {
     patchReverseFaceSession({ roster, rosterLoading: false, rosterHydrated: true });
   } catch (e) {
     patchReverseFaceSession({
-      error: formatApiError(e, "Failed to load Executive Leaders"),
+      error: reverseFaceErrorMessage(e, "Failed to load Executive Leaders"),
       roster: cachedRoster ?? state.roster,
       rosterLoading: false,
       rosterHydrated: true,
@@ -251,8 +265,10 @@ export function selectReverseFaceLeader(person: LeadershipPerson) {
   let job!: Promise<void>;
   job = (async () => {
     try {
+      await ensureAppSession();
+      if (isStaleSearch(gen)) return;
       const result = await withNetworkRetry(
-        () => apiClient.searchFaceByUrl(person.image_url!, 20, signal),
+        () => apiClient.searchFaceByUrl(person.image_url!, 20, signal, { silent: true }),
         { signal, isStale: () => isStaleSearch(gen) }
       );
       if (isStaleSearch(gen)) return;
@@ -264,7 +280,7 @@ export function selectReverseFaceLeader(person: LeadershipPerson) {
         return;
       }
       patchReverseFaceSession({
-        error: formatApiError(e, "Leader face search failed"),
+        error: reverseFaceErrorMessage(e, "Leader face search failed"),
         result: null,
         searching: false,
       });
@@ -275,6 +291,78 @@ export function selectReverseFaceLeader(person: LeadershipPerson) {
   })();
   searchJob = job;
   return job;
+}
+
+/**
+ * Retarget reverse-face to an Indexed Person (representative face) without wiping
+ * into caption-only text search — used when the Search person filter changes
+ * while face results are already on screen.
+ *
+ * Returns true when a face retarget was started. Returns false when there is no
+ * representative face thumb — clears reverse-face so the caller can fall back to
+ * a normal person-aware text search (avoids pairing a new person with stale faces).
+ *
+ * Do NOT call cancelSearch here: callers immediately runSearch(), and an async
+ * cancel would bump searchGeneration and abort that new text search.
+ */
+export function retargetReverseFaceToPerson(opts: {
+  name: string;
+  representativeFaceId: number | null | undefined;
+}): boolean {
+  const faceId = opts.representativeFaceId ?? null;
+  const imageUrl = faceThumbnailUrl(faceId);
+  if (!imageUrl) {
+    clearReverseFaceSearch();
+    return false;
+  }
+  const gen = bumpSearchGeneration();
+  searchAbort = new AbortController();
+  const signal = searchAbort.signal;
+  const prevUrl = state.previewUrl;
+  if (prevUrl) URL.revokeObjectURL(prevUrl);
+  const syntheticLeader: LeadershipPerson = {
+    name: opts.name,
+    role: "",
+    image_url: imageUrl,
+  };
+  patchReverseFaceSession({
+    selectedLeader: syntheticLeader,
+    file: null,
+    previewUrl: null,
+    searching: true,
+    error: null,
+    tagMessage: null,
+    result: null,
+  });
+  let job!: Promise<void>;
+  job = (async () => {
+    try {
+      await ensureAppSession();
+      if (isStaleSearch(gen)) return;
+      const result = await withNetworkRetry(
+        () => apiClient.searchFaceByUrl(imageUrl, 20, signal, { silent: true }),
+        { signal, isStale: () => isStaleSearch(gen) }
+      );
+      if (isStaleSearch(gen)) return;
+      patchReverseFaceSession({ result, searching: false, error: null });
+    } catch (e) {
+      if (isStaleSearch(gen)) return;
+      if (signal.aborted || isAbortError(e)) {
+        patchReverseFaceSession({ searching: false, error: null });
+        return;
+      }
+      patchReverseFaceSession({
+        error: reverseFaceErrorMessage(e, "Person face search failed"),
+        result: null,
+        searching: false,
+      });
+    } finally {
+      if (searchJob === job) searchJob = null;
+      if (searchAbort?.signal === signal) searchAbort = null;
+    }
+  })();
+  searchJob = job;
+  return true;
 }
 
 export function runReverseFaceCrawl() {
@@ -416,7 +504,7 @@ export async function runReverseFaceNameTag(opts: {
       try {
         if (leaderUrl) {
           const refreshed = await withNetworkRetry(
-            () => apiClient.searchFaceByUrl(leaderUrl, 20, signal),
+            () => apiClient.searchFaceByUrl(leaderUrl, 20, signal, { silent: true }),
             { signal, isStale: isStaleRefresh }
           );
           if (!isStaleRefresh()) patchReverseFaceSession({ result: refreshed });

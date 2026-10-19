@@ -241,7 +241,7 @@ function FileRow({
         <span className="truncate font-medium">{file.name}</span>
       </span>
       <span className="flex min-w-0 items-center justify-center">
-        <span className={cn("max-w-full truncate rounded px-1.5 py-0.5 text-center text-[10px] font-medium", statusBadge(file.status))}>
+        <span className={cn("max-w-full truncate rounded px-1.5 py-0.5 text-center text-[10px] font-medium normal-case", statusBadge(file.status))}>
           {formatIndexStatusLabel(file.status)}
         </span>
       </span>
@@ -697,7 +697,7 @@ export default function LibraryPage() {
             <span className="flex items-center justify-center">Size</span>
           </div>
 
-          <div className="scrollbar-hidden min-h-0 flex-1 overflow-y-auto">
+          <div className="min-h-0 flex-1 overflow-auto">
             {selectedFolderPath === "/" ? (
               <p className="py-16 text-center text-sm text-muted-foreground">
                 Choose a folder on the left to load file names

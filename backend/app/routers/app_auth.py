@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth_session import current_user_claims
 from app.config import Settings, get_settings
 from app.db.models import AppAdmin
 from app.db.session import get_db
@@ -39,6 +40,27 @@ async def is_app_admin_email(session: AsyncSession, email: str) -> bool:
         select(AppAdmin.email).where(func.lower(AppAdmin.email) == key).limit(1)
     )
     return row is not None
+
+
+async def require_app_admin(
+    claims: dict[str, Any] = Depends(current_user_claims),
+    session: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> str:
+    """Require a valid session for an app admin (DB allowlist or password-admin claim)."""
+    email = str(claims.get("email") or "").strip().lower()
+    if not email:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    if await is_app_admin_email(session, email):
+        return email
+    admin_email = (settings.admin_login_email or "").strip().lower()
+    if (
+        bool(claims.get("isAdmin"))
+        and admin_email
+        and email == admin_email
+    ):
+        return email
+    raise HTTPException(status_code=403, detail="Admin access required")
 
 
 def _verify_google_id_token(credential: str, settings: Settings) -> dict[str, Any]:
