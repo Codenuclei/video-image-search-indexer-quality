@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     # Comma-separated extra GIS client IDs accepted for ID-token verify (e.g. DigitalOcean
     # frontend NEXT_PUBLIC_GOOGLE_CLIENT_ID). Does not replace google_client_id (Drive OAuth).
     google_id_token_extra_audiences: str = (
+        "969672000852-9aauao6fkmtb7ga7o1m1qvsec3145dfk.apps.googleusercontent.com,"
         "667640945733-1m2i2ipuib6mu51a7o9d76imiatl6ka0.apps.googleusercontent.com"
     )
     google_redirect_uri: str = "http://localhost:8000/auth/google/callback"

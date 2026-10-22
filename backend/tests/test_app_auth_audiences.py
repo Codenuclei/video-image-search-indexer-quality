@@ -40,6 +40,15 @@ def test_audiences_default_includes_digitalocean_gis_client() -> None:
     )
 
 
+def test_audiences_default_includes_searchatmu_domain_client() -> None:
+    settings = _settings(google_client_id="primary.apps.googleusercontent.com")
+    auds = app_auth._google_id_token_audiences(settings)
+    assert (
+        "969672000852-9aauao6fkmtb7ga7o1m1qvsec3145dfk.apps.googleusercontent.com"
+        in auds
+    )
+
+
 def test_verify_accepts_token_for_extra_audience(monkeypatch: pytest.MonkeyPatch) -> None:
     settings = _settings(
         google_client_id="primary.apps.googleusercontent.com",
