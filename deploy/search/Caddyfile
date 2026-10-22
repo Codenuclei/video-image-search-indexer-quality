@@ -3,12 +3,12 @@
 }
 
 # UI
-165-245-174-92.sslip.io {
+searchatmu.bran.mastersunion.org, 165-245-174-92.sslip.io {
 	reverse_proxy frontend:3001
 }
 
 # API (separate hostname so Next.js /search does not collide with GET /search)
-api.165.245.174.92.sslip.io {
+searchatmu-api.bran.mastersunion.org, api.165.245.174.92.sslip.io {
 	reverse_proxy backend:8000 {
 		flush_interval -1
 		transport http {
