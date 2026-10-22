@@ -320,11 +320,11 @@ export function TestShell({ children }: { children: React.ReactNode }) {
             Settings
           </Link>
           <Link
-            href="/"
+            href="/dashboard"
             className="flex items-center gap-2 rounded-xl px-2.5 py-2 text-sm text-sidebar-foreground/80 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
           >
             <HardDrive size={16} />
-            Current UI
+            Old UI
           </Link>
         </div>
       </aside>

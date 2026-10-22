@@ -294,14 +294,14 @@ export const TEST_FAQ_CATEGORIES: FaqCategory[] = [
         id: "first-run",
         question: "What should I do on first use?",
         answer:
-          "1) Open Indexed Folders and connect Google Drive if prompted. 2) Pick the Drive folder to index (use Current UI → Admin → Start Index if indexing has not run yet). 3) Open People Directory → Un-Indexed People to name unknown faces. 4) Use Search once files are processed.",
+          "1) Open Indexed Folders and connect Google Drive if prompted. 2) Pick the Drive folder to index (use Old UI → Admin → Start Index if indexing has not run yet). 3) Open People Directory → Un-Indexed People to name unknown faces. 4) Use Search once files are processed.",
         href: "/test/folders",
       },
       {
         id: "nav-overview",
         question: "Where is everything in the sidebar?",
         answer:
-          "Search is the home view. Library has Indexed Folders and People Directory. How to / FAQ and Settings are in the footer. Current UI opens the classic app (Dashboard, Admin, Review Queue) when you need ops tools that are not in this shell.",
+          "Search is the home view. Library has Indexed Folders and People Directory. How to / FAQ and Settings are in the footer. Old UI opens the classic app (Dashboard, Admin, Review Queue) when you need ops tools that are not in this shell.",
         href: "/test/search",
       },
     ],
@@ -385,8 +385,8 @@ export const TEST_FAQ_CATEGORIES: FaqCategory[] = [
         id: "start-index",
         question: "How do I start or check indexing?",
         answer:
-          "Indexing controls (Start Index, skip reasons, status chart) live in Current UI → Dashboard and Admin. After indexing runs, return here to Search and Indexed Folders — processed counts show on the classic Dashboard chart.",
-        href: "/",
+          "Indexing controls (Start Index, skip reasons, status chart) live in Old UI → Dashboard and Admin. After indexing runs, return here to Search and Indexed Folders — processed counts show on the classic Dashboard chart.",
+        href: "/dashboard",
       },
     ],
   },
@@ -442,20 +442,20 @@ export const TEST_FAQ_CATEGORIES: FaqCategory[] = [
   {
     id: "errors",
     title: "Troubleshooting",
-    blurb: "Empty results, Drive issues, and when to use Current UI.",
+    blurb: "Empty results, Drive issues, and when to use Old UI.",
     items: [
       {
         id: "empty-search",
         question: "Search returns nothing",
         answer:
-          "Clear person / folder / type filters and try again. Confirm Indexed Folders shows files and that indexing has finished (Current UI → Dashboard). New uploads need to finish processing first. For a person name, check spelling against People Directory.",
+          "Clear person / folder / type filters and try again. Confirm Indexed Folders shows files and that indexing has finished (Old UI → Dashboard). New uploads need to finish processing first. For a person name, check spelling against People Directory.",
         href: "/test/search",
       },
       {
         id: "drive-oauth-fail",
         question: "Drive will not connect",
         answer:
-          "Retry Connect from Indexed Folders. Confirm you use the right Google account. Disconnect Drive from the account menu, then connect again. If it still fails, use Current UI → Folders for the classic OAuth flow.",
+          "Retry Connect from Indexed Folders. Confirm you use the right Google account. Disconnect Drive from the account menu, then connect again. If it still fails, use Old UI → Folders for the classic OAuth flow.",
         href: "/test/folders",
       },
       {
@@ -476,8 +476,8 @@ export const TEST_FAQ_CATEGORIES: FaqCategory[] = [
         id: "need-admin",
         question: "Where do I retry failed files or see skip reasons?",
         answer:
-          "Open Current UI → Dashboard for the status chart, skip reasons, and conflicts. Admin has Start Index, count cards, and bulk retries.",
-        href: "/",
+          "Open Old UI → Dashboard for the status chart, skip reasons, and conflicts. Admin has Start Index, count cards, and bulk retries.",
+        href: "/dashboard",
       },
     ],
   },

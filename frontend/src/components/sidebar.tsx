@@ -42,7 +42,7 @@ type NavLink = {
 };
 
 const links: NavLink[] = [
-  { href: "/", label: "Dashboard", icon: Home, mobile: true },
+  { href: "/dashboard", label: "Dashboard", icon: Home, mobile: true },
   { href: "/review", label: "Review Queue", icon: UserCheck, mobile: true },
   { href: "/people", label: "People", icon: Users, mobile: true },
   { href: "/search", label: "Search", icon: Search, mobile: true, section: "find" },
@@ -62,7 +62,7 @@ const links: NavLink[] = [
   },
   { href: "/help", label: "How to / FAQ", icon: CircleHelp, mobile: false },
   { href: "/settings", label: "Settings", icon: Settings, mobile: false },
-  { href: "/test/search", label: "UI Test", icon: ScanFace, mobile: false },
+  { href: "/", label: "New UI", icon: ScanFace, mobile: false },
 ];
 
 function navActive(pathname: string, href: string): boolean {
@@ -72,7 +72,6 @@ function navActive(pathname: string, href: string): boolean {
   if (href === "/admin/search-audit") {
     return pathname === "/admin/search-audit" || pathname.startsWith("/admin/search-audit/");
   }
-  if (href === "/test/search") return pathname.startsWith("/test");
   return pathname === href || pathname.startsWith(`${href}/`);
 }
 
@@ -263,7 +262,7 @@ export function Sidebar() {
 
   const currentPage =
     links.find((l) => navActive(pathname, l.href) && l.href !== "/")?.label ??
-    (pathname === "/" ? "Home" : "DriveFaceIndexer");
+    (pathname === "/dashboard" ? "Dashboard" : "DriveFaceIndexer");
 
   return (
     <>
