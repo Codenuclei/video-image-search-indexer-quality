@@ -119,14 +119,28 @@ async def scan_leadership_faces(
     1) match against internal pgvector faces
     2) optionally run Apify/Lens reverse search (slow; off by default)
     """
-    from app.reid.face_search import search_faces_by_image_bytes
+    from app.reid.face_search import FaceSearchBusyError, search_faces_by_image_bytes
     from app.reid.reverse_search import reverse_search_face
 
     roster = await fetch_leadership_roster(tab, page_url=page_url)
     results: list[dict[str, Any]] = []
+    gpu_busy = False
 
     async with httpx.AsyncClient(timeout=45.0, follow_redirects=True, headers=_HEADERS) as client:
         for person in roster["people"]:
+            if gpu_busy:
+                # Fail fast: the GPU is cold or broken; do not stack 120s waits per leader.
+                results.append(
+                    {
+                        "name": person["name"],
+                        "role": person["role"],
+                        "image_url": person["image_url"],
+                        "linkedin_url": person.get("linkedin_url") or None,
+                        "ok": False,
+                        "error": "Face engine is warming up - retry",
+                    }
+                )
+                continue
             item: dict[str, Any] = {
                 "name": person["name"],
                 "role": person["role"],
@@ -167,6 +181,10 @@ async def scan_leadership_faces(
                             )
                         except Exception as exc:  # noqa: BLE001
                             item["web_reverse_error"] = str(exc)[:240]
+            except FaceSearchBusyError as exc:
+                gpu_busy = True
+                logger.warning("leadership scan GPU busy at %s: %s", person.get("name"), exc)
+                item["error"] = "Face engine is warming up - retry"
             except Exception as exc:  # noqa: BLE001
                 logger.warning("leadership scan failed for %s: %s", person.get("name"), exc)
                 item["error"] = str(exc)[:300]

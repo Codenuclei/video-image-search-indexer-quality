@@ -63,15 +63,33 @@ async def require_app_admin(
     raise HTTPException(status_code=403, detail="Admin access required")
 
 
+def _google_id_token_audiences(settings: Settings) -> list[str]:
+    """Primary Drive OAuth client id plus optional GIS frontend audiences."""
+    primary = (settings.google_client_id or "").strip()
+    extras = [
+        part.strip()
+        for part in (settings.google_id_token_extra_audiences or "").split(",")
+        if part.strip()
+    ]
+    out: list[str] = []
+    seen: set[str] = set()
+    for aud in ([primary] if primary else []) + extras:
+        if aud in seen:
+            continue
+        seen.add(aud)
+        out.append(aud)
+    return out
+
+
 def _verify_google_id_token(credential: str, settings: Settings) -> dict[str, Any]:
-    client_id = (settings.google_client_id or "").strip()
-    if not client_id:
+    audiences = _google_id_token_audiences(settings)
+    if not audiences:
         raise HTTPException(status_code=503, detail="Google client id is not configured")
     try:
         payload = google_id_token.verify_oauth2_token(
             credential,
             google_requests.Request(),
-            client_id,
+            audiences,
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("Google ID token verify failed: %s", exc)

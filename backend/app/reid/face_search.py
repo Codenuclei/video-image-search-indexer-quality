@@ -469,8 +469,9 @@ async def search_faces_by_image_url(
     content = _portrait_cache_get(url)
     if content is None:
         try:
+            # 15s + 120s GPU wait stays under the 135s client timeout.
             async with httpx.AsyncClient(
-                timeout=45.0, follow_redirects=True, headers=_FETCH_HEADERS
+                timeout=15.0, follow_redirects=True, headers=_FETCH_HEADERS
             ) as client:
                 resp = await client.get(url)
                 resp.raise_for_status()

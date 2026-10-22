@@ -13,6 +13,11 @@ class Settings(BaseSettings):
     # Google OAuth (replaces the external Drive Connector)
     google_client_id: str = ""
     google_client_secret: str = ""
+    # Comma-separated extra GIS client IDs accepted for ID-token verify (e.g. DigitalOcean
+    # frontend NEXT_PUBLIC_GOOGLE_CLIENT_ID). Does not replace google_client_id (Drive OAuth).
+    google_id_token_extra_audiences: str = (
+        "667640945733-1m2i2ipuib6mu51a7o9d76imiatl6ka0.apps.googleusercontent.com"
+    )
     google_redirect_uri: str = "http://localhost:8000/auth/google/callback"
     # Browser API key for Google Picker (setDeveloperKey). Not a Gemini / AI Studio key.
     google_api_key: str = ""
@@ -118,7 +123,9 @@ class Settings(BaseSettings):
     runpod_face_video_pull_ttl_seconds: int = 3600
     # Interactive reverse face search only (indexing keeps runpod_face_timeout_seconds).
     face_search_max_edge: int = 1600  # long-edge cap for interactive reverse face search only
-    face_search_gpu_timeout_seconds: float = 20.0
+    # Cold-start budget for RunPod serverless (workersMin stays 0). Keep frontend
+    # face-search client timeouts above this value.
+    face_search_gpu_timeout_seconds: float = 120.0
     face_search_cpu_timeout_seconds: float = 60.0
     # Stop claiming new index downloads when free space on media/video volume is below this.
     index_disk_high_water_bytes: int = 2 * 1024 * 1024 * 1024

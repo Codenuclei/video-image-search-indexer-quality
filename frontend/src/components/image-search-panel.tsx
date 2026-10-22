@@ -31,6 +31,8 @@ import { cn, formatMediaClock } from "@/lib/utils";
 import {
   clearReverseFaceSearch,
   collectUnknownNameTagIds,
+  FACE_ENGINE_WARMING_MESSAGE,
+  isFaceEngineBusyMessage,
   isUnknownFaceMatch,
   patchReverseFaceSession,
   runReverseFaceNameTag,
@@ -414,71 +416,73 @@ function ClusterGalleryDialog({
           </button>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
-          {sortedItems.length === 0 ? (
-            <p className="py-6 text-center text-xs text-muted-foreground">
-              No Drive files linked to this {scope === "cluster" ? "cluster" : "match"} yet.
-            </p>
-          ) : (
-            <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-5">
-              {sortedItems.map((item) => (
-                <div key={item.drive_file_id} className="contents">
-                  {firstVideoId === item.drive_file_id && (
-                    <p className="col-span-full pt-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
-                      Videos
-                    </p>
+        <div className="dfi-scroll min-h-0 flex-1 overflow-y-auto">
+          <div className="px-4 py-3">
+            {sortedItems.length === 0 ? (
+              <p className="py-6 text-center text-xs text-muted-foreground">
+                No Drive files linked to this {scope === "cluster" ? "cluster" : "match"} yet.
+              </p>
+            ) : (
+              <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-5">
+                {sortedItems.map((item) => (
+                  <div key={item.drive_file_id} className="contents">
+                    {firstVideoId === item.drive_file_id && (
+                      <p className="col-span-full pt-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+                        Videos
+                      </p>
+                    )}
+                    <a
+                      href={driveGoogleViewUrl(item.drive_file_id)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      title={`${item.name}\n${item.path || item.media_type}`}
+                      className="group block overflow-hidden rounded-lg border border-border bg-muted transition-colors hover:border-ring"
+                    >
+                      <span className="relative block aspect-square">
+                        {isVideo(item) ? (
+                          <>
+                            <DriveMediaThumb
+                              driveFileId={item.drive_file_id}
+                              name={item.name}
+                              isVideo
+                              frameTimestamp={item.frame_timestamp}
+                            />
+                            <span className="absolute bottom-1 left-1 rounded bg-black/70 px-1 py-0.5 text-[9px] font-semibold uppercase text-white">
+                              {videoBadgeLabel(item)}
+                            </span>
+                          </>
+                        ) : (
+                          <DriveMediaThumb driveFileId={item.drive_file_id} name={item.name} />
+                        )}
+                      </span>
+                      <span className="block truncate px-1.5 py-1 text-[10px] text-muted-foreground group-hover:text-foreground">
+                        {item.name}
+                      </span>
+                    </a>
+                  </div>
+                ))}
+              </div>
+            )}
+            {actionError && !unknown && (
+              <p className="mt-2 text-center text-xs text-destructive">{actionError}</p>
+            )}
+            {canLoadMore && (
+              <div className="mt-3 flex justify-center">
+                <Button
+                  variant="secondary"
+                  onClick={() => void loadMore()}
+                  disabled={loadingMore}
+                  className="px-3 py-1.5 text-xs"
+                >
+                  {loadingMore ? (
+                    <LoadingLabel>Loading files…</LoadingLabel>
+                  ) : (
+                    `Load more (${items.length} of ${total})`
                   )}
-                  <a
-                    href={driveGoogleViewUrl(item.drive_file_id)}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    title={`${item.name}\n${item.path || item.media_type}`}
-                    className="group block overflow-hidden rounded-lg border border-border bg-muted transition-colors hover:border-ring"
-                  >
-                    <span className="relative block aspect-square">
-                      {isVideo(item) ? (
-                        <>
-                          <DriveMediaThumb
-                            driveFileId={item.drive_file_id}
-                            name={item.name}
-                            isVideo
-                            frameTimestamp={item.frame_timestamp}
-                          />
-                          <span className="absolute bottom-1 left-1 rounded bg-black/70 px-1 py-0.5 text-[9px] font-semibold uppercase text-white">
-                            {videoBadgeLabel(item)}
-                          </span>
-                        </>
-                      ) : (
-                        <DriveMediaThumb driveFileId={item.drive_file_id} name={item.name} />
-                      )}
-                    </span>
-                    <span className="block truncate px-1.5 py-1 text-[10px] text-muted-foreground group-hover:text-foreground">
-                      {item.name}
-                    </span>
-                  </a>
-                </div>
-              ))}
-            </div>
-          )}
-          {actionError && !unknown && (
-            <p className="mt-2 text-center text-xs text-destructive">{actionError}</p>
-          )}
-          {canLoadMore && (
-            <div className="mt-3 flex justify-center">
-              <Button
-                variant="secondary"
-                onClick={() => void loadMore()}
-                disabled={loadingMore}
-                className="px-3 py-1.5 text-xs"
-              >
-                {loadingMore ? (
-                  <LoadingLabel>Loading files…</LoadingLabel>
-                ) : (
-                  `Load more (${items.length} of ${total})`
-                )}
-              </Button>
-            </div>
-          )}
+                </Button>
+              </div>
+            )}
+          </div>
         </div>
 
         {unknown && (
@@ -684,7 +688,7 @@ export function ImageSearchPanel() {
               <LoadingLabel size={14}>Searching faces…</LoadingLabel>
               {showSlowHint && (
                 <p className="mt-1 text-[11px] text-muted-foreground">
-                  Still working. The face engine may be starting up.
+                  Still working — the face engine may be warming up (up to ~2 min on first request).
                 </p>
               )}
             </>
@@ -714,7 +718,30 @@ export function ImageSearchPanel() {
           ) : (
             <p>Upload a photo to find matching people across your library.</p>
           )}
-          {error && <p className="mt-1 text-red-600 dark:text-red-400">{error}</p>}
+          {error && (
+            <div className="mt-1.5 space-y-1.5">
+              <p
+                className={
+                  isFaceEngineBusyMessage(error)
+                    ? "text-amber-700 dark:text-amber-400"
+                    : "text-red-600 dark:text-red-400"
+                }
+              >
+                {isFaceEngineBusyMessage(error) ? FACE_ENGINE_WARMING_MESSAGE : error}
+              </p>
+              <Button
+                type="button"
+                variant="secondary"
+                className="h-7 px-2.5 text-[11px]"
+                onClick={() => {
+                  if (file) void runReverseFaceSearch(file);
+                  else uploadRef.current?.click();
+                }}
+              >
+                Retry
+              </Button>
+            </div>
+          )}
           {result?.message && !error && (
             <p className="mt-1 text-amber-700 dark:text-amber-400">{result.message}</p>
           )}

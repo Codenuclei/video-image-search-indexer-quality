@@ -15,6 +15,13 @@ from app.reid.face_search import (
 )
 
 
+def test_face_search_gpu_timeout_default_allows_cold_start() -> None:
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+    assert settings.face_search_gpu_timeout_seconds == 120.0
+    # Indexing path stays on the long RunPod timeout; do not couple them.
+    assert settings.runpod_face_timeout_seconds == 3600.0
+
+
 def test_downscale_bgr_for_search_caps_long_edge() -> None:
     image = np.zeros((2000, 3000, 3), dtype=np.uint8)
     out = downscale_bgr_for_search(image, 1600)

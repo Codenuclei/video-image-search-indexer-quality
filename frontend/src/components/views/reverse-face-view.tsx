@@ -30,7 +30,9 @@ import { formatClusterStatusLabel } from "@/lib/index-errors";
 import { cn, toTitleCase } from "@/lib/utils";
 import {
   clearReverseFaceSearch,
+  FACE_ENGINE_WARMING_MESSAGE,
   hydrateLeadershipRoster,
+  isFaceEngineBusyMessage,
   patchReverseFaceSession,
   runReverseFaceCrawl,
   runReverseFaceNameTag,
@@ -84,9 +86,44 @@ function collectClusters(matches: FaceSearchMatch[]) {
   return out;
 }
 
+function personBaseFromPath(pathname: string): string {
+  return pathname.startsWith("/test") ? "/test/people" : "/people";
+}
+
+/** Prefer an indexed person id whose name aligns with the roster leader. */
+function resolveLeaderProfileHref(
+  leader: LeadershipPerson,
+  matches: FaceSearchMatch[],
+  personBase: string
+): { href: string; external: boolean; title?: string } | null {
+  const leaderKey = leader.name.trim().toLowerCase();
+  const named = matches
+    .filter((m) => m.person_id != null)
+    .sort((a, b) => b.score - a.score);
+  const aligned =
+    named.find((m) => (m.person_name || "").trim().toLowerCase() === leaderKey) ??
+    named.find((m) => {
+      const pn = (m.person_name || "").trim().toLowerCase();
+      return pn.includes(leaderKey) || leaderKey.includes(pn);
+    }) ??
+    named[0];
+  if (aligned?.person_id != null) {
+    return { href: `${personBase}/${aligned.person_id}`, external: false };
+  }
+  const linkedin = (leader.linkedin_url || "").trim();
+  if (linkedin) {
+    return { href: linkedin, external: true, title: "Open LinkedIn profile" };
+  }
+  return {
+    href: "https://mastersunion.org/about-us",
+    external: true,
+    title: "Open mastersunion.org profile",
+  };
+}
+
 function MatchRow({ match }: { match: FaceSearchMatch }) {
   const pathname = usePathname();
-  const personBase = pathname.startsWith("/test") ? "/test/people" : "/people";
+  const personBase = personBaseFromPath(pathname);
   return (
     <div className="flex items-center gap-3 rounded-lg bg-muted/30 p-2.5">
       <FaceThumb faceId={match.thumb_face_id ?? match.face_id} className="h-12 w-12 shrink-0 rounded-md" />
@@ -116,9 +153,10 @@ function MatchRow({ match }: { match: FaceSearchMatch }) {
       {match.person_id != null && (
         <Link
           href={`${personBase}/${match.person_id}`}
-          className="shrink-0 text-[11px] font-medium text-muted-foreground hover:text-foreground"
+          className="inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-1 text-[11px] font-medium text-sky-700 transition-colors hover:bg-accent hover:underline dark:text-sky-300"
         >
           Profile
+          <ExternalLink size={10} aria-hidden />
         </Link>
       )}
     </div>
@@ -233,6 +271,11 @@ function ResultsSidePanel({
       setLoadingMoreFiles(false);
     }
   }
+  const pathname = usePathname();
+  const personBase = personBaseFromPath(pathname);
+  const leaderProfile = leader
+    ? resolveLeaderProfileHref(leader, result.matches, personBase)
+    : null;
   const canTag =
     !!leader &&
     result.matches.length > 0 &&
@@ -272,6 +315,28 @@ function ResultsSidePanel({
                   {leader.role ? toTitleCase(leader.role) : ""}
                 </p>
               </div>
+              {leaderProfile &&
+                (leaderProfile.external ? (
+                  <a
+                    href={leaderProfile.href}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title={leaderProfile.title ?? "Profile"}
+                    className="inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-1 text-[11px] font-medium text-sky-700 transition-colors hover:bg-accent hover:underline dark:text-sky-300"
+                  >
+                    Profile
+                    <ExternalLink size={10} aria-hidden />
+                  </a>
+                ) : (
+                  <Link
+                    href={leaderProfile.href}
+                    title="Profile"
+                    className="inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-1 text-[11px] font-medium text-sky-700 transition-colors hover:bg-accent hover:underline dark:text-sky-300"
+                  >
+                    Profile
+                    <ExternalLink size={10} aria-hidden />
+                  </Link>
+                ))}
             </div>
           )}
         </div>
@@ -608,9 +673,44 @@ export function ReverseFaceLabPage({ embedded = false }: { embedded?: boolean } 
             </LoadingLabel>
             {showSlowHint && (
               <p className="mt-2 text-xs text-muted-foreground">
-                Still working. The face engine may be starting up.
+                Still working — the face engine may be warming up (up to ~2 min on first request).
               </p>
             )}
+          </div>
+        )}
+
+        {!searching && error && !result && (
+          <div className="rounded-lg border border-border/70 bg-muted/20 px-4 py-5 text-center">
+            <p
+              className={cn(
+                "text-sm",
+                isFaceEngineBusyMessage(error)
+                  ? "text-amber-700 dark:text-amber-400"
+                  : "text-destructive"
+              )}
+            >
+              {isFaceEngineBusyMessage(error) ? FACE_ENGINE_WARMING_MESSAGE : error}
+            </p>
+            <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
+              <Button
+                variant="secondary"
+                className="px-3 py-1.5 text-xs"
+                onClick={() => {
+                  if (selectedLeader) void selectLeader(selectedLeader);
+                  else if (file) void runSearch(file);
+                  else patchReverseFaceSession({ error: null });
+                }}
+              >
+                Retry
+              </Button>
+              <Button
+                variant="secondary"
+                className="px-3 py-1.5 text-xs"
+                onClick={() => clearReverseFaceSearch()}
+              >
+                Dismiss
+              </Button>
+            </div>
           </div>
         )}
 

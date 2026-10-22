@@ -1918,7 +1918,8 @@ export const apiClient = {
     const form = new FormData();
     form.append("file", file);
     const controller = new AbortController();
-    const timeoutMs = 90_000;
+    // Above face_search_gpu_timeout_seconds (120s) so cold starts can finish.
+    const timeoutMs = 135_000;
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
@@ -1961,7 +1962,7 @@ export const apiClient = {
       if (signal?.aborted || isAbortError(error)) {
         // Timer fired (not an external/user cancel) — toast and surface a clear message.
         if (timedOut && !signal?.aborted) {
-          const msg = "Face search took too long. Please try again.";
+          const msg = "Face engine is warming up — retry";
           toastApiError(msg);
           throw new Error(msg);
         }
@@ -1984,8 +1985,8 @@ export const apiClient = {
       method: "POST",
       body: JSON.stringify({ image_url: imageUrl, limit }),
       signal,
-      // Backend caps GPU+CPU (~80s); keep client slightly above that.
-      timeoutMs: 90_000,
+      // Above face_search_gpu_timeout_seconds (120s) so RunPod cold starts can finish.
+      timeoutMs: 135_000,
       silent: opts?.silent,
     }),
   faceMatchAppearances: (opts: {

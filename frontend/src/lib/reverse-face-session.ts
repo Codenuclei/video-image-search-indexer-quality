@@ -119,12 +119,30 @@ export function useReverseFaceSession(): ReverseFaceSession {
   return useSyncExternalStore(subscribe, getReverseFaceSession, getReverseFaceSession);
 }
 
+/** Friendly copy when RunPod is cold-starting or returning FaceSearchBusyError. */
+export const FACE_ENGINE_WARMING_MESSAGE = "Face engine is warming up — retry";
+
+export function isFaceEngineBusyMessage(message: string | null | undefined): boolean {
+  if (!message) return false;
+  const lower = message.toLowerCase();
+  return (
+    lower.includes("warming up") ||
+    (lower.includes("busy") && lower.includes("try again")) ||
+    lower.includes("face search took too long") ||
+    (lower.includes("timed out") && lower.includes("busy"))
+  );
+}
+
 function reverseFaceErrorMessage(error: unknown, fallback: string): string {
   const status = getApiErrorStatus(error);
   if (status === 401) {
     return "Session expired — please sign out and sign in again";
   }
-  return formatApiError(error, fallback);
+  const msg = formatApiError(error, fallback);
+  if (status === 503 || isFaceEngineBusyMessage(msg)) {
+    return FACE_ENGINE_WARMING_MESSAGE;
+  }
+  return msg;
 }
 
 export async function hydrateLeadershipRoster(force = false) {
@@ -227,7 +245,7 @@ export function runReverseFaceSearch(upload?: File) {
         return;
       }
       patchReverseFaceSession({
-        error: formatApiError(e, "Face search failed"),
+        error: reverseFaceErrorMessage(e, "Face search failed"),
         result: null,
         searching: false,
       });
