@@ -38,7 +38,7 @@ from app.faces.l2_recall import (  # noqa: E402
     person_proto,
     rank_person_ids,
 )
-from app.faces.runpod_gpu import runpod_face_configured, set_face_workers_max  # noqa: E402
+from app.faces.runpod_gpu import ensure_face_endpoint_active, runpod_face_configured  # noqa: E402
 from runpod_buffalo_embed_smoke import (  # noqa: E402
     BATCH_SIZE,
     FETCH_CONCURRENCY,
@@ -227,70 +227,67 @@ async def main() -> None:
                 row["error"] = str(exc)[:240]
         return row
 
-    await set_face_workers_max(settings, 1)
-    try:
-        async with httpx.AsyncClient(timeout=timeout) as http:
-            fetch_task = asyncio.gather(
-                *[_prefetch(i, did, name, mime) for i, (did, name, mime) in enumerate(picked, start=1)]
-            )
-            await _wait_face_ready(http, endpoint_id)
-            health = None
-            last_err: Exception | None = None
-            for _attempt in range(8):
-                try:
-                    health = await _run_job(
-                        http, endpoint_id, {"healthcheck": True}, timeout_s=1800.0
-                    )
-                    break
-                except RuntimeError as exc:
-                    last_err = exc
-                    if "409" not in str(exc) and "paused" not in str(exc).lower():
-                        raise
-                    await asyncio.sleep(2.0)
-            if health is None:
-                raise last_err or RuntimeError("face healthcheck failed")
-            print(
-                f"health model={health.get('model')} providers={health.get('providers')}",
-                flush=True,
-            )
-            fetched = await fetch_task
-            ready = [row for row in fetched if "jpeg" in row]
-            batches: list[list[dict]] = []
-            current: list[dict] = []
-            current_bytes = 0
-            for row in ready:
-                jpeg_len = int(row["jpeg_bytes"])
-                if current and (len(current) >= BATCH_SIZE or current_bytes + jpeg_len > MAX_BATCH_BYTES):
-                    batches.append(current)
-                    current = []
-                    current_bytes = 0
-                current.append(row)
-                current_bytes += jpeg_len
-            if current:
+    await ensure_face_endpoint_active(settings, force=True)
+    async with httpx.AsyncClient(timeout=timeout) as http:
+        fetch_task = asyncio.gather(
+            *[_prefetch(i, did, name, mime) for i, (did, name, mime) in enumerate(picked, start=1)]
+        )
+        await _wait_face_ready(http, endpoint_id)
+        health = None
+        last_err: Exception | None = None
+        for _attempt in range(8):
+            try:
+                health = await _run_job(
+                    http, endpoint_id, {"healthcheck": True}, timeout_s=1800.0
+                )
+                break
+            except RuntimeError as exc:
+                last_err = exc
+                if "409" not in str(exc) and "paused" not in str(exc).lower():
+                    raise
+                await asyncio.sleep(2.0)
+        if health is None:
+            raise last_err or RuntimeError("face healthcheck failed")
+        print(
+            f"health model={health.get('model')} providers={health.get('providers')}",
+            flush=True,
+        )
+        fetched = await fetch_task
+        ready = [row for row in fetched if "jpeg" in row]
+        batches: list[list[dict]] = []
+        current: list[dict] = []
+        current_bytes = 0
+        for row in ready:
+            jpeg_len = int(row["jpeg_bytes"])
+            if current and (len(current) >= BATCH_SIZE or current_bytes + jpeg_len > MAX_BATCH_BYTES):
                 batches.append(current)
-            print(f"GPU batches={len(batches)} images={len(ready)}", flush=True)
-            for b_i, batch in enumerate(batches, start=1):
-                t0 = time.perf_counter()
-                payload = {
-                    "images": [
-                        {
-                            "drive_file_id": row["drive_file_id"],
-                            "image_b64": base64.b64encode(row["jpeg"]).decode("ascii"),
-                        }
-                        for row in batch
-                    ]
-                }
-                output = await _run_job(http, endpoint_id, payload, timeout_s=1800.0)
-                elapsed = time.perf_counter() - t0
-                by_id = {item.get("drive_file_id"): item for item in (output.get("images") or [])}
-                print(f"batch {b_i}/{len(batches)} {elapsed:.1f}s", flush=True)
-                for row in batch:
-                    item = by_id.get(row["drive_file_id"]) or {}
-                    row.pop("jpeg", None)
-                    row.update(item)
-                    gpu_by_id[row["drive_file_id"]] = row
-    finally:
-        await set_face_workers_max(settings, 0)
+                current = []
+                current_bytes = 0
+            current.append(row)
+            current_bytes += jpeg_len
+        if current:
+            batches.append(current)
+        print(f"GPU batches={len(batches)} images={len(ready)}", flush=True)
+        for b_i, batch in enumerate(batches, start=1):
+            t0 = time.perf_counter()
+            payload = {
+                "images": [
+                    {
+                        "drive_file_id": row["drive_file_id"],
+                        "image_b64": base64.b64encode(row["jpeg"]).decode("ascii"),
+                    }
+                    for row in batch
+                ]
+            }
+            output = await _run_job(http, endpoint_id, payload, timeout_s=1800.0)
+            elapsed = time.perf_counter() - t0
+            by_id = {item.get("drive_file_id"): item for item in (output.get("images") or [])}
+            print(f"batch {b_i}/{len(batches)} {elapsed:.1f}s", flush=True)
+            for row in batch:
+                item = by_id.get(row["drive_file_id"]) or {}
+                row.pop("jpeg", None)
+                row.update(item)
+                gpu_by_id[row["drive_file_id"]] = row
 
     gpu_hits1: list[bool] = []
     gpu_hits5: list[bool] = []

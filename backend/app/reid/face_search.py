@@ -25,6 +25,7 @@ from app.db.models import (
 from app.faces.engine import DetectedFace, get_face_engine
 from app.pipelines.async_cpu import run_cpu_bound
 from app.reid.face_thumbs import resolve_face_thumbnail_id
+from app.reid.mu_people_index import match_mu_people, mu_people_status
 from app.reid.reverse_search import linkedin_map
 
 logger = logging.getLogger(__name__)
@@ -315,7 +316,13 @@ async def search_faces_by_image_bytes(
             (time.monotonic() - t_start) * 1000.0,
             engine_name,
         )
-        return {"faces_detected": 0, "matches": [], "message": "No face detected in upload"}
+        return {
+            "faces_detected": 0,
+            "matches": [],
+            "mu_people": [],
+            "mu_people_ready": mu_people_status(settings)["ready"],
+            "message": "No face detected in upload",
+        }
 
     # Prefer largest face by bbox area
     detections = sorted(
@@ -345,14 +352,15 @@ async def search_faces_by_image_bytes(
             .outerjoin(Person, Person.id == identity_person_id)
             .order_by(dist)
             # Extra headroom: one person can legitimately surface several
-            # clusters, so rows are consumed faster than one-per-identity.
-            .limit(max(limit * 4, 60))
+            # clusters, and indexed + un-indexed each get up to ``limit`` rows.
+            .limit(max(limit * 8, 120))
         )
     ).all()
 
     li_map = await linkedin_map(session)
     matches: list[dict[str, object]] = []
     seen_identities: set[tuple[str, int]] = set()
+    group_counts = {"indexed": 0, "unindexed": 0}
     person_clusters_cache: dict[int, list[dict[str, object]]] = {}
     person_face_count_cache: dict[int, int] = {}
     for face_id, distance, person_id, person_name, cluster_id, cluster_status, member_count in rows:
@@ -361,7 +369,8 @@ async def search_faces_by_image_bytes(
             continue
         score = max(0.0, 1.0 - d)
         key = _identity_key(int(face_id), person_id, cluster_id)
-        if key in seen_identities:
+        group = "indexed" if person_id is not None else "unindexed"
+        if key in seen_identities or group_counts[group] >= limit:
             continue
         seen_identities.add(key)
 
@@ -431,27 +440,63 @@ async def search_faces_by_image_bytes(
                 "file_count": file_count,
                 "appears_in": appears_in,
                 "person_clusters": person_clusters,
+                "group": group,
             }
         )
-        if len(matches) >= limit:
+        group_counts[group] += 1
+        if all(count >= limit for count in group_counts.values()):
             break
 
+    mu_people = await _match_mu_people(
+        session, query.embedding, max_distance=max_distance, limit=limit, settings=settings
+    )
     match_ms = (time.monotonic() - t_match) * 1000.0
     total_ms = (time.monotonic() - t_start) * 1000.0
     logger.info(
-        "face_search detect_ms=%.0f match_ms=%.0f total_ms=%.0f engine=%s faces=%s matches=%s",
+        "face_search detect_ms=%.0f match_ms=%.0f total_ms=%.0f engine=%s faces=%s "
+        "indexed=%s unindexed=%s mu_people=%s",
         detect_ms,
         match_ms,
         total_ms,
         engine_name,
         len(detections),
-        len(matches),
+        group_counts["indexed"],
+        group_counts["unindexed"],
+        len(mu_people),
     )
     return {
         "faces_detected": len(detections),
         "query_confidence": float(query.confidence),
         "matches": matches,
+        "mu_people": mu_people,
+        "mu_people_ready": mu_people_status(settings)["ready"],
     }
+
+
+async def _match_mu_people(
+    session: AsyncSession,
+    embedding: list[float],
+    *,
+    max_distance: float,
+    limit: int,
+    settings: Settings,
+) -> list[dict[str, object]]:
+    """MU People portrait matches, linked to an Indexed Person when the names agree."""
+    hits = match_mu_people(embedding, max_distance=max_distance, limit=limit, settings=settings)
+    if not hits:
+        return []
+    lowered = {str(h["name"]).strip().lower() for h in hits}
+    person_ids = {
+        str(name).strip().lower(): int(pid)
+        for pid, name in (
+            await session.execute(
+                select(Person.id, Person.name).where(func.lower(Person.name).in_(lowered))
+            )
+        ).all()
+    }
+    for hit in hits:
+        hit["indexed_person_id"] = person_ids.get(str(hit["name"]).strip().lower())
+    return hits
 
 
 async def search_faces_by_image_url(

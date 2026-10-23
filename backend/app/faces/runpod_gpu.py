@@ -22,10 +22,17 @@ _RUN = "https://api.runpod.ai/v2"
 _scaled: tuple[int, int] | None = None
 _MAX_BATCH_IMAGES = 16
 _MAX_BATCH_BYTES = 6 * 1024 * 1024
+_PAUSED_RETRY_DELAYS = (1.0, 2.0, 4.0, 8.0, 15.0)
+_WARM_SUBMIT_COOLDOWN_S = 60.0
+_last_warm_submit = 0.0
 
 
 class RunPodFaceError(RuntimeError):
     pass
+
+
+def _is_endpoint_paused(resp: httpx.Response) -> bool:
+    return resp.status_code == 409 and "ENDPOINT_PAUSED" in resp.text
 
 
 def runpod_face_configured(settings: Settings | None = None) -> bool:
@@ -234,24 +241,23 @@ def payload_contains_drive_url(payload: dict[str, Any]) -> bool:
     return "drive.google.com" in blob or "googleapis.com/drive" in blob
 
 
-def serverless_worker_scale(*, active: bool) -> dict[str, int]:
-    """Serverless endpoint size: one worker under load, scale to zero when idle.
+def serverless_worker_scale() -> dict[str, int]:
+    """Serverless endpoint size: always accept work, never keep a worker warm.
 
     Never uses a dedicated pod. Minimum workers must always remain zero;
-    only the user may opt into always-on workers manually. RunPod starts flex
-    workers on demand and releases them after the endpoint idle timeout.
+    only the user may opt into always-on workers manually. With
+    workersMin=0 an idle endpoint costs nothing, so it is never paused with
+    workersMax=0: a paused endpoint rejects searches with ENDPOINT_PAUSED.
     """
-    if active:
-        return {"workersMin": 0, "workersMax": 1}
-    return {"workersMin": 0, "workersMax": 0}
+    return {"workersMin": 0, "workersMax": 1}
 
 
-async def set_face_workers_max(settings: Settings, workers_max: int) -> None:
-    """Scale the face **serverless** endpoint. ``workers_max>0`` means load."""
+async def ensure_face_endpoint_active(settings: Settings, *, force: bool = False) -> None:
+    """PATCH the face **serverless** endpoint to workersMin=0, workersMax=1."""
     global _scaled
-    desired = serverless_worker_scale(active=workers_max > 0)
+    desired = serverless_worker_scale()
     scaled = (desired["workersMin"], desired["workersMax"])
-    if _scaled == scaled:
+    if _scaled == scaled and not force:
         return
     endpoint = (settings.runpod_face_endpoint_id or "").strip()
     key = (settings.runpod_api_key or "").strip()
@@ -273,6 +279,54 @@ async def set_face_workers_max(settings: Settings, workers_max: int) -> None:
         scaled[1],
         endpoint[:12],
     )
+
+
+def face_gpu_state(health: dict[str, Any]) -> str:
+    """``ready`` (a worker can take work), ``starting`` (booting/queued) or ``cold``."""
+    workers = health.get("workers") or {}
+    jobs = health.get("jobs") or {}
+    if any(int(workers.get(k) or 0) > 0 for k in ("idle", "ready", "running")):
+        return "ready"
+    if int(workers.get("initializing") or 0) > 0 or int(jobs.get("inQueue") or 0) > 0:
+        return "starting"
+    return "cold"
+
+
+async def warm_face_endpoint(settings: Settings | None = None) -> dict[str, Any]:
+    """Start booting a worker for an imminent face search without waiting for it.
+
+    Submits a ``healthcheck`` job (loads the model) only when no worker is up or
+    booting, so repeated calls never queue extra GPU work.
+    """
+    global _last_warm_submit
+    settings = settings or get_settings()
+    if not runpod_face_configured(settings):
+        return {"gpu": "cpu"}
+    await ensure_face_endpoint_active(settings)
+    endpoint = settings.runpod_face_endpoint_id.strip()
+    headers = {
+        "Authorization": f"Bearer {settings.runpod_api_key.strip()}",
+        "Content-Type": "application/json",
+    }
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        health_resp = await client.get(f"{_RUN}/{endpoint}/health", headers=headers)
+        if health_resp.status_code >= 400:
+            raise RunPodFaceError(f"health HTTP {health_resp.status_code}")
+        state = face_gpu_state(health_resp.json())
+        now = time.monotonic()
+        if state == "cold" and now - _last_warm_submit > _WARM_SUBMIT_COOLDOWN_S:
+            submit = await client.post(
+                f"{_RUN}/{endpoint}/run",
+                headers=headers,
+                json={"input": {"healthcheck": True}},
+            )
+            if _is_endpoint_paused(submit):
+                await ensure_face_endpoint_active(settings, force=True)
+            elif submit.status_code < 400:
+                _last_warm_submit = now
+                logger.info("face_gpu_warm submitted healthcheck")
+            state = "starting"
+    return {"gpu": state}
 
 
 def _chunk_jpegs(encoded: list[tuple[bytes, str, float, np.ndarray]]) -> list[list[tuple[bytes, str, float, np.ndarray]]]:
@@ -297,7 +351,7 @@ def _chunk_jpegs(encoded: list[tuple[bytes, str, float, np.ndarray]]) -> list[li
 async def _run_face_job(payload: dict[str, Any], settings: Settings) -> dict[str, Any]:
     if payload_contains_drive_url(payload):
         raise RunPodFaceError("Refusing to send a Drive URL to RunPod")
-    await set_face_workers_max(settings, 1)
+    await ensure_face_endpoint_active(settings)
     endpoint = settings.runpod_face_endpoint_id.strip()
     headers = {
         "Authorization": f"Bearer {settings.runpod_api_key.strip()}",
@@ -310,6 +364,18 @@ async def _run_face_job(payload: dict[str, Any], settings: Settings) -> dict[str
             headers=headers,
             json={"input": payload},
         )
+        # Un-pausing takes several seconds to propagate after the PATCH.
+        for delay in _PAUSED_RETRY_DELAYS:
+            if not _is_endpoint_paused(submit):
+                break
+            logger.warning("face_gpu_endpoint_paused retry_in=%.0fs", delay)
+            await ensure_face_endpoint_active(settings, force=True)
+            await asyncio.sleep(delay)
+            submit = await client.post(
+                f"{_RUN}/{endpoint}/run",
+                headers=headers,
+                json={"input": payload},
+            )
         if submit.status_code >= 400:
             raise RunPodFaceError(f"run HTTP {submit.status_code}: {submit.text[:300]}")
         body = submit.json()

@@ -9,7 +9,7 @@ Session recap (through 9 Sep 2026). **Never `railway up`.** Railway `drivefacein
 - API box: Drive download + Postgres persist. Bytes in; **never Drive URLs** to RunPod.
 - Video: 10 GB cap, HMAC-signed HTTPS pull + parallel Range GET (not JSON/base64).
 - DO search-api droplet: **no InsightFace** on the 8 GB box when GPU is configured.
-- Serverless scale: load `{workersMin:1, workersMax:1}`; idle `{0,0}`.
+- Serverless scale: always `{workersMin:0, workersMax:1}`; never min>0, never paused at max=0.
 - Do **not** set exclusive `RUN_FACE_WORKER=true` (that kills `IdentifyWorkerLoop`).
 - Do not put an empty `RUNPOD_API_KEY=` in compose `environment:` (it wipes `backend.env`).
 
@@ -169,5 +169,4 @@ docker build -t ghcr.io/codenuclei/video-image-search-indexer-quality/dfi-face-b
 
 REST scale (browser User-Agent if Cloudflare 1010):
 
-- Load: `PATCH /v1/endpoints/0zub88paibpsf3` `{"workersMin":1,"workersMax":1}`
-- Idle: `{"workersMin":0,"workersMax":0}`
+- Always: `PATCH /v1/endpoints/0zub88paibpsf3` `{"workersMin":0,"workersMax":1}`

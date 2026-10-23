@@ -25,6 +25,8 @@ export type ReverseFaceSession = {
   file: File | null;
   previewUrl: string | null;
   searching: boolean;
+  /** GPU is booting: shown as "warming up" while searches retry automatically. */
+  warming: boolean;
   result: FaceSearchResponse | null;
   crawlUrls: string;
   crawling: boolean;
@@ -44,6 +46,7 @@ const initial: ReverseFaceSession = {
   file: null,
   previewUrl: null,
   searching: false,
+  warming: false,
   result: null,
   crawlUrls: "",
   crawling: false,
@@ -97,6 +100,64 @@ async function withNetworkRetry<T>(
   }
 }
 
+/**
+ * Each backend attempt waits up to 120s for the GPU; a cold RunPod worker takes
+ * ~4 min to boot, so keep retrying while it reports busy / warming up.
+ */
+const WARMUP_MAX_ATTEMPTS = 4;
+const WARMUP_RETRY_DELAY_MS = 3_000;
+
+async function withWarmupRetry<T>(
+  fn: () => Promise<T>,
+  opts: { signal?: AbortSignal; isStale: () => boolean }
+): Promise<T> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      const out = await withNetworkRetry(fn, opts);
+      if (!opts.isStale()) patchReverseFaceSession({ warming: false });
+      return out;
+    } catch (e) {
+      if (opts.signal?.aborted || isAbortError(e) || opts.isStale()) throw e;
+      const busy =
+        getApiErrorStatus(e) === 503 || isFaceEngineBusyMessage(formatApiError(e, ""));
+      if (!busy || attempt >= WARMUP_MAX_ATTEMPTS) throw e;
+      patchReverseFaceSession({ warming: true });
+      await new Promise((r) => setTimeout(r, WARMUP_RETRY_DELAY_MS));
+      if (opts.isStale() || opts.signal?.aborted) throw e;
+    }
+  }
+}
+
+const WARM_MIN_INTERVAL_MS = 60_000;
+/** A cold boot takes ~4 min; after that assume the worker is up. */
+const WARM_STALE_AFTER_MS = 5 * 60_000;
+let lastWarmAt = 0;
+
+/**
+ * Start booting the face GPU (and refresh MU People portraits) as soon as the
+ * reverse-face UI opens, so the upload that follows does not wait ~4 min.
+ */
+export function warmFaceSearch() {
+  const now = Date.now();
+  if (now - lastWarmAt < WARM_MIN_INTERVAL_MS) return;
+  lastWarmAt = now;
+  void apiClient
+    .warmFaceSearch()
+    .then((res) => {
+      if (state.searching) return;
+      const booting = res.gpu === "starting" || res.gpu === "cold";
+      patchReverseFaceSession({ warming: booting });
+      if (booting) {
+        setTimeout(() => {
+          if (!state.searching) patchReverseFaceSession({ warming: false });
+        }, WARM_STALE_AFTER_MS);
+      }
+    })
+    .catch(() => {
+      /* best-effort: the search itself still boots the GPU */
+    });
+}
+
 function emit() {
   listeners.forEach((fn) => fn());
 }
@@ -121,6 +182,10 @@ export function useReverseFaceSession(): ReverseFaceSession {
 
 /** Friendly copy when RunPod is cold-starting or returning FaceSearchBusyError. */
 export const FACE_ENGINE_WARMING_MESSAGE = "Face engine is warming up — retry";
+
+/** Shown while a search waits on a booting GPU and retries automatically. */
+export const FACE_GPU_WARMING_HINT =
+  "Warming up face search — the GPU is starting, which can take up to ~4 minutes. Retrying automatically…";
 
 export function isFaceEngineBusyMessage(message: string | null | undefined): boolean {
   if (!message) return false;
@@ -232,7 +297,7 @@ export function runReverseFaceSearch(upload?: File) {
   let job!: Promise<void>;
   job = (async () => {
     try {
-      const result = await withNetworkRetry(
+      const result = await withWarmupRetry(
         () => apiClient.searchUploadedFace(target, 20, signal),
         { signal, isStale: () => isStaleSearch(gen) }
       );
@@ -241,13 +306,14 @@ export function runReverseFaceSearch(upload?: File) {
     } catch (e) {
       if (isStaleSearch(gen)) return;
       if (signal.aborted || isAbortError(e)) {
-        patchReverseFaceSession({ searching: false, error: null });
+        patchReverseFaceSession({ searching: false, warming: false, error: null });
         return;
       }
       patchReverseFaceSession({
         error: reverseFaceErrorMessage(e, "Face search failed"),
         result: null,
         searching: false,
+        warming: false,
       });
     } finally {
       if (searchJob === job) searchJob = null;
@@ -285,7 +351,7 @@ export function selectReverseFaceLeader(person: LeadershipPerson) {
     try {
       await ensureAppSession();
       if (isStaleSearch(gen)) return;
-      const result = await withNetworkRetry(
+      const result = await withWarmupRetry(
         () => apiClient.searchFaceByUrl(person.image_url!, 20, signal, { silent: true }),
         { signal, isStale: () => isStaleSearch(gen) }
       );
@@ -294,13 +360,14 @@ export function selectReverseFaceLeader(person: LeadershipPerson) {
     } catch (e) {
       if (isStaleSearch(gen)) return;
       if (signal.aborted || isAbortError(e)) {
-        patchReverseFaceSession({ searching: false, error: null });
+        patchReverseFaceSession({ searching: false, warming: false, error: null });
         return;
       }
       patchReverseFaceSession({
         error: reverseFaceErrorMessage(e, "Leader face search failed"),
         result: null,
         searching: false,
+        warming: false,
       });
     } finally {
       if (searchJob === job) searchJob = null;
@@ -357,7 +424,7 @@ export function retargetReverseFaceToPerson(opts: {
     try {
       await ensureAppSession();
       if (isStaleSearch(gen)) return;
-      const result = await withNetworkRetry(
+      const result = await withWarmupRetry(
         () => apiClient.searchFaceByUrl(imageUrl, 20, signal, { silent: true }),
         { signal, isStale: () => isStaleSearch(gen) }
       );
@@ -366,13 +433,14 @@ export function retargetReverseFaceToPerson(opts: {
     } catch (e) {
       if (isStaleSearch(gen)) return;
       if (signal.aborted || isAbortError(e)) {
-        patchReverseFaceSession({ searching: false, error: null });
+        patchReverseFaceSession({ searching: false, warming: false, error: null });
         return;
       }
       patchReverseFaceSession({
         error: reverseFaceErrorMessage(e, "Person face search failed"),
         result: null,
         searching: false,
+        warming: false,
       });
     } finally {
       if (searchJob === job) searchJob = null;

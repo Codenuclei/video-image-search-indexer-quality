@@ -31,6 +31,7 @@ import { cn, toTitleCase } from "@/lib/utils";
 import {
   clearReverseFaceSearch,
   FACE_ENGINE_WARMING_MESSAGE,
+  FACE_GPU_WARMING_HINT,
   hydrateLeadershipRoster,
   isFaceEngineBusyMessage,
   patchReverseFaceSession,
@@ -41,6 +42,7 @@ import {
   setReverseFaceFile,
   totalMatchFileCount,
   useReverseFaceSession,
+  warmFaceSearch,
 } from "@/lib/reverse-face-session";
 
 function collectAppearances(matches: FaceSearchMatch[]): FaceSearchAppearance[] {
@@ -506,6 +508,7 @@ export function ReverseFaceLabPage({ embedded = false }: { embedded?: boolean } 
     file,
     previewUrl,
     searching,
+    warming,
     result,
     crawlUrls,
     crawling,
@@ -523,6 +526,7 @@ export function ReverseFaceLabPage({ embedded = false }: { embedded?: boolean } 
 
   useEffect(() => {
     void hydrateLeadershipRoster();
+    warmFaceSearch();
   }, []);
 
   useEffect(() => {
@@ -671,9 +675,9 @@ export function ReverseFaceLabPage({ embedded = false }: { embedded?: boolean } 
             <LoadingLabel>
               {selectedLeader ? `Searching for ${selectedLeader.name}…` : "Searching faces…"}
             </LoadingLabel>
-            {showSlowHint && (
-              <p className="mt-2 text-xs text-muted-foreground">
-                Still working — the face engine may be warming up (up to ~2 min on first request).
+            {(warming || showSlowHint) && (
+              <p className="mt-2 text-xs text-amber-700 dark:text-amber-400">
+                {FACE_GPU_WARMING_HINT}
               </p>
             )}
           </div>

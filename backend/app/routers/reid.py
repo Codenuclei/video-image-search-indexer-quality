@@ -27,6 +27,7 @@ from app.reid.face_search import (
     search_faces_by_image_bytes,
     search_faces_by_image_url,
 )
+from app.reid.mu_people_index import ensure_mu_people_index, mu_people_status
 from app.reid.body import (
     backfill_body_signatures,
     body_gallery,
@@ -235,13 +236,31 @@ async def reid_official_image_search(
         ) from exc
 
 
+@router.post("/faces/warm")
+async def warm_face_search() -> dict:
+    """Pre-boot the face GPU and refresh MU People portraits before a search.
+
+    Called when the reverse-face UI opens; never waits for the worker.
+    """
+    from app.faces.runpod_gpu import warm_face_endpoint
+
+    ensure_mu_people_index()
+    try:
+        gpu = await warm_face_endpoint()
+    except Exception:  # noqa: BLE001
+        logger.warning("face_search warm failed", exc_info=True)
+        gpu = {"gpu": "unknown"}
+    return {**gpu, "mu_people": mu_people_status()}
+
+
 @router.post("/faces/search")
 async def search_uploaded_face(
     file: UploadFile = File(...),
     limit: int = 20,
     session: AsyncSession = Depends(get_db),
 ) -> dict:
-    """Upload a face photo → ArcFace embed → pgvector ANN → ranked internal profiles."""
+    """Upload a face photo → ArcFace embed → indexed, un-indexed and MU People matches."""
+    ensure_mu_people_index()
     raw = await file.read()
     if not raw:
         raise HTTPException(status_code=400, detail="Empty upload")
@@ -338,6 +357,7 @@ async def search_face_by_url(
     session: AsyncSession = Depends(get_db),
 ) -> dict:
     """Reverse-match a public portrait URL (used by Executive Leaders mini-cards)."""
+    ensure_mu_people_index()
     try:
         return await search_faces_by_image_url(session, body.image_url, limit=body.limit)
     except FaceSearchBusyError as exc:

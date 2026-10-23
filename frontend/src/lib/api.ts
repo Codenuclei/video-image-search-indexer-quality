@@ -349,13 +349,35 @@ export type FaceSearchMatch = {
   file_count?: number | null;
   /** Bounded first page of Drive files; load the remainder via faceMatchAppearances. */
   appears_in?: FaceSearchAppearance[];
+  /** "indexed" = named person, "unindexed" = unknown cluster / unlinked face. */
+  group?: "indexed" | "unindexed";
+};
+
+/** Website Executive Leaders portrait matched against the uploaded face. */
+export type MuPeopleMatch = {
+  name: string;
+  role: string;
+  image_url: string;
+  linkedin_url: string | null;
+  score: number;
+  distance: number;
+  /** Indexed Person with the same name, when one exists. */
+  indexed_person_id: number | null;
 };
 
 export type FaceSearchResponse = {
   faces_detected: number;
   query_confidence?: number;
   matches: FaceSearchMatch[];
+  mu_people?: MuPeopleMatch[];
+  /** False while MU People portraits are still being embedded. */
+  mu_people_ready?: boolean;
   message?: string;
+};
+
+export type FaceWarmResponse = {
+  gpu: "ready" | "starting" | "cold" | "cpu" | "unknown";
+  mu_people: { ready: boolean; count: number; building: boolean };
 };
 
 export type FaceCrawlResult = {
@@ -1960,11 +1982,10 @@ export const apiClient = {
       return res.json();
     } catch (error) {
       if (signal?.aborted || isAbortError(error)) {
-        // Timer fired (not an external/user cancel) — toast and surface a clear message.
+        // Timer fired (not an external/user cancel). The panel retries automatically
+        // while the GPU boots, so no toast here.
         if (timedOut && !signal?.aborted) {
-          const msg = "Face engine is warming up — retry";
-          toastApiError(msg);
-          throw new Error(msg);
+          throw new Error("Face engine is warming up — retry");
         }
         // Cancelled in-flight face search — never toast DOMException text.
         throw error;
@@ -1988,6 +2009,12 @@ export const apiClient = {
       // Above face_search_gpu_timeout_seconds (120s) so RunPod cold starts can finish.
       timeoutMs: 135_000,
       silent: opts?.silent,
+    }),
+  warmFaceSearch: () =>
+    api<FaceWarmResponse>("/reid/faces/warm", {
+      method: "POST",
+      timeoutMs: 20_000,
+      silent: true,
     }),
   faceMatchAppearances: (opts: {
     personId?: number | null;

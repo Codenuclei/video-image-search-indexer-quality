@@ -96,6 +96,8 @@ scripts/auto-deploy.sh --force   # backend + frontend + carousel for current HEA
 ## RunPod face scaling cost invariant
 
 Automatic code and deployment scripts must never set `workersMin` above `0`.
-Only the user may manually enable always-on workers. Under load use
-`workersMin=0, workersMax=1`; let RunPod flex workers start on demand.
-Keep regression tests for both active and idle scaling paths.
+Only the user may manually enable always-on workers. Keep the face endpoint at
+`workersMin=0, workersMax=1` at all times; let RunPod flex workers start on
+demand. Never pause it with `workersMax=0` when idle: that costs nothing extra
+to avoid (min is 0) and makes searches fail with `409 ENDPOINT_PAUSED`.
+Keep regression tests for both the scale-up path and the idle (never-pause) path.

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Create a RunPod **serverless** template + endpoint for buffalo_l.
 
-Never a dedicated pod. Rest: workersMin=0 workersMax=0. Under load the API
-PATCHes workersMax=1 with workersMin=0, then sets max=0 when idle.
+Never a dedicated pod. Always workersMin=0 workersMax=1: idle costs nothing,
+and the endpoint is never paused (max=0 rejects searches with ENDPOINT_PAUSED).
 """
 
 from __future__ import annotations
@@ -127,7 +127,7 @@ def main() -> None:
                     "templateId": template_id,
                     "gpuTypeIds": GPU_TYPE_IDS,
                     "workersMin": 0,
-                    "workersMax": 0,
+                    "workersMax": 1,
                     "idleTimeout": 60,
                     "executionTimeoutMs": 3600000,
                     "flashboot": True,
@@ -149,7 +149,7 @@ def main() -> None:
                     "gpuCount": 1,
                     "gpuTypeIds": GPU_TYPE_IDS,
                     "workersMin": 0,
-                    "workersMax": 0,
+                    "workersMax": 1,
                     "idleTimeout": 60,
                     "executionTimeoutMs": 3600000,
                     "flashboot": True,

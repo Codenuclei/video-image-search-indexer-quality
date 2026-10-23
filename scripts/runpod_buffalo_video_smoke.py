@@ -34,7 +34,7 @@ from app.faces.runpod_gpu import (  # noqa: E402
     build_face_video_payload,
     payload_contains_drive_url,
     runpod_face_configured,
-    set_face_workers_max,
+    ensure_face_endpoint_active,
 )
 from app.faces.video_pull import signed_face_video_pull_url  # noqa: E402
 from runpod_buffalo_embed_smoke import RESULTS_DIR, _endpoint_id, _load_repo_env, _run_job  # noqa: E402
@@ -168,23 +168,20 @@ async def main() -> None:
             if payload_contains_drive_url(payload):
                 raise SystemExit("Refusing Drive URL in RunPod payload")
             endpoint_id = _endpoint_id()
-            await set_face_workers_max(settings, 1)
-            try:
-                job_timeout = httpx.Timeout(600.0, connect=30.0)
-                async with httpx.AsyncClient(timeout=job_timeout) as http:
-                    await _wait_face_ready(http, endpoint_id)
-                    health = await _run_job(
-                        http, endpoint_id, {"healthcheck": True}, timeout_s=1800.0
-                    )
-                    print(
-                        f"health model={health.get('model')} providers={health.get('providers')}",
-                        flush=True,
-                    )
-                    t0 = time.perf_counter()
-                    output = await _run_job(http, endpoint_id, payload, timeout_s=1800.0)
-                    elapsed = time.perf_counter() - t0
-            finally:
-                await set_face_workers_max(settings, 0)
+            await ensure_face_endpoint_active(settings, force=True)
+            job_timeout = httpx.Timeout(600.0, connect=30.0)
+            async with httpx.AsyncClient(timeout=job_timeout) as http:
+                await _wait_face_ready(http, endpoint_id)
+                health = await _run_job(
+                    http, endpoint_id, {"healthcheck": True}, timeout_s=1800.0
+                )
+                print(
+                    f"health model={health.get('model')} providers={health.get('providers')}",
+                    flush=True,
+                )
+                t0 = time.perf_counter()
+                output = await _run_job(http, endpoint_id, payload, timeout_s=1800.0)
+                elapsed = time.perf_counter() - t0
             frames = output.get("frames") or []
             summary["runpod"] = {
                 "elapsed_s": round(elapsed, 1),

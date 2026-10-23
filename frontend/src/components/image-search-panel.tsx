@@ -17,6 +17,7 @@ import {
   formatApiError,
   type FaceSearchAppearance,
   type FaceSearchMatch,
+  type MuPeopleMatch,
   type SuggestedClusterMatch,
 } from "@/lib/api";
 import { Button, ConfirmDialog, DriveMediaThumb, FaceThumb, Input, LoadingLabel, Spinner } from "@/components/ui";
@@ -32,6 +33,7 @@ import {
   clearReverseFaceSearch,
   collectUnknownNameTagIds,
   FACE_ENGINE_WARMING_MESSAGE,
+  FACE_GPU_WARMING_HINT,
   isFaceEngineBusyMessage,
   isUnknownFaceMatch,
   patchReverseFaceSession,
@@ -40,6 +42,7 @@ import {
   setReverseFaceFile,
   totalMatchFileCount,
   useReverseFaceSession,
+  warmFaceSearch,
 } from "@/lib/reverse-face-session";
 
 const APPEARANCES_PAGE_SIZE = 60;
@@ -548,13 +551,102 @@ type OpenTarget = {
   recommendedFor?: { id: number; name: string };
 };
 
+function MuPeopleRow({ person }: { person: MuPeopleMatch }) {
+  const personBase = usePersonBase();
+  const profileHref =
+    person.indexed_person_id != null ? `${personBase}/${person.indexed_person_id}` : null;
+  return (
+    <div className="flex w-full items-center gap-3 px-3 py-2.5">
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={person.image_url}
+        alt={person.name}
+        className="h-12 w-12 shrink-0 rounded-lg object-cover"
+      />
+      <div className="min-w-0 flex-1">
+        <p className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-sm leading-snug">
+          <span className="truncate font-semibold text-foreground">{person.name}</span>
+          <span className="rounded-full bg-violet-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-violet-700 dark:text-violet-300">
+            MU People
+          </span>
+        </p>
+        <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
+          {person.role ? `${person.role} · ` : ""}
+          {Math.round(person.score * 100)}% similar
+          {profileHref ? "" : " · not in Indexed People yet"}
+        </p>
+      </div>
+      <span className="flex shrink-0 items-center gap-1">
+        {person.linkedin_url && (
+          <a
+            href={person.linkedin_url}
+            target="_blank"
+            rel="noopener noreferrer"
+            title="LinkedIn"
+            className="flex h-7 w-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+          >
+            <Linkedin size={13} />
+          </a>
+        )}
+        {profileHref && (
+          <Link
+            href={profileHref}
+            title="Profile"
+            className="inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          >
+            Profile
+            <ExternalLink size={10} aria-hidden />
+          </Link>
+        )}
+      </span>
+    </div>
+  );
+}
+
+function MatchSection({
+  title,
+  count,
+  empty,
+  children,
+}: {
+  title: string;
+  count: number;
+  empty: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="space-y-2">
+      <div className="flex items-center gap-2">
+        <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+          {title}
+        </h3>
+        <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-semibold tabular-nums text-muted-foreground">
+          {count}
+        </span>
+      </div>
+      {count === 0 ? (
+        <p className="text-xs text-muted-foreground">{empty}</p>
+      ) : (
+        <div className="divide-y divide-border overflow-hidden rounded-xl border border-border/60 bg-card">
+          {children}
+        </div>
+      )}
+    </section>
+  );
+}
+
 export function ImageSearchPanel() {
-  const { file, previewUrl, searching, result, error, tagging, tagMessage } = useReverseFaceSession();
+  const { file, previewUrl, searching, warming, result, error, tagging, tagMessage } =
+    useReverseFaceSession();
   const uploadRef = useRef<HTMLInputElement>(null);
   const [bulkName, setBulkName] = useState("");
   const [confirmBulkOpen, setConfirmBulkOpen] = useState(false);
   const [openTarget, setOpenTarget] = useState<OpenTarget | null>(null);
   const [showSlowHint, setShowSlowHint] = useState(false);
+
+  useEffect(() => {
+    warmFaceSearch();
+  }, []);
 
   useEffect(() => {
     if (!searching) {
@@ -566,6 +658,9 @@ export function ImageSearchPanel() {
   }, [searching]);
 
   const matches = useMemo(() => result?.matches ?? [], [result?.matches]);
+  const indexedMatches = useMemo(() => matches.filter((m) => !isUnknownFaceMatch(m)), [matches]);
+  const unindexedMatches = useMemo(() => matches.filter(isUnknownFaceMatch), [matches]);
+  const muPeople = useMemo(() => result?.mu_people ?? [], [result?.mu_people]);
   const unknownIds = useMemo(() => collectUnknownNameTagIds(matches), [matches]);
   const unknownCount = unknownIds.clusterIds.length + unknownIds.faceIds.length;
   const matchFileCount = useMemo(() => totalMatchFileCount(matches), [matches]);
@@ -686,9 +781,9 @@ export function ImageSearchPanel() {
           {searching ? (
             <>
               <LoadingLabel size={14}>Searching faces…</LoadingLabel>
-              {showSlowHint && (
-                <p className="mt-1 text-[11px] text-muted-foreground">
-                  Still working — the face engine may be warming up (up to ~2 min on first request).
+              {(warming || showSlowHint) && (
+                <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-400">
+                  {FACE_GPU_WARMING_HINT}
                 </p>
               )}
             </>
@@ -818,18 +913,47 @@ export function ImageSearchPanel() {
         </div>
       )}
 
-      {matches.length > 0 && (
-        <div className="divide-y divide-border overflow-hidden rounded-xl border border-border/60 bg-card">
-          {matches.map((m) => {
-            const key = `${scopeOf(m)}:${m.cluster_id ?? m.person_id ?? m.face_id}`;
-            return (
+      {result && result.faces_detected > 0 && (
+        <div className="space-y-4">
+          <MatchSection
+            title="Indexed People"
+            count={indexedMatches.length}
+            empty="No named people match this face."
+          >
+            {indexedMatches.map((m) => (
               <ClusterRow
-                key={`${key}-${m.face_id}`}
+                key={`${scopeOf(m)}:${m.cluster_id ?? m.person_id ?? m.face_id}-${m.face_id}`}
                 match={m}
                 onOpen={() => setOpenTarget({ match: m })}
               />
-            );
-          })}
+            ))}
+          </MatchSection>
+          <MatchSection
+            title="MU People"
+            count={muPeople.length}
+            empty={
+              result.mu_people_ready === false
+                ? "MU People portraits are still loading — search again in a minute."
+                : "No Executive Leaders match this face."
+            }
+          >
+            {muPeople.map((p) => (
+              <MuPeopleRow key={p.image_url} person={p} />
+            ))}
+          </MatchSection>
+          <MatchSection
+            title="Un-Indexed People"
+            count={unindexedMatches.length}
+            empty="No unknown faces match."
+          >
+            {unindexedMatches.map((m) => (
+              <ClusterRow
+                key={`${scopeOf(m)}:${m.cluster_id ?? m.person_id ?? m.face_id}-${m.face_id}`}
+                match={m}
+                onOpen={() => setOpenTarget({ match: m })}
+              />
+            ))}
+          </MatchSection>
         </div>
       )}
 

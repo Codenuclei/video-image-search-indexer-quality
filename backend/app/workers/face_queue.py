@@ -383,11 +383,9 @@ class FaceWorkerLoop:
 
     async def _worker_loop(self, slot: int) -> None:
         settings = self._settings
-        idle_ticks = 0
         while not self._stop.is_set():
             try:
                 from app.drive.indexing_pause import global_indexing_is_paused
-                from app.faces.runpod_gpu import runpod_face_configured, set_face_workers_max
 
                 paused = False
                 jobs: list = []
@@ -403,16 +401,8 @@ class FaceWorkerLoop:
                         )
                         await session.commit()
                 if paused or not jobs:
-                    idle_ticks += 1
-                    if slot == 0 and idle_ticks >= 180 and runpod_face_configured(settings):
-                        try:
-                            await set_face_workers_max(settings, 0)
-                        except Exception:  # noqa: BLE001
-                            logger.warning("face_gpu_scale_zero_failed", exc_info=True)
-                        idle_ticks = 0
                     await asyncio.sleep(1.0)
                     continue
-                idle_ticks = 0
                 for job in jobs:
                     async with self._session_factory() as session:
                         fresh = await session.get(FaceJob, job.id)

@@ -128,6 +128,9 @@ class Settings(BaseSettings):
     # face-search client timeouts above this value.
     face_search_gpu_timeout_seconds: float = 120.0
     face_search_cpu_timeout_seconds: float = 60.0
+    # MU People (website Executive Leaders) portrait embeddings, shared by all API workers.
+    mu_people_index_path: str = "./data/mu_people_faces.json"
+    mu_people_index_ttl_seconds: float = 6 * 3600.0
     # Stop claiming new index downloads when free space on media/video volume is below this.
     index_disk_high_water_bytes: int = 2 * 1024 * 1024 * 1024
 

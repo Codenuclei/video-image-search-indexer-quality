@@ -118,11 +118,21 @@ def test_jpeg_scale_zero_is_full_res() -> None:
 
 
 def test_serverless_scale_never_requires_an_always_on_worker() -> None:
-    assert serverless_worker_scale(active=True) == {"workersMin": 0, "workersMax": 1}
-    assert serverless_worker_scale(active=False) == {"workersMin": 0, "workersMax": 0}
+    assert serverless_worker_scale() == {"workersMin": 0, "workersMax": 1}
 
 
-def test_set_face_workers_keeps_min_zero_on_load() -> None:
+def test_idle_face_queue_never_pauses_endpoint() -> None:
+    import inspect
+
+    from app.faces import runpod_gpu as gpu
+    from app.workers import face_queue
+
+    src = inspect.getsource(face_queue)
+    assert "set_face_workers_max" not in src
+    assert '"workersMax": 0' not in inspect.getsource(gpu)
+
+
+def test_ensure_face_endpoint_active_keeps_min_zero() -> None:
     import asyncio
 
     from app.faces import runpod_gpu as gpu
@@ -155,14 +165,69 @@ def test_set_face_workers_keeps_min_zero_on_load() -> None:
             return _Resp()
 
     with patch("app.faces.runpod_gpu.httpx.AsyncClient", _Client):
-        asyncio.run(gpu.set_face_workers_max(settings, 1))
-        asyncio.run(gpu.set_face_workers_max(settings, 1))
-        asyncio.run(gpu.set_face_workers_max(settings, 0))
+        asyncio.run(gpu.ensure_face_endpoint_active(settings))
+        asyncio.run(gpu.ensure_face_endpoint_active(settings))
+        asyncio.run(gpu.ensure_face_endpoint_active(settings, force=True))
     gpu._scaled = None
     assert patches == [
         {"workersMin": 0, "workersMax": 1},
-        {"workersMin": 0, "workersMax": 0},
+        {"workersMin": 0, "workersMax": 1},
     ]
+
+
+def test_run_face_job_retries_when_endpoint_paused() -> None:
+    import asyncio
+
+    from app.faces import runpod_gpu as gpu
+
+    settings = Settings(
+        _env_file=None,  # type: ignore[call-arg]
+        runpod_api_key="rp_test",
+        runpod_face_endpoint_id="0zub88paibpsf3",
+        runpod_face_gpu_enabled=True,
+    )
+    paused = '{"status":409,"code":"ENDPOINT_PAUSED"}'
+    submits: list[int] = []
+
+    class _Resp:
+        def __init__(self, payload: dict, status: int = 200, text: str = "") -> None:
+            self._payload = payload
+            self.status_code = status
+            self.text = text
+
+        def json(self) -> dict:
+            return self._payload
+
+    class _Client:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def post(self, url: str, headers: dict, json: dict):
+            submits.append(1)
+            if len(submits) <= 2:
+                return _Resp({}, status=409, text=paused)
+            return _Resp({"id": "job-1"})
+
+        async def get(self, url: str, headers: dict):
+            return _Resp({"status": "COMPLETED", "output": {"images": []}})
+
+    scale = AsyncMock()
+    with (
+        patch("app.faces.runpod_gpu.httpx.AsyncClient", _Client),
+        patch("app.faces.runpod_gpu.ensure_face_endpoint_active", scale),
+        patch("app.faces.runpod_gpu.asyncio.sleep", AsyncMock()),
+    ):
+        output = asyncio.run(gpu._run_face_job({"images": []}, settings))
+    assert output == {"images": []}
+    assert len(submits) == 3
+    assert all(c.kwargs.get("force") for c in scale.await_args_list[1:])
+    assert all(c.args[0] is settings for c in scale.await_args_list)
 
 
 def test_face_endpoint_script_is_serverless_scale_to_zero() -> None:
@@ -173,7 +238,8 @@ def test_face_endpoint_script_is_serverless_scale_to_zero() -> None:
     ).read_text()
     assert 'isServerless": True' in text
     assert '"workersMin": 0' in text
-    assert '"workersMax": 0' in text
+    assert '"workersMax": 1' in text
+    assert '"workersMax": 0' not in text
     assert "REQUEST_COUNT" in text
     assert "3600000" in text
     assert "proxy.runpod.net" not in text
@@ -307,7 +373,7 @@ def test_image_pipeline_uses_gpu_when_configured() -> None:
     assert "RunPodFaceError" in src
 
 
-@patch("app.faces.runpod_gpu.set_face_workers_max", new_callable=AsyncMock)
+@patch("app.faces.runpod_gpu.ensure_face_endpoint_active", new_callable=AsyncMock)
 def test_detect_faces_runpod_posts_input_bytes(_scale: AsyncMock) -> None:
     import asyncio
 
