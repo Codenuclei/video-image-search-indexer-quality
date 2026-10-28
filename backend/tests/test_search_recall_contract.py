@@ -277,10 +277,54 @@ async def test_image_retrieval_does_not_truncate_relevant_candidates():
 
 
 @pytest.mark.asyncio
-async def test_broad_caption_rerank_preserves_rejected_candidates_in_lower_order():
-    first = _file(1, caption="Graduates wearing black gowns and yellow stoles.")
-    second = _file(2, caption="People throwing graduation caps during convocation.")
-    settings = SimpleNamespace(
+async def test_caption_filter_never_reappends_judged_rejects():
+    first = _file(1, caption="A large ceremonial cheque held on stage.")
+    second = _file(2, caption="The image is completely black.")
+    settings = _caption_filter_settings()
+
+    async def _judge(query, visual_query, batch, *, judged, **_kwargs):
+        judged[0] += len(batch)
+        return [item for item in batch if item is first]
+
+    with (
+        patch("app.config.get_settings", return_value=settings),
+        patch("app.gemini.caption_filter._filter_batch_with_split", new=_judge),
+    ):
+        results = await filter_images_by_caption_llm("cheque", [first, second])
+
+    assert results == [first]
+
+
+@pytest.mark.asyncio
+async def test_caption_filter_unavailable_is_distinct_from_rejecting_all():
+    from app.gemini.caption_filter import CaptionFilterUnavailable
+
+    first = _file(1, caption="A large ceremonial cheque held on stage.")
+    settings = _caption_filter_settings()
+
+    async def _unjudged(query, visual_query, batch, *, judged, **_kwargs):
+        return []
+
+    async def _rejects_all(query, visual_query, batch, *, judged, **_kwargs):
+        judged[0] += len(batch)
+        return []
+
+    with (
+        patch("app.config.get_settings", return_value=settings),
+        patch("app.gemini.caption_filter._filter_batch_with_split", new=_unjudged),
+    ):
+        with pytest.raises(CaptionFilterUnavailable):
+            await filter_images_by_caption_llm("cheque", [first])
+
+    with (
+        patch("app.config.get_settings", return_value=settings),
+        patch("app.gemini.caption_filter._filter_batch_with_split", new=_rejects_all),
+    ):
+        assert await filter_images_by_caption_llm("cheque", [first]) == []
+
+
+def _caption_filter_settings() -> SimpleNamespace:
+    return SimpleNamespace(
         gemini_api_key="test",
         search_caption_filter_enabled=True,
         search_caption_filter_pool_size=120,
@@ -290,18 +334,3 @@ async def test_broad_caption_rerank_preserves_rejected_candidates_in_lower_order
         search_caption_filter_gap_seconds=0,
         gemini_model="test",
     )
-
-    with (
-        patch("app.config.get_settings", return_value=settings),
-        patch(
-            "app.gemini.caption_filter._filter_batch_with_split",
-            new=AsyncMock(return_value=[first]),
-        ),
-    ):
-        results = await filter_images_by_caption_llm(
-            "gradutes",
-            [first, second],
-            preserve_rejected=True,
-        )
-
-    assert results == [first, second]

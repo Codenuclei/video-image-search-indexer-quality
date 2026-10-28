@@ -15,6 +15,10 @@ from app.search.local import SearchRoleContext, is_action_query
 logger = logging.getLogger(__name__)
 
 
+class CaptionFilterUnavailable(RuntimeError):
+    """No caption batch could be judged (model/API failure), unlike a judged empty result."""
+
+
 def _build_prompt(
     query: str,
     visual_query: str,
@@ -48,9 +52,11 @@ def _build_prompt(
             )
         else:
             lines.append(
-                "Student context: the caption must describe students present in the scene "
-                "(group of students, classroom, ceremony with students, cheque to students, etc.). "
-                "Reject solo portraits, one-on-one interviews, or adult-only panels with no students mentioned."
+                "Student context: the people may be students. Captions often say 'people', "
+                "'young man', or 'group' instead of 'students' — do not reject for that wording alone. "
+                "The scene/action/object in the query is still REQUIRED: students alone (e.g. a "
+                "classroom or lecture) without it are false. Reject adult-only panels or solo "
+                "portraits of clearly non-student adults."
             )
     if role_ctx and role_ctx.co_occur_roles:
         lines.append(f"Role co-occurrence required: {', '.join(role_ctx.co_occur_roles)}")
@@ -177,6 +183,7 @@ async def _filter_batch_with_split(
     strict_action: bool,
     model: str,
     api_key: str,
+    judged: list[int],
 ) -> list[SearchResultFile]:
     mask = await asyncio.to_thread(
         _filter_batch_sync,
@@ -191,6 +198,7 @@ async def _filter_batch_with_split(
         api_key=api_key,
     )
     if mask is not None:
+        judged[0] += len(batch)
         return [item for item, ok in zip(batch, mask) if ok]
 
     if len(batch) <= 1:
@@ -208,6 +216,7 @@ async def _filter_batch_with_split(
             strict_action=strict_action,
             model=model,
             api_key=api_key,
+            judged=judged,
         ),
         _filter_batch_with_split(
             query,
@@ -219,6 +228,7 @@ async def _filter_batch_with_split(
             strict_action=strict_action,
             model=model,
             api_key=api_key,
+            judged=judged,
         ),
     )
     return left + right
@@ -233,9 +243,11 @@ async def filter_images_by_caption_llm(
     role_ctx: SearchRoleContext | None = None,
     folder_context: str | None = None,
     strict_action: bool | None = None,
-    preserve_rejected: bool = False,
 ) -> list[SearchResultFile]:
-    """Validate caption hits; broad searches may retain rejects at lower rank."""
+    """Keep only caption hits the model accepts; rejects are never re-appended.
+
+    Raises CaptionFilterUnavailable when no batch could be judged at all.
+    """
     from app.concurrency.pools import effective_cpu_workers
     from app.config import get_settings
 
@@ -266,7 +278,6 @@ async def filter_images_by_caption_llm(
         else settings.search_caption_filter_pool_size
     )
     pool = ranked[:pool_limit]
-    tail = ranked[pool_limit:]
     batch_size = max(1, min(settings.search_caption_filter_batch_size, 25))
     batches = [pool[i : i + batch_size] for i in range(0, len(pool), batch_size)]
     parallel = (
@@ -277,6 +288,7 @@ async def filter_images_by_caption_llm(
     gap = max(0.0, settings.search_caption_filter_gap_seconds)
 
     sem = asyncio.Semaphore(parallel)
+    judged = [0]
 
     async def _run_batch(batch: list[SearchResultFile], batch_index: int) -> list[SearchResultFile]:
         if gap > 0 and batch_index >= parallel:
@@ -292,11 +304,16 @@ async def filter_images_by_caption_llm(
                 strict_action=action_strict,
                 model=settings.gemini_model,
                 api_key=settings.gemini_api_key,
+                judged=judged,
             )
 
     batch_results = await asyncio.gather(
         *[_run_batch(batch, i) for i, batch in enumerate(batches)]
     )
+    if pool and judged[0] == 0:
+        raise CaptionFilterUnavailable(
+            f"caption filter could not judge any of {len(pool)} hit(s) for {query!r}"
+        )
     kept: list[SearchResultFile] = []
     seen: set[str] = set()
     for batch_kept in batch_results:
@@ -318,12 +335,6 @@ async def filter_images_by_caption_llm(
             len(pool),
             query,
         )
-    if preserve_rejected:
-        kept_ids = {item.drive_file_id for item in kept}
-        rejected = [item for item in pool if item.drive_file_id not in kept_ids]
-        ordered = kept + rejected + tail
-    else:
-        ordered = kept
     # Caption LLM batches scramble order — restore score ranking for the UI.
-    ordered.sort(key=lambda f: (-(f.score or 0.0), f.name.lower()))
-    return ordered
+    kept.sort(key=lambda f: (-(f.score or 0.0), f.name.lower()))
+    return kept

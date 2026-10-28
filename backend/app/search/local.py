@@ -263,6 +263,28 @@ async def drive_file_ids_with_extra_named_people(
     return list((await session.execute(stmt)).scalars().all())
 
 
+def _is_student_only_role(role_ctx: SearchRoleContext) -> bool:
+    roles = set(role_ctx.co_occur_roles) | set(role_ctx.require_all_roles)
+    return roles == {"student"}
+
+
+async def drive_file_ids_without_faces(
+    session: AsyncSession,
+    drive_file_ids: list[str],
+) -> list[str]:
+    """Files with no detected face rows."""
+    if not drive_file_ids:
+        return []
+    has_face = exists(
+        select(1)
+        .select_from(Face)
+        .join(Media, Media.id == Face.media_id)
+        .where(Media.drive_file_id == DriveFile.id)
+    )
+    stmt = select(DriveFile.id).where(DriveFile.id.in_(drive_file_ids)).where(~has_face)
+    return list((await session.execute(stmt)).scalars().all())
+
+
 def _unique_ids(*groups: list[str]) -> list[str]:
     seen: set[str] = set()
     out: list[str] = []
@@ -299,6 +321,11 @@ async def resolve_role_matching_file_ids(
         person_names=person_names,
         role_ctx=role_ctx,
     )
+    if not person_names and _is_student_only_role(role_ctx):
+        # Face detection misses small/profile/stage faces, so "no face" is not
+        # evidence against students. Only all-non_student frames are excluded.
+        faceless_ids = await drive_file_ids_without_faces(session, drive_file_ids)
+        return _unique_ids(sql_ids, faceless_ids)
     if person_names and role_context_needs_student(role_ctx):
         cap_ids = await drive_file_ids_with_student_captions(session, drive_file_ids)
         named_ids = await drive_file_ids_with_extra_named_people(

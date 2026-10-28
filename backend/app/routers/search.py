@@ -39,7 +39,6 @@ from app.search.local import (
     filter_non_student_solo_in_student_context,
     person_student_funnel_active,
     student_evidence_role_ctx,
-    find_files_by_role_context,
     filter_to_tagged_persons,
     sort_by_person_overlap,
     boost_multi_person_scores,
@@ -609,7 +608,8 @@ async def _run_search(
             if effective_persons and not person_focused:
                 hits = await find_matching_files(local_session, "", person_names=effective_persons)
             elif role_context_active(role_filter_ctx) and not effective_persons:
-                hits = await find_files_by_role_context(local_session, role_filter_ctx)
+                # Role tags filter retrieved hits; they never nominate unranked candidates.
+                return []
             else:
                 hits = await find_matching_files(
                     local_session,
@@ -697,12 +697,6 @@ async def _run_search(
                     vector_image_files,
                     default_score_for_tagged=0.45,
                 )
-            elif role_context_active(role_filter_ctx) and local_files:
-                files = _apply_vector_metadata(
-                    local_files,
-                    vector_image_files,
-                    default_score_for_tagged=0.45,
-                )
             else:
                 files = vector_image_files or local_files
     files = filter_by_mime(files, mime_filter)
@@ -751,14 +745,7 @@ async def _run_search(
             if f.score is not None or text_matches_query(f.name, f.path, query=query)
         ]
 
-    if role_context_active(role_filter_ctx) and not (action_query and not effective_persons):
-        files = [
-            item.model_copy(update={"score": item.score or 0.55})
-            if item.mime_type.startswith("image/") and item.score is None
-            else item
-            for item in files
-        ]
-    elif combined_person_student:
+    if combined_person_student:
         files = [
             item.model_copy(update={"score": item.score or 0.55})
             if item.mime_type.startswith("image/") and item.score is None
@@ -881,23 +868,6 @@ async def _run_search(
         await checkpoint()
         image_hits = [f for f in files if f.mime_type.startswith("image/")]
         other_hits = [f for f in files if not f.mime_type.startswith("image/")]
-        if (
-            image_hits
-            and role_ctx.student_context
-            and not combined_person_student
-            and not object_anchored
-            and retrieval_policy != "testv2"
-        ):
-            from app.search.local import drive_file_ids_with_student_captions
-
-            student_cap_ids = set(
-                await drive_file_ids_with_student_captions(
-                    session,
-                    [f.drive_file_id for f in image_hits],
-                )
-            )
-            if student_cap_ids:
-                image_hits = [f for f in image_hits if f.drive_file_id in student_cap_ids]
         if combined_person_student:
             files = dedupe_search_files(image_hits + other_hits)
         elif retrieval_policy == "testv2" and image_hits:
@@ -910,11 +880,9 @@ async def _run_search(
                 key=lambda f: (-(f.score or 0.0), f.name.lower()),
             )
         elif image_hits:
-            pre_filter_hits = list(image_hits)
             try:
-                from app.objects.query_concepts import parse_query_concepts
-
-                query_concepts = parse_query_concepts(query)
+                # Judged rejects are never re-appended (that surfaced black frames and
+                # QR codes for "cheque"). Only CaptionFilterUnavailable keeps the pool.
                 filtered_images = await filter_images_by_caption_llm(
                     query,
                     image_hits,
@@ -923,13 +891,8 @@ async def _run_search(
                     role_ctx=role_ctx,
                     folder_context=folder_description,
                     strict_action=action_query or person_action,
-                    # Conjunctive brand/object queries must not re-append LLM rejects
-                    # (that resurfaced Financial Express plaques for mastersunion).
-                    preserve_rejected=(
-                        not strict_student_query
-                        and not query_concepts.is_conjunctive_object_query
-                    ),
                 )
+                accepted_ids = {f.drive_file_id for f in filtered_images}
                 if action_query or person_action:
                     if action_query and not person_action and strict_student_query:
                         keywords = action_match_keywords(query)
@@ -941,25 +904,8 @@ async def _run_search(
                         ]
                     filtered_images = finalize_action_search_results(
                         filtered_images,
-                        keyword_matched,
+                        [f for f in keyword_matched if f.drive_file_id in accepted_ids],
                     )
-                if not filtered_images and pre_filter_hits:
-                    if keyword_matched:
-                        filtered_images = keyword_matched
-                    elif not (person_action or action_query):
-                        # Never un-do conjunctive brand gating with a full-pool fallback.
-                        if query_concepts.is_conjunctive_object_query:
-                            filtered_images = []
-                        else:
-                            filtered_images = sorted(
-                                pre_filter_hits,
-                                key=lambda f: (-(f.score or 0.0), f.name.lower()),
-                            )
-                            logger.warning(
-                                "Caption filter returned 0 for %r — fallback %d hit(s)",
-                                query,
-                                len(filtered_images),
-                            )
                 files = dedupe_search_files(filtered_images + other_hits)
                 files = sorted(
                     files,

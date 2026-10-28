@@ -168,6 +168,10 @@ async def test_students_only_does_not_union_captions_when_sql_hits():
             "app.search.local.drive_file_ids_with_extra_named_people",
             new=AsyncMock(return_value=["named-peer"]),
         ) as named,
+        patch(
+            "app.search.local.drive_file_ids_without_faces",
+            new=AsyncMock(return_value=[]),
+        ),
     ):
         ids = await resolve_role_matching_file_ids(
             session=None,
@@ -178,6 +182,33 @@ async def test_students_only_does_not_union_captions_when_sql_hits():
     assert ids == ["face-sql"]
     cap.assert_not_called()
     named.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_students_only_keeps_faceless_and_drops_all_non_student_frames():
+    """'students receiving cheques': stage cheque photos often have no detected face."""
+    from unittest.mock import AsyncMock, patch
+
+    from app.search.local import resolve_role_matching_file_ids
+
+    role_ctx = SearchRoleContext(require_all_roles=("student",), student_context=True)
+    with (
+        patch(
+            "app.search.local.matching_drive_file_ids_for_roles",
+            new=AsyncMock(return_value=["unnamed-face"]),
+        ),
+        patch(
+            "app.search.local.drive_file_ids_without_faces",
+            new=AsyncMock(return_value=["no-face-cheque"]),
+        ),
+    ):
+        ids = await resolve_role_matching_file_ids(
+            session=None,
+            drive_file_ids=["unnamed-face", "no-face-cheque", "faculty-only"],
+            person_names=[],
+            role_ctx=role_ctx,
+        )
+    assert ids == ["unnamed-face", "no-face-cheque"]
 
 
 @pytest.mark.asyncio
