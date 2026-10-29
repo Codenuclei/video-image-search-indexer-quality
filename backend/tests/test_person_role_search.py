@@ -157,7 +157,7 @@ async def test_students_only_does_not_union_captions_when_sql_hits():
     role_ctx = SearchRoleContext(require_all_roles=("student",), student_context=True)
     with (
         patch(
-            "app.search.local.matching_drive_file_ids_for_roles",
+            "app.search.local.drive_file_ids_not_all_non_student",
             new=AsyncMock(return_value=["face-sql"]),
         ),
         patch(
@@ -194,13 +194,14 @@ async def test_students_only_keeps_faceless_and_drops_all_non_student_frames():
     role_ctx = SearchRoleContext(require_all_roles=("student",), student_context=True)
     with (
         patch(
-            "app.search.local.matching_drive_file_ids_for_roles",
+            "app.search.local.drive_file_ids_not_all_non_student",
             new=AsyncMock(return_value=["unnamed-face"]),
         ),
         patch(
             "app.search.local.drive_file_ids_without_faces",
             new=AsyncMock(return_value=["no-face-cheque"]),
         ),
+        patch("app.search.local.matching_drive_file_ids_for_roles") as strict,
     ):
         ids = await resolve_role_matching_file_ids(
             session=None,
@@ -209,6 +210,65 @@ async def test_students_only_keeps_faceless_and_drops_all_non_student_frames():
             role_ctx=role_ctx,
         )
     assert ids == ["unnamed-face", "no-face-cheque"]
+    strict.assert_not_called()
+
+
+def test_parse_plural_students_requires_two_student_faces():
+    _, plural = parse_role_context("Pratham Mittal with Students")
+    _, singular = parse_role_context("Pratham Mittal with a student")
+    assert plural.co_occur_roles == ("student",)
+    assert plural.min_student_faces == 2
+    assert singular.min_student_faces == 1
+
+
+def test_student_evidence_ctx_keeps_plural_requirement():
+    from app.search.local import student_evidence_role_ctx
+
+    _, ctx = parse_role_context("Pratham Mittal students")
+    assert student_evidence_role_ctx(ctx).min_student_faces == 2
+
+
+def test_boost_ranks_real_student_faces_and_student_captions_above_panels():
+    from app.schemas import SearchResultFile
+    from app.search.local import boost_by_student_evidence
+
+    def _f(fid: str, score: float, caption: str) -> SearchResultFile:
+        return SearchResultFile(
+            drive_file_id=fid,
+            name=f"{fid}.jpg",
+            path=f"/{fid}.jpg",
+            mime_type="image/jpeg",
+            score=score,
+            caption=caption,
+        )
+
+    panel = _f("panel", 0.479, "Two men sit in armchairs on a stage.")
+    classroom = _f("classroom", 0.44, "Pratham Mittal speaks to students in a classroom.")
+    crowd = _f("crowd", 0.43, "A man on stage in front of an audience.")
+    ranked = boost_by_student_evidence(
+        [panel, classroom, crowd],
+        {"classroom": 6, "crowd": 3, "panel": 0},
+    )
+    assert [f.drive_file_id for f in ranked] == ["classroom", "crowd", "panel"]
+    assert ranked[-1].score == 0.479
+
+
+def test_student_face_sql_compiles_with_real_face_bounds():
+    from sqlalchemy import select
+    from sqlalchemy.dialects import postgresql
+
+    from app.db.models import DriveFile
+    from app.search.local import _student_face_count_clause
+
+    sql = str(
+        select(DriveFile.id)
+        .where(_student_face_count_clause(min_faces=2, exclude_person_ids=[7]))
+        .compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True})
+    )
+    assert "faces.detection_confidence >= 0.75" in sql
+    assert "faces.bbox_y >= 0" in sql
+    assert "coalesce(faces.person_id, face_clusters.person_id)" in sql
+    assert ">= 2" in sql
 
 
 @pytest.mark.asyncio

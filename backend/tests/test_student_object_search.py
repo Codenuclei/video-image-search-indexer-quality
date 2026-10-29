@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -62,6 +63,12 @@ async def _run(*, caption_filter_result: list[SearchResultFile] | Exception):
             search_router, "rerank_image_files", AsyncMock(side_effect=lambda _q, files, **_k: files)
         ),
         patch.object(search_router, "filter_images_by_caption_llm", caption_filter),
+        patch.object(search_router, "student_face_counts", AsyncMock(return_value={})),
+        patch.object(
+            search_router,
+            "get_runtime_settings",
+            return_value=SimpleNamespace(search_rerank_enabled=True),
+        ),
     ):
         response = await search_router._run_search(
             session=AsyncMock(),

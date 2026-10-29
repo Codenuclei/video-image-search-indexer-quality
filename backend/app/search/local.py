@@ -3,8 +3,9 @@ from __future__ import annotations
 import asyncio
 import re
 from dataclasses import dataclass
+from typing import Iterable
 
-from sqlalchemy import exists, func, or_, select, true
+from sqlalchemy import and_, exists, func, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import (
@@ -112,6 +113,7 @@ _STUDENT_OBJECT_PHRASE = re.compile(
     re.IGNORECASE,
 )
 _STUDENT_WORD = re.compile(rf"\b{_STUDENT_LIKE}\b", re.IGNORECASE)
+_PLURAL_STUDENTS = re.compile(r"\bstudents\b", re.IGNORECASE)
 _NON_STUDENT_WORD = re.compile(
     r"\b(?:non[- ]?students?|teachers?|faculty|staff)\b",
     re.IGNORECASE,
@@ -125,6 +127,7 @@ class SearchRoleContext:
     co_occur_roles: tuple[str, ...] = ()  # required alongside named person(s)
     require_all_roles: tuple[str, ...] = ()  # file must include every listed role
     student_context: bool = False  # query involves students (to/with/for students, etc.)
+    min_student_faces: int = 1  # "students" (plural) needs 2 real student faces
 
 
 def query_has_student_context(query: str) -> bool:
@@ -170,6 +173,7 @@ def parse_role_context(query: str) -> tuple[str, SearchRoleContext]:
         co_occur_roles=tuple(dict.fromkeys(co_occur)),
         require_all_roles=tuple(dict.fromkeys(require_all)),
         student_context=student_context,
+        min_student_faces=2 if _PLURAL_STUDENTS.search(query) else 1,
     )
     return cleaned, ctx
 
@@ -195,6 +199,7 @@ def student_evidence_role_ctx(role_ctx: SearchRoleContext) -> SearchRoleContext:
         co_occur_roles=("student",),
         require_all_roles=role_ctx.require_all_roles,
         student_context=True,
+        min_student_faces=role_ctx.min_student_faces,
     )
 
 
@@ -285,6 +290,21 @@ async def drive_file_ids_without_faces(
     return list((await session.execute(stmt)).scalars().all())
 
 
+async def drive_file_ids_not_all_non_student(
+    session: AsyncSession,
+    drive_file_ids: list[str],
+) -> list[str]:
+    """Files with at least one face not tagged non_student."""
+    if not drive_file_ids:
+        return []
+    stmt = (
+        select(DriveFile.id)
+        .where(DriveFile.id.in_(drive_file_ids))
+        .where(_not_non_student_face_exists_clause())
+    )
+    return list((await session.execute(stmt)).scalars().all())
+
+
 def _unique_ids(*groups: list[str]) -> list[str]:
     seen: set[str] = set()
     out: list[str] = []
@@ -315,17 +335,20 @@ async def resolve_role_matching_file_ids(
     if not role_context_active(role_ctx):
         return drive_file_ids
 
+    if not person_names and _is_student_only_role(role_ctx):
+        # Face detection misses small/profile/stage faces, so "no face" is not
+        # evidence against students. Only all-non_student frames are excluded;
+        # real-student-face counts affect ranking, not membership.
+        lenient_ids = await drive_file_ids_not_all_non_student(session, drive_file_ids)
+        faceless_ids = await drive_file_ids_without_faces(session, drive_file_ids)
+        return _unique_ids(lenient_ids, faceless_ids)
+
     sql_ids = await matching_drive_file_ids_for_roles(
         session,
         drive_file_ids,
         person_names=person_names,
         role_ctx=role_ctx,
     )
-    if not person_names and _is_student_only_role(role_ctx):
-        # Face detection misses small/profile/stage faces, so "no face" is not
-        # evidence against students. Only all-non_student frames are excluded.
-        faceless_ids = await drive_file_ids_without_faces(session, drive_file_ids)
-        return _unique_ids(sql_ids, faceless_ids)
     if person_names and role_context_needs_student(role_ctx):
         cap_ids = await drive_file_ids_with_student_captions(session, drive_file_ids)
         named_ids = await drive_file_ids_with_extra_named_people(
@@ -570,6 +593,7 @@ def soften_student_role_for_object_anchor(
         co_occur_roles=(),
         require_all_roles=(),
         student_context=True,
+        min_student_faces=role_ctx.min_student_faces,
     )
 
 
@@ -1192,8 +1216,8 @@ async def filter_non_student_solo_in_student_context(
     return [item for item in files if item.drive_file_id in valid]
 
 
-def _student_face_exists_clause():
-    """Default student: unnamed faces or anyone not explicitly marked non_student."""
+def _not_non_student_face_exists_clause():
+    """Any face not explicitly tagged non_student (lenient; soft student filter only)."""
     return exists(
         select(1)
         .select_from(Face)
@@ -1210,6 +1234,124 @@ def _student_face_exists_clause():
     )
 
 
+# Unnamed detections below these bounds are usually mannequins, posters, or faces
+# on stage screens (real student faces measured median 0.86, 95% >= 0.75).
+REAL_FACE_MIN_CONFIDENCE = 0.75
+REAL_FACE_MIN_PX = 32.0
+
+
+def _student_face_select(
+    columns,
+    *,
+    exclude_person_ids: Iterable[int] = (),
+):
+    """Faces that count as students: named student/untagged people, or real unnamed faces.
+
+    Image dimensions are not stored, so "inside the photo" checks the top/left edges only.
+    """
+    person_id = func.coalesce(Face.person_id, FaceCluster.person_id)
+    real_unnamed = and_(
+        person_id.is_(None),
+        Face.detection_confidence >= REAL_FACE_MIN_CONFIDENCE,
+        Face.bbox_x >= 0,
+        Face.bbox_y >= 0,
+        Face.bbox_width >= REAL_FACE_MIN_PX,
+        Face.bbox_height >= REAL_FACE_MIN_PX,
+    )
+    named_student = and_(
+        person_id.is_not(None),
+        or_(Person.role.is_(None), Person.role == "student"),
+    )
+    excluded = list(exclude_person_ids)
+    if excluded:
+        named_student = and_(named_student, ~person_id.in_(excluded))
+    return (
+        select(*columns)
+        .select_from(Face)
+        .join(Media, Media.id == Face.media_id)
+        .outerjoin(FaceCluster, FaceCluster.id == Face.cluster_id)
+        .outerjoin(Person, Person.id == person_id)
+        .where(or_(real_unnamed, named_student))
+    )
+
+
+def _student_face_count_clause(
+    *,
+    min_faces: int = 1,
+    exclude_person_ids: Iterable[int] = (),
+):
+    count = (
+        _student_face_select([func.count(Face.id)], exclude_person_ids=exclude_person_ids)
+        .where(Media.drive_file_id == DriveFile.id)
+        .scalar_subquery()
+    )
+    return count >= max(1, min_faces)
+
+
+async def student_face_counts(
+    session: AsyncSession,
+    drive_file_ids: list[str],
+    *,
+    exclude_person_ids: Iterable[int] = (),
+) -> dict[str, int]:
+    """Real student faces per file (queried people excluded)."""
+    if not drive_file_ids:
+        return {}
+    stmt = (
+        _student_face_select(
+            [Media.drive_file_id, func.count(Face.id)],
+            exclude_person_ids=exclude_person_ids,
+        )
+        .where(Media.drive_file_id.in_(drive_file_ids))
+        .group_by(Media.drive_file_id)
+    )
+    return {fid: int(n) for fid, n in (await session.execute(stmt)).all()}
+
+
+async def person_ids_for_names(session: AsyncSession, person_names: list[str]) -> list[int]:
+    names = [n.strip() for n in person_names if n and n.strip()]
+    if not names:
+        return []
+    rows = (
+        await session.execute(
+            select(Person.id).where(or_(*[Person.name.ilike(name) for name in names]))
+        )
+    ).all()
+    return [row[0] for row in rows]
+
+
+_STUDENT_SCENE_CAPTION_RE = re.compile(
+    r"\b(?:students?|pupils?|classmates?|graduates?|audience|crowd|class|classroom|"
+    r"lecture|batch|attendees|participants|group\s+of)\b",
+    re.IGNORECASE,
+)
+
+
+def boost_by_student_evidence(
+    files: list[SearchResultFile],
+    face_counts: dict[str, int],
+) -> list[SearchResultFile]:
+    """Rank images with more real student faces / student-scene captions higher."""
+    boosted: list[SearchResultFile] = []
+    for item in files:
+        if not item.mime_type.startswith("image/") or item.score is None:
+            boosted.append(item)
+            continue
+        faces = face_counts.get(item.drive_file_id, 0)
+        bonus = 0.025 * min(faces, 6)
+        if _STUDENT_SCENE_CAPTION_RE.search(item.caption or ""):
+            bonus += 0.05
+        if bonus:
+            item = item.model_copy(update={"score": round(min(0.99, item.score + bonus), 4)})
+        boosted.append(item)
+    images = sorted(
+        (f for f in boosted if f.mime_type.startswith("image/")),
+        key=lambda f: (-(f.score or 0.0), f.name.lower()),
+    )
+    others = [f for f in boosted if not f.mime_type.startswith("image/")]
+    return images + others
+
+
 def _non_student_face_exists_clause():
     return exists(
         select(1)
@@ -1221,9 +1363,17 @@ def _non_student_face_exists_clause():
     )
 
 
-def _role_face_exists_clause(role: str):
+def _role_face_exists_clause(
+    role: str,
+    *,
+    min_student_faces: int = 1,
+    exclude_person_ids: Iterable[int] = (),
+):
     if role == "student":
-        return _student_face_exists_clause()
+        return _student_face_count_clause(
+            min_faces=min_student_faces,
+            exclude_person_ids=exclude_person_ids,
+        )
     if role == "non_student":
         return _non_student_face_exists_clause()
     return exists(
@@ -1249,13 +1399,18 @@ async def matching_drive_file_ids_for_roles(
     if not person_names and not role_context_active(role_ctx):
         return drive_file_ids
 
+    queried_ids = await person_ids_for_names(session, person_names)
     stmt = select(DriveFile.id).where(DriveFile.id.in_(drive_file_ids))
     for name in person_names:
         stmt = stmt.where(_person_face_exists_clause(name))
-    for role in role_ctx.co_occur_roles:
-        stmt = stmt.where(_role_face_exists_clause(role))
-    for role in role_ctx.require_all_roles:
-        stmt = stmt.where(_role_face_exists_clause(role))
+    for role in (*role_ctx.co_occur_roles, *role_ctx.require_all_roles):
+        stmt = stmt.where(
+            _role_face_exists_clause(
+                role,
+                min_student_faces=role_ctx.min_student_faces,
+                exclude_person_ids=queried_ids,
+            )
+        )
     if role_ctx.student_context and person_names:
         exclude_ids = await non_student_person_ids_for_names(session, person_names)
         if exclude_ids:
@@ -1418,9 +1573,13 @@ async def find_files_by_role_context(
     for name in names:
         stmt = stmt.where(_person_face_exists_clause(name))
     for role in role_ctx.co_occur_roles:
-        stmt = stmt.where(_role_face_exists_clause(role))
+        stmt = stmt.where(
+            _role_face_exists_clause(role, min_student_faces=role_ctx.min_student_faces)
+        )
     for role in role_ctx.require_all_roles:
-        stmt = stmt.where(_role_face_exists_clause(role))
+        stmt = stmt.where(
+            _role_face_exists_clause(role, min_student_faces=role_ctx.min_student_faces)
+        )
 
     stmt = stmt.distinct().order_by(DriveFile.path).limit(100)
     drive_files = list((await session.execute(stmt)).scalars().all())

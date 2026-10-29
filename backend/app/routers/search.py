@@ -42,6 +42,9 @@ from app.search.local import (
     filter_to_tagged_persons,
     sort_by_person_overlap,
     boost_multi_person_scores,
+    boost_by_student_evidence,
+    person_ids_for_names,
+    student_face_counts,
     dedupe_search_files,
     find_matching_files,
     has_strong_filename_match,
@@ -932,6 +935,16 @@ async def _run_search(
         )
         other_kept = [f for f in files if not f.mime_type.startswith("image/")]
         files = dedupe_search_files(image_kept + other_kept)
+
+    if role_ctx.student_context and files and retrieval_policy != "testv2":
+        files = boost_by_student_evidence(
+            files,
+            await student_face_counts(
+                session,
+                [f.drive_file_id for f in files if f.mime_type.startswith("image/")],
+                exclude_person_ids=await person_ids_for_names(session, effective_persons),
+            ),
+        )
 
     await checkpoint()
     response = SearchResponse(
