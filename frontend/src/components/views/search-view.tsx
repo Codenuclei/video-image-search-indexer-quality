@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { ExternalLink, FileText, Image as ImageIcon, Play, Search, Sparkles, X } from "lucide-react";
+import Link from "next/link";
+import { ExternalLink, FileText, Image as ImageIcon, Play, Rocket, Search, Sparkles, X } from "lucide-react";
 import {
   apiAssetUrl,
   driveFileDownloadUrl,
@@ -10,7 +11,9 @@ import {
   driveVideoStreamUrl,
   type ObjectEvidence,
   type SearchMoment,
+  type StartupFilter,
 } from "@/lib/api";
+import { cn } from "@/lib/utils";
 import { AddToCollectionButton } from "@/components/add-to-collection";
 import { Button, DownloadButton, FilePreview, IconButton, IconLink, Input, LoadingLabel, PersonTags } from "@/components/ui";
 import { FilterDropdown } from "@/components/filter-dropdown";
@@ -53,6 +56,28 @@ function ObjectChips({ items }: { items?: ObjectEvidence[] }) {
     </div>
   );
 }
+
+function MatchReasonChips({ reasons }: { reasons?: string[] }) {
+  if (!reasons?.length) return null;
+  return (
+    <div className="flex flex-wrap gap-1" aria-label="Match reasons">
+      {reasons.map((reason) => (
+        <span
+          key={reason}
+          className="rounded-full border border-orange-500/30 bg-orange-500/10 px-2 py-0.5 text-[10px] font-medium text-orange-800 dark:text-orange-200"
+        >
+          {reason}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+const STARTUP_FILTERS: { value: StartupFilter; label: string }[] = [
+  { value: "all", label: "All" },
+  { value: "founders", label: "Founders" },
+  { value: "logo", label: "Logo" },
+];
 
 function formatTimestamp(sec: number): string {
   const m = Math.floor(sec / 60);
@@ -110,6 +135,7 @@ export function SearchPage({
     q,
     person,
     mime,
+    startupFilter,
     folderPath,
     rerank,
     useCaptions,
@@ -142,6 +168,15 @@ export function SearchPage({
     }
     // runSearch clears reverse-face for free text and keeps it when q matches the person.
     void runSearch();
+  }
+
+  function applyStartupFilter(next: StartupFilter) {
+    if (next === startupFilter) return;
+    patchSearchSession({ startupFilter: next });
+    const session = getSearchSession();
+    if (session.q.trim() || session.person.trim()) {
+      void runSearch();
+    }
   }
 
   function clearFilterAndSearch(patch: Partial<{ mime: string; person: string; folderPath: string }>) {
@@ -409,6 +444,46 @@ export function SearchPage({
         </p>
       )}
 
+      {results && (Boolean(results.startups?.length) || startupFilter !== "all") && (
+        <div className="flex flex-wrap items-center gap-2">
+          {(results.startups ?? []).map((startup) => (
+            <Link
+              key={startup.id}
+              href={`/startups/${startup.slug}`}
+              title={startup.matched_term ? `Matched “${startup.matched_term}”` : startup.name}
+              className="inline-flex items-center gap-1.5 rounded-full border border-orange-500/30 bg-orange-500/10 px-2.5 py-1 text-xs font-medium text-orange-800 transition-colors hover:bg-orange-500/20 dark:text-orange-200"
+            >
+              <Rocket size={12} aria-hidden />
+              Startup: {startup.name}
+            </Link>
+          ))}
+          <div
+            role="tablist"
+            aria-label="Startup match filter"
+            className="inline-flex rounded-lg border border-border/80 bg-muted/50 p-0.5"
+          >
+            {STARTUP_FILTERS.map((tab) => (
+              <button
+                key={tab.value}
+                type="button"
+                role="tab"
+                aria-selected={startupFilter === tab.value}
+                disabled={loading}
+                onClick={() => applyStartupFilter(tab.value)}
+                className={cn(
+                  "inline-flex h-8 items-center rounded-md px-3 text-xs font-medium transition-colors disabled:pointer-events-none disabled:opacity-50",
+                  startupFilter === tab.value
+                    ? "bg-primary text-primary-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground"
+                )}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       {results && (
         <section className="relative">
           <div className="mb-4 flex items-start justify-between gap-2">
@@ -481,6 +556,7 @@ export function SearchPage({
                         </p>
                       )}
                       <ObjectChips items={file.matched_objects} />
+                      <MatchReasonChips reasons={file.match_reasons} />
                       {(file.person_names ?? []).length > 0 && (
                         <PersonTags names={file.person_names ?? []} links={linkedinMap} />
                       )}
@@ -595,6 +671,7 @@ export function SearchPage({
                 <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{previewFile.caption}</p>
               )}
               <ObjectChips items={previewFile.matched_objects} />
+              <MatchReasonChips reasons={previewFile.match_reasons} />
               {(previewFile.person_names ?? []).length > 0 && (
                 <PersonTags names={previewFile.person_names ?? []} className="mt-2" links={linkedinMap} />
               )}
@@ -701,6 +778,7 @@ function MomentCard({ moment, onPreview }: { moment: SearchMoment; onPreview: ()
           </p>
         )}
         <ObjectChips items={moment.matched_objects} />
+        <MatchReasonChips reasons={moment.match_reasons} />
         <div className="mt-2 flex flex-wrap items-center gap-2">
           <span className={`rounded-full px-2 py-0.5 text-xs ${matchBadgeStyle(moment.match_type)}`}>
             {matchLabel(moment.match_type, moment.score ?? null)}

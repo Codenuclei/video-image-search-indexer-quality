@@ -1,0 +1,1278 @@
+{
+  "generated_at": "2026-11-01T18:28:54.869173+00:00",
+  "sources": [
+    "pdf",
+    "web"
+  ],
+  "startups": [
+    {
+      "slug": "bambaii-foods",
+      "name": "Bambaii Foods",
+      "aliases": [
+        "bambaii foods",
+        "bambaiifoods",
+        "bambaii-foods",
+        "bambaii"
+      ],
+      "cohort": "PGP TBM 2025",
+      "sector": "D2C / F&B",
+      "one_liner": "Campus-born snack brand: homemade hustle to nationwide guilt-free snacks.",
+      "founders": [
+        {
+          "name": "Gaurav Dasgupta"
+        }
+      ],
+      "candidate_founders": [],
+      "pages": [
+        48,
+        49
+      ],
+      "assets": {
+        "logo": "assets/bambaii-foods/web_logo.png",
+        "logos": [
+          "assets/bambaii-foods/web_logo.png"
+        ],
+        "founder_photos": [
+          "assets/bambaii-foods/pdf_founder.jpg"
+        ]
+      },
+      "sources": [
+        "pdf",
+        "web"
+      ]
+    },
+    {
+      "slug": "bana-roma",
+      "name": "Bana Roma",
+      "aliases": [
+        "bana roma",
+        "banaroma",
+        "bana-roma"
+      ],
+      "cohort": "PGP TBM 2025",
+      "sector": "F&B",
+      "one_liner": "High-quality Banarasi street food in a modern QSR format.",
+      "founders": [
+        {
+          "name": "Apoorv Kathuria"
+        }
+      ],
+      "candidate_founders": [],
+      "pages": [
+        58,
+        59
+      ],
+      "assets": {
+        "logo": "assets/bana-roma/web_logo.png",
+        "logos": [
+          "assets/bana-roma/web_logo.png"
+        ],
+        "founder_photos": [
+          "assets/bana-roma/pdf_founder.jpg"
+        ]
+      },
+      "sources": [
+        "pdf",
+        "web"
+      ]
+    },
+    {
+      "slug": "beyond-veda",
+      "name": "Beyond Veda",
+      "aliases": [
+        "beyond veda",
+        "beyondveda",
+        "beyond-veda"
+      ],
+      "cohort": "PGP TBM 2024",
+      "sector": "D2C",
+      "one_liner": "A college project turned ₹2 crore Gen Z Ayurveda brand.",
+      "founders": [
+        {
+          "name": "Bhavya Kothary"
+        },
+        {
+          "name": "Manan Sahai"
+        }
+      ],
+      "candidate_founders": [],
+      "pages": [
+        42,
+        43
+      ],
+      "assets": {
+        "logo": "assets/beyond-veda/web_logo.png",
+        "logos": [
+          "assets/beyond-veda/web_logo.png"
+        ],
+        "founder_photos": [
+          "assets/beyond-veda/pdf_founder.jpg"
+        ]
+      },
+      "sources": [
+        "pdf",
+        "web"
+      ]
+    },
+    {
+      "slug": "blue-brew",
+      "name": "Blue Brew",
+      "aliases": [
+        "blue brew",
+        "bluebrew",
+        "blue-brew"
+      ],
+      "cohort": "PGP TBM 2024",
+      "sector": "D2C",
+      "one_liner": "Built from a denim obsession, redefining fit-first fashion in India.",
+      "founders": [
+        {
+          "name": "Aditya Rathi"
+        }
+      ],
+      "candidate_founders": [
+        {
+          "name": "Sheetal (last name not stated)"
+        },
+        {
+          "name": "Anirudh (last name not stated)"
+        }
+      ],
+      "pages": [
+        22,
+        23
+      ],
+      "assets": {
+        "logo": "assets/blue-brew/web_logo.png",
+        "logos": [
+          "assets/blue-brew/web_logo.png"
+        ],
+        "founder_photos": [
+          "assets/blue-brew/pdf_founder.jpg"
+        ]
+      },
+      "sources": [
+        "pdf",
+        "web"
+      ]
+    },
+    {
+      "slug": "bullspree",
+      "name": "Bullspree",
+      "aliases": [
+        "bullspree"
+      ],
+      "cohort": "PGP TBM 2021",
+      "sector": "Tech & SaaS",
+      "one_liner": "Turning India’s curiosity about markets into financial confidence.",
+      "founders": [
+        {
+          "name": "Dharmil Bavishi"
+        }
+      ],
+      "candidate_founders": [],
+      "pages": [
+        14,
+        15
+      ],
+      "assets": {
+        "logo": "assets/bullspree/web_logo.png",
+        "logos": [
+          "assets/bullspree/web_logo.png"
+        ],
+        "founder_photos": [
+          "assets/bullspree/web_founder_0.jpg",
+          "assets/bullspree/pdf_founder.jpg"
+        ]
+      },
+      "sources": [
+        "pdf",
+        "web"
+      ]
+    },
+    {
+      "slug": "cryptique",
+      "name": "Cryptique",
+      "aliases": [
+        "cryptique"
+      ],
+      "cohort": "PGP TBM 2025",
+      "sector": "Tech & SaaS",
+      "one_liner": "Giving Web3 its intelligence layer.",
+      "founders": [
+        {
+          "name": "Parth Agarwal"
+        },
+        {
+          "name": "Akshit Varsani"
+        }
+      ],
+      "candidate_founders": [],
+      "pages": [
+        32,
+        33
+      ],
+      "assets": {
+        "logo": "assets/cryptique/pdf_cover_0.png",
+        "logos": [
+          "assets/cryptique/pdf_cover_0.png"
+        ],
+        "founder_photos": [
+          "assets/cryptique/pdf_founder.jpg"
+        ]
+      },
+      "sources": [
+        "pdf"
+      ]
+    },
+    {
+      "slug": "eat-atlas",
+      "name": "Eat Atlas",
+      "aliases": [
+        "eat atlas",
+        "eatatlas",
+        "eat-atlas"
+      ],
+      "cohort": "PGP TBM 2024",
+      "sector": "D2C / F&B",
+      "one_liner": "From bland chips to bold global dips.",
+      "founders": [
+        {
+          "name": "Ishita Gupta"
+        },
+        {
+          "name": "Anshul Gupta"
+        },
+        {
+          "name": "Mayuresh Jadhav"
+        }
+      ],
+      "candidate_founders": [],
+      "pages": [
+        62,
+        63
+      ],
+      "assets": {
+        "logo": "assets/eat-atlas/web_logo.png",
+        "logos": [
+          "assets/eat-atlas/web_logo.png"
+        ],
+        "founder_photos": [
+          "assets/eat-atlas/pdf_founder.jpg"
+        ]
+      },
+      "sources": [
+        "pdf",
+        "web"
+      ]
+    },
+    {
+      "slug": "eight",
+      "name": "EIGHT",
+      "aliases": [
+        "eight",
+        "eight.network",
+        "eightnetwork",
+        "eight-network",
+        "eight network"
+      ],
+      "cohort": "PGP TBM 2021",
+      "sector": "Tech & SaaS",
+      "one_liner": "From a classroom experiment to India’s leading audio and microdrama platform.",
+      "founders": [
+        {
+          "name": "Mohit Paliwal"
+        },
+        {
+          "name": "Mohit Goswami"
+        },
+        {
+          "name": "Yugal Tamang"
+        }
+      ],
+      "candidate_founders": [],
+      "pages": [
+        10,
+        11
+      ],
+      "assets": {
+        "logo": "assets/eight/web_logo.png",
+        "logos": [
+          "assets/eight/web_logo.png"
+        ],
+        "founder_photos": [
+          "assets/eight/web_founder_0.jpg",
+          "assets/eight/pdf_founder.jpg"
+        ]
+      },
+      "sources": [
+        "pdf",
+        "web"
+      ]
+    },
+    {
+      "slug": "eventsa",
+      "name": "Eventsa",
+      "aliases": [
+        "eventsa"
+      ],
+      "cohort": "PGP TBM 2022",
+      "sector": "Tech & SaaS / Services",
+      "one_liner": "Where AI meets thoughtful guest experience.",
+      "founders": [
+        {
+          "name": "Pankhuri Bhandari"
+        }
+      ],
+      "candidate_founders": [],
+      "pages": [
+        68,
+        69
+      ],
+      "assets": {
+        "logo": "assets/eventsa/web_logo.png",
+        "logos": [
+          "assets/eventsa/web_logo.png"
+        ],
+        "founder_photos": [
+          "assets/eventsa/pdf_founder.jpg"
+        ]
+      },
+      "sources": [
+        "pdf",
+        "web"
+      ]
+    },
+    {
+      "slug": "flourish-foods",
+      "name": "Flourish Foods",
+      "aliases": [
+        "flourish foods",
+        "flourishfoods",
+        "flourish-foods"
+      ],
+      "cohort": "PGP TBM 2025",
+      "sector": "D2C / F&B",
+      "one_liner": "Turns everyday rotis into simple, powerful tools for better health.",
+      "founders": [
+        {
+          "name": "Sonam Sharma"
+        },
+        {
+          "name": "Nikhil Sharma"
+        }
+      ],
+      "candidate_founders": [],
+      "pages": [
+        28,
+        29
+      ],
+      "assets": {
+        "logo": "assets/flourish-foods/web_logo.png",
+        "logos": [
+          "assets/flourish-foods/web_logo.png"
+        ],
+        "founder_photos": [
+          "assets/flourish-foods/pdf_founder.jpg"
+        ]
+      },
+      "sources": [
+        "pdf",
+        "web"
+      ]
+    },
+    {
+      "slug": "fnor",
+      "name": "FNOR",
+      "aliases": [
+        "fnor"
+      ],
+      "cohort": "PGP TBM 2024",
+      "sector": "D2C",
+      "one_liner": "Breakup to breakthrough — fashion with a fearless heart (For No Reason).",
+      "founders": [
+        {
+          "name": "Sirjan Singh Saluja"
+        }
+      ],
+      "candidate_founders": [
+        {
+          "name": "Sidak Singh"
+        }
+      ],
+      "pages": [
+        54,
+        55
+      ],
+      "assets": {
+        "logo": "assets/fnor/web_logo.png",
+        "logos": [
+          "assets/fnor/web_logo.png"
+        ],
+        "founder_photos": [
+          "assets/fnor/pdf_founder.jpg"
+        ]
+      },
+      "sources": [
+        "pdf",
+        "web"
+      ]
+    },
+    {
+      "slug": "guardex",
+      "name": "Guardex",
+      "aliases": [
+        "guardex"
+      ],
+      "cohort": "PGP TBM 2025",
+      "sector": "Tech & SaaS",
+      "one_liner": "Turns CCTV into smart, AI-powered security — the sixth sense of modern manufacturing.",
+      "founders": [
+        {
+          "name": "Naman Jain"
+        }
+      ],
+      "candidate_founders": [],
+      "pages": [
+        40,
+        41
+      ],
+      "assets": {
+        "logo": "assets/guardex/web_logo.png",
+        "logos": [
+          "assets/guardex/web_logo.png"
+        ],
+        "founder_photos": [
+          "assets/guardex/pdf_founder.jpg"
+        ]
+      },
+      "sources": [
+        "pdf",
+        "web"
+      ]
+    },
+    {
+      "slug": "hive-school",
+      "name": "Hive School",
+      "aliases": [
+        "hive school",
+        "hiveschool",
+        "hive-school"
+      ],
+      "cohort": "PGP TBM · Shark Tank India Season 4",
+      "sector": null,
+      "one_liner": "India’s first sales school — students learn on live pipelines with real quotas, calls and commissions.",
+      "founders": [
+        {
+          "name": "Nikhil Gaur"
+        }
+      ],
+      "candidate_founders": [],
+      "pages": [],
+      "assets": {
+        "logo": "assets/hive-school/web_logo.png",
+        "logos": [
+          "assets/hive-school/web_logo.png"
+        ],
+        "founder_photos": [
+          "assets/hive-school/web_founder_0.jpg"
+        ]
+      },
+      "sources": [
+        "web"
+      ]
+    },
+    {
+      "slug": "hookd",
+      "name": "HookD",
+      "aliases": [
+        "hookd"
+      ],
+      "cohort": "PGP TBM Co ’23 · Shark Tank India Season 5 · Ready-to-eat non-veg snacking",
+      "sector": null,
+      "one_liner": "Ready-to-eat non-veg snacking",
+      "founders": [
+        {
+          "name": "Dia Goel"
+        }
+      ],
+      "candidate_founders": [],
+      "pages": [],
+      "assets": {
+        "logo": null,
+        "logos": [],
+        "founder_photos": [
+          "assets/hookd/web_founder_0.jpg"
+        ]
+      },
+      "sources": [
+        "web"
+      ]
+    },
+    {
+      "slug": "justmyroots",
+      "name": "JustMyRoots",
+      "aliases": [
+        "justmyroots"
+      ],
+      "cohort": "PGP TBM 2024",
+      "sector": "F&B",
+      "one_liner": "Delivering regional flavors, connecting Indian homes.",
+      "founders": [
+        {
+          "name": "Karan Sachdeva"
+        }
+      ],
+      "candidate_founders": [],
+      "pages": [
+        26,
+        27
+      ],
+      "assets": {
+        "logo": "assets/justmyroots/web_logo.png",
+        "logos": [
+          "assets/justmyroots/web_logo.png"
+        ],
+        "founder_photos": [
+          "assets/justmyroots/pdf_founder.jpg"
+        ]
+      },
+      "sources": [
+        "pdf",
+        "web"
+      ]
+    },
+    {
+      "slug": "kaze",
+      "name": "Kazé",
+      "aliases": [
+        "kaze",
+        "kaze drinks",
+        "kazedrinks",
+        "kaze-drinks"
+      ],
+      "cohort": "PGP TBM 2025",
+      "sector": "F&B",
+      "one_liner": "Redefining India’s drinking culture with guilt-free indulgence.",
+      "founders": [
+        {
+          "name": "Zaheen Khatri"
+        }
+      ],
+      "candidate_founders": [],
+      "pages": [
+        70,
+        71
+      ],
+      "assets": {
+        "logo": "assets/kaze/web_logo.png",
+        "logos": [
+          "assets/kaze/web_logo.png"
+        ],
+        "founder_photos": [
+          "assets/kaze/pdf_founder.jpg"
+        ]
+      },
+      "sources": [
+        "pdf",
+        "web"
+      ]
+    },
+    {
+      "slug": "lexis",
+      "name": "Lexi's",
+      "aliases": [
+        "lexi's",
+        "lexis",
+        "lexi's gourmet sandwiches",
+        "lexisgourmetsandwiches",
+        "lexis-gourmet-sandwiches"
+      ],
+      "cohort": "PGP TBM 2024",
+      "sector": "F&B",
+      "one_liner": "From a tiny kitchen to Gurgaon’s top gourmet sandwich brand.",
+      "founders": [
+        {
+          "name": "Naveen Balaji"
+        },
+        {
+          "name": "Rhea Melwani"
+        },
+        {
+          "name": "Alex Francis Puthusserry"
+        },
+        {
+          "name": "Ayush Melwani"
+        }
+      ],
+      "candidate_founders": [],
+      "pages": [
+        24,
+        25
+      ],
+      "assets": {
+        "logo": "assets/lexis/web_logo.png",
+        "logos": [
+          "assets/lexis/web_logo.png"
+        ],
+        "founder_photos": [
+          "assets/lexis/web_founder_0.jpg",
+          "assets/lexis/pdf_founder.jpg"
+        ]
+      },
+      "sources": [
+        "pdf",
+        "web"
+      ]
+    },
+    {
+      "slug": "memotag",
+      "name": "MemoTag",
+      "aliases": [
+        "memotag"
+      ],
+      "cohort": "UG TBM Co ’28 · Shark Tank India Season 4 · pitched as a first-year student, bootstrapped",
+      "sector": null,
+      "one_liner": "",
+      "founders": [
+        {
+          "name": "Reyansh Juneja"
+        }
+      ],
+      "candidate_founders": [],
+      "pages": [],
+      "assets": {
+        "logo": null,
+        "logos": [],
+        "founder_photos": [
+          "assets/memotag/web_founder_0.jpg"
+        ]
+      },
+      "sources": [
+        "web"
+      ]
+    },
+    {
+      "slug": "meta-fashion",
+      "name": "Meta Fashion",
+      "aliases": [
+        "meta fashion",
+        "metafashion",
+        "meta-fashion"
+      ],
+      "cohort": "UG TBM Co ’28 · Shark Tank India Season 5 · Phygital commerce",
+      "sector": null,
+      "one_liner": "Phygital commerce",
+      "founders": [
+        {
+          "name": "Arjun Goel"
+        }
+      ],
+      "candidate_founders": [],
+      "pages": [],
+      "assets": {
+        "logo": null,
+        "logos": [],
+        "founder_photos": [
+          "assets/meta-fashion/web_founder_0.jpg"
+        ]
+      },
+      "sources": [
+        "web"
+      ]
+    },
+    {
+      "slug": "moms-mixes",
+      "name": "Mom's Mixes",
+      "aliases": [
+        "mom's mixes",
+        "momsmixes",
+        "moms-mixes",
+        "moms",
+        "moms mixes"
+      ],
+      "cohort": "PGP TBM 2025",
+      "sector": "D2C / F&B",
+      "one_liner": "From homemade magic to modern kitchens: pure, artisanal spice blends.",
+      "founders": [
+        {
+          "name": "Anubhooti Jain"
+        }
+      ],
+      "candidate_founders": [],
+      "pages": [
+        36,
+        37
+      ],
+      "assets": {
+        "logo": "assets/moms-mixes/web_logo.png",
+        "logos": [
+          "assets/moms-mixes/web_logo.png"
+        ],
+        "founder_photos": [
+          "assets/moms-mixes/pdf_founder.jpg"
+        ]
+      },
+      "sources": [
+        "pdf",
+        "web"
+      ]
+    },
+    {
+      "slug": "monarque",
+      "name": "Monarque",
+      "aliases": [
+        "monarque"
+      ],
+      "cohort": "PGP TBM 2025",
+      "sector": "D2C",
+      "one_liner": "Makes luxury fragrances accessible and long-lasting.",
+      "founders": [
+        {
+          "name": "Sarthak Khanna"
+        }
+      ],
+      "candidate_founders": [],
+      "pages": [
+        38,
+        39
+      ],
+      "assets": {
+        "logo": "assets/monarque/web_logo.png",
+        "logos": [
+          "assets/monarque/web_logo.png"
+        ],
+        "founder_photos": [
+          "assets/monarque/pdf_founder.jpg"
+        ]
+      },
+      "sources": [
+        "pdf",
+        "web"
+      ]
+    },
+    {
+      "slug": "nexera-health",
+      "name": "Nexera Health",
+      "aliases": [
+        "nexera health",
+        "nexerahealth",
+        "nexera-health"
+      ],
+      "cohort": "CEO Challenge alum · Shark Tank India Season 4 · Workplace wellness",
+      "sector": null,
+      "one_liner": "Workplace wellness",
+      "founders": [
+        {
+          "name": "Himanshu Rajpurohit"
+        }
+      ],
+      "candidate_founders": [],
+      "pages": [],
+      "assets": {
+        "logo": null,
+        "logos": [],
+        "founder_photos": [
+          "assets/nexera-health/web_founder_0.jpg"
+        ]
+      },
+      "sources": [
+        "web"
+      ]
+    },
+    {
+      "slug": "nivara",
+      "name": "Nivara",
+      "aliases": [
+        "nivara"
+      ],
+      "cohort": "PGP TBM 2021",
+      "sector": "D2C",
+      "one_liner": "A diamond startup that’s redefining everyday luxury (lab-grown diamonds).",
+      "founders": [
+        {
+          "name": "Vikas Kabra"
+        }
+      ],
+      "candidate_founders": [
+        {
+          "name": "Soham Maheshwari"
+        }
+      ],
+      "pages": [
+        12,
+        13
+      ],
+      "assets": {
+        "logo": "assets/nivara/web_logo.png",
+        "logos": [
+          "assets/nivara/web_logo.png"
+        ],
+        "founder_photos": [
+          "assets/nivara/pdf_founder.jpg"
+        ]
+      },
+      "sources": [
+        "pdf",
+        "web"
+      ]
+    },
+    {
+      "slug": "offlyn",
+      "name": "Offlyn",
+      "aliases": [
+        "offlyn"
+      ],
+      "cohort": "PGP TBM 2024",
+      "sector": "Tech & SaaS",
+      "one_liner": "From idea to event — infrastructure for offline connection.",
+      "founders": [
+        {
+          "name": "Ayush Sinha"
+        }
+      ],
+      "candidate_founders": [],
+      "pages": [
+        30,
+        31
+      ],
+      "assets": {
+        "logo": "assets/offlyn/web_logo.png",
+        "logos": [
+          "assets/offlyn/web_logo.png"
+        ],
+        "founder_photos": [
+          "assets/offlyn/pdf_founder.jpg"
+        ]
+      },
+      "sources": [
+        "pdf",
+        "web"
+      ]
+    },
+    {
+      "slug": "pixel",
+      "name": "Pixel",
+      "aliases": [
+        "pixel"
+      ],
+      "cohort": "PGP TBM 2025",
+      "sector": "Services",
+      "one_liner": "Building India’s first business-focused, industry-led fashion school.",
+      "founders": [
+        {
+          "name": "Ahsan Afroz Khalique"
+        }
+      ],
+      "candidate_founders": [],
+      "pages": [
+        66,
+        67
+      ],
+      "assets": {
+        "logo": "assets/pixel/web_logo.png",
+        "logos": [
+          "assets/pixel/web_logo.png"
+        ],
+        "founder_photos": [
+          "assets/pixel/pdf_founder.jpg"
+        ]
+      },
+      "sources": [
+        "pdf",
+        "web"
+      ]
+    },
+    {
+      "slug": "playsuper",
+      "name": "PlaySuper",
+      "aliases": [
+        "playsuper"
+      ],
+      "cohort": "PGP TBM 2024",
+      "sector": "Tech & SaaS",
+      "one_liner": "Gaming grit: childhood friends building a rewards platform for game-studio retention.",
+      "founders": [
+        {
+          "name": "Upamanyu Chatterjee"
+        },
+        {
+          "name": "Shouradeep Chakraborty"
+        }
+      ],
+      "candidate_founders": [],
+      "pages": [
+        20,
+        21
+      ],
+      "assets": {
+        "logo": "assets/playsuper/web_logo.png",
+        "logos": [
+          "assets/playsuper/web_logo.png"
+        ],
+        "founder_photos": [
+          "assets/playsuper/web_founder_0.jpg",
+          "assets/playsuper/pdf_founder.jpg"
+        ]
+      },
+      "sources": [
+        "pdf",
+        "web"
+      ]
+    },
+    {
+      "slug": "saaha-india",
+      "name": "Saaha India",
+      "aliases": [
+        "saaha india",
+        "saahaindia",
+        "saaha-india",
+        "saaha"
+      ],
+      "cohort": "PGP TBM 2025",
+      "sector": "D2C",
+      "one_liner": "Turns Indian stories into collectible luxury.",
+      "founders": [
+        {
+          "name": "Jaishree Soni"
+        }
+      ],
+      "candidate_founders": [],
+      "pages": [
+        60,
+        61
+      ],
+      "assets": {
+        "logo": "assets/saaha-india/web_logo.png",
+        "logos": [
+          "assets/saaha-india/web_logo.png"
+        ],
+        "founder_photos": [
+          "assets/saaha-india/pdf_founder.jpg"
+        ]
+      },
+      "sources": [
+        "pdf",
+        "web"
+      ]
+    },
+    {
+      "slug": "seedsai",
+      "name": "SeedsAI",
+      "aliases": [
+        "seedsai"
+      ],
+      "cohort": "PGP TBM 2024",
+      "sector": "Tech & SaaS",
+      "one_liner": "Revolutionizing NBFCs with AI-driven voice intelligence and automation.",
+      "founders": [
+        {
+          "name": "Vansh Miglani"
+        },
+        {
+          "name": "Shubham Khatri"
+        }
+      ],
+      "candidate_founders": [],
+      "pages": [
+        18,
+        19
+      ],
+      "assets": {
+        "logo": "assets/seedsai/web_logo.png",
+        "logos": [
+          "assets/seedsai/web_logo.png"
+        ],
+        "founder_photos": [
+          "assets/seedsai/pdf_founder.jpg"
+        ]
+      },
+      "sources": [
+        "pdf",
+        "web"
+      ]
+    },
+    {
+      "slug": "shrnm",
+      "name": "Shrnm",
+      "aliases": [
+        "shrnm"
+      ],
+      "cohort": "PGP TBM 2021",
+      "sector": "D2C",
+      "one_liner": "Born from stillness, built to be your sanctuary (comfort / rest brand).",
+      "founders": [
+        {
+          "name": "Shivangi Dewani"
+        }
+      ],
+      "candidate_founders": [],
+      "pages": [
+        56,
+        57
+      ],
+      "assets": {
+        "logo": "assets/shrnm/web_logo.png",
+        "logos": [
+          "assets/shrnm/web_logo.png"
+        ],
+        "founder_photos": [
+          "assets/shrnm/pdf_founder.jpg"
+        ]
+      },
+      "sources": [
+        "pdf",
+        "web"
+      ]
+    },
+    {
+      "slug": "spawn-right",
+      "name": "Spawn Right",
+      "aliases": [
+        "spawn right",
+        "spawnright",
+        "spawn-right"
+      ],
+      "cohort": "PGP TBM 2025",
+      "sector": "Tech & SaaS",
+      "one_liner": "Making esports in India active, not just watched.",
+      "founders": [
+        {
+          "name": "Lokesh Gaingade"
+        },
+        {
+          "name": "Sanjana Nair"
+        }
+      ],
+      "candidate_founders": [],
+      "pages": [
+        46,
+        47
+      ],
+      "assets": {
+        "logo": "assets/spawn-right/web_logo.png",
+        "logos": [
+          "assets/spawn-right/web_logo.png"
+        ],
+        "founder_photos": [
+          "assets/spawn-right/pdf_founder.jpg"
+        ]
+      },
+      "sources": [
+        "pdf",
+        "web"
+      ]
+    },
+    {
+      "slug": "startt",
+      "name": "Startt",
+      "aliases": [
+        "startt"
+      ],
+      "cohort": "PGP TBM 2021",
+      "sector": "Tech & SaaS",
+      "one_liner": "Making funding frictionless for founders from the first step (discovery).",
+      "founders": [
+        {
+          "name": "Dhirendra Kumar"
+        },
+        {
+          "name": "Shauryaveer Saxena"
+        }
+      ],
+      "candidate_founders": [],
+      "pages": [
+        34,
+        35
+      ],
+      "assets": {
+        "logo": "assets/startt/web_logo.png",
+        "logos": [
+          "assets/startt/web_logo.png"
+        ],
+        "founder_photos": [
+          "assets/startt/pdf_founder.jpg"
+        ]
+      },
+      "sources": [
+        "pdf",
+        "web"
+      ]
+    },
+    {
+      "slug": "truebrands",
+      "name": "Truebrands",
+      "aliases": [
+        "truebrands",
+        "truebrandsindia",
+        "true brands",
+        "true-brands",
+        "true brands india",
+        "true-brands-india"
+      ],
+      "cohort": "PGP TBM 2025",
+      "sector": "D2C",
+      "one_liner": "Rescuing unsold fashion, redefining retail for aspiring India.",
+      "founders": [
+        {
+          "name": "Mukund Gupta"
+        }
+      ],
+      "candidate_founders": [],
+      "pages": [
+        52,
+        53
+      ],
+      "assets": {
+        "logo": "assets/truebrands/web_logo.png",
+        "logos": [
+          "assets/truebrands/web_logo.png"
+        ],
+        "founder_photos": [
+          "assets/truebrands/pdf_founder.jpg"
+        ]
+      },
+      "sources": [
+        "pdf",
+        "web"
+      ]
+    },
+    {
+      "slug": "vinyasa",
+      "name": "Vinyasa",
+      "aliases": [
+        "vinyasa"
+      ],
+      "cohort": "PGP TBM 2024",
+      "sector": "Tech & SaaS / Services",
+      "one_liner": "From breakdown to breakthrough — platform for the mental-health / therapy ecosystem.",
+      "founders": [
+        {
+          "name": "Divya Shah"
+        }
+      ],
+      "candidate_founders": [],
+      "pages": [
+        50,
+        51
+      ],
+      "assets": {
+        "logo": "assets/vinyasa/web_logo.png",
+        "logos": [
+          "assets/vinyasa/web_logo.png"
+        ],
+        "founder_photos": [
+          "assets/vinyasa/pdf_founder.jpg"
+        ]
+      },
+      "sources": [
+        "pdf",
+        "web"
+      ]
+    },
+    {
+      "slug": "witty-adverts",
+      "name": "Witty Adverts",
+      "aliases": [
+        "witty adverts",
+        "wittyadverts",
+        "witty-adverts"
+      ],
+      "cohort": "PGP TBM 2021",
+      "sector": "Services",
+      "one_liner": "Wit-driven campaigns that actually convert.",
+      "founders": [
+        {
+          "name": "Harpreet Kaur"
+        }
+      ],
+      "candidate_founders": [],
+      "pages": [
+        64,
+        65
+      ],
+      "assets": {
+        "logo": "assets/witty-adverts/web_logo.png",
+        "logos": [
+          "assets/witty-adverts/web_logo.png"
+        ],
+        "founder_photos": [
+          "assets/witty-adverts/pdf_founder.jpg"
+        ]
+      },
+      "sources": [
+        "pdf",
+        "web"
+      ]
+    },
+    {
+      "slug": "woodys-pizzeria",
+      "name": "Woody's Pizzeria",
+      "aliases": [
+        "woody's pizzeria",
+        "woodyspizzeria",
+        "woodys-pizzeria",
+        "woodys pizzeria"
+      ],
+      "cohort": "PGP TBM 2024",
+      "sector": "F&B",
+      "one_liner": "From 1 to 4.7 — Woody’s Pizza redemption; a slice of belief, baked to perfection.",
+      "founders": [
+        {
+          "name": "Kanav Rishi Kumar"
+        }
+      ],
+      "candidate_founders": [],
+      "pages": [
+        16,
+        17
+      ],
+      "assets": {
+        "logo": "assets/woodys-pizzeria/web_logo.png",
+        "logos": [
+          "assets/woodys-pizzeria/web_logo.png"
+        ],
+        "founder_photos": [
+          "assets/woodys-pizzeria/pdf_founder.jpg"
+        ]
+      },
+      "sources": [
+        "pdf",
+        "web"
+      ]
+    },
+    {
+      "slug": "yango",
+      "name": "Yango",
+      "aliases": [
+        "yango"
+      ],
+      "cohort": "PGP TBM 2025",
+      "sector": "D2C / F&B",
+      "one_liner": "From finance to food — reshaping kids’ nutrition.",
+      "founders": [
+        {
+          "name": "Sakshi Tuteja"
+        }
+      ],
+      "candidate_founders": [],
+      "pages": [
+        44,
+        45
+      ],
+      "assets": {
+        "logo": "assets/yango/web_logo.png",
+        "logos": [
+          "assets/yango/web_logo.png"
+        ],
+        "founder_photos": [
+          "assets/yango/pdf_founder.jpg"
+        ]
+      },
+      "sources": [
+        "pdf",
+        "web"
+      ]
+    }
+  ]
+}

@@ -51,6 +51,10 @@ class Settings(BaseSettings):
     openrouter_api_key: str = ""
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     openrouter_model: str = "anthropic/claude-sonnet-4"
+    # Cheap structured chores (startup catalog aliases / ingest helpers).
+    startup_llm_model: str = "x-ai/grok-4-fast"
+    # Logo ANN against dfi_images (Gemini Embedding 2 cosine).
+    startup_logo_min_score: float = 0.72
     gemini_embedding_model: str = "models/gemini-embedding-2"
     gemini_file_search_store_display_name: str = "drive-connector-shared"
     gemini_upload_poll_seconds: float = 3.0

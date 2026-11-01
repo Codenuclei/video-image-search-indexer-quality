@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { FileImage, Gauge, ScanFace, Tag, Users } from "lucide-react";
+import Link from "next/link";
+import { FileImage, Gauge, Rocket, ScanFace, Tag, Users } from "lucide-react";
 import {
   apiClient,
   formatApiError,
@@ -112,10 +113,13 @@ export function ReviewPage({ embedded = false }: { embedded?: boolean } = {}) {
     return action?.clusterId === clusterId;
   }
 
-  async function nameCluster(id: number) {
+  async function nameCluster(id: number, explicitName?: string) {
     if (namingRef.current || action) return;
-    const name = names[id]?.trim();
+    const name = (explicitName ?? names[id] ?? "").trim();
     if (!name) return;
+    if (explicitName) {
+      setNames((prev) => ({ ...prev, [id]: explicitName }));
+    }
     namingRef.current = true;
     setAction({ type: "name", clusterId: id });
     setError(null);
@@ -307,9 +311,37 @@ export function ReviewPage({ embedded = false }: { embedded?: boolean } = {}) {
                         {c.appears_in.length} file{c.appears_in.length === 1 ? "" : "s"}
                       </span>
                     )}
+                    {c.startup && (
+                      <Link
+                        href={`/startups/${c.startup.startup_slug}`}
+                        className="inline-flex items-center gap-1 rounded-full bg-orange-500/15 px-2 py-0.5 text-[11px] font-semibold text-orange-700 transition-colors hover:bg-orange-500/25 dark:text-orange-300"
+                      >
+                        <Rocket size={11} aria-hidden />
+                        Founder of {c.startup.startup_name}
+                      </Link>
+                    )}
                   </div>
                 </div>
               </div>
+              {c.startup?.founder_candidates?.length ? (
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    Candidates
+                  </span>
+                  {c.startup.founder_candidates.map((candidate) => (
+                    <button
+                      key={candidate}
+                      type="button"
+                      disabled={busy}
+                      title={`Name this cluster ${candidate}`}
+                      onClick={() => void nameCluster(c.id, candidate)}
+                      className="rounded-full border border-orange-500/30 bg-orange-500/10 px-2.5 py-1 text-xs font-medium text-orange-800 transition-colors hover:bg-orange-500/20 disabled:pointer-events-none disabled:opacity-50 dark:text-orange-200"
+                    >
+                      {candidate}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
               <div className="flex flex-col gap-2 sm:flex-row">
                 <Input
                   className="flex-1"

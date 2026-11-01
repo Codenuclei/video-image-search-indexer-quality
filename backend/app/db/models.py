@@ -969,3 +969,99 @@ class CollectionView(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
+
+class Startup(Base):
+    """Student startup imported from the entrepreneurship catalog."""
+
+    __tablename__ = "startups"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    slug: Mapped[str] = mapped_column(String(128), nullable=False, unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(256), nullable=False, index=True)
+    aliases: Mapped[list | dict | None] = mapped_column(JSONB, nullable=True)
+    cohort: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    sector: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    one_liner: Mapped[str | None] = mapped_column(Text, nullable=True)
+    logo_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    founders: Mapped[list["StartupFounder"]] = relationship(
+        back_populates="startup", cascade="all, delete-orphan"
+    )
+    face_clusters: Mapped[list["StartupFaceCluster"]] = relationship(
+        back_populates="startup", cascade="all, delete-orphan"
+    )
+    logo_refs: Mapped[list["StartupLogoRef"]] = relationship(
+        back_populates="startup", cascade="all, delete-orphan"
+    )
+
+
+class StartupFounder(Base):
+    """Named founder text from the catalog; person_id filled after review naming."""
+
+    __tablename__ = "startup_founders"
+    __table_args__ = (
+        UniqueConstraint("startup_id", "founder_name", name="uq_startup_founder_name"),
+        Index("ix_startup_founders_person_id", "person_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    startup_id: Mapped[int] = mapped_column(
+        ForeignKey("startups.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    founder_name: Mapped[str] = mapped_column(String(256), nullable=False)
+    person_id: Mapped[int | None] = mapped_column(
+        ForeignKey("persons.id", ondelete="SET NULL"), nullable=True
+    )
+    is_candidate: Mapped[bool] = mapped_column(default=False, nullable=False, server_default="false")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    startup: Mapped[Startup] = relationship(back_populates="founders")
+    person: Mapped[Person | None] = relationship()
+
+
+class StartupFaceCluster(Base):
+    """Links a startup to an unnamed (or later named) founder face cluster."""
+
+    __tablename__ = "startup_face_clusters"
+    __table_args__ = (
+        UniqueConstraint("startup_id", "cluster_id", name="uq_startup_face_cluster"),
+        Index("ix_startup_face_clusters_cluster_id", "cluster_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    startup_id: Mapped[int] = mapped_column(
+        ForeignKey("startups.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    cluster_id: Mapped[int] = mapped_column(
+        ForeignKey("face_clusters.id", ondelete="CASCADE"), nullable=False
+    )
+    source_asset: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    similarity: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    startup: Mapped[Startup] = relationship(back_populates="face_clusters")
+    cluster: Mapped[FaceCluster] = relationship()
+
+
+class StartupLogoRef(Base):
+    """Reference logo embedding (Gemini Embedding 2) for visual logo search."""
+
+    __tablename__ = "startup_logo_refs"
+    __table_args__ = (
+        UniqueConstraint("startup_id", "asset_path", name="uq_startup_logo_ref_asset"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    startup_id: Mapped[int] = mapped_column(
+        ForeignKey("startups.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    asset_path: Mapped[str] = mapped_column(String(512), nullable=False)
+    embedding: Mapped[list[float]] = mapped_column(Vector(BODY_EMBEDDING_DIM), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    startup: Mapped[Startup] = relationship(back_populates="logo_refs")
+

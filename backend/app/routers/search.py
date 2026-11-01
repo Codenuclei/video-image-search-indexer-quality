@@ -13,7 +13,13 @@ from app.config import get_settings
 from app.db.app_settings_store import refresh_runtime_settings_from_db
 from app.db.session import get_db, get_session_factory
 from app.runtime_settings import get_runtime_settings
-from app.schemas import SearchMoment, SearchResponse, SearchResultFile
+from app.schemas import SearchMoment, SearchResponse, SearchResultFile, SearchStartupRef
+from app.startups.resolve import (
+    resolve_startups_in_query,
+    startups_for_person_names,
+    strip_startup_terms,
+)
+from app.startups.search import gather_startup_hits, startup_hits_to_files
 from app.gemini.service import SearchCitation, get_gemini_service
 from app.gemini.caption_filter import filter_images_by_caption_llm
 from app.gemini.rerank import rerank_image_files
@@ -223,6 +229,7 @@ async def search(
     source: str | None = None,
     rerank: bool = True,
     captions: bool = False,
+    startup_filter: str | None = None,
     search_id: str | None = None,
     session: AsyncSession = Depends(get_db),
 ) -> SearchResponse:
@@ -236,6 +243,7 @@ async def search(
     mime_filter = (mime or "all").strip().lower()
     source_raw = (source or "all").strip().lower()
     source_filter: str | None = source_raw
+    startup_mode = (startup_filter or "all").strip().lower()
     active_search_id = (search_id or "").strip() or None
     user_email = optional_bearer_email(request.headers.get("authorization"))
     forwarded = (request.headers.get("x-forwarded-for") or "").split(",", 1)[0].strip()
@@ -255,6 +263,10 @@ async def search(
             raise HTTPException(status_code=400, detail="source must be all, youtube, or drive")
         if source_raw == "all":
             source_filter = None
+        if startup_mode not in ("all", "founders", "logo"):
+            raise HTTPException(
+                status_code=400, detail="startup_filter must be all, founders, or logo"
+            )
 
         await register_search(active_search_id)
         try:
@@ -268,6 +280,7 @@ async def search(
                 rerank=rerank,
                 captions=captions,
                 checkpoint=_checkpoint,
+                startup_filter=startup_mode,
             )
             return audit_response
         finally:
@@ -439,6 +452,7 @@ async def _run_search(
     checkpoint,
     skip_cache: bool = False,
     retrieval_policy: str = "default",
+    startup_filter: str = "all",
 ) -> SearchResponse:
     # Settings are persisted globally; refresh this worker before cache lookup
     # so an admin threshold change takes effect on the next search everywhere.
@@ -489,6 +503,26 @@ async def _run_search(
             logger.debug("search cache embed/semantic lookup skipped", exc_info=True)
 
     effective_persons, visual_query, role_ctx = await resolve_search_context(session, query, person)
+    await checkpoint()
+
+    resolved_startups = await resolve_startups_in_query(
+        session, query, person_names=effective_persons
+    )
+    if not resolved_startups and effective_persons:
+        resolved_startups = await startups_for_person_names(session, effective_persons)
+    startup_refs = [
+        SearchStartupRef(
+            id=s.id, slug=s.slug, name=s.name, matched_term=s.matched_term
+        )
+        for s in resolved_startups
+    ]
+    if resolved_startups and not effective_persons:
+        visual_query = strip_startup_terms(visual_query or query, resolved_startups) or visual_query
+    startup_focused = bool(
+        resolved_startups
+        and not effective_persons
+        and is_weak_person_visual(visual_query or "", [s.name for s in resolved_startups])
+    )
     await checkpoint()
 
     student_role_action = (
@@ -578,6 +612,7 @@ async def _run_search(
             citations=[],
             moments=moments,
             cache="miss",
+            startups=startup_refs,
         )
         try:
             await store_search_cache(
@@ -702,6 +737,47 @@ async def _run_search(
                 )
             else:
                 files = vector_image_files or local_files
+
+    startup_files: list[SearchResultFile] = []
+    if resolved_startups and mime_filter != "video":
+        include_founders = startup_filter in ("all", "founders")
+        include_logos = startup_filter in ("all", "logo")
+        hits = await gather_startup_hits(
+            session,
+            resolved_startups,
+            include_founders=include_founders,
+            include_logos=include_logos,
+        )
+        startup_files = await startup_hits_to_files(session, hits)
+        await checkpoint()
+        if startup_focused:
+            # Startup name search: founders OR logos are ground truth.
+            files = startup_files
+        elif startup_files:
+            by_id = {f.drive_file_id: f for f in files}
+            for sf in startup_files:
+                existing = by_id.get(sf.drive_file_id)
+                if existing is None:
+                    files.append(sf)
+                    by_id[sf.drive_file_id] = sf
+                else:
+                    reasons = list(
+                        dict.fromkeys(
+                            [*(existing.match_reasons or []), *(sf.match_reasons or [])]
+                        )
+                    )
+                    score = existing.score
+                    if sf.score is not None and (score is None or sf.score > score):
+                        score = sf.score
+                    updated = existing.model_copy(
+                        update={"match_reasons": reasons, "score": score}
+                    )
+                    files = [
+                        updated if f.drive_file_id == existing.drive_file_id else f
+                        for f in files
+                    ]
+                    by_id[sf.drive_file_id] = updated
+
     files = filter_by_mime(files, mime_filter)
 
     # Scope to folder if requested (skip for root "/" — that means all files)
@@ -709,7 +785,7 @@ async def _run_search(
         fp = folder_path.strip().rstrip("/")
         files = [f for f in files if f.path.startswith(fp + "/") or f.path == fp]
 
-    if effective_persons:
+    if effective_persons and not startup_focused:
         files = filter_to_tagged_persons(files, effective_persons)
         if len(effective_persons) > 1:
             files = boost_multi_person_scores(files, effective_persons)
@@ -954,6 +1030,7 @@ async def _run_search(
         citations=[],
         moments=moments,
         cache="miss",
+        startups=startup_refs,
     )
     if not skip_cache:
         try:

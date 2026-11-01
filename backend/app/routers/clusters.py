@@ -5,11 +5,28 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.db.models import ClusterStatus, DriveFile, Face, FaceCluster, Media
+from app.db.models import (
+    ClusterStatus,
+    DriveFile,
+    Face,
+    FaceCluster,
+    Media,
+    Startup,
+    StartupFaceCluster,
+    StartupFounder,
+)
 from app.db.session import get_db
 from app.matching.service import ignore_cluster, merge_cluster_into_person, name_cluster
 from app.routers.persons import _serialize_person
-from app.schemas import ClusterListResponse, ClusterOut, MediaOccurrence, MergeClusterRequest, NameClusterRequest, PersonOut
+from app.schemas import (
+    ClusterListResponse,
+    ClusterOut,
+    MediaOccurrence,
+    MergeClusterRequest,
+    NameClusterRequest,
+    PersonOut,
+    StartupClusterContext,
+)
 
 router = APIRouter(prefix="/clusters", tags=["clusters"])
 
@@ -56,6 +73,7 @@ async def _build_cluster_out(session: AsyncSession, cluster: FaceCluster) -> Clu
         rep_face = await session.get(Face, cluster.representative_face_id)
         representative_confidence = rep_face.detection_confidence if rep_face else None
 
+    startup_ctx = await _startup_contexts(session, [cluster.id])
     return ClusterOut(
         id=cluster.id,
         status=cluster.status.value,
@@ -64,6 +82,7 @@ async def _build_cluster_out(session: AsyncSession, cluster: FaceCluster) -> Clu
         representative_confidence=representative_confidence,
         appears_in=appears_in,
         created_at=cluster.created_at,
+        startup=startup_ctx.get(cluster.id),
     )
 
 
@@ -144,6 +163,7 @@ async def _build_cluster_outs(
             ).all()
         }
 
+    startup_ctx = await _startup_contexts(session, cluster_ids)
     return [
         ClusterOut(
             id=cluster.id,
@@ -153,9 +173,64 @@ async def _build_cluster_outs(
             representative_confidence=confidences.get(cluster.representative_face_id),
             appears_in=occurrences.get(cluster.id, []),
             created_at=cluster.created_at,
+            startup=startup_ctx.get(cluster.id),
         )
         for cluster in clusters
     ]
+
+
+async def _startup_contexts(
+    session: AsyncSession,
+    cluster_ids: list[int],
+) -> dict[int, StartupClusterContext]:
+    if not cluster_ids:
+        return {}
+    rows = (
+        await session.execute(
+            select(StartupFaceCluster, Startup)
+            .join(Startup, Startup.id == StartupFaceCluster.startup_id)
+            .where(StartupFaceCluster.cluster_id.in_(cluster_ids))
+        )
+    ).all()
+    if not rows:
+        return {}
+    startup_ids = list({startup.id for _link, startup in rows})
+    founders = (
+        await session.execute(
+            select(StartupFounder).where(StartupFounder.startup_id.in_(startup_ids))
+        )
+    ).scalars().all()
+    by_startup: dict[int, list[str]] = {}
+    for founder in founders:
+        by_startup.setdefault(founder.startup_id, []).append(founder.founder_name)
+
+    out: dict[int, StartupClusterContext] = {}
+    for link, startup in rows:
+        if link.cluster_id in out:
+            continue
+        candidates = [
+            name
+            for name in by_startup.get(startup.id, [])
+        ]
+        # Prefer non-candidate names first while keeping order stable.
+        primary = [
+            f.founder_name
+            for f in founders
+            if f.startup_id == startup.id and not f.is_candidate
+        ]
+        secondary = [
+            f.founder_name
+            for f in founders
+            if f.startup_id == startup.id and f.is_candidate
+        ]
+        out[int(link.cluster_id)] = StartupClusterContext(
+            startup_id=startup.id,
+            startup_slug=startup.slug,
+            startup_name=startup.name,
+            source_asset=link.source_asset,
+            founder_candidates=primary or secondary or candidates,
+        )
+    return out
 
 
 @router.get("", response_model=ClusterListResponse)

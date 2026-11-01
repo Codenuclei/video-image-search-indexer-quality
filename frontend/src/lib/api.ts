@@ -150,6 +150,14 @@ export type Person = {
   created_at: string;
 };
 
+export type ClusterStartup = {
+  startup_id: number;
+  startup_slug: string;
+  startup_name: string;
+  source_asset?: string | null;
+  founder_candidates: string[];
+};
+
 export type Cluster = {
   id: number;
   status: string;
@@ -166,7 +174,56 @@ export type Cluster = {
     duration_seconds?: number | null;
   }[];
   created_at: string;
+  startup?: ClusterStartup | null;
 };
+
+export type StartupFounder = {
+  id: number;
+  founder_name: string;
+  person_id: number | null;
+  person_name: string | null;
+  is_candidate: boolean;
+};
+
+export type StartupFaceCluster = {
+  cluster_id: number;
+  status: string;
+  member_count: number;
+  source_asset: string | null;
+  similarity: number | null;
+  person_id: number | null;
+  person_name: string | null;
+};
+
+export type Startup = {
+  id: number;
+  slug: string;
+  name: string;
+  aliases: string[];
+  cohort: string | null;
+  sector: string | null;
+  one_liner: string | null;
+  logo_path: string | null;
+  founders: StartupFounder[];
+  face_clusters: StartupFaceCluster[];
+  logo_ref_count: number;
+};
+
+export type StartupListResponse = {
+  items: Startup[];
+  total: number;
+  catalog_present: boolean;
+  catalog_count: number;
+};
+
+export type SearchStartupRef = {
+  id: number;
+  slug: string;
+  name: string;
+  matched_term?: string | null;
+};
+
+export type StartupFilter = "all" | "founders" | "logo";
 
 export type ClusterListResponse = {
   items: Cluster[];
@@ -583,6 +640,7 @@ export type SearchResultFile = {
   score?: number | null;
   caption?: string | null;
   matched_objects?: ObjectEvidence[];
+  match_reasons?: string[];
 };
 
 export type SearchMoment = {
@@ -600,6 +658,7 @@ export type SearchMoment = {
   snippet?: string | null;
   score?: number | null;
   matched_objects?: ObjectEvidence[];
+  match_reasons?: string[];
 };
 
 export type SearchResponse = {
@@ -609,6 +668,7 @@ export type SearchResponse = {
   files: SearchResultFile[];
   moments: SearchMoment[];
   cache?: "exact" | "semantic" | "miss" | null;
+  startups?: SearchStartupRef[];
 };
 
 export type CarouselPresetItem = {
@@ -1313,6 +1373,20 @@ export const driveVideoStreamUrl = (driveFileId: string) =>
 export const apiAssetUrl = (path: string) =>
   path.startsWith("http") ? path : `${API_BASE}${path}`;
 
+/** Catalog logo / founder photo. `logo_path` is usually `assets/{slug}/web_logo.png`. */
+export function startupAssetUrl(logoPath: string | null | undefined): string | null {
+  if (!logoPath?.trim()) return null;
+  const trimmed = logoPath.trim().replace(/^\/+/, "");
+  const afterAssets = trimmed.replace(/^assets\//, "");
+  if (!afterAssets) return null;
+  const encoded = afterAssets
+    .split("/")
+    .filter(Boolean)
+    .map((segment) => encodeURIComponent(segment))
+    .join("/");
+  return `${API_BASE}/startups/asset/${encoded}`;
+}
+
 /** Ready carousel previews must never fall back to on-demand video extraction. */
 export const cacheOnlyAssetUrl = (path: string) => {
   const asset = apiAssetUrl(path);
@@ -1438,6 +1512,18 @@ export type FaceReverseSearchResult = {
 export const apiClient = {
   health: () =>
     api<{ status: string; search?: string; fennec_enabled?: boolean; fennec_ready?: boolean }>("/health"),
+  listStartups: () => api<StartupListResponse>("/startups"),
+  getStartup: (slug: string) =>
+    api<Startup>(`/startups/by-slug/${encodeURIComponent(slug)}`),
+  ingestStartups: (opts?: { wait?: boolean }) => {
+    const params = new URLSearchParams();
+    if (opts?.wait) params.set("wait", "true");
+    const qs = params.toString();
+    return api<{ ok: boolean; stats: Record<string, unknown> }>(
+      `/startups/ingest${qs ? `?${qs}` : ""}`,
+      { method: "POST" }
+    );
+  },
   persons: (opts?: { silent?: boolean }) =>
     api<Person[]>("/persons", { silent: opts?.silent }),
   searchPersons: (q: string, limit = 20, opts?: { silent?: boolean }) => {
@@ -2089,10 +2175,16 @@ export const apiClient = {
     }),
   // Shared visual search: images via Qdrant embeddings; videos (mime=video) via
   // Gemini frame embeddings + Qdrant + optional VLM rerank. Carousel uses mime=video.
-  search: async (q: string, person?: string, mime?: string): Promise<SearchResponse> => {
+  search: async (
+    q: string,
+    person?: string,
+    mime?: string,
+    startupFilter?: StartupFilter
+  ): Promise<SearchResponse> => {
     const params = new URLSearchParams({ q });
     if (person?.trim()) params.set("person", person.trim());
     if (mime && mime !== "all") params.set("mime", mime);
+    if (startupFilter && startupFilter !== "all") params.set("startup_filter", startupFilter);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 900_000);
     try {
@@ -2117,6 +2209,8 @@ export const apiClient = {
         citations: Array.isArray(raw.citations) ? raw.citations.filter(Boolean) : [],
         files: Array.isArray(raw.files) ? raw.files.filter(Boolean) : [],
         moments: Array.isArray(raw.moments) ? raw.moments.filter(Boolean) : [],
+        cache: raw.cache ?? null,
+        startups: Array.isArray(raw.startups) ? raw.startups.filter(Boolean) : [],
       };
     } catch (e) {
       if (e instanceof Error && e.name === "AbortError") {

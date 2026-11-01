@@ -186,6 +186,21 @@ async def name_cluster(session: AsyncSession, cluster_id: int, name: str) -> Per
     person.representative_face_id = cluster.representative_face_id
 
     await _queue_gemini_refresh_for_faces(session, face_ids)
+    try:
+        from app.startups.search import link_person_to_startup_founders
+
+        await link_person_to_startup_founders(
+            session,
+            person_id=person.id,
+            person_name=person.name,
+            cluster_id=cluster_id,
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "startup founder link after name_cluster failed cluster=%s",
+            cluster_id,
+            exc_info=True,
+        )
     await session.flush()
     return person
 
@@ -359,6 +374,21 @@ async def merge_cluster_into_person(session: AsyncSession, cluster_id: int, pers
     cluster.person_id = person.id
     cluster.status = ClusterStatus.NAMED
     await _queue_gemini_refresh_for_faces(session, face_ids)
+    try:
+        from app.startups.search import link_person_to_startup_founders
+
+        await link_person_to_startup_founders(
+            session,
+            person_id=person.id,
+            person_name=person.name,
+            cluster_id=cluster_id,
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "startup founder link after merge_cluster failed cluster=%s",
+            cluster_id,
+            exc_info=True,
+        )
     await session.flush()
     return person
 

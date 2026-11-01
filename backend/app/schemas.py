@@ -201,6 +201,16 @@ class MediaOccurrence(BaseModel):
     duration_seconds: float | None = None
 
 
+class StartupClusterContext(BaseModel):
+    """Present when an unnamed cluster is linked to a catalog startup."""
+
+    startup_id: int
+    startup_slug: str
+    startup_name: str
+    source_asset: str | None = None
+    founder_candidates: list[str] = []
+
+
 class ClusterOut(BaseModel):
     id: int
     status: str
@@ -209,6 +219,7 @@ class ClusterOut(BaseModel):
     representative_confidence: float | None = None
     appears_in: list[MediaOccurrence]
     created_at: datetime
+    startup: StartupClusterContext | None = None
 
     model_config = {"from_attributes": True}
 
@@ -335,6 +346,7 @@ class SearchResultFile(BaseModel):
     score: float | None = None
     caption: str | None = None
     matched_objects: list[ObjectEvidence] = []
+    match_reasons: list[str] = []
 
 
 class SearchMoment(BaseModel):
@@ -352,6 +364,14 @@ class SearchMoment(BaseModel):
     snippet: str | None = None
     score: float | None = None
     matched_objects: list[ObjectEvidence] = []
+    match_reasons: list[str] = []
+
+
+class SearchStartupRef(BaseModel):
+    id: int
+    slug: str
+    name: str
+    matched_term: str | None = None
 
 
 class SearchResponse(BaseModel):
@@ -361,6 +381,7 @@ class SearchResponse(BaseModel):
     files: list[SearchResultFile] = []
     moments: list[SearchMoment] = []
     cache: str | None = None
+    startups: list[SearchStartupRef] = []
 
 
 class IndexedFolderOut(BaseModel):

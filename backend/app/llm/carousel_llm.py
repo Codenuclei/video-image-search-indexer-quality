@@ -40,6 +40,8 @@ OPENROUTER_MODEL_OPTIONS: list[dict[str, str]] = [
     {"id": "anthropic/claude-sonnet-4", "label": "Claude Sonnet 4", "provider": "openrouter"},
     {"id": "google/gemini-2.5-pro", "label": "Gemini 2.5 Pro", "provider": "openrouter"},
     {"id": "openai/gpt-4.1", "label": "GPT-4.1", "provider": "openrouter"},
+    {"id": "x-ai/grok-4-fast", "label": "Grok 4 Fast", "provider": "openrouter"},
+    {"id": "x-ai/grok-4.1-fast", "label": "Grok 4.1 Fast", "provider": "openrouter"},
 ]
 
 GEMINI_MODEL_OPTIONS: list[dict[str, str]] = [

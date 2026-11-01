@@ -50,6 +50,7 @@ from app.routers import (
     search,
     search_audit,
     settings,
+    startups,
     transcripts,
     webhooks,
     youtube,
@@ -564,6 +565,7 @@ app.include_router(settings.router)
 app.include_router(persons.router)
 app.include_router(clusters.router)
 app.include_router(faces.router)
+app.include_router(startups.router)
 app.include_router(face_gpu_pull.router)
 app.include_router(media.router)
 app.include_router(folder_contexts.router)

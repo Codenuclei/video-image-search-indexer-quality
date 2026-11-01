@@ -14,6 +14,7 @@ import {
   type SearchMoment,
   type SearchResponse,
   type SearchResultFile,
+  type StartupFilter,
 } from "@/lib/api";
 import { toastApiError } from "@/lib/toast-api-error";
 import { readCache, writeCache, hydrateKeyFromDisk } from "@/lib/data-cache";
@@ -42,6 +43,7 @@ export type SearchSession = {
   q: string;
   person: string;
   mime: string;
+  startupFilter: StartupFilter;
   folderPath: string;
   rerank: boolean;
   useCaptions: boolean;
@@ -63,6 +65,7 @@ const initial: SearchSession = {
   q: "",
   person: "",
   mime: "all",
+  startupFilter: "all",
   folderPath: "",
   rerank: true,
   useCaptions: false,
@@ -327,7 +330,7 @@ export function cancelSearch(options?: {
   inFlight = null;
   abortInFlightHttp();
   patchSearchSession({
-    ...(clearQuery ? { q: "" } : {}),
+    ...(clearQuery ? { q: "", startupFilter: "all" as const } : {}),
     ...(clearResults
       ? {
           results: null,
@@ -412,6 +415,9 @@ export function runSearch(options?: RunSearchOptions) {
   const params = new URLSearchParams({ q, search_id: searchId });
   if (person) params.set("person", person);
   if (mime !== "all") params.set("mime", mime);
+  if (current.startupFilter && current.startupFilter !== "all") {
+    params.set("startup_filter", current.startupFilter);
+  }
   if (current.folderPath) params.set("folder_path", current.folderPath);
   if (!current.rerank) params.set("rerank", "false");
   if (current.useCaptions) params.set("captions", "true");
@@ -420,6 +426,9 @@ export function runSearch(options?: RunSearchOptions) {
   const cacheParams = new URLSearchParams({ q });
   if (person) cacheParams.set("person", person);
   if (mime !== "all") cacheParams.set("mime", mime);
+  if (current.startupFilter && current.startupFilter !== "all") {
+    cacheParams.set("startup_filter", current.startupFilter);
+  }
   if (current.folderPath) cacheParams.set("folder_path", current.folderPath);
   if (!current.rerank) cacheParams.set("rerank", "false");
   if (current.useCaptions) cacheParams.set("captions", "true");
