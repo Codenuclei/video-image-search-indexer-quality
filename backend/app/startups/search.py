@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
+import threading
+import time
 from dataclasses import dataclass
 
 from sqlalchemy import exists, or_, select
@@ -215,20 +218,104 @@ async def _logo_ocr_hits(session: AsyncSession, startup: ResolvedStartup) -> lis
     ]
 
 
+_CAPTION_SNAPSHOT_TTL_S = 300.0
+_caption_snapshot: tuple[float, list[tuple[str, str]]] | None = None
+_caption_snapshot_lock = threading.Lock()
+
+
+def _all_captions_sync() -> list[tuple[str, str]]:
+    """(drive_file_id, caption) for every caption point, cached briefly."""
+    global _caption_snapshot
+    with _caption_snapshot_lock:
+        now = time.monotonic()
+        if _caption_snapshot and now - _caption_snapshot[0] < _CAPTION_SNAPSHOT_TTL_S:
+            return _caption_snapshot[1]
+        from app.qdrant.image_captions import _client
+
+        collection = get_settings().qdrant_image_captions_collection
+        rows: list[tuple[str, str]] = []
+        offset = None
+        while True:
+            points, offset = _client().scroll(
+                collection_name=collection,
+                limit=1000,
+                offset=offset,
+                with_payload=True,
+                with_vectors=False,
+            )
+            for point in points:
+                payload = point.payload or {}
+                fid = payload.get("drive_file_id")
+                caption = str(payload.get("caption") or "")
+                if fid and caption:
+                    rows.append((str(fid), caption))
+            if offset is None:
+                break
+        _caption_snapshot = (now, rows)
+        return rows
+
+
+def _name_pattern(term: str) -> re.Pattern[str] | None:
+    tokens = re.findall(r"[a-z0-9]+", term.lower())
+    if not tokens or len("".join(tokens)) < 3:
+        return None
+    body = r"[\s\-'’.&]*".join(re.escape(t) for t in tokens)
+    return re.compile(rf"(?<![a-z0-9]){body}(?![a-z0-9])", re.IGNORECASE)
+
+
+def caption_mentions_startup(caption: str, name: str, aliases: list[str]) -> bool:
+    """True when a caption names the startup as a brand.
+
+    Multi-word names match case-insensitively. Single-word names ("Eight",
+    "Pixel") are ordinary words too, so they only count when written as a
+    brand: inside quotes or in all caps.
+    """
+    multi_word = len(re.findall(r"[a-z0-9]+", name.lower())) > 1
+    for term in {name, *aliases}:
+        pattern = _name_pattern(term)
+        if pattern is None:
+            continue
+        for match in pattern.finditer(caption):
+            if multi_word:
+                return True
+            text = match.group(0)
+            if text.isupper() and len(text) >= 3:
+                return True
+            before = caption[: match.start()]
+            if before.count('"') % 2 == 1 or before.count("“") > before.count("”"):
+                return True
+    return False
+
+
+async def _caption_mention_hits(startup: ResolvedStartup) -> list[StartupHit]:
+    try:
+        captions = await asyncio.to_thread(_all_captions_sync)
+    except Exception:  # noqa: BLE001
+        logger.warning("startup caption scan failed slug=%s", startup.slug, exc_info=True)
+        return []
+    return [
+        StartupHit(drive_file_id=fid, match_reason="logo", score=None)
+        for fid, caption in captions
+        if caption_mentions_startup(caption, startup.name, startup.aliases)
+    ]
+
+
 async def _logo_caption_hits(startup: ResolvedStartup) -> list[StartupHit]:
-    """Caption ANN for 'X logo' style queries."""
+    """Caption ANN for 'X logo' style queries, plus captions naming the brand."""
     try:
         from app.gemini.video_embeddings import embed_text_sync
         from app.qdrant.image_captions import search_captions_sync
     except Exception:  # noqa: BLE001
-        return []
+        return await _caption_mention_hits(startup)
 
     queries = [
         f"{startup.name} logo",
         f"{startup.name} brand",
         startup.name,
     ]
-    hits: dict[str, float] = {}
+    hits: dict[str, float] = {
+        hit.drive_file_id: 1.0 for hit in await _caption_mention_hits(startup)
+    }
     for q in queries:
         try:
             vec = await asyncio.to_thread(embed_text_sync, q)

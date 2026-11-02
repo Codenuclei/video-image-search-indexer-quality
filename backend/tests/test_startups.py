@@ -16,7 +16,26 @@ from app.startups.resolve import (
     find_startup_matches_in_query,
     strip_startup_terms,
 )
-from app.startups.search import link_person_to_startup_founders, logo_score_cutoff
+from app.startups.search import (
+    caption_mentions_startup,
+    link_person_to_startup_founders,
+    logo_score_cutoff,
+)
+
+
+def test_caption_mention_multi_word_any_case():
+    cap = 'Two jars labeled "eat atlas" and BHUTAN SPICY DIP on a pedestal.'
+    assert caption_mentions_startup(cap, "Eat Atlas", ["eatatlas"])
+    assert caption_mentions_startup("Jars labeled EAT ATLAS.", "Eat Atlas", [])
+    assert caption_mentions_startup("A Woodys Pizzeria box.", "Woody's Pizzeria", [])
+    assert not caption_mentions_startup("A great atlas of eateries.", "Eat Atlas", [])
+
+
+def test_caption_mention_single_word_needs_brand_styling():
+    assert not caption_mentions_startup("Eight people sit at a table.", "EIGHT", [])
+    assert not caption_mentions_startup("A pixel art poster.", "Pixel", [])
+    assert caption_mentions_startup('A banner reading "Pixel" on stage.', "Pixel", [])
+    assert caption_mentions_startup("A cup with the EIGHT logo.", "EIGHT", [])
 
 
 def test_flatten_logo_puts_dark_transparent_mark_on_white():
