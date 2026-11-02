@@ -25,6 +25,9 @@ async def _main() -> int:
     parser = argparse.ArgumentParser(description="Ingest startups catalog")
     parser.add_argument("--no-logos", action="store_true", help="Skip logo embeddings")
     parser.add_argument("--no-faces", action="store_true", help="Skip founder face linking")
+    parser.add_argument(
+        "--refresh-logos", action="store_true", help="Delete and re-embed all logo refs"
+    )
     args = parser.parse_args()
 
     from app.db.session import get_session_factory
@@ -38,6 +41,7 @@ async def _main() -> int:
             session,
             embed_logos=not args.no_logos,
             link_faces=not args.no_faces,
+            refresh_logos=args.refresh_logos,
         )
     print(json.dumps(stats.as_dict(), indent=2))
     return 0 if not stats.errors else 1

@@ -126,6 +126,23 @@ async def _founder_drive_ids(
     return [StartupHit(drive_file_id=fid, match_reason=reason, score=0.9) for fid in drive_ids]
 
 
+LOGO_ANN_POOL = 80
+LOGO_NOISE_MARGIN = 0.06
+
+
+def logo_score_cutoff(scores: list[float], min_score: float) -> float:
+    """Keep only hits that stand out from the pool's background similarity.
+
+    Logo embeddings score every image in a narrow band; a real logo sighting
+    must clear both the absolute floor and the pool median by a margin.
+    """
+    if not scores:
+        return min_score
+    ordered = sorted(scores)
+    median = ordered[len(ordered) // 2]
+    return max(min_score, median + LOGO_NOISE_MARGIN)
+
+
 async def _logo_ann_hits(session: AsyncSession, startup: ResolvedStartup) -> list[StartupHit]:
     refs = list(
         (
@@ -146,16 +163,17 @@ async def _logo_ann_hits(session: AsyncSession, startup: ResolvedStartup) -> lis
             rows = await asyncio.to_thread(
                 search_images_sync,
                 list(ref.embedding),
-                limit=40,
-                min_score=min_score,
+                limit=LOGO_ANN_POOL,
+                min_score=0.0,
             )
         except Exception:  # noqa: BLE001
             logger.warning("startup logo ANN failed slug=%s", startup.slug, exc_info=True)
             continue
+        cutoff = logo_score_cutoff([float(r.get("score") or 0.0) for r in rows], min_score)
         for row in rows:
             fid = row.get("drive_file_id")
             score = float(row.get("score") or 0.0)
-            if not fid:
+            if not fid or score < cutoff:
                 continue
             hits[fid] = max(hits.get(fid, 0.0), score)
     return [

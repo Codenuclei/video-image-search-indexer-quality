@@ -7,14 +7,43 @@ from types import SimpleNamespace
 import pytest
 
 from app.startups.catalog import load_catalog
-from app.startups.ingest import IngestStats
+import numpy as np
+
+from app.startups.ingest import IngestStats, flatten_logo
 from app.startups.paths import catalog_path
 from app.startups.resolve import (
     ResolvedStartup,
     find_startup_matches_in_query,
     strip_startup_terms,
 )
-from app.startups.search import link_person_to_startup_founders
+from app.startups.search import link_person_to_startup_founders, logo_score_cutoff
+
+
+def test_flatten_logo_puts_dark_transparent_mark_on_white():
+    logo = np.zeros((20, 40, 4), dtype=np.uint8)
+    logo[5:15, 10:30, 3] = 255
+    flat = flatten_logo(logo)
+    assert flat.shape[2] == 3
+    assert flat[0, 0].tolist() == [255, 255, 255]
+    assert flat[flat.shape[0] // 2, flat.shape[1] // 2].tolist() == [0, 0, 0]
+
+
+def test_flatten_logo_puts_light_transparent_mark_on_dark():
+    logo = np.zeros((20, 40, 4), dtype=np.uint8)
+    logo[5:15, 10:30] = 255
+    flat = flatten_logo(logo)
+    assert flat[0, 0].tolist() == [32, 32, 32]
+
+
+def test_logo_cutoff_rejects_flat_noise_band():
+    noise = [0.75 - i * 0.001 for i in range(80)]
+    assert logo_score_cutoff(noise, 0.72) > max(noise)
+
+
+def test_logo_cutoff_keeps_standouts():
+    scores = [0.95, 0.93] + [0.70 - i * 0.001 for i in range(78)]
+    cutoff = logo_score_cutoff(scores, 0.72)
+    assert [s for s in scores if s >= cutoff] == [0.95, 0.93]
 
 
 def _startup(id: int, slug: str, name: str, aliases: list[str] | None = None):

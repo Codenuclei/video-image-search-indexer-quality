@@ -9,7 +9,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -73,14 +73,41 @@ async def _detect_faces(image_bgr: np.ndarray) -> list:
     return await run_cpu_bound(engine.detect_faces, image_bgr)
 
 
+def flatten_logo(image: np.ndarray) -> np.ndarray:
+    """Composite a (possibly transparent) logo onto a contrasting padded canvas.
+
+    Dropping alpha turns transparent pixels black, so dark-on-transparent marks
+    collapse into near-identical black frames that all embed the same.
+    """
+    if image.ndim == 2:
+        image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+    if image.shape[2] == 4:
+        bgr = image[:, :, :3].astype(np.float32)
+        alpha = image[:, :, 3:4].astype(np.float32) / 255.0
+        opaque = alpha[:, :, 0] > 0.5
+        luminance = float(cv2.cvtColor(image[:, :, :3], cv2.COLOR_BGR2GRAY)[opaque].mean()) if opaque.any() else 0.0
+        background = 32.0 if luminance > 200 else 255.0
+        image = (bgr * alpha + background * (1.0 - alpha)).clip(0, 255).astype(np.uint8)
+    else:
+        image = image[:, :, :3]
+    h, w = image.shape[:2]
+    side = int(max(h, w) * 1.2)
+    fill = int(image[0, 0].mean())
+    canvas = np.full((side, side, 3), fill, dtype=np.uint8)
+    y, x = (side - h) // 2, (side - w) // 2
+    canvas[y : y + h, x : x + w] = image
+    return canvas
+
+
 def _embed_logo_bytes(path: Path) -> list[float]:
     """Embed a logo image as Gemini Embedding 2 (3072-d)."""
     from app.gemini.video_embeddings import embed_frames_batch_bytes_sync
 
     raw = path.read_bytes()
-    img = cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_COLOR)
-    if img is None:
+    decoded = cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
+    if decoded is None:
         raise RuntimeError(f"unreadable logo: {path}")
+    img = flatten_logo(decoded)
     ok, buf = cv2.imencode(".jpg", img, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
     if not ok:
         raise RuntimeError(f"jpeg encode failed: {path}")
@@ -307,6 +334,7 @@ async def ingest_catalog(
     reload: bool = True,
     embed_logos: bool = True,
     link_faces: bool = True,
+    refresh_logos: bool = False,
 ) -> IngestStats:
     """Upsert catalog rows, link founder faces, embed logos. Never names a Person."""
     stats = IngestStats()
@@ -314,6 +342,10 @@ async def ingest_catalog(
     if not entries:
         stats.errors.append("catalog empty or missing")
         return stats
+
+    if refresh_logos:
+        await session.execute(delete(StartupLogoRef))
+        await session.commit()
 
     for entry in entries:
         # Commit per startup so one bad row cannot roll back the whole catalog.
