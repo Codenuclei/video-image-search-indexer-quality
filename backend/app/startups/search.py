@@ -184,6 +184,7 @@ async def _logo_ocr_hits(session: AsyncSession, startup: ResolvedStartup) -> lis
     rows = (
         await session.execute(
             select(Media.drive_file_id)
+            .select_from(MediaOcrSpan)
             .join(Media, Media.id == MediaOcrSpan.media_id)
             .where(or_(*clauses))
             .distinct()
@@ -264,7 +265,18 @@ async def gather_startup_hits(
                 _keep(hit)
         if include_logos:
             for collector in (_logo_ann_hits, _logo_ocr_hits):
-                for hit in await collector(session, startup):
+                try:
+                    async with session.begin_nested():
+                        collected = await collector(session, startup)
+                except Exception:  # noqa: BLE001
+                    logger.warning(
+                        "startup logo signal %s failed slug=%s",
+                        collector.__name__,
+                        startup.slug,
+                        exc_info=True,
+                    )
+                    continue
+                for hit in collected:
                     _keep(hit)
             for hit in await _logo_caption_hits(startup):
                 _keep(hit)
