@@ -316,17 +316,19 @@ async def ingest_catalog(
         return stats
 
     for entry in entries:
+        # Commit per startup so one bad row cannot roll back the whole catalog.
         try:
             startup = await _upsert_startup(session, entry)
-            stats.startups_upserted += 1
             await _upsert_founders(session, startup, entry, stats)
             if link_faces:
                 await _ingest_founder_photos(session, startup, entry, stats)
             if embed_logos:
                 await _ingest_logos(session, startup, entry, stats)
+            await session.commit()
+            stats.startups_upserted += 1
         except Exception as exc:  # noqa: BLE001
+            await session.rollback()
             logger.exception("startup ingest failed slug=%s", entry.slug)
             stats.errors.append(f"{entry.slug}: {exc}")
 
-    await session.commit()
     return stats

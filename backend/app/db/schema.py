@@ -283,6 +283,24 @@ async def ensure_schema(engine: AsyncEngine) -> None:
             "ON media_identify_labels (media_id, model_version)",
         )
 
+        # startups.cohort/sector shipped as VARCHAR(64/128); Shark Tank cohorts overflow.
+        for column in ("cohort", "sector"):
+            col_type = await conn.scalar(
+                text(
+                    """
+                    SELECT data_type FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                      AND table_name = 'startups'
+                      AND column_name = :column
+                    """
+                ),
+                {"column": column},
+            )
+            if col_type == "character varying":
+                await conn.execute(
+                    text(f"ALTER TABLE startups ALTER COLUMN {column} TYPE TEXT")
+                )
+
         # Warm prod DBs already have additive columns. Skip ALTER TABLE entirely —
         # even IF NOT EXISTS takes AccessExclusiveLock and can 503 the API on boot.
         warm = await _column_exists(conn, "drive_files", "archived_at")
